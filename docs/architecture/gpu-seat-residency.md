@@ -470,7 +470,7 @@ run.
 
 Residency is measured, not assumed:
 
-- `ED4ALL_VRAM_DOCTOR` writes `state/runs/<RUN_ID>/vram_trajectory.jsonl`, one
+- `ED4ALL_VRAM_DOCTOR` writes `runtime/state/runs/<RUN_ID>/vram_trajectory.jsonl`, one
   row per sample carrying `run_id`, `phase`, `when` (`before` / `after`), `ts`,
   `event`, `free_mib`, `total_mib`, `probe_source`, `resident_models`, and
   `cuda_available`. The aggregator below reads `ts`, `phase`, and
@@ -484,7 +484,7 @@ Residency is measured, not assumed:
   `recreate_seat`, and `ensure_serving` when a run dir is known.
 - `BuildCostAggregator` (`lib/aggregators/build_cost.py`) joins the trajectory
   samples to the per-phase wall-clock windows from
-  `state/runs/<RUN_ID>/checkpoints/*.json` and reports a per-phase residency span
+  `runtime/state/runs/<RUN_ID>/checkpoints/*.json` and reports a per-phase residency span
   and peak resident VRAM. **An absent trajectory file omits the GPU section
   entirely** rather than reporting zeros — a run without `ED4ALL_VRAM_DOCTOR`
   produced no measurement, and saying so is honest where reporting 0 MiB would

@@ -439,10 +439,10 @@ Reachable by ordinary imports, but load-bearing for every run.
 | `cli/commands/run.py` | builds workflow params, drives the run | all | constructs the `params` block observed in workflow state |
 | `cli/commands/stop.py` | graceful stop sentinel | all | pairs with `lib/generation/stop_control.py` |
 | `MCP/core/config.py` | `OrchestratorConfig`; its `validate()` method also imports every gate's validator, but is opt-in with no production caller (§1.4) | load-time (config), test-only (validate) | `importlib` walk at line 314 |
-| `MCP/core/workflow_runner.py` | phase loop, skip predicates, resume, seat schedule, post-loop aggregators | all | writes `state/workflows/<WORKFLOW_ID>.json` |
+| `MCP/core/workflow_runner.py` | phase loop, skip predicates, resume, seat schedule, post-loop aggregators | all | writes `runtime/state/workflows/<WORKFLOW_ID>.json` |
 | `MCP/core/executor.py` | dispatch tables + per-phase gate loop | all | writes every phase checkpoint |
 | `MCP/core/param_mapper.py`, `schemas.py`, `tool_schemas.py` | param routing + tool schema records | all | imported by executor/config |
-| `MCP/hardening/checkpoint.py` | `CheckpointManager`, `PhaseCheckpoint` | all | writes `state/runs/<RUN_ID>/checkpoints/` |
+| `MCP/hardening/checkpoint.py` | `CheckpointManager`, `PhaseCheckpoint` | all | writes `runtime/state/runs/<RUN_ID>/checkpoints/` |
 | `MCP/hardening/validation_gates.py` | `GateManager`, dynamic validator loading, allowlist | all gated phases | §1.4 |
 | `MCP/hardening/gate_input_routing.py` | `GateInputRouter.build(cache=)` | all gated phases | executor gate loop |
 | `MCP/hardening/error_classifier.py` | transient/permanent classification | all | imported by `pipeline_tools.py` |
@@ -453,7 +453,7 @@ Reachable by ordinary imports, but load-bearing for every run.
 | `MCP/tools/_content_gen_helpers.py` | outline + course-planning helpers | 6, 9 | imported by `_run_content_generation_outline`, `_plan_course_structure` |
 | `MCP/tools/courseforge_tools.py` | `register_courseforge_tools` | 2 | used by `_stage_semantik_outputs` |
 | `MCP/tools/trainforge_tools.py` | `register_trainforge_tools` | 16, 18 | imported by `pipeline_tools.py` |
-| `MCP/tools/gui_tools.py` | 9 `gui_*` MCP tools over `state/gui/` | none (GUI bridge) | `MCP/server.py:575` |
+| `MCP/tools/gui_tools.py` | 9 `gui_*` MCP tools over `runtime/state/gui/` | none (GUI bridge) | `MCP/server.py:575` |
 | `MCP/tools/analysis_tools.py`, `orchestrator_tools.py` | MCP surfaces outside the pipeline path | none | `MCP/server.py:557,539` registration |
 | `MCP/tools/quiz_generator.py` | quiz engine behind a CLI verb | none | ordinary import from `cli/commands/libv2_generate_quiz.py:44`. **Not** registered in `MCP/server.py` |
 | `MCP/tools/tutoring_tools.py`, `intent_dispatch_tool.py` | tutoring / intent surfaces | none | referenced by `LibV2/tools/intent_router.py` and `cli/commands/libv2_ask.py`. **Not** registered in `MCP/server.py`. **UNVERIFIED:** whether `intent_dispatch_tool` has a live caller or only a docstring reference |
@@ -514,7 +514,7 @@ Agent `semantik-converter` → `extract_and_convert_pdf`.
 
 - `python -m semantik_structure.glmocr.heading_judge_standalone` per chapter
   (§1.7). `SemantiK/semantik_structure/glmocr/` is protected in full.
-- Outputs mirrored to `state/runs/<RUN_ID>/heading_judge/`.
+- Outputs mirrored to `runtime/state/runs/<RUN_ID>/heading_judge/`.
 - Per-chapter fail-open; skip-with-pass when `SEMANTIK_HEADING_JUDGE` is off.
 - Stop-cooperative: `check_stop("heading_judge", idx)` at each chapter boundary.
 - No gates declared.
@@ -791,7 +791,7 @@ Not on the pipeline path, but live. Shipped as the `gui` extra and as the
   `apply_deprecation_if_post`. It is live shared code, not a dead router.
 - `gui/services/` — 14 modules + `__init__.py`; `gui/static/`; `gui/tests/`
   (run by CI).
-- `MCP/tools/gui_tools.py` — the 9 `gui_*` MCP tools over `state/gui/`.
+- `MCP/tools/gui_tools.py` — the 9 `gui_*` MCP tools over `runtime/state/gui/`.
 - `run-gui.sh` / `run-gui.bat` launchers.
 
 ---

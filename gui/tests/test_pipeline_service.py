@@ -10,7 +10,7 @@ presented as the ONE sequenced pipeline they are. These tests pin:
   ``planned_phases`` (the pipeline tail the operator sees),
 - a completed training discovered ONLY via ``LibV2/courses/<slug>/models/`` with
   no run record (``present: true``, ``run_id: null``),
-- a training run discovered from a bare ``state/workflows/*.json`` file with NO
+- a training run discovered from a bare ``runtime/state/workflows/*.json`` file with NO
   GUI record (CLI/pilot-launched),
 - a non-build workflow (``rag_training``) → a single stage, no training tail,
 - an unresolvable slug → single-stage chain with ``course_slug: null``,
@@ -225,7 +225,7 @@ def test_completed_training_discovered_via_model_dirs(state_dir, libv2_root):
 
 def test_training_discovered_from_cli_workflow_file(state_dir, libv2_root):
     """A CLI/pilot-launched trainforge_train run has NO GUI record — only a
-    state/workflows/*.json file. It must still be discovered."""
+    runtime/state/workflows/*.json file. It must still be discovered."""
     build_id = _seed_build_run(state_dir)
     _write_workflow_state(
         state_dir, "WF-cli-train-0001", wf_type="trainforge_train",

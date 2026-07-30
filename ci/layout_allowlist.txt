@@ -33,12 +33,12 @@ dir:LibV2
 dir:MCP
 dir:schemas
 dir:scripts
-dir:seats
 dir:SemantiK
-dir:state
+dir:runtime
 dir:tests
 dir:Trainforge
-dir:training-captures
+
+script:code_index.py  # hybrid code-search harness (post-snapshot; -> scripts/harness/ in Phase 2)
 
 # --- root-level files (seeded from the tracked tree, 2026-07-29) -----------
 file:.dockerignore

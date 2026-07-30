@@ -175,7 +175,7 @@ def register_analysis_tools(mcp):
             if not records:
                 return json.dumps({
                     "total_records": 0,
-                    "message": "No decision records found in training-captures/"
+                    "message": "No decision records found in runtime/training-captures/"
                 })
 
             # Initialize counters

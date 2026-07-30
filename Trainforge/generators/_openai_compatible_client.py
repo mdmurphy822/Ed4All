@@ -95,7 +95,7 @@ _RETRY_AFTER_MAX_SECONDS: float = 60.0
 ENV_REQUEST_TIMEOUT: str = "ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS"
 
 # OP2 usage tap: when this env identifies a run, every chat-completion call
-# appends one metering row to ``state/runs/<run_id>/llm_usage.jsonl`` (read
+# appends one metering row to ``runtime/state/runs/<run_id>/llm_usage.jsonl`` (read
 # by ``lib/aggregators/build_cost.py``). Best-effort + no-op when unset, so a
 # bare library caller (no run id) is byte-identical to the pre-tap path.
 ENV_RUN_ID: str = "ED4ALL_RUN_ID"
@@ -296,7 +296,7 @@ def maybe_append_usage_row(
     error: Optional[str] = None,
     include_run_identity: bool = False,
 ) -> None:
-    """Append one OP2 metering row to ``state/runs/<run_id>/llm_usage.jsonl``.
+    """Append one OP2 metering row to ``runtime/state/runs/<run_id>/llm_usage.jsonl``.
 
     Roadmap OP2 + Task #10 + perf-doc P4 — the SHARED tap implementation.
     Module-level so every OpenAI-compatible call site meters through ONE
@@ -828,7 +828,7 @@ class OpenAICompatibleClient:
         stream_usage_present: Optional[bool] = None,
         finish_reason: Optional[str] = None,
     ) -> None:
-        """Append one metering row to ``state/runs/<run_id>/llm_usage.jsonl``.
+        """Append one metering row to ``runtime/state/runs/<run_id>/llm_usage.jsonl``.
 
         Thin delegator to the module-level :func:`maybe_append_usage_row`
         (the shared OP2 tap implementation) with this client's

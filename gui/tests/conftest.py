@@ -1,7 +1,7 @@
 """Shared fixtures for the Ed4All control-plane GUI test suite.
 
 Every fixture isolates state into a ``tmp_path``: ``ED4ALL_STATE_RUNS_DIR`` is
-redirected so ``gui.shared_state`` writes a throwaway ``state/gui/`` sibling, and
+redirected so ``gui.shared_state`` writes a throwaway ``runtime/state/gui/`` sibling, and
 ``ED4ALL_LIBV2_ROOT`` is redirected so course / retrieval reads/writes never
 touch the real ``LibV2/``. All state-mutating fixtures monkeypatch these env
 vars; nothing here makes a network call or loads a heavy ML dep.
@@ -66,12 +66,12 @@ def _isolate_gui_learner_env() -> Any:
 
 @pytest.fixture
 def state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Redirect ``state/`` into ``tmp_path`` via ``ED4ALL_STATE_RUNS_DIR``.
+    """Redirect ``runtime/state/`` into ``tmp_path`` via ``ED4ALL_STATE_RUNS_DIR``.
 
     ``shared_state._state_root`` resolves the GUI store as a sibling of the
     ``runs`` dir named by ``ED4ALL_STATE_RUNS_DIR``, so pointing it at
     ``tmp_path/state/runs`` lands the GUI store at ``tmp_path/state/gui/``.
-    Returns the ``state/`` root.
+    Returns the ``runtime/state/`` root.
     """
     state_root = tmp_path / "state"
     runs = state_root / "runs"

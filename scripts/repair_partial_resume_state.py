@@ -14,7 +14,7 @@ of outputs derived from only the ONE converted chapter.
 
 What this does
 --------------
-Rewrites ``state/workflows/<workflow_id>.json`` so the next ``--resume`` re-runs
+Rewrites ``runtime/state/workflows/<workflow_id>.json`` so the next ``--resume`` re-runs
 the incomplete phase AND every downstream phase fresh, WITHOUT discarding the
 legitimately-completed task result(s):
 
@@ -31,7 +31,7 @@ legitimately-completed task result(s):
     ``stopped_after`` markers are cleared, so the resume starts at the
     explicitly uncompleted phase rather than retaining a later pause marker.
 
-Per-run executor checkpoints under ``state/runs/<run_id>/checkpoints/`` may be
+Per-run executor checkpoints under ``runtime/state/runs/<run_id>/checkpoints/`` may be
 reused because ``params.run_id`` persists across resumes. This state-only tool
 reports which phase checkpoint files must be backed up and evicted separately;
 it never deletes files itself.

@@ -1,7 +1,7 @@
 """Workflow-state file write/read hardening (2026-07-21 corruption incident).
 
 Two concurrent ``ed4all run --resume`` processes raced non-atomic
-``open(path, 'w') + json.dump`` writes to ``state/workflows/WF-<id>.json``,
+``open(path, 'w') + json.dump`` writes to ``runtime/state/workflows/WF-<id>.json``,
 interleaving partial documents mid-file (one nearly-complete doc plus the
 head of a second appended). Both processes then crashed parsing the result.
 
@@ -19,7 +19,7 @@ Covered here:
   the checkpoint-recovery hint — never a bare ``json.JSONDecodeError``.
 
 Hermetic: ``STATE_PATH`` is monkeypatched into ``tmp_path``; nothing under
-the real ``state/`` is touched.
+the real ``runtime/state/`` is touched.
 """
 
 from __future__ import annotations
@@ -275,7 +275,7 @@ def test_run_workflow_corrupted_state_raises_enriched_error(tmp_path, monkeypatc
     assert str(wf_path) in msg                        # names the file
     assert re.search(r"char \d+", msg)                # names the position
     assert ".tmp sibling" in msg                      # recovery hint 1
-    assert "state/runs/<run_id>/checkpoints/" in msg  # recovery hint 2
+    assert "runtime/state/runs/<run_id>/checkpoints/" in msg  # recovery hint 2
     # Chained from the underlying decode error, not swallowing it.
     assert isinstance(excinfo.value.__cause__, json.JSONDecodeError)
 

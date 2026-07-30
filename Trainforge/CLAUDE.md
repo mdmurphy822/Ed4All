@@ -330,7 +330,7 @@ contract documented in root `CLAUDE.md`:
   `lib/trainforge_capture.py` (repo root) for the full surface.
 - OP2 usage tap: `Trainforge/generators/_openai_compatible_client.py`
   additionally appends one metering row per `chat_completion` call to
-  `state/runs/<run_id>/llm_usage.jsonl` (provider / model / prompt +
+  `runtime/state/runs/<run_id>/llm_usage.jsonl` (provider / model / prompt +
   completion tokens / duration) — but ONLY when `ED4ALL_RUN_ID` identifies
   a run (`_maybe_append_usage_row`; best-effort, silently skipped otherwise).
   This is metering, not decision capture; the post-loop `BuildCostAggregator`
@@ -1089,7 +1089,7 @@ Six mandatory decision events fire across a training run; all under phase `train
 | `model_promotion_decision` | Once per `libv2 models promote` invocation | Promoted model_id, demoted model_id (if any), eval_report deltas if available. |
 | `synthesis_provider_call` | Once per training-pair synthesis call on the active provider (`local` / `together` / `claude_session`) | Model ID, max_tokens, prompt-cache hit/miss, retry count on malformed JSON. Not an Anthropic-SDK path — that provider was removed Phase 4. |
 
-All training captures land at `training-captures/trainforge/<COURSE_CODE>/phase_trainforge-training/decisions_YYYYMMDD_HHMMSS.jsonl`.
+All training captures land at `runtime/training-captures/trainforge/<COURSE_CODE>/phase_trainforge-training/decisions_YYYYMMDD_HHMMSS.jsonl`.
 
 ### End-to-end: from imported course to promoted adapter
 

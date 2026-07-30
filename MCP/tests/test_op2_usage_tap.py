@@ -1,7 +1,7 @@
 """Roadmap OP2 — OpenAI-compatible client usage-tap tests.
 
 When ``ED4ALL_RUN_ID`` is set, every ``chat_completion`` call appends one
-metering row to ``state/runs/<run_id>/llm_usage.jsonl``; when unset it is a
+metering row to ``runtime/state/runs/<run_id>/llm_usage.jsonl``; when unset it is a
 strict no-op (byte-identical for bare library callers).
 """
 

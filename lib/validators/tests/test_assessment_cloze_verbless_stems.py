@@ -4,7 +4,7 @@ Provenance
 ----------
 Every stem string in this module is copied VERBATIM out of the blocking gate
 result recorded at
-``state/runs/<run>/checkpoints/trainforge_assessment_checkpoint.json`` for a
+``runtime/state/runs/<run>/checkpoints/trainforge_assessment_checkpoint.json`` for a
 real production run that halted on::
 
     PERVASIVE_VERBLESS_STEMS: 15 questions have verb-less stems (of 50 total).

@@ -21,7 +21,7 @@ The GUI lets a human:
   `synthesized_objectives.json`.
 - **Run retrieval + adapter inference** — BM25, multi-query, or LLM-rerank
   retrieval against a LibV2 course; run a trained adapter against a prompt.
-- **Bridge with Claude Code** — a shared `state/gui/` store + an append-only
+- **Bridge with Claude Code** — a shared `runtime/state/gui/` store + an append-only
   activity log keep a Claude session and the GUI in sync in both directions.
 
 The GUI ships as an opt-in `gui` extra — it adds no heavy deps to the default
@@ -103,7 +103,7 @@ left nav has six tabs:
 
 ### Where settings persist
 
-The canonical settings doc is `state/gui/settings.json` (versioned, schema v1).
+The canonical settings doc is `runtime/state/gui/settings.json` (versioned, schema v1).
 It carries five sections:
 
 - `env` — raw env-var values (including secrets).
@@ -143,7 +143,7 @@ the configuration. Rendering precedence (later wins):
    `env_catalog.routing_to_env`).
 4. `env` → raw passthrough of catalog-known keys.
 
-Apply also writes `state/gui/.env.rendered` — an informational dotenv-style
+Apply also writes `runtime/state/gui/.env.rendered` — an informational dotenv-style
 dump of the resolved vars (secrets masked). It is **not** sourced by anything;
 the backend applies vars in-process. It exists so an operator can see exactly
 what was injected.
@@ -307,7 +307,7 @@ partial directory.
 | POST | `/api/runs/phase` | `{workflow, phase, course_name?, project_id?, mode?, provider?, model?, options{}}` | `{run_id, status, tasks?, gate_results?}` (422 on failure) |
 | GET | `/api/runs` | — | `{runs: [<run record>...]}` (newest first) |
 | GET | `/api/runs/{run_id}` | — | the run record (404 if unknown). On a failed run the record carries `failed_phase` + `failure_reason`. |
-| GET | `/api/runs/{run_id}/progress` | — | Stage-tracker payload for the pipeline rail + live stats band: `{run_id, workflow_id, workflow, status, phases:[{name, index, state, group, label, wallclock_s, telemetry?}], current_phase, failed_phase, failure_reason, stats:{tok_s, streams?, calls, prompt_tokens, completion_tokens, ttft_p50_ms, phase_elapsed_s, phase_telemetry?, seat:{name, url, model}\|null}, updated_at}`. Phase `state` is `done \| current \| paused \| pending \| failed \| skipped`; the phase list is the run's own `config/workflows.yaml` plan (workflow-agnostic, cached — when the plan carries both sides of an `enabled_when_env` branch, the not-taken side is omitted from the list: a branchy row that resolved skipped, or the negative-clause fallback row with no evidence of running yet), merged with the orchestrator workflow state, checkpoint wall-clocks, optional versioned atomic `state/runs/<run_id>/telemetry/<phase>.json` snapshots, and a bounded tail of the OP2 `llm_usage.jsonl` tap. Telemetry is run/phase/schema/type validated fail-safe; invalid documents are omitted, while valid completed metrics remain visible after the phase advances. (`tok_s` is the AGGREGATE seat throughput — sliding-window completion tokens over the window's wall span; `streams` is the estimated in-flight request count over that window, omitted when not computable; the per-stream figure is `stats.detail.throughput.per_stream_tok_s`; nulls when no usage yet). `seat` is a TTL-cached `/v1/models` probe over the `ED4ALL_SEAT_BASE_URLS` registry (null when no seat registry / terminal run). Cheap enough to poll at 2–5s. Accepts a GUI run id or a bare orchestrator workflow id; typed 404 otherwise. |
+| GET | `/api/runs/{run_id}/progress` | — | Stage-tracker payload for the pipeline rail + live stats band: `{run_id, workflow_id, workflow, status, phases:[{name, index, state, group, label, wallclock_s, telemetry?}], current_phase, failed_phase, failure_reason, stats:{tok_s, streams?, calls, prompt_tokens, completion_tokens, ttft_p50_ms, phase_elapsed_s, phase_telemetry?, seat:{name, url, model}\|null}, updated_at}`. Phase `state` is `done \| current \| paused \| pending \| failed \| skipped`; the phase list is the run's own `config/workflows.yaml` plan (workflow-agnostic, cached — when the plan carries both sides of an `enabled_when_env` branch, the not-taken side is omitted from the list: a branchy row that resolved skipped, or the negative-clause fallback row with no evidence of running yet), merged with the orchestrator workflow state, checkpoint wall-clocks, optional versioned atomic `runtime/state/runs/<run_id>/telemetry/<phase>.json` snapshots, and a bounded tail of the OP2 `llm_usage.jsonl` tap. Telemetry is run/phase/schema/type validated fail-safe; invalid documents are omitted, while valid completed metrics remain visible after the phase advances. (`tok_s` is the AGGREGATE seat throughput — sliding-window completion tokens over the window's wall span; `streams` is the estimated in-flight request count over that window, omitted when not computable; the per-stream figure is `stats.detail.throughput.per_stream_tok_s`; nulls when no usage yet). `seat` is a TTL-cached `/v1/models` probe over the `ED4ALL_SEAT_BASE_URLS` registry (null when no seat registry / terminal run). Cheap enough to poll at 2–5s. Accepts a GUI run id or a bare orchestrator workflow id; typed 404 otherwise. |
 | GET | `/api/runs/{run_id}/output-tail` | — | Live-output tail for the run's CURRENT phase (the Studio "Live output" panel): `{run_id, phase, source, label, row_count, rows:[{seq, label, text}]}` — the last ≤15 complete rows of the phase's per-unit resume-checkpoint sidecar (or, for `heading_judge`, the newest per-chapter judgment files — a growing-directory source; `training_synthesis` tails its per-pair `training_specs/.synthesis_pairs_checkpoint.jsonl`), each mapped to a bounded display record (`text` HTML-stripped + truncated to ~500 chars with a trailing `…`; rows without a content field render a compact JSON of their payload minus fingerprint/schema bookkeeping). Bounded seek-from-end read (~2 MB cap); corrupt / mid-append partial rows are skipped; absent sidecar or unmapped phase → honest `rows: []` with `source: null`. Typed 404 when the run is unknown. |
 | GET | `/api/runs/{run_id}/validation-report` | — | `{run_id, report, report_path, failed_gates:[{phase, gate_id, severity, message, issues_count}], failed_phase, failure_reason}`. `report` is the `courseforge_validation_report.json` body when present, else `null` with an explanatory `note`. 404 if the run is unknown. |
 | POST | `/api/runs/{run_id}/cancel` | — | `{run_id, status}` (404 if unknown) |
@@ -452,7 +452,7 @@ the Activity tab alongside the Claude↔GUI events.
 | GET | `/api/health` | `{status: "ok"}` — the unauthenticated Docker liveness probe. |
 | GET | `/api/health/doctor` | Cached in-process `ed4all doctor` preflight: `{generated_at, exit_state, exit_code, verdict, groups: [{group, checks: [CheckResult]}], summary}`. `exit_state` is `healthy` \| `degraded` \| `critical` (the worst-severity banner verdict); each `check` is a `{name, group, severity, summary, detail, remediation, data}` dict. **Group-agnostic** — the default check groups (`gpu`, `gpu_profile`, `window`, `environment`) plus any opt-in group whose env prerequisite is present (e.g. `seat` when a seat-registry env is set) are discovered from the live diagnostics registry, never hardcoded; the run-preflight `provider` + run-scoped `postmortem` groups are excluded. Results are cached ~30 s. |
 | POST | `/api/health/doctor/refresh` | Re-runs the preflight now (bypasses the TTL cache); same shape. |
-| GET | `/api/health/doctor/run/{run_id}` | Cached **run-scoped post-mortem** (the `ed4all doctor --run-id` equivalent): the global shape plus `{run_id, orchestrator_run_id, effective_status, usage: {present, rows}}`. `run_id` accepts a GUI run id, a `WF-*` orchestrator workflow id, or a bare orchestrator run id (resolved to `state/runs/<run_id>/` like the run/progress services). Unknown run → 404 `run_not_found`. |
+| GET | `/api/health/doctor/run/{run_id}` | Cached **run-scoped post-mortem** (the `ed4all doctor --run-id` equivalent): the global shape plus `{run_id, orchestrator_run_id, effective_status, usage: {present, rows}}`. `run_id` accepts a GUI run id, a `WF-*` orchestrator workflow id, or a bare orchestrator run id (resolved to `runtime/state/runs/<run_id>/` like the run/progress services). Unknown run → 404 `run_not_found`. |
 | POST | `/api/health/doctor/run/{run_id}/refresh` | Re-runs the run-scoped post-mortem now; same shape (404 for an unknown run). |
 
 The `/api/health/*` family is deliberately **open** (mirroring `/api/health`): it
@@ -495,14 +495,14 @@ never starts or stops anything. Service: `gui.services.seat_service`; router:
 
 ## Claude Code integration
 
-The GUI and a Claude Code session share a single on-disk store, `state/gui/`,
+The GUI and a Claude Code session share a single on-disk store, `runtime/state/gui/`,
 written via the web-dep-free `gui/shared_state.py`. The same store backs nine
 `gui_*` MCP tools (`MCP/tools/gui_tools.py`, registered in `MCP/server.py`). A
 Claude session drives and observes exactly what the GUI shows, and vice versa —
 symmetric to the existing StatusTracker / TaskMailbox file-IPC idiom.
 
 ```
-state/gui/
+runtime/state/gui/
 ├── settings.json     # canonical settings doc (gui_get_settings / gui_set_setting)
 ├── .env.rendered     # informational rendered env (secrets masked)
 ├── runs/             # run registry: <run_id>.json (gui_list_runs / gui_get_run / gui_enqueue_run)
@@ -546,8 +546,8 @@ drives — nothing is re-implemented:
 - **Workflow launch** — `run_service.launch_pipeline` applies the settings env,
   then calls `create_textbook_pipeline` (textbook_to_course + Courseforge stage
   aliases) or `create_workflow_impl` (other workflows). A real workflow is
-  created under `state/workflows/` and driven by `PipelineOrchestrator.run` in a
-  background asyncio task, streaming status/log to `state/gui/logs/<run_id>.log`.
+  created under `runtime/state/workflows/` and driven by `PipelineOrchestrator.run` in a
+  background asyncio task, streaming status/log to `runtime/state/gui/logs/<run_id>.log`.
 - **Single phase** — `run_service.launch_phase` uses the documented phase
   pathway: `OrchestratorConfig` → pick the phase → `WorkflowRunner._route_params`
   → `_create_phase_tasks` → `TaskExecutor.execute_phase`, with upstream
@@ -1074,7 +1074,7 @@ configured:
 
 ### Privacy note
 
-Learner queries are logged locally to `training-captures/` (JSONL, via
+Learner queries are logged locally to `runtime/training-captures/` (JSONL, via
 `DecisionCapture`) on the **same device** — there is no telemetry or
 network-egress path. Disclose this in the session consent language.
 

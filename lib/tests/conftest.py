@@ -199,7 +199,7 @@ def mock_run_context():
 @pytest.fixture
 def capture_output_dir(tmp_path):
     """Directory for decision capture output."""
-    output_dir = tmp_path / "training-captures" / "test"
+    output_dir = tmp_path / "runtime/training-captures" / "test"
     output_dir.mkdir(parents=True)
     return output_dir
 

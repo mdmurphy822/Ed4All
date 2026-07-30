@@ -1,7 +1,7 @@
 """Ed4All licensing guard package.
 
 Machine-readable teacher-roster + fail-closed export/ingest license guards
-(backlog SFT-C S6/S7; owner memo ``scratchpad/licensing_memo.md``).
+(backlog SFT-C S6/S7; owner memo ``runtime/scratchpad/licensing_memo.md``).
 
 Canonical prose reference: ``docs/LICENSING.md``. This package is the
 *machine-readable* half of that posture — the export-time fail-closed

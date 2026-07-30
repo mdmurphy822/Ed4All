@@ -58,7 +58,7 @@ they carry no import risk): `validate-run`, `summarize-run`, `diff-runs`,
 | `objectives restructure` | `commands/objectives_cmd.py` | Deterministic (no-LLM) objectives rebuild; output round-trips `--reuse-objectives`. |
 | `libv2 validate-packet \| query \| generate-quiz \| generate-study-pack \| ask` | `commands/libv2_*.py` | Five subcommands assembled onto one `libv2` group by `register_libv2_command`. |
 | `tutor diagnose \| inventory \| guardrails` | `commands/tutor.py` | Misconception-aware tutoring tools over LibV2 archives. |
-| `state prune` | `commands/state_prune.py` | GC for `state/runs` + `state/workflows`. |
+| `state prune` | `commands/state_prune.py` | GC for `runtime/state/runs` + `runtime/state/workflows`. |
 | `mailbox watch` | `commands/mailbox_watch.py` | Outer-session watcher for the `LocalDispatcher` task mailbox. |
 | `mailbox-bridge peek \| complete \| peek-agent \| complete-agent` | `commands/mailbox_bridge.py` | Hidden group (`hidden=True`); operator plumbing for the brokered LLM bridge. |
 | `gui` | `commands/gui_cmd.py` | Launches the control-plane server; see [`gui/CLAUDE.md`](../gui/CLAUDE.md). |

@@ -1,6 +1,6 @@
 """Runs-tab surfacing of CLI-launched orchestrator workflows.
 
-Service-level: ``run_service.list_runs`` merges ``state/workflows/WF-*.json``
+Service-level: ``run_service.list_runs`` merges ``runtime/state/workflows/WF-*.json``
 records (tagged ``source: "cli"``) into the GUI-registry listing (tagged
 ``source: "gui"``), de-duped on workflow id, newest-first, staleness-filtered
 by the display heuristic (non-terminal ≤ 48 h / terminal ≤ 7 days), tolerant of

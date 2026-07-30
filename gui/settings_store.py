@@ -1,4 +1,4 @@
-"""Canonical settings persistence — ``state/gui/settings.json`` + env render.
+"""Canonical settings persistence — ``runtime/state/gui/settings.json`` + env render.
 
 This is the single source of truth for the GUI's env/API-key/model-routing
 state. MCP tools and the GUI backend both read/write through here so a Claude
@@ -254,7 +254,7 @@ def apply_env(doc: Dict[str, Any]) -> Dict[str, str]:
     """Render ``doc``, write the resolved vars into ``os.environ``, and persist.
 
     The rendered map is written into ``os.environ`` (so launched runs inherit
-    it) AND mirrored to ``state/gui/.env.rendered`` (informational). Returns the
+    it) AND mirrored to ``runtime/state/gui/.env.rendered`` (informational). Returns the
     applied map (unmasked — caller masks for transport).
     """
     rendered = render_env(doc)
@@ -265,7 +265,7 @@ def apply_env(doc: Dict[str, Any]) -> Dict[str, str]:
 
 
 def _write_env_rendered(rendered: Dict[str, str]) -> None:
-    """Write ``state/gui/.env.rendered`` (dotenv form), atomically."""
+    """Write ``runtime/state/gui/.env.rendered`` (dotenv form), atomically."""
     lines = ["# Rendered by gui.settings_store.apply_env — informational only.\n"]
     for key in sorted(rendered):
         value = rendered[key]

@@ -659,7 +659,7 @@ def postmortem_checks(ctx: CheckContext) -> List[CheckResult]:
                     group="postmortem",
                     severity=Severity.FAIL,
                     summary=f"run {run_id} not found at {shown}",
-                    remediation="check the run id; runs live under state/runs/ or $ED4ALL_STATE_RUNS_DIR",
+                    remediation="check the run id; runs live under runtime/state/runs/ or $ED4ALL_STATE_RUNS_DIR",
                     data={"run_id": run_id, "run_dir": shown},
                 )
             ]

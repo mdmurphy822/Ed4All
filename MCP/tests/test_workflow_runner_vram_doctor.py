@@ -3,7 +3,7 @@
 The workflow run loop wraps every ``executor.execute_phase`` call with a
 best-effort "VRAM doctor" snapshot (``WorkflowRunner._vram_doctor_snapshot``)
 so a crashed / VRAM-contended run leaves a forensic free-VRAM timeline at
-``state/runs/<run_id>/vram_trajectory.jsonl`` (the same run dir the executor
+``runtime/state/runs/<run_id>/vram_trajectory.jsonl`` (the same run dir the executor
 writes its phase checkpoints into).
 
 Contract under test:

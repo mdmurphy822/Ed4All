@@ -154,7 +154,7 @@ Rolls the newest `retrieval_eval/grounded_answer_eval_<ts>.json` into a versione
 
 `SCHEMA_VERSION = "1.0"`; schema `schemas/aggregators/intelligence_level.schema.json`. **Flag-gated** on `ED4ALL_INTELLIGENCE_RUBRIC` via `resolve_intelligence_rubric()`; default OFF → no file. Falls back to `<trainforge_dir>/intelligence_level_report.json`. Scores a built course on a deterministic (no-model) 0–5 capability rubric by tallying which capability artifacts are actually present. Emits one `intelligence_level_scored` decision per build.
 
-### `harvest_bloom_labels` — `state/bloom_labels/labels.jsonl`
+### `harvest_bloom_labels` — `runtime/state/bloom_labels/labels.jsonl`
 
 `lib/bloom_labels/harvester.py::harvest_bloom_labels` (re-exported from the package `__init__`), called from `_maybe_harvest_bloom_labels`. Not a report writer — an **appender** to a shared, cross-run store whose default location is `DEFAULT_STORE_PATH = STATE_PATH / "bloom_labels" / "labels.jsonl"`. **Flag-gated** on `ED4ALL_HARVEST_BLOOM_LABELS`, read directly from the environment in the helper; off → short-circuits before any path resolution.
 
@@ -181,7 +181,7 @@ Two input sources are read best-effort and unioned: the in-memory `phase_outputs
 
 `SCHEMA_VERSION = "1.0"`; schema `schemas/aggregators/build_cost.schema.json` (Draft 2020-12, `additionalProperties: false`). Falls back to `<trainforge_dir>/build_cost_report.json`. Pure **metering** — it makes no model call, so it correctly has **no decision-capture surface**.
 
-Three independently degradable sections, sourced from artifacts the run already drops under `state/runs/<run_id>/`:
+Three independently degradable sections, sourced from artifacts the run already drops under `runtime/state/runs/<run_id>/`:
 
 1. **Per-phase wall-clock** from `checkpoints/*.json` (`started_at` / `completed_at`). Always emitted — a run that got far enough to aggregate has checkpoints.
 2. **GPU residency** from `vram_trajectory.jsonl` (rows carry `ts`, `phase`, `resident_models`), joined to the phase wall-clock windows for per-phase residency span and peak resident VRAM. **An absent file omits the section entirely** rather than emitting zeros — a run without `ED4ALL_VRAM_DOCTOR` writes no trajectory, and zeros would be a lie.

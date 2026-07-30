@@ -9,7 +9,7 @@ schema is prose — the next PR lands a 25th top-level dir "just this once"
 and the diagnosis in § 1 repeats itself.
 
 Four checks, all against ``git ls-files`` (tracked files only, so
-gitignored VAR-zone content — ``state/ runtime/ var/ plans/ demo/`` etc. —
+gitignored VAR-zone content — ``runtime/ plans/ inputs/`` etc. —
 can never trip this guard; only ``.gitkeep`` sentinels are tracked there):
 
 1. **Top-level closed** — every top-level entry (the first path segment of

@@ -148,7 +148,7 @@ _COLOR_STYLE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Colour words used in prose to signal state/answer/category.
+# Colour words used in prose to signal runtime/state/answer/category.
 _COLOR_SIGNAL_WORDS = (
     "red",
     "green",
@@ -298,7 +298,7 @@ def _is_drag_only(text: str, block: Any) -> bool:
 
 
 def _is_color_only(text: str) -> bool:
-    """True iff state/answer/category is conveyed by colour with no companion
+    """True iff runtime/state/answer/category is conveyed by colour with no companion
     text / icon / pattern cue."""
     has_color = bool(_COLOR_STYLE_RE.search(text)) or any(
         w in text for w in _COLOR_SIGNAL_WORDS

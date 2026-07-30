@@ -87,7 +87,7 @@ Ed4All/
 ├── lib/            # Shared libraries, validators, decision capture
 ├── config/         # Workflow and agent configuration (YAML)
 ├── schemas/        # JSON schemas for validation
-├── state/          # Runtime state and progress tracking
+├── runtime/state/          # Runtime state and progress tracking
 └── ci/             # CI integrity checks
 ```
 
@@ -104,7 +104,7 @@ The root `CLAUDE.md` covers the orchestration protocol, MCP tools, workflow defi
 
 ## Decision Capture
 
-If your change involves AI-driven decisions (content generation, assessment creation, remediation choices), log decisions to `training-captures/` using `lib.decision_capture.DecisionCapture`. Every decision needs a rationale of at least 20 characters. See `CLAUDE.md` for the full protocol.
+If your change involves AI-driven decisions (content generation, assessment creation, remediation choices), log decisions to `runtime/training-captures/` using `lib.decision_capture.DecisionCapture`. Every decision needs a rationale of at least 20 characters. See `CLAUDE.md` for the full protocol.
 
 ## Adding a New MCP Tool
 

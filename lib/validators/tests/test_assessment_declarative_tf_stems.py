@@ -6,7 +6,7 @@ After the cloze fix + the first apparatus-guard widening landed (07fa61eb), the
 production run regenerated and the ``assessment_quality`` gate at
 ``trainforge_assessment`` still failed at score 0.75 on five accumulated
 warnings. Four were ``VERB_LESS_STEM``, verbatim from
-``state/runs/<run>/checkpoints/trainforge_assessment_checkpoint.json``::
+``runtime/state/runs/<run>/checkpoints/trainforge_assessment_checkpoint.json``::
 
     Q-cbc366e9: 'Show solution The opposite of 7 is -7 because it is the same distance from 0 but...'
     Q-5a4deb7d: 'The opposite of -10 is 10 because it is the same distance from 0 but on the oppo...'

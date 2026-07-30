@@ -120,7 +120,7 @@ class CheckpointManager:
         Initialize checkpoint manager.
 
         Args:
-            run_path: Path to run directory (state/runs/{run_id}/)
+            run_path: Path to run directory (runtime/state/runs/{run_id}/)
         """
         self.run_path = run_path
         self.checkpoints_dir = run_path / "checkpoints"

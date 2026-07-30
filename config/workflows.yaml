@@ -5779,7 +5779,7 @@ hardening:
   # Checkpointing
   checkpoints:
     enabled: true
-    checkpoint_dir: state/runs/{run_id}/checkpoints
+    checkpoint_dir: runtime/state/runs/{run_id}/checkpoints
 
   # Validation
   validation:

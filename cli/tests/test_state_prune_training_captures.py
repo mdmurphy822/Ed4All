@@ -3,7 +3,7 @@
 The training-captures age-prune is OPT-IN (never runs without the flag) and
 age-based (only files older than ``--older-than`` days are eligible). All tests
 run against a synthetic ``tmp_path`` captures tree — never the real
-``training-captures/``.
+``runtime/training-captures/``.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ def _capture(captures_dir: Path, rel: str, *, age_days: float, body: bytes = b"{
 
 @pytest.fixture
 def captures_root(tmp_path: Path) -> Path:
-    root = tmp_path / "training-captures"
+    root = tmp_path / "runtime/training-captures"
     root.mkdir(parents=True)
     return root
 

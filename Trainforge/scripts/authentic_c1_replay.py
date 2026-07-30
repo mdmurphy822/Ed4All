@@ -109,7 +109,7 @@ def build_authentic_inventory(
     attempts = _read_jsonl(source_cell / "http_attempts.jsonl")
     intents = _read_jsonl(source_cell / "call-intents.jsonl")
     capture_paths = sorted(
-        (source_cell / "audit" / "training-captures").rglob("decisions_*.jsonl")
+        (source_cell / "audit" / "runtime/training-captures").rglob("decisions_*.jsonl")
     )
     if len(capture_paths) != 1:
         raise ValueError("authentic C1 authority requires one decision stream")

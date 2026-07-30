@@ -1,17 +1,17 @@
 """
-``ed4all state prune`` — garbage-collect ``state/runs/`` and
-``state/workflows/`` artifacts (Wave 74 cleanup).
+``ed4all state prune`` — garbage-collect ``runtime/state/runs/`` and
+``runtime/state/workflows/`` artifacts (Wave 74 cleanup).
 
 Both directories accumulate per-run dirs/files indefinitely:
 
-* ``state/workflows/WF-{date}-{hash}.json`` — the workflow record.
-* ``state/runs/{run_id}/`` — per-run mailbox/checkpoints/decisions tree.
+* ``runtime/state/workflows/WF-{date}-{hash}.json`` — the workflow record.
+* ``runtime/state/runs/{run_id}/`` — per-run mailbox/checkpoints/decisions tree.
 
 This command keeps the most recent N COMPLETED workflows (and their
-matching ``state/runs/{run_id}/`` dirs) plus any workflows in a status
+matching ``runtime/state/runs/{run_id}/`` dirs) plus any workflows in a status
 the operator wants to preserve (``--keep-status``, default ``COMPLETE``;
 repeat the flag to add ``RUNNING``, etc.). Anything older — and any
-``state/runs/`` dir with no matching workflow record (orphan) — is
+``runtime/state/runs/`` dir with no matching workflow record (orphan) — is
 dropped. Workflows whose status is in ``--keep-status`` are NEVER
 pruned regardless of ``--keep-last``; this is what protects an
 in-progress run from being clobbered while the dispatcher is still
@@ -25,7 +25,7 @@ Guardrails
 * ``.gitkeep`` markers under either directory are never touched.
 * A workflow whose status is in ``--keep-status`` is treated as a
   protected entry and its run dir is preserved.
-* Orphan ``state/runs/`` dirs (no workflow JSON references the run_id)
+* Orphan ``runtime/state/runs/`` dirs (no workflow JSON references the run_id)
   are pruned by default — but if the dir name matches an active
   workflow's run_id even one whose status is RUNNING, it survives.
 """
@@ -65,7 +65,7 @@ DEFAULT_TRAINING_CAPTURES_OLDER_THAN = 30
 
 @dataclass
 class WorkflowRecord:
-    """One ``state/workflows/*.json`` entry."""
+    """One ``runtime/state/workflows/*.json`` entry."""
 
     path: Path
     workflow_id: str
@@ -103,7 +103,7 @@ class WorkflowRecord:
 
 @dataclass
 class RunDir:
-    """One ``state/runs/{run_id}/`` entry."""
+    """One ``runtime/state/runs/{run_id}/`` entry."""
 
     path: Path
     run_id: str
@@ -135,7 +135,7 @@ class PrunePlan:
 
 @dataclass
 class CaptureFile:
-    """One ``training-captures/**/*.jsonl`` decision-capture file."""
+    """One ``runtime/training-captures/**/*.jsonl`` decision-capture file."""
 
     path: Path
     mtime: float
@@ -144,7 +144,7 @@ class CaptureFile:
 
 @dataclass
 class CapturePrunePlan:
-    """Opt-in age-based prune over ``training-captures/``."""
+    """Opt-in age-based prune over ``runtime/training-captures/``."""
 
     older_than_days: int
     drop_captures: List[CaptureFile] = field(default_factory=list)
@@ -238,7 +238,7 @@ def _dir_size_bytes(path: Path) -> int:
 
 
 def _load_workflows(workflows_dir: Path) -> List[WorkflowRecord]:
-    """Read every ``state/workflows/*.json`` into a ``WorkflowRecord``.
+    """Read every ``runtime/state/workflows/*.json`` into a ``WorkflowRecord``.
 
     Files that fail to parse are still returned (with ``status="UNKNOWN"``)
     so the operator can choose to drop them via ``--keep-status``.
@@ -268,7 +268,7 @@ def _load_workflows(workflows_dir: Path) -> List[WorkflowRecord]:
 
 
 def _load_run_dirs(runs_dir: Path) -> List[RunDir]:
-    """List every ``state/runs/{run_id}/`` directory."""
+    """List every ``runtime/state/runs/{run_id}/`` directory."""
     out: List[RunDir] = []
     if not runs_dir.exists():
         return out
@@ -301,9 +301,9 @@ def build_plan(
     1. Workflows with ``status`` in ``keep_statuses`` are always kept.
     2. Of the remaining workflows, the ``keep_last`` most-recently
        updated COMPLETE entries are kept (sorted by ``updated_at``).
-    3. ``state/runs/{run_id}/`` dirs are kept iff their ``run_id``
+    3. ``runtime/state/runs/{run_id}/`` dirs are kept iff their ``run_id``
        matches a kept workflow's run_id (or workflow_id, for back-compat).
-    4. ``state/runs/`` dirs with no matching workflow record are
+    4. ``runtime/state/runs/`` dirs with no matching workflow record are
        classified as orphans and dropped (unless an associated kept
        workflow shares the run_id — which step 3 already covers).
     """
@@ -386,7 +386,7 @@ def state_group() -> None:
     show_default=True,
     help=(
         "Keep the N most-recent workflow records (and their associated "
-        "state/runs dirs) regardless of status. 0 prunes everything not "
+        "runtime/state/runs dirs) regardless of status. 0 prunes everything not "
         "covered by --keep-status."
     ),
 )
@@ -406,14 +406,14 @@ def state_group() -> None:
     "--state-root",
     type=click.Path(file_okay=False, path_type=Path),
     default=None,
-    help="Override state root (tests only). Defaults to the project state/.",
+    help="Override state root (tests only). Defaults to the project runtime/state/.",
 )
 @click.option(
     "--training-captures",
     "prune_training_captures",
     is_flag=True,
     help=(
-        "ALSO prune training-captures/ decision-capture files older than "
+        "ALSO prune runtime/training-captures/ decision-capture files older than "
         "--older-than days. OPT-IN: training captures are never pruned without "
         "this flag (they are the SLM-training audit trail)."
     ),
@@ -448,9 +448,9 @@ def prune_command(
     older_than_days: int,
     training_captures_root: Optional[Path],
 ) -> None:
-    """GC ``state/runs/`` and ``state/workflows/`` per the keep policy.
+    """GC ``runtime/state/runs/`` and ``runtime/state/workflows/`` per the keep policy.
 
-    With ``--training-captures`` ALSO age-prunes ``training-captures/`` (opt-in;
+    With ``--training-captures`` ALSO age-prunes ``runtime/training-captures/`` (opt-in;
     files older than ``--older-than`` days). The training-captures sweep is
     never run by default.
     """

@@ -580,8 +580,8 @@ Notes on the chain:
 
 | surface | written by | what it is |
 |---|---|---|
-| `state/runs/<RUN_ID>/checkpoints/<phase>_checkpoint.json` | `MCP/hardening/checkpoint.py::CheckpointManager` (`checkpoints_dir`, `checkpoint.py:103`), called from `executor.py::execute_phase` | per-phase execution record + the full gate chain |
-| `state/workflows/<WORKFLOW_ID>.json` → `phase_outputs[<phase>]` | `workflow_runner.py::_save_workflow_state` | **what `--resume` actually reads** |
+| `runtime/state/runs/<RUN_ID>/checkpoints/<phase>_checkpoint.json` | `MCP/hardening/checkpoint.py::CheckpointManager` (`checkpoints_dir`, `checkpoint.py:103`), called from `executor.py::execute_phase` | per-phase execution record + the full gate chain |
+| `runtime/state/workflows/<WORKFLOW_ID>.json` → `phase_outputs[<phase>]` | `workflow_runner.py::_save_workflow_state` | **what `--resume` actually reads** |
 
 `--resume` skips a phase only when its recorded output has `_completed` **and**
 `_gates_passed` is not `False` (`workflow_runner.py:2253-2257`). An absent
@@ -617,8 +617,8 @@ re-computes rather than serving a stale verdict.
 `ed4all stop` writes a filesystem sentinel that long-running stages poll at
 their unit boundaries (`lib/generation/stop_control.py`):
 
-* run-scoped: `state/runs/<RUN_ID>/control/` (`_run_sentinel_path`, `:123`)
-* global: `state/runs/STOP_ALL` (`_global_sentinel_path`, `:119`), operator-owned
+* run-scoped: `runtime/state/runs/<RUN_ID>/control/` (`_run_sentinel_path`, `:123`)
+* global: `runtime/state/runs/STOP_ALL` (`_global_sentinel_path`, `:119`), operator-owned
   — it both pauses running work and blocks new/resumed runs until
   `ed4all stop --clear-all`
 

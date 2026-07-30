@@ -1,6 +1,6 @@
 """Deterministic GLM-OCR layout → SemantiK ``region_provenance`` transform.
 
-NO LLM. Ports the validated rules from ``scratchpad/glmocr/build_html.py`` into
+NO LLM. Ports the validated rules from ``runtime/scratchpad/glmocr/build_html.py`` into
 the SemantiK wire contract: a list of ``region_provenance`` dicts (the shape
 ``lib/semantik/cascade_ir.py::_block_from_provenance`` consumes) + a
 ``heading_tree`` + a list of Super-escalation records.

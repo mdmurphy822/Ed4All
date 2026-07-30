@@ -716,7 +716,7 @@ def verify_micro_journals(
     evidence_plane = None
     http_path = cell_dir / "http_attempts.jsonl"
     capture_paths = sorted(
-        (cell_dir / "audit" / "training-captures").rglob("*.jsonl")
+        (cell_dir / "audit" / "runtime/training-captures").rglob("*.jsonl")
     )
     if http_path.is_file() or capture_paths:
         if not http_path.is_file() or len(capture_paths) != 1:
@@ -3908,7 +3908,7 @@ def _run_benchmark_matrix(
         model_snapshot = _models_snapshot(base_url, hard_deadline=cell_deadline)
         cell_dir = args.output_dir / cell_id
         from lib.decision_capture import DecisionCapture
-        capture_root = cell_dir / "audit" / "training-captures"
+        capture_root = cell_dir / "audit" / "runtime/training-captures"
         prior_capture_root = os.environ.get("ED4ALL_TRAINING_CAPTURES_DIR")
         os.environ["ED4ALL_TRAINING_CAPTURES_DIR"] = str(capture_root)
         try:

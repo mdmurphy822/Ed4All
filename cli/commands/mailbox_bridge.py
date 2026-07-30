@@ -2,7 +2,7 @@
 
 Running ``ed4all run ... --mode local`` starts a pipeline subprocess
 whose LLM call sites and per-task subagent dispatches write pending
-specs to ``state/runs/{run_id}/mailbox/pending/``. A Claude Code
+specs to ``runtime/state/runs/{run_id}/mailbox/pending/``. A Claude Code
 session drives the other side of the bridge: it reads each pending
 task, dispatches a completion, and writes the result envelope to
 ``completed/{task_id}.json``.
@@ -155,13 +155,13 @@ def mailbox_bridge_group():
 @mailbox_bridge_group.command("peek")
 @click.option(
     "--run-id", required=True,
-    help="Workflow run id — determines the state/runs/{run_id}/mailbox/ path.",
+    help="Workflow run id — determines the runtime/state/runs/{run_id}/mailbox/ path.",
 )
 @click.option(
     "--base-dir",
     type=click.Path(file_okay=False),
     default=None,
-    help="Override state/runs parent dir (tests only).",
+    help="Override runtime/state/runs parent dir (tests only).",
 )
 @click.option(
     "--max",
@@ -212,7 +212,7 @@ def mailbox_peek(run_id: str, base_dir: Optional[str], max_tasks: int):
     "--base-dir",
     type=click.Path(file_okay=False),
     default=None,
-    help="Override state/runs parent dir (tests only).",
+    help="Override runtime/state/runs parent dir (tests only).",
 )
 @click.option(
     "--text",
@@ -295,13 +295,13 @@ def mailbox_complete(
 @mailbox_bridge_group.command("peek-agent")
 @click.option(
     "--run-id", required=True,
-    help="Workflow run id — determines the state/runs/{run_id}/mailbox/ path.",
+    help="Workflow run id — determines the runtime/state/runs/{run_id}/mailbox/ path.",
 )
 @click.option(
     "--base-dir",
     type=click.Path(file_okay=False),
     default=None,
-    help="Override state/runs parent dir (tests only).",
+    help="Override runtime/state/runs parent dir (tests only).",
 )
 @click.option(
     "--max",
@@ -375,7 +375,7 @@ def mailbox_peek_agent(run_id: str, base_dir: Optional[str], max_tasks: int):
     "--base-dir",
     type=click.Path(file_okay=False),
     default=None,
-    help="Override state/runs parent dir (tests only).",
+    help="Override runtime/state/runs parent dir (tests only).",
 )
 @click.option(
     "--result-file",

@@ -139,7 +139,7 @@ def anchor_score(claim_text: str, passage_text: str) -> int:
     Deterministic, symmetric in text content, and independent of any model.
 
     Retained as the ``ORDERING_VERSION == 1`` scorer for the offline A/B harness
-    (``scratchpad/ordering_depth_eval.py``) and as a simple public helper. The
+    (``runtime/scratchpad/ordering_depth_eval.py``) and as a simple public helper. The
     production ordering (:func:`order_passages_for_claim`) uses the pool-IDF
     weighting instead — a flat count cannot tell a token shared with 300/379
     pool chunks from one shared with 3.

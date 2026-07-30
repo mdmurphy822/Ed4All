@@ -1,6 +1,6 @@
 """Multi-teacher license roster + fail-closed export/ingest guards.
 
-Backlog SFT-C (S6/S7); owner memo ``scratchpad/licensing_memo.md`` §C-E.
+Backlog SFT-C (S6/S7); owner memo ``runtime/scratchpad/licensing_memo.md`` §C-E.
 
 This module is the **machine-readable source of truth** for which model
 outputs may become training pairs in a commercially-shipped course-tutor

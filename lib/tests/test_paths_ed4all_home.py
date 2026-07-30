@@ -121,13 +121,13 @@ def test_per_dir_override_wins_with_home_unset(
     assert resolver() == override
 
 
-# ---------------------------------------------- state/runs has its own override
+# ---------------------------------------------- runtime/state/runs has its own override
 
 
 def test_state_runs_unset_home_unset_override(monkeypatch):
     monkeypatch.delenv("ED4ALL_HOME", raising=False)
     monkeypatch.delenv("ED4ALL_STATE_RUNS_DIR", raising=False)
-    assert paths.get_state_runs_dir() == paths.PROJECT_ROOT / "state" / "runs"
+    assert paths.get_state_runs_dir() == paths.PROJECT_ROOT / "runtime" / "state" / "runs"
 
 
 def test_state_runs_relocates_under_home(monkeypatch, tmp_path):

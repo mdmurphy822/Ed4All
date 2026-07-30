@@ -22,9 +22,9 @@ Prints the bundle path + size on completion.
 | Member | Source | Notes |
 |--------|--------|-------|
 | `doctor.json` | `ed4all doctor`, run **in-process** at bundle time | Post-mortem group with `--run-id` (reads the run's checkpoints + VRAM trajectory off disk); otherwise the live-env `gpu` / `window` / `environment` groups. Never raises — a failure degrades to `{"error": ...}`. |
-| `run/<run_id>/…` | `state/runs/<id>/` | Checkpoints, `vram_trajectory.jsonl`, `llm_usage.jsonl`, decisions, audit. With no `--run-id` the **newest** run dir is chosen. |
-| `gui-logs/…` | `state/gui/logs/*.log` | The per-run consoles tailed by the GUI. |
-| `captures/…` | `training-captures/**/*.jsonl` | **Only** under `--include-captures`. |
+| `run/<run_id>/…` | `runtime/state/runs/<id>/` | Checkpoints, `vram_trajectory.jsonl`, `llm_usage.jsonl`, decisions, audit. With no `--run-id` the **newest** run dir is chosen. |
+| `gui-logs/…` | `runtime/state/gui/logs/*.log` | The per-run consoles tailed by the GUI. |
+| `captures/…` | `runtime/training-captures/**/*.jsonl` | **Only** under `--include-captures`. |
 | `manifest.json` | generated | Every included file with its `size` + `sha256`, plus a `warnings[]` list recording anything withheld. |
 
 ## What's OUT
@@ -49,7 +49,7 @@ Defense in depth beyond the wave-1 settings/secrets sidecar split:
    the "is it configured?" signal survives). This scrubs a stray credential in a
    config snapshot.
 3. **Decision captures are opt-in.** Capture *rationales* interpolate real
-   signals and can quote verbatim source text, so `training-captures/` is
+   signals and can quote verbatim source text, so `runtime/training-captures/` is
    excluded unless you pass `--include-captures` — which also prints a review
    warning and records it in the manifest.
 

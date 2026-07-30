@@ -7,7 +7,7 @@ control surface.
 
 The foundation-core modules (``shared_state``, ``env_catalog``,
 ``settings_store``, ``models``) import WITHOUT FastAPI/uvicorn installed, so
-MCP tools can read/write the same ``state/gui/`` store without pulling web
+MCP tools can read/write the same ``runtime/state/gui/`` store without pulling web
 deps. The web surface (``app``, ``server``, ``routers/*``) lives behind the
 opt-in ``gui`` extra.
 

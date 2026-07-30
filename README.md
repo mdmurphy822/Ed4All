@@ -239,7 +239,7 @@ Ed4All is organised around four components that each do one job well, plus the g
 - **Trainforge** extracts content from the course package into pedagogically tagged chunks, builds a typed concept graph, and generates Bloom's-aligned assessments.
 - **LibV2** is the archive and retrieval layer: a flat-storage course repository with BM25 retrieval, metadata filters, and cross-course concept indexes.
 
-Supporting directories: **MCP** hosts the orchestrator and tool server, **cli** is the `ed4all` command line entry point, and **lib** holds shared validators and ontology helpers. Output artefacts land under `Courseforge/exports/`, `LibV2/courses/`, and `training-captures/`.
+Supporting directories: **MCP** hosts the orchestrator and tool server, **cli** is the `ed4all` command line entry point, and **lib** holds shared validators and ontology helpers. Output artefacts land under `Courseforge/exports/`, `LibV2/courses/`, and `runtime/training-captures/`.
 
 ## Going deeper
 

@@ -9,7 +9,7 @@ the running process directly; it only drops the sentinel and reports.
 Three modes (exactly one per invocation):
 
 * ``ed4all stop <workflow_id|run_id>`` — run-scoped stop. Resolves the target
-  against the ``RUNNING`` workflows in ``state/workflows/*.json`` (matching
+  against the ``RUNNING`` workflows in ``runtime/state/workflows/*.json`` (matching
   either the workflow id or its ``params.run_id``; generic workflows fall back
   to the workflow id) and writes the run-scoped
   ``<state_runs>/<run_id>/control/STOP_REQUESTED`` sentinel.
@@ -40,7 +40,7 @@ _STALE_AFTER_SECONDS = 24 * 3600
 
 
 def _load_running_workflows() -> List[Dict[str, Any]]:
-    """Return the ``RUNNING`` workflow records from ``state/workflows/*.json``.
+    """Return the ``RUNNING`` workflow records from ``runtime/state/workflows/*.json``.
 
     Each record carries ``workflow_id`` (the file stem / ``id``), ``run_id``
     (``params.run_id`` when present — textbook pipelines mint it — else the
@@ -151,7 +151,7 @@ def _emit(payload: Dict[str, Any], *, output_json: bool) -> None:
             )
     elif mode in ("all", "run"):
         click.echo()
-        click.echo("  (no RUNNING workflows found in state/workflows/)")
+        click.echo("  (no RUNNING workflows found in runtime/state/workflows/)")
 
 
 @click.command("stop")

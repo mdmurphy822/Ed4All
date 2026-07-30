@@ -62,7 +62,7 @@ def resolve_backup_dirs() -> Dict[str, Path]:
     captured separately as ``state-runs`` so a scattered layout still round-trips.
     """
     home = ed4all_home()
-    state_root = (home / "state") if home is not None else (PROJECT_ROOT / "state")
+    state_root = (home / "state") if home is not None else (PROJECT_ROOT / "runtime" / "state")
 
     dirs: Dict[str, Path] = {
         "state": state_root,

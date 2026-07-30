@@ -397,7 +397,7 @@ class TestAggregator:
 def test_post_loop_aggregator_writes_top_level_report(tmp_path, monkeypatch):
     """Worker W5 integration — ``run_workflow`` post-loop hook fires.
 
-    Builds a minimal workflow state file under ``state/workflows/`` (via
+    Builds a minimal workflow state file under ``runtime/state/workflows/`` (via
     a monkey-patched STATE_PATH) such that the runner runs through one
     phase, fails its dispatch, and exits the loop early. The post-loop
     aggregator then resolves project_path from the synthesised

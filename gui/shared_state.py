@@ -1,4 +1,4 @@
-"""Shared ``state/gui/`` store — single source of truth both the GUI backend
+"""Shared ``runtime/state/gui/`` store — single source of truth both the GUI backend
 AND MCP tools read/write, so a Claude Code session and the GUI stay in sync.
 
 Mirrors the ``StatusTracker`` / ``TaskMailbox`` file-IPC idiom: atomic writes
@@ -7,7 +7,7 @@ deps are imported here — this module is import-safe from MCP tool code.
 
 Layout::
 
-    state/gui/
+    runtime/state/gui/
     ├── settings.json        # canonical settings doc (see settings_store)
     ├── .env.rendered        # rendered env file (informational)
     ├── runs/                # run registry: <run_id>.json
@@ -40,14 +40,14 @@ def _now_iso() -> str:
 
 
 def _state_root() -> Path:
-    """Resolve the ``state/`` root.
+    """Resolve the ``runtime/state/`` root.
 
     Priority:
     1. ``ED4ALL_STATE_RUNS_DIR`` env var — used by tests to redirect into a
        throwaway ``tmp_path`` (mirrors ``TaskMailbox`` / ``get_state_runs_dir``).
        The override names the ``runs`` parent, so the GUI store lands as a
        sibling ``gui/`` next to it.
-    2. ``lib.paths.STATE_PATH`` — the canonical project ``state/`` directory.
+    2. ``lib.paths.STATE_PATH`` — the canonical project ``runtime/state/`` directory.
     """
     env_override = os.environ.get("ED4ALL_STATE_RUNS_DIR")
     if env_override:
@@ -61,50 +61,50 @@ def _state_root() -> Path:
 
 
 def gui_state_dir() -> Path:
-    """Return ``state/gui/`` (created lazily)."""
+    """Return ``runtime/state/gui/`` (created lazily)."""
     path = _state_root() / "gui"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def settings_path() -> Path:
-    """Return ``state/gui/settings.json`` (parent created lazily)."""
+    """Return ``runtime/state/gui/settings.json`` (parent created lazily)."""
     return gui_state_dir() / "settings.json"
 
 
 def env_rendered_path() -> Path:
-    """Return ``state/gui/.env.rendered`` (parent created lazily)."""
+    """Return ``runtime/state/gui/.env.rendered`` (parent created lazily)."""
     return gui_state_dir() / ".env.rendered"
 
 
 def runs_dir() -> Path:
-    """Return ``state/gui/runs/`` (created lazily)."""
+    """Return ``runtime/state/gui/runs/`` (created lazily)."""
     path = gui_state_dir() / "runs"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def logs_dir() -> Path:
-    """Return ``state/gui/logs/`` (created lazily)."""
+    """Return ``runtime/state/gui/logs/`` (created lazily)."""
     path = gui_state_dir() / "logs"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def uploads_dir() -> Path:
-    """Return ``state/gui/uploads/`` (created lazily)."""
+    """Return ``runtime/state/gui/uploads/`` (created lazily)."""
     path = gui_state_dir() / "uploads"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def events_path() -> Path:
-    """Return ``state/gui/events.jsonl`` (parent created lazily)."""
+    """Return ``runtime/state/gui/events.jsonl`` (parent created lazily)."""
     return gui_state_dir() / "events.jsonl"
 
 
 def log_path(run_id: str) -> Path:
-    """Return ``state/gui/logs/<run_id>.log`` for a run (parent created lazily)."""
+    """Return ``runtime/state/gui/logs/<run_id>.log`` for a run (parent created lazily)."""
     _validate_id(run_id, "run_id")
     return logs_dir() / f"{run_id}.log"
 

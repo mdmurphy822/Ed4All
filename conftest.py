@@ -30,7 +30,7 @@ def pytest_configure(config):
     they read/write the real in-tree ``LibV2/`` archive (e.g. RDF-export
     round-trips, full-archive emit tests). Everything else is isolated
     into ``tmp_path`` so a pytest run never litters ``LibV2/courses/``
-    with empty skeleton dirs or grows ``training-captures/`` by thousands
+    with empty skeleton dirs or grows ``runtime/training-captures/`` by thousands
     of files.
     """
     config.addinivalue_line(
@@ -50,9 +50,9 @@ def _ed4all_default_roots_isolated(tmp_path_factory):
     ``ensure_directories()`` which mkdir's ``LibV2/courses/<slug>/...`` +
     ``LibV2/catalog/<COURSE>/...`` in the REAL tree, and
     ``DecisionCapture`` mirrors decision JSONL into the real
-    ``training-captures/<tool>/<COURSE>/`` tree. An audit found this
+    ``runtime/training-captures/<tool>/<COURSE>/`` tree. An audit found this
     mechanism had littered ``LibV2/courses/`` with 87 empty skeleton dirs
-    and grew ``training-captures/`` by thousands of files per pytest run.
+    and grew ``runtime/training-captures/`` by thousands of files per pytest run.
 
     Design notes (why setattr on the DEFAULT constants, not env vars):
 
@@ -73,11 +73,11 @@ def _ed4all_default_roots_isolated(tmp_path_factory):
       every ``LibV2Storage`` / ``DecisionCapture`` / ``StreamingCapture``
       constructed during the session.
     * ``ED4ALL_STATE_RUNS_DIR`` IS set as an env var (no test asserts a
-      default-leg destination against the real ``state/runs/``), covering
+      default-leg destination against the real ``runtime/state/runs/``), covering
       tests that construct ``TaskExecutor()`` / ``CheckpointManager``
       without the explicit ``state_runs_isolated`` fixture (whose
       construction-time ``checkpoints/`` mkdir leaked
-      ``state/runs/run_<date>_<time>/`` dirs). The explicit
+      ``runtime/state/runs/run_<date>_<time>/`` dirs). The explicit
       ``state_runs_isolated`` fixture still overrides per-test.
 
     Per-test opt-out: ``@pytest.mark.real_libv2_archive`` (see the
@@ -88,7 +88,7 @@ def _ed4all_default_roots_isolated(tmp_path_factory):
     mp = pytest.MonkeyPatch()
     base = tmp_path_factory.mktemp("ed4all_session_isolated")
     libv2_root = base / "LibV2"
-    captures_root = base / "training-captures"
+    captures_root = base / "runtime/training-captures"
     state_runs_root = base / "state" / "runs"
     libv2_root.mkdir(parents=True, exist_ok=True)
     captures_root.mkdir(parents=True, exist_ok=True)
@@ -125,7 +125,7 @@ def isolate_libv2_and_captures(request, monkeypatch):
 
         monkeypatch.setattr(_paths, "LIBV2_PATH", _paths.PROJECT_ROOT / "LibV2")
         monkeypatch.setattr(
-            _paths, "TRAINING_DIR", _paths.PROJECT_ROOT / "training-captures"
+            _paths, "TRAINING_DIR", _paths.PROJECT_ROOT / "runtime/training-captures"
         )
         monkeypatch.delenv("ED4ALL_TRAINING_CAPTURES_DIR", raising=False)
     yield
@@ -158,7 +158,7 @@ def temp_project_dir(tmp_path):
 
 @pytest.fixture
 def state_runs_isolated(tmp_path, monkeypatch):
-    """Redirect any test that writes to ``state/runs/`` into ``tmp_path``.
+    """Redirect any test that writes to ``runtime/state/runs/`` into ``tmp_path``.
 
     Tests opt in by requesting this fixture. Setting
     ``ED4ALL_STATE_RUNS_DIR`` is honored by:
@@ -184,7 +184,7 @@ def state_runs_isolated(tmp_path, monkeypatch):
     set by production code mid-test, so we manually capture +
     restore in a finalizer.
 
-    Returns the ``state/runs`` dir under ``tmp_path``. Not auto-applied;
+    Returns the ``runtime/state/runs`` dir under ``tmp_path``. Not auto-applied;
     each test must request the fixture explicitly.
     """
     import os

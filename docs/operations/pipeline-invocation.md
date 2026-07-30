@@ -141,7 +141,7 @@ ed4all run textbook-to-course --corpus book.pdf --course-name PHYS_101
 **Auto-named run (`--auto-name`)** — opt-in H1-derived, run-timestamped course
 slugs (owner directive: slugs inherit the H1 title SemantiK creates, combined
 with the run-init date/time). `--course-name` becomes the PROVISIONAL identity
-(run_id / `state/runs/<run_id>` / log tagging; omit it and the provisional is
+(run_id / `runtime/state/runs/<run_id>` / log tagging; omit it and the provisional is
 derived from the corpus filename). Immediately after `semantik_conversion`
 (+ `heading_judge`) completes — and before `staging`, the first phase that
 consumes identity into artifacts — the runner reads the accessible HTML's
@@ -453,7 +453,7 @@ ed4all stop --clear-all            # remove the global STOP_ALL sentinel
 ```
 
 - **Run-scoped** resolves the target against the `RUNNING` workflows in
-  `state/workflows/*.json` (matching the workflow id or its `params.run_id`) and
+  `runtime/state/workflows/*.json` (matching the workflow id or its `params.run_id`) and
   drops `<state_runs>/<run_id>/control/STOP_REQUESTED`. A target that matches no
   live run still writes a best-effort sentinel — a stray sentinel is a harmless
   no-op. `ed4all stop` never touches the running process; it only drops the

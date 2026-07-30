@@ -36,7 +36,7 @@ from MCP.orchestrator.task_mailbox import TaskMailbox
 @pytest.fixture
 def wired_servicer(monkeypatch, tmp_path, state_runs_isolated):
     """Point the servicer's hardcoded ROOT at tmp_path so its mailbox and the
-    stop sentinel (ED4ALL_STATE_RUNS_DIR) resolve to the same state/runs."""
+    stop sentinel (ED4ALL_STATE_RUNS_DIR) resolve to the same runtime/state/runs."""
     monkeypatch.setattr(servicer, "ROOT", tmp_path)
     return tmp_path
 

@@ -653,7 +653,7 @@ class _ShapeParser(HTMLParser):
         #   (1) an interactive control that removes its boundary
         #       (border:none / outline:none) AND declares no other non-color
         #       affordance (background / box-shadow / text-decoration / a
-        #       remaining border-* side) → state/boundary by color alone.
+        #       remaining border-* side) → runtime/state/boundary by color alone.
         #   (2) an icon-only control (no visible text — aria-label only) that
         #       signals via an inline `color:` with no border/shape/background.
         if is_interactive_control and style and self.non_text_contrast_reason is None:

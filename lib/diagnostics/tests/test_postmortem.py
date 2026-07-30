@@ -39,7 +39,7 @@ from lib.diagnostics.postmortem import postmortem_checks
 
 @pytest.fixture
 def runs_root(tmp_path, monkeypatch):
-    """Isolate state/runs under tmp_path via ED4ALL_STATE_RUNS_DIR."""
+    """Isolate runtime/state/runs under tmp_path via ED4ALL_STATE_RUNS_DIR."""
     root = tmp_path / "runs"
     root.mkdir()
     monkeypatch.setenv("ED4ALL_STATE_RUNS_DIR", str(root))

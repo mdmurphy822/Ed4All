@@ -127,7 +127,7 @@ class StreamingDecisionCapture:
     - Supports event_id and seq for unique identification
     - Supports task_id for cross-linking to orchestrator tasks
     - Integrates with HashChainedLog for tamper-evident writing
-    - Triple-write: primary (LibV2), legacy (training-captures), run-specific (state/runs/)
+    - Triple-write: primary (LibV2), legacy (training-captures), run-specific (runtime/state/runs/)
 
     Usage:
         with StreamingDecisionCapture("CIS_101", "content-generator", "courseforge") as capture:
@@ -179,10 +179,10 @@ class StreamingDecisionCapture:
         self.output_dir = self._storage.get_training_capture_path(tool, phase)
 
         # Legacy training-captures directory (secondary location per CLAUDE.md spec)
-        # Path: training-captures/{tool}/{course_code}/phase_{phase}/
+        # Path: runtime/training-captures/{tool}/{course_code}/phase_{phase}/
         # Resolved at construction time so ``ED4ALL_TRAINING_CAPTURES_DIR``
         # (e.g. the repo-root autouse test-isolation fixture) redirects the
-        # mirror into tmp instead of growing the real training-captures/ tree.
+        # mirror into tmp instead of growing the real runtime/training-captures/ tree.
         normalized_phase = phase.replace("_", "-")
         self.legacy_output_dir = (
             get_training_captures_dir() / tool / course_code / f"phase_{normalized_phase}"
@@ -471,7 +471,7 @@ class StreamingDecisionCapture:
             except OSError as e:
                 logger.warning("legacy write failed: %s", e)
 
-        # Phase 0 Hardening: Run-specific location (state/runs/{run_id}/decisions/)
+        # Phase 0 Hardening: Run-specific location (runtime/state/runs/{run_id}/decisions/)
         if self._run_file:
             try:
                 self._run_file.write(line)

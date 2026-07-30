@@ -14,7 +14,7 @@ them as current facts.
 
 ## Context
 
-Trainforge's course-processing pipeline today has two passes that both write to `state/<run>/quality/quality_report.json`:
+Trainforge's course-processing pipeline today has two passes that both write to `runtime/state/<run>/quality/quality_report.json`:
 
 1. **Base pass** — `Trainforge/process_course.py::CourseProcessor._generate_quality_report`, called from `_write_metadata` at `process_course.py:2025`. Full-replacement write of the complete report.
 2. **Alignment pass** — `Trainforge/align_chunks.py::update_quality_report` at `align_chunks.py:678`. Load-then-mutate write against the file the base pass produced.

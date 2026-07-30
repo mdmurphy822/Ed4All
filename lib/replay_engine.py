@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # CONSTANTS
 # ============================================================================
 
-DEFAULT_RUNS_PATH = Path("state/runs")
+DEFAULT_RUNS_PATH = Path("runtime/state/runs")
 
 
 class ReplayStatus(Enum):
@@ -197,7 +197,7 @@ class ReplayEngine:
     Phase 0.5 Enhancement: Deterministic Replay Support.
 
     Usage:
-        engine = ReplayEngine(runs_path=Path("state/runs"))
+        engine = ReplayEngine(runs_path=Path("runtime/state/runs"))
         context = engine.load_run("RUN_20250101_143022")
         result = engine.replay_decisions(context)
         diff = engine.compare_outputs(context)

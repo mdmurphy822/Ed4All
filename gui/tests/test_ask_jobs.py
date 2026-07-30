@@ -156,7 +156,7 @@ def test_finished_answer_survives_fresh_read(state_dir, monkeypatch):
     reread = ask_jobs.read_job(rec["ask_id"])
     assert reread["status"] == ask_jobs.STATUS_DONE
     assert reread["answer"]["answer_text"] == "Velocity is a vector."
-    # The job file physically exists under state/gui/ask_jobs/.
+    # The job file physically exists under runtime/state/gui/ask_jobs/.
     assert (ask_jobs.ask_jobs_dir() / f"{rec['ask_id']}.json").is_file()
 
 

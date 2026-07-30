@@ -434,8 +434,8 @@ Two more traps:
   set their own. A gate declared `warning` in YAML can persist as `"critical"`
   in the checkpoint JSON.
 - Two state surfaces exist and they mean different things.
-  `state/runs/<RUN_ID>/checkpoints/<phase>_checkpoint.json` is the execution
-  record plus the full gate chain. `state/workflows/<WORKFLOW_ID>.json` →
+  `runtime/state/runs/<RUN_ID>/checkpoints/<phase>_checkpoint.json` is the execution
+  record plus the full gate chain. `runtime/state/workflows/<WORKFLOW_ID>.json` →
   `phase_outputs[<phase>]` is what `--resume` actually reads; a phase is skipped
   on resume only when it is `_completed` **and** `_gates_passed` is not `False`.
   Stale `paused_phase` / `failed_phase` markers can survive on a workflow whose
@@ -488,9 +488,9 @@ dry-run mode first:
 
 ```bash
 python scripts/prepare_fresh_training_synthesis.py \
-  --workflow-state state/workflows/<WORKFLOW_ID>.json \
+  --workflow-state runtime/state/workflows/<WORKFLOW_ID>.json \
   --training-specs-dir <PROJECT_WORKSPACE>/trainforge/training_specs \
-  --runs-dir state/runs
+  --runs-dir runtime/state/runs
 ```
 
 After reviewing the exact JSON plan, repeat with `--apply`. The tool archives
@@ -704,7 +704,7 @@ An OpenOLAT deployment can host the grounded-ask widget as a course element —
 the end-to-end "a learner asks the course a question inside an LMS"
 demonstration.
 
-**The demo deployment is operator-local and deliberately not tracked** (`demo/`
+**The demo deployment is operator-local and deliberately not tracked** (`runtime/demo/`
 is gitignored, alongside the `run-env.*.sh` profiles). It is deployment config
 for one site, not shipped product config, so a fresh clone will not contain it.
 The shape is recorded here so it can be rebuilt; the Ed4All side of the
@@ -872,7 +872,7 @@ you are looking at a loud warning, and the phase continued.
 
 If the gate is genuinely `critical`:
 
-1. Read `state/runs/<RUN_ID>/checkpoints/<phase>_checkpoint.json` for the full
+1. Read `runtime/state/runs/<RUN_ID>/checkpoints/<phase>_checkpoint.json` for the full
    gate chain — score, issue list, and the failing gate id.
 2. For content gates, the fix is usually a **scoped re-roll**, not a full
    rebuild. The rewrite tier supports three additive eviction scopes that all

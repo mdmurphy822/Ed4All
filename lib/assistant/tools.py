@@ -13,7 +13,7 @@ Sandbox rules (extend, never weaken):
   must exist in the campaign manifest or ``LibV2/courses/``; report names
   come from fixed enums; log tails are capped at 200 lines and resolve ONLY
   through the two whitelisted patterns (campaign slug log / run-id log
-  under ``state/runs``).
+  under ``runtime/state/runs``).
 * Subprocess invocations use fixed argv lists (never ``shell=True``); the
   only model-supplied argv members are ids/slugs validated above.
 * Every tool result is SUMMARIZED for a 32k-context model: hard cap
@@ -67,7 +67,7 @@ logger = logging.getLogger(__name__)
 RUN_ID_RE = re.compile(r"^WF-[0-9]{8}-[a-f0-9]{8}$")
 
 #: Executor-form run id (``TTC_<course>_<ts>``) — accepted where relevant
-#: (log resolution under ``state/runs``), never for state/workflows reads.
+#: (log resolution under ``runtime/state/runs``), never for runtime/state/workflows reads.
 TTC_RUN_ID_RE = re.compile(r"^TTC_[A-Za-z0-9_-]{1,100}$")
 
 #: Course-slug shape guard (defense in depth BEFORE the existence check —
@@ -234,7 +234,7 @@ def _coerce_int(value: Any, default: int) -> int:
 
 
 def _workflow_state_path(run_id: str) -> Path:
-    """state/workflows/<WF-id>.json for a PRE-VALIDATED WF run id."""
+    """runtime/state/workflows/<WF-id>.json for a PRE-VALIDATED WF run id."""
     return STATE_PATH / "workflows" / f"{run_id}.json"
 
 
@@ -289,7 +289,7 @@ def campaign_status() -> str:
 
 
 def run_status() -> str:
-    """List active/recent runs from state/runs (read-only, newest first)."""
+    """List active/recent runs from runtime/state/runs (read-only, newest first)."""
     runs_dir = STATE_PATH / "runs"
     if not runs_dir.is_dir():
         return f"no runs found (no {runs_dir} directory)"
@@ -385,7 +385,7 @@ def _read_workflow_doc(run_id: str) -> Tuple[Optional[Dict[str, Any]], str]:
     """(doc, error). Only for a PRE-VALIDATED WF id."""
     path = _workflow_state_path(run_id)
     if not path.is_file():
-        return None, f"no workflow state for {run_id} (state/workflows/{run_id}.json missing)"
+        return None, f"no workflow state for {run_id} (runtime/state/workflows/{run_id}.json missing)"
     try:
         doc = _load_json(path)
     except (OSError, ValueError) as exc:
@@ -397,7 +397,7 @@ def _read_workflow_doc(run_id: str) -> Tuple[Optional[Dict[str, Any]], str]:
 
 def run_report(run_id: str) -> str:
     """Summarize one run: status, failed/paused phase, failure reason,
-    per-phase completion + gate summary from state/workflows/<id>.json."""
+    per-phase completion + gate summary from runtime/state/workflows/<id>.json."""
     valid = _validated_run_id(run_id)
     if valid is None:
         return (
@@ -537,7 +537,7 @@ def _tail_file(path: Path, lines: int) -> str:
 def tail_log(target: str, lines: int = 50) -> str:
     """Bounded log tail. ``target`` is a campaign slug (resolves to
     ``<campaign dir>/logs/<slug>.log``) or a run id (resolves to *.log
-    files under state/runs/<id>/). Path resolution goes ONLY through these
+    files under runtime/state/runs/<id>/). Path resolution goes ONLY through these
     two whitelisted patterns; lines clamped to 1..200."""
     lines = max(1, min(MAX_LOG_TAIL_LINES, _coerce_int(lines, 50)))
     target = str(target or "").strip()
@@ -551,7 +551,7 @@ def tail_log(target: str, lines: int = 50) -> str:
             reverse=True,
         ) if run_dir.is_dir() else []
         if not candidates:
-            return f"no log files found for run {run_id} under state/runs/{run_id}/"
+            return f"no log files found for run {run_id} under runtime/state/runs/{run_id}/"
         chosen = candidates[0]
         body = _tail_file(chosen, lines)
         return _clip(_redact(f"[{chosen.name}] last {lines} line(s):\n{body}"))
@@ -1635,7 +1635,7 @@ def stop_seat(seat: str) -> str:
 
 def support_bundle() -> str:
     """Assemble a redacted support bundle via ``ed4all support-bundle``
-    (fixed output path under state/support_bundles/); returns path + size."""
+    (fixed output path under runtime/state/support_bundles/); returns path + size."""
     out_dir = STATE_PATH / "support_bundles"
     try:
         out_dir.mkdir(parents=True, exist_ok=True)

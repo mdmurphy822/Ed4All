@@ -2,7 +2,7 @@
 
 No fastapi needed (shared_state is web-free). State is isolated via the
 ``state_dir`` fixture (``ED4ALL_STATE_RUNS_DIR`` -> tmp_path) so the real
-``state/gui/`` is never written.
+``runtime/state/gui/`` is never written.
 """
 
 from __future__ import annotations

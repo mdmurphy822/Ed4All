@@ -18,7 +18,7 @@ live in the root `CLAUDE.md` and `docs/` — not here.
 | `tools/` | Tool implementations. `pipeline_tools.py` is the pipeline phase-handler monolith; the rest are `register_*_tools(mcp)` modules. |
 | `orchestrator/` | Mode-aware front controller + dispatchers + LLM backends + the file-based task mailbox. |
 | `hardening/` | Checkpointing, error classification / poison pill / retry policy, validation-gate manager, gate-input routing, config lockfiles. |
-| `ipc/` | `status_tracker.py` — file-locked multi-terminal status/lock/log files under `state/`. |
+| `ipc/` | `status_tracker.py` — file-locked multi-terminal status/lock/log files under `runtime/state/`. |
 | `tests/`, `tools/tests/`, `core/tests/`, `hardening/tests/` | Tests colocated per layer (175 / 39 / 3 / 4 files respectively). |
 
 Module sizes matter for navigation: `tools/pipeline_tools.py` is ~31k lines and
@@ -240,7 +240,7 @@ unknown input fails closed).
   Code session (or `scripts/mailbox_servicer.py`) services subagent work.
 
 `orchestrator/task_mailbox.py::TaskMailbox` is the file protocol. Root is
-`state/runs/{run_id}/mailbox/`, with the `state/runs` base overridable via
+`runtime/state/runs/{run_id}/mailbox/`, with the `runtime/state/runs` base overridable via
 `ED4ALL_STATE_RUNS_DIR`. (`ED4ALL_MAILBOX_BASE_DIR` is a separate knob, read by
 `MailboxBrokeredBackend` in `orchestrator/llm_backend.py`, not by `TaskMailbox`.)
 Three state dirs —
@@ -281,7 +281,7 @@ dispatcher speaks: `PhaseInput`, `PhaseOutput`, `GateResult`. Note this
 ## Checkpointing and graceful stop
 
 `hardening/checkpoint.py::CheckpointManager` writes
-`state/runs/{run_id}/checkpoints/{phase}_checkpoint.json`
+`runtime/state/runs/{run_id}/checkpoints/{phase}_checkpoint.json`
 (`start_phase` → `complete_task` → completion). `get_resume_point(run_path)` is
 the resume entry. Non-obvious: `_PHASE_NAME_ALIASES` maps the conversion phase's
 legacy name ↔ `semantik_conversion` both directions, so a checkpoint written

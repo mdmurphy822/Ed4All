@@ -89,7 +89,7 @@ one ``training_pair_promotion_check`` event. Rationale interpolates the
 pair's ``chunk_id``, the resolved ``promotion_status``, the matched
 ``rejection_reason`` (when present), the threshold of every criterion
 that fired, and the kind ("instruction" / "preference"). Captures are
-replayable post-hoc via the ``training-captures/`` JSONL stream.
+replayable post-hoc via the ``runtime/training-captures/`` JSONL stream.
 """
 from __future__ import annotations
 

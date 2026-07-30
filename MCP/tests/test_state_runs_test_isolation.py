@@ -1,8 +1,8 @@
-"""Audit guard: unit tests must not pollute project ``state/runs/``.
+"""Audit guard: unit tests must not pollute project ``runtime/state/runs/``.
 
 History (Wave 74): an audit found 18 ephemeral
 ``run_20260424_HHMMSS`` directories left behind in the project's
-``state/runs/`` by unit tests writing to project state instead of
+``runtime/state/runs/`` by unit tests writing to project state instead of
 ``tmp_path``. This test asserts that no such leftover directories
 exist after a test run.
 
@@ -26,10 +26,10 @@ _LEAK_PATTERN = re.compile(r"^run_\d{8}_\d{6}$")
 
 
 def test_no_test_creates_state_runs_dirs() -> None:
-    """The project ``state/runs/`` must contain no run_<date>_<time> leftovers."""
+    """The project ``runtime/state/runs/`` must contain no run_<date>_<time> leftovers."""
     runs_dir = STATE_PATH / "runs"
     if not runs_dir.exists():
-        return  # No state/runs at all → no leakage.
+        return  # No runtime/state/runs at all → no leakage.
 
     leaked = sorted(
         entry.name
@@ -37,7 +37,7 @@ def test_no_test_creates_state_runs_dirs() -> None:
         if entry.is_dir() and _LEAK_PATTERN.match(entry.name)
     )
     assert not leaked, (
-        f"Found {len(leaked)} run_<date>_<time> dirs in project state/runs/ "
+        f"Found {len(leaked)} run_<date>_<time> dirs in project runtime/state/runs/ "
         f"— a test is leaking state. Leaked dirs: {leaked}. "
         f"Use the ``state_runs_isolated`` fixture from the repo-root "
         f"conftest.py so tests redirect into tmp_path."

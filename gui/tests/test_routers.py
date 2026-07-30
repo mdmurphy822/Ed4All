@@ -2,7 +2,7 @@
 
 Skipped entirely on a default install with no ``fastapi`` (the ``gui`` extra is
 opt-in). State is isolated via ``state_dir`` / ``libv2_root`` so the real
-``state/gui/`` and ``LibV2/`` are never touched.
+``runtime/state/gui/`` and ``LibV2/`` are never touched.
 """
 
 from __future__ import annotations

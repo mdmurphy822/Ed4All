@@ -3,7 +3,7 @@
 This module is the *service* layer behind the RUNS vertical of the GUI. It
 wraps the SAME backend functions the ``ed4all run`` CLI drives — there are no
 stubs here. Every launch creates a real workflow state under
-``state/workflows/`` and runs it through ``PipelineOrchestrator``.
+``runtime/state/workflows/`` and runs it through ``PipelineOrchestrator``.
 
 Import contract: this module imports cleanly WITHOUT FastAPI. All heavy MCP /
 orchestrator imports are deferred inside the launch functions so
@@ -11,7 +11,7 @@ orchestrator imports are deferred inside the launch functions so
 dependency is ``gui.shared_state`` + ``gui.settings_store`` (which themselves
 have no web deps) and stdlib.
 
-Run-record schema persisted to ``state/gui/runs/<run_id>.json`` (via
+Run-record schema persisted to ``runtime/state/gui/runs/<run_id>.json`` (via
 ``shared_state.register_run`` / ``update_run``)::
 
     {
@@ -283,7 +283,7 @@ async def launch_pipeline(req: Dict[str, Any]) -> Dict[str, Any]:
     1. Apply saved settings env + per-request overrides into ``os.environ``.
     2. Create a REAL workflow via ``create_textbook_pipeline`` (textbook_to_course
        + Courseforge stage subcommands) or ``create_workflow_impl`` (others).
-    3. Register a GUI run record in ``state/gui/runs/``.
+    3. Register a GUI run record in ``runtime/state/gui/runs/``.
     4. Kick off execution in a background asyncio task that drives
        ``PipelineOrchestrator.run`` and streams status/log to disk.
 
@@ -1076,7 +1076,7 @@ _PHASE_GATE_COUNT_CACHE: Dict[str, Dict[str, int]] = {}
 async def _poll_phase_progress(run_id: str, workflow_id: str) -> None:
     """Append friendly per-phase progress lines as the workflow advances.
 
-    Watches ``state/workflows/<workflow_id>.json``'s ``phase_outputs`` — the
+    Watches ``runtime/state/workflows/<workflow_id>.json``'s ``phase_outputs`` — the
     WorkflowRunner stamps ``_completed`` (and ``_skipped``) on each phase's
     output dict as it finishes a phase and re-saves the state file. We poll that
     file and, when a phase newly reaches a completed/skipped marker, append a
@@ -1184,7 +1184,7 @@ def _record_launch_failure(
 ) -> Dict[str, Any]:
     """Register a failed run record (never fabricate success) and return it.
 
-    Persists the real error to ``state/gui/runs/<run_id>.json`` + the log so the
+    Persists the real error to ``runtime/state/gui/runs/<run_id>.json`` + the log so the
     failure is visible in the GUI / via the registry. Returns the frontend
     response payload carrying ``status="failed"`` and the real error.
     """
@@ -2146,8 +2146,8 @@ def _attach_run_lineage(runs: List[Dict[str, Any]]) -> None:
 def list_runs(limit: Optional[int] = None) -> List[Dict[str, Any]]:
     """Return GUI + CLI-launched run records, newest-first.
 
-    GUI-registry records (``state/gui/runs/``) are tagged ``source: "gui"``.
-    CLI-launched orchestrator workflows (``state/workflows/WF-*.json`` records
+    GUI-registry records (``runtime/state/gui/runs/``) are tagged ``source: "gui"``.
+    CLI-launched orchestrator workflows (``runtime/state/workflows/WF-*.json`` records
     with no GUI registry entry) are additionally surfaced as run-record-shaped
     dicts tagged ``source: "cli"`` (see :func:`_list_cli_workflow_runs`), so a
     live ``ed4all run`` campaign is discoverable from the Runs tab instead of
@@ -2200,7 +2200,7 @@ def list_runs(limit: Optional[int] = None) -> List[Dict[str, Any]]:
 
 # ---- CLI-launched workflow surfacing (Runs tab) -------------------------
 #
-# DISPLAY HEURISTIC (not a lifecycle truth-source): ``state/workflows/``
+# DISPLAY HEURISTIC (not a lifecycle truth-source): ``runtime/state/workflows/``
 # accumulates stale RUNNING records from old crashed runs whose processes are
 # long dead — the orchestrator has no reaper stamping them terminal. Dumping
 # them all into the Runs tab would bury the live build under dozens of
@@ -2238,7 +2238,7 @@ def _parse_state_timestamp(value: Any) -> Optional[datetime]:
 def _record_orch_run_id(params: Any) -> Optional[str]:
     """Best-effort orchestrator run id (``params.run_id``) for a run record.
 
-    The stop-sentinel + checkpoint dirs live under ``state/runs/<run_id>/`` keyed
+    The stop-sentinel + checkpoint dirs live under ``runtime/state/runs/<run_id>/`` keyed
     by this orchestrator run id (NOT the ``WF-...`` workflow id). Tolerates a
     JSON-string params blob.
     """

@@ -220,7 +220,7 @@ class RunDiff:
         Args:
             run_a_id: First run identifier
             run_b_id: Second run identifier
-            runs_root: Root path for runs (defaults to state/runs)
+            runs_root: Root path for runs (defaults to runtime/state/runs)
         """
         self.run_a_id = run_a_id
         self.run_b_id = run_b_id

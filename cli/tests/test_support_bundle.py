@@ -28,7 +28,7 @@ from cli.commands.support_bundle import (
 
 
 def _make_state(tmp_path: Path) -> Path:
-    """Build a tmp state/ root with a run dir, gui logs, and a secret file."""
+    """Build a tmp runtime/state/ root with a run dir, gui logs, and a secret file."""
     state = tmp_path / "state"
     run_dir = state / "runs" / "WF-TEST-run"
     (run_dir / "checkpoints").mkdir(parents=True)
@@ -57,7 +57,7 @@ def _make_state(tmp_path: Path) -> Path:
 
 
 def _make_captures(tmp_path: Path) -> Path:
-    root = tmp_path / "training-captures"
+    root = tmp_path / "runtime/training-captures"
     d = root / "tool" / "COURSE" / "phase_1"
     d.mkdir(parents=True)
     (d / "decisions_1.jsonl").write_text('{"rationale": "quoted source text here"}\n')

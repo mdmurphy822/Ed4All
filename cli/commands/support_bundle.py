@@ -8,10 +8,10 @@ INCLUDED
     * ``doctor.json`` — the ``ed4all doctor`` diagnostics, run IN-PROCESS at
       bundle time (post-mortem group when ``--run-id`` is given, else the
       live-env gpu/window/environment groups).
-    * ``run/<run_id>/`` — one run's ``state/runs/<id>/`` tree (checkpoints,
+    * ``run/<run_id>/`` — one run's ``runtime/state/runs/<id>/`` tree (checkpoints,
       ``vram_trajectory.jsonl``, ``llm_usage.jsonl``, decisions, audit). When
       ``--run-id`` is omitted the newest run dir is chosen.
-    * ``gui-logs/`` — ``state/gui/logs/*.log`` (run consoles tailed by the GUI).
+    * ``gui-logs/`` — ``runtime/state/gui/logs/*.log`` (run consoles tailed by the GUI).
     * ``captures/`` — decision-capture ``*.jsonl`` — ONLY under
       ``--include-captures`` (off by default): capture rationales can quote
       verbatim source text, so they are excluded unless the operator opts in
@@ -162,7 +162,7 @@ class BundleResult:
 
 
 def _newest_run_dir(runs_dir: Path) -> Optional[Path]:
-    """Return the most-recently-modified ``state/runs/<id>/`` dir, or ``None``."""
+    """Return the most-recently-modified ``runtime/state/runs/<id>/`` dir, or ``None``."""
     if not runs_dir.exists():
         return None
     candidates = [p for p in runs_dir.iterdir() if p.is_dir() and p.name != ".gitkeep"]
@@ -362,7 +362,7 @@ def _format_bytes(n: int) -> str:
     "run_id",
     default=None,
     help=(
-        "Bundle a specific run's state/runs/<id>/ tree and run the doctor "
+        "Bundle a specific run's runtime/state/runs/<id>/ tree and run the doctor "
         "post-mortem group against it. Default: the newest run dir + live-env "
         "doctor groups."
     ),
@@ -387,13 +387,13 @@ def _format_bytes(n: int) -> str:
     "--state-root",
     type=click.Path(file_okay=False, path_type=Path),
     default=None,
-    help="Override the state/ root (tests only). Defaults to the project state/.",
+    help="Override the runtime/state/ root (tests only). Defaults to the project runtime/state/.",
 )
 @click.option(
     "--captures-root",
     type=click.Path(file_okay=False, path_type=Path),
     default=None,
-    help="Override the training-captures/ root (tests only).",
+    help="Override the runtime/training-captures/ root (tests only).",
 )
 def support_bundle_command(
     run_id: Optional[str],

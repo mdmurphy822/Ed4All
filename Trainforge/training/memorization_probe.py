@@ -1,6 +1,6 @@
 """SFT-D S8 — memorization-probe held-out assessment-item slice.
 
-The SFT program (scratchpad/sft_data_program.md §C) requires a memorization
+The SFT program (runtime/scratchpad/sft_data_program.md §C) requires a memorization
 probe: hold out a slice of assessment items that is NEVER used to generate any
 training pair, then each run compare adapter accuracy on the held-out items vs
 the trained ones to quantify memorization-vs-generalization.

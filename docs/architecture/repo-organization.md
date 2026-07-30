@@ -1,9 +1,13 @@
 # Repo Organization Schema
 
 **Status: ADOPTED** — Phase 1 landed 2026-07-29 (this document, the four-bucket
-`docs/` taxonomy, `var/`, `ci/layout_guard.py`); Phase 2 (`scripts/`
-re-taxonomy, scratch-root retirement) is pending; Phase 3 is deliberately
-**rejected** (§5). This document is the placement authority: when a new file or
+`docs/` taxonomy, `ci/layout_guard.py`); the runtime-collapse phase landed the
+same day (owner decision): `state/`, `training-captures/`, `seats/`, `demo/`,
+`extracted/`, `testruns/`, `scratchpad/`, and `shots/` all live under the
+single gitignored `runtime/` root, with compat symlinks at `state`,
+`training-captures`, and `seats` until the paused run finishes and operator
+env files are updated. Phase 2 (`scripts/` re-taxonomy) is pending; the
+import-root moves stay **rejected** (§5). This document is the placement authority: when a new file or
 directory doesn't obviously fit a rule below, that is a design question, not a
 formatting one.
 
@@ -43,7 +47,7 @@ is the design review.
 | **CODE-PLATFORM** | `lib/ MCP/ cli/ gui/` | Ships in the wheel. Importable, tested, no data. TitleCase forbidden except `MCP`. |
 | **CODE-SUBSYSTEM** | `SemantiK/ Courseforge/ Trainforge/ LibV2/` | One product each, own `CLAUDE.md`, own `tests/fixtures/`. TitleCase names are **reserved** for this zone. |
 | **CONTRACTS & INFRA** | `config/ schemas/ ci/ seats/ scripts/ docs/ tests/` + root deploy files (`Dockerfile*`, `docker-compose*`, `Makefile`, `pyproject.toml`, `run-gui.*`) | Tracked, hand-authored, no generated data. |
-| **VAR (gitignored)** | `state/ runtime/ inputs/ training-captures/ var/ plans/ demo/` (+ legacy `extracted/ testruns/ scratchpad/` until Phase 2 retires them) | Only `.gitkeep` sentinels tracked. Nothing here is ever a git dependency of the build. |
+| **VAR (gitignored)** | `runtime/ inputs/ plans/` | `runtime/` holds ALL mutable data (`state/`, `training-captures/`, `seats/`, `demo/`, `extracted/`, `testruns/`, `scratchpad/`, `shots/`, ...). Only `.gitkeep` sentinels tracked. Nothing here is ever a git dependency of the build. |
 
 Per-dir placement rules (purpose / belongs / **never**):
 
@@ -64,8 +68,8 @@ Per-dir placement rules (purpose / belongs / **never**):
   `schemas/tests/fixtures/<wave>/`. Never: generated instance data.
 - `ci/` — repo guards + their tests + allowlists. Never: runbooks (→
   `docs/operations/`).
-- `seats/` — gitignored real seat scripts; only `README.md` +
-  `launch-seat.example.sh` tracked (unchanged).
+- `runtime/seats/` — gitignored real seat scripts; the tracked reference is
+  `docs/operations/seat-scripts.md` + `docs/operations/launch-seat.example.sh`.
 - `scripts/` — see §3. Never: anything imported by shipped code paths (if
   `lib`/`MCP` needs it at runtime, it graduates into the package).
 - `docs/` — see §4. Never: machine-specific values or gitignored-local-path
@@ -74,22 +78,23 @@ Per-dir placement rules (purpose / belongs / **never**):
   generated manifests (`docs/MANIFEST.md` stays gitignored).
 - `tests/` — cross-project integration only; single-subsystem tests live with
   the subsystem (unchanged).
-- `state/`, `runtime/`, `training-captures/`, `inputs/` — **frozen names**
-  (sandbox + `ED4ALL_HOME` + checkpoint surface). Never: tracked files other
-  than `.gitkeep`; never new *top-level* siblings — a new mutable root goes
-  under `state/<name>/` (auto-ignored by the catch-all) or `var/`.
-- `var/` — gitignored: the single home for ad-hoc scratch that previously
-  invented top-level dirs. Phase 2 absorbs `extracted/`, `testruns/`,
-  `scratchpad/` as `var/extracted`, `var/testruns`, `var/scratchpad`. Rule:
-  an operator experiment that needs a dir gets `var/<name>/`, never a new
-  root.
-- `plans/`, `demo/` — local-only, unchanged.
+- `runtime/` — the single gitignored data root: `runtime/state/` (workflow
+  state, checkpoints, caches), `runtime/training-captures/`,
+  `runtime/seats/`, `runtime/demo/`, `runtime/extracted/`,
+  `runtime/testruns/`, `runtime/scratchpad/`, `runtime/shots/`. `inputs/`
+  stays a sibling (corpus staging, `ED4ALL_HOME`-adjacent). Never: tracked
+  files other than `.gitkeep`; never new top-level siblings — an operator
+  experiment that needs a dir gets `runtime/<name>/`, never a new root.
+  Under `ED4ALL_HOME` the relocated basenames are unchanged (`state`,
+  `training-captures`, ...) — the `runtime/` nesting is the in-repo default
+  layout only (`lib/paths.py`).
+- `plans/` — local-only, unchanged.
 
 **Naming conventions.** Dirs: lowercase (kebab or snake, match siblings);
 TitleCase only for subsystem products. Docs: kebab-case `.md`. Env flags: the
 one-owner-per-prefix contract (root `CLAUDE.md` § Opt-In Behavior Flags)
 unchanged. One-off scripts: date- or wave-stamped and born in
-`scripts/archive/` or `var/` — a script whose name contains `pilot`/`ab`/
+`scripts/archive/` or `runtime/` — a script whose name contains `pilot`/`ab`/
 `wave` does not belong at `scripts/` root.
 
 ## 3. `scripts/` taxonomy (Phase 2)
@@ -110,13 +115,13 @@ scripts/
 
 Placement question for any new script: *documented operator procedure* →
 `ops/`; *produces a measurement you'll want again* → `harness/`; *one
-campaign* → `archive/` (or `var/` if truly scratch). Known references to sweep
+campaign* → `archive/` (or `runtime/` if truly scratch). Known references to sweep
 when Phase 2 executes: `MCP/tests/test_mailbox_servicer_stop.py` /
 `test_repair_partial_resume_state.py` (`scripts.` imports),
 `tests/test_prepare_fresh_training_synthesis.py`,
 `tests/test_stratified_synthesis_pilot.py`, `scripts/tests/*` imports,
-docs/CLAUDE.md mentions, assistant campaign-tool fixed argvs, and the
-`.gitignore` `scripts/shots/` rule (becomes `var/shots/`).
+docs/CLAUDE.md mentions, assistant campaign-tool fixed argvs, (the shots
+output dir already moved to `runtime/shots/`).
 
 ## 4. `docs/` taxonomy (Phase 1 — DONE)
 
@@ -138,12 +143,12 @@ Four buckets, hard rule "no single-file dirs":
 - **No `src/` or `packages/` layout.** ~2,600 files across 8 import roots;
   `pyproject`, coverage, ruff, CI, `AGENT_TOOL_MAPPING`, and every checkpoint
   alias assume current paths. Cost is weeks of churn; benefit is aesthetic.
-- **No renaming `state/ runtime/ training-captures/ inputs/`.** MCP sandbox
-  confinement, the `.gitignore` defensive catch-all, resume checkpoints, and
-  55+ referencing modules pin these. The deployment problem the names might
-  motivate is already solved by `ED4ALL_HOME`.
+- ~~No renaming `state/ training-captures/`~~ — **superseded 2026-07-29 by
+  owner decision**: both now nest under `runtime/` (executed with a full
+  tracked-reference sweep + compat symlinks; `ED4ALL_HOME` basenames
+  unchanged). `inputs/` keeps its name and root position.
 - **No collapsing `Courseforge/exports/`, `SemantiK/output/`,
-  `LibV2/courses/` into `var/`.** They are `ED4ALL_HOME` basename keys with
+  `LibV2/courses/` into `runtime/`.** They are `ED4ALL_HOME` basename keys with
   dual-read legacy handling; moving them re-opens the D1 migration class for
   zero operator benefit.
 - **No mass `lib/` flat-module consolidation.** Ratchet + as-touched migration

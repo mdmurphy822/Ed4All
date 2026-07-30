@@ -4,7 +4,7 @@ Walks a Courseforge project/export (and, optionally, a LibV2 course dir) and
 harvests every artifact-asserted Bloom label — the generator's OWN declared
 ``bloom_level`` on synthesized objectives, outline/rewrite blocks, and
 assessment items — into a de-duplicated JSONL store
-(``state/bloom_labels/labels.jsonl`` by default).
+(``runtime/state/bloom_labels/labels.jsonl`` by default).
 
 No LLM, no model load, no network — a pure read of already-emitted artifacts.
 The store is the corpus behind voter 1 of the re-founded
@@ -32,7 +32,7 @@ import click
     "store_path",
     type=click.Path(dir_okay=False),
     default=None,
-    help="Override the default state/bloom_labels/labels.jsonl store.",
+    help="Override the default runtime/state/bloom_labels/labels.jsonl store.",
 )
 @click.option(
     "--run-id",

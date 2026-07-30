@@ -233,7 +233,7 @@ def _seed_gui_run(state_dir, gui_run_id, orch_run_id, *, status="failed"):
 
 
 def _seed_workflow_file(state_dir, workflow_id, orch_run_id, *, status="failed"):
-    """Write a CLI-style ``state/workflows/<id>.json`` naming the orchestrator dir."""
+    """Write a CLI-style ``runtime/state/workflows/<id>.json`` naming the orchestrator dir."""
     wf_dir = state_dir / "workflows"
     wf_dir.mkdir(parents=True, exist_ok=True)
     (wf_dir / f"{workflow_id}.json").write_text(

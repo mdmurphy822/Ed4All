@@ -13,8 +13,8 @@ Design constraints honored:
   standard wrapper); no network, no model download at run time.
 - CPU by default (``--device cuda`` opts in when the card is free) —
   the GPU is frequently leased to vLLM seats or training.
-- Index lives under ``state/code_index/`` (gitignored via the
-  ``state/*/*`` defensive catch-all; nothing here may land in git).
+- Index lives under ``runtime/state/code_index/`` (gitignored via the
+  ``runtime/state/*/*`` defensive catch-all; nothing here may land in git).
 - Hybrid retrieval: BM25 over code-aware tokens + cosine over MiniLM,
   fused with reciprocal-rank fusion — pure-semantic never beat lexical
   on this project's own retrieval evals, so neither side runs alone.
@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_INDEX_DIR = PROJECT_ROOT / "state" / "code_index"
+DEFAULT_INDEX_DIR = PROJECT_ROOT / "runtime" / "state" / "code_index"
 
 # Text/code files worth indexing. Everything else tracked (images, pdf
 # fixtures, archives) carries no queryable text.

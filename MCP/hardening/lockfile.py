@@ -47,7 +47,7 @@ class LockfileManager:
         Initialize lockfile manager.
 
         Args:
-            run_path: Path to the run directory (state/runs/{run_id}/)
+            run_path: Path to the run directory (runtime/state/runs/{run_id}/)
         """
         self.run_path = run_path
         self.snapshot_dir = run_path / "config_snapshot"

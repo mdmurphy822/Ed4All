@@ -637,7 +637,7 @@ class _BaseLLMProvider(ABC):
         # the tap here through the SHARED module-level helper so every
         # Courseforge tier dispatch (outline / rewrite / content-generator /
         # the together-local outliner + textbook-synthesis branches) meters
-        # into the same ``state/runs/<run_id>/llm_usage.jsonl`` ledger.
+        # into the same ``runtime/state/runs/<run_id>/llm_usage.jsonl`` ledger.
         # Contract-identical: best-effort (the helper swallows everything),
         # gated on ``ED4ALL_RUN_ID``, real server-reported token counts only
         # (an absent usage block defaults to 0 per the existing row shape),

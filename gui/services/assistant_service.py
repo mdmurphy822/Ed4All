@@ -14,7 +14,7 @@ NOTHING on top. It only:
   attempt);
 * runs one stateless turn (history round-trips through the client);
 * appends one ``assistant``-sourced event per exchange to the shared
-  ``state/gui/events.jsonl`` activity bridge (best-effort — telemetry never
+  ``runtime/state/gui/events.jsonl`` activity bridge (best-effort — telemetry never
   eats a reply), so exchanges surface in the Activity tab beside the
   Claude/GUI events;
 * exposes the panel's explicit "Seat model" action (:func:`seat_status` /

@@ -97,7 +97,7 @@ def _pin_hermetic_roots(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(_pt, "PROJECT_ROOT", tmp_path)
     monkeypatch.setenv("ED4ALL_LIBV2_ROOT", str(tmp_path / "LibV2"))
     monkeypatch.setenv(
-        "ED4ALL_TRAINING_CAPTURES_DIR", str(tmp_path / "training-captures"),
+        "ED4ALL_TRAINING_CAPTURES_DIR", str(tmp_path / "runtime/training-captures"),
     )
 
 

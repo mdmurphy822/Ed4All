@@ -216,7 +216,7 @@ async def test_executor_maps_stop_envelope_to_paused(monkeypatch, state_runs_iso
 
 
 def _sentinel_path(state_dir, run_id):
-    """Run-scoped stop sentinel path under the isolated state/runs dir."""
+    """Run-scoped stop sentinel path under the isolated runtime/state/runs dir."""
     return state_dir / run_id / "control" / RUN_SENTINEL_NAME
 
 

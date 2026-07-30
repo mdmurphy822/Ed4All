@@ -27,7 +27,7 @@ from MCP.orchestrator.task_mailbox import TaskMailbox
 def _mailbox(run_id: str) -> TaskMailbox:
     # base_dir=None → TaskMailbox reads ED4ALL_STATE_RUNS_DIR (set by the
     # state_runs_isolated fixture), so the mailbox and the sentinel resolve
-    # to the same state/runs parent.
+    # to the same runtime/state/runs parent.
     return TaskMailbox(run_id=run_id)
 
 

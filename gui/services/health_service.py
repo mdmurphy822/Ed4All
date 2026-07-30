@@ -8,7 +8,7 @@ payload the Dashboard's "System health" card renders. Two surfaces:
   plus any env-gated opt-in group whose prerequisite env is present). Backs
   ``GET /api/health/doctor``.
 * :func:`run_health` — a RUN-SCOPED post-mortem (the ``postmortem`` group over
-  one run's persisted ``state/runs/<run_id>/`` checkpoints + VRAM trajectory,
+  one run's persisted ``runtime/state/runs/<run_id>/`` checkpoints + VRAM trajectory,
   the in-process equivalent of ``ed4all doctor --run-id <id>``), folded with the
   run's honest ``effective_status`` and an ``llm_usage.jsonl`` presence/row
   probe. Backs ``GET /api/health/doctor/run/{run_id}``.
@@ -353,7 +353,7 @@ def get_health(*, force_refresh: bool = False) -> Dict[str, Any]:
 
 # ---------------------------------------------------- run-scoped post-mortem
 def _run_dir_exists(run_id: str) -> bool:
-    """True when ``state/runs/<run_id>/`` exists (a bare orchestrator run id)."""
+    """True when ``runtime/state/runs/<run_id>/`` exists (a bare orchestrator run id)."""
     try:
         from lib.paths import get_state_runs_dir  # noqa: PLC0415
 
@@ -363,7 +363,7 @@ def _run_dir_exists(run_id: str) -> bool:
 
 
 def _read_workflow_state(workflow_id: str) -> Optional[Dict[str, Any]]:
-    """Read ``state/workflows/<workflow_id>.json`` (bounded, never raises).
+    """Read ``runtime/state/workflows/<workflow_id>.json`` (bounded, never raises).
 
     Mirrors ``progress_service._read_workflow_state`` — a CLI-launched run is
     only observable through its ``WF-*.json`` workflow-state file.
@@ -397,7 +397,7 @@ def _as_dict(params: Any) -> Dict[str, Any]:
 
 
 def _orch_run_id_from_params(params: Any) -> Optional[str]:
-    """Best-effort orchestrator run id (``params.run_id``) — the state/runs key."""
+    """Best-effort orchestrator run id (``params.run_id``) — the runtime/state/runs key."""
     from gui.services.run_service import _record_orch_run_id  # noqa: PLC0415
 
     return _record_orch_run_id(params)
@@ -407,9 +407,9 @@ def _resolve_run(run_id: str) -> Optional[Dict[str, Any]]:
     """Resolve an input id to its orchestrator run id + effective status.
 
     Accepts a GUI run id, an orchestrator ``WF-*`` workflow id, OR a bare
-    orchestrator run id (a ``state/runs/<id>/`` dir). Resolution precedent is
+    orchestrator run id (a ``runtime/state/runs/<id>/`` dir). Resolution precedent is
     the run + progress services: a GUI record's ``params.run_id`` / a
-    ``WF-*.json`` workflow-state's ``params.run_id`` is the ``state/runs/<...>``
+    ``WF-*.json`` workflow-state's ``params.run_id`` is the ``runtime/state/runs/<...>``
     key the post-mortem reads. Returns ``None`` when NOTHING resolves (→ the
     router answers a clean 404); a resolvable record with no post-mortem dir
     still returns (the post-mortem then reports ``run_not_found`` honestly).
@@ -476,7 +476,7 @@ def _resolve_run(run_id: str) -> Optional[Dict[str, Any]]:
 
 
 def _usage_probe(orch_run_id: str) -> Dict[str, Any]:
-    """Read-only presence + row count of ``state/runs/<id>/llm_usage.jsonl``.
+    """Read-only presence + row count of ``runtime/state/runs/<id>/llm_usage.jsonl``.
 
     ``{present, rows}`` — the OP2 usage tap the run/progress services read.
     Streams line-by-line (never loads the file); any failure → not present.

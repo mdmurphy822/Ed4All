@@ -91,7 +91,7 @@ class TestTaskExecutorInit:
     """Test TaskExecutor initialization.
 
     Wave 74: opted into ``state_runs_isolated`` so the timestamp-fallback
-    ``run_path`` lands in tmp_path instead of project ``state/runs/``.
+    ``run_path`` lands in tmp_path instead of project ``runtime/state/runs/``.
     """
 
     @pytest.mark.unit
@@ -154,7 +154,7 @@ class TestToolRegistryValidation:
     """Test tool registry validation.
 
     Wave 74: opted into ``state_runs_isolated`` to avoid polluting
-    project ``state/runs/``.
+    project ``runtime/state/runs/``.
     """
 
     @pytest.mark.unit
@@ -223,7 +223,7 @@ class TestTaskExecution:
     """Test task execution.
 
     Wave 74: opted into ``state_runs_isolated`` to avoid polluting
-    project ``state/runs/``.
+    project ``runtime/state/runs/``.
     """
 
     @pytest.fixture
@@ -305,7 +305,7 @@ class TestRetryLogic:
     """Test retry logic and error handling.
 
     Wave 74: opted into ``state_runs_isolated`` to avoid polluting
-    project ``state/runs/``.
+    project ``runtime/state/runs/``.
     """
 
     @pytest.mark.unit
@@ -383,7 +383,7 @@ class TestWorkflowExecution:
     """Test workflow execution.
 
     Wave 74: opted into ``state_runs_isolated`` to avoid polluting
-    project ``state/runs/``.
+    project ``runtime/state/runs/``.
     """
 
     @pytest.fixture

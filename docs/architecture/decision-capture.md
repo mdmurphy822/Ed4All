@@ -49,12 +49,12 @@ Note the default: `VALIDATE_DECISIONS` defaults to `"true"` in `lib/constants.py
 A single `DecisionCapture` writes the same rows to up to three sinks:
 
 1. **Canonical LibV2 catalog store** — `LibV2/catalog/<COURSE_CODE>/training/<tool>/phase_<phase>/decisions_<session_id>.jsonl`, resolved by `lib/libv2_storage.py::LibV2Storage.get_training_capture_path`. Honors `ED4ALL_LIBV2_ROOT`.
-2. **Legacy mirror** — `training-captures/<tool>/<COURSE_CODE>/phase_<phase>/decisions_<session_id>.jsonl`. Root overridable via `ED4ALL_TRAINING_CAPTURES_DIR` (which does **not** follow `ED4ALL_LIBV2_ROOT` — the mirror lives at the project root, so it needs its own knob; the test-isolation autouse fixture points it at a tmp dir so a pytest run does not grow the real tree).
-3. **Run-scoped stream** — `<run_context.decisions_path>/decisions_<tool>_<session_id>.jsonl`, written only when a hardening run context is active. `lib/replay_engine.py` reads this sink back from `state/runs/<RUN_ID>/decisions/`.
+2. **Legacy mirror** — `runtime/training-captures/<tool>/<COURSE_CODE>/phase_<phase>/decisions_<session_id>.jsonl`. Root overridable via `ED4ALL_TRAINING_CAPTURES_DIR` (which does **not** follow `ED4ALL_LIBV2_ROOT` — the mirror lives at the project root, so it needs its own knob; the test-isolation autouse fixture points it at a tmp dir so a pytest run does not grow the real tree).
+3. **Run-scoped stream** — `<run_context.decisions_path>/decisions_<tool>_<session_id>.jsonl`, written only when a hardening run context is active. `lib/replay_engine.py` reads this sink back from `runtime/state/runs/<RUN_ID>/decisions/`.
 
 **Phase names are normalized:** `phase.replace("_", "-")`, and `phase=None` routes to `phase_unknown/` rather than crashing (tool-level captures such as the orchestrator's `phase_start` fire before a phase has been selected). So a capture constructed with `phase="semantik_conversion"` lands in a directory named `phase_semantik-conversion`.
 
-Observed `<tool>` roots under `training-captures/`: `courseforge`, `libv2`, `orchestrator`, `pipeline`, `semantik`, `textbook-pipeline`, `trainforge`. The set is **not closed** — `tool` is a free constructor argument, not an enum. (A `training-captures/decisions/` directory also exists but is **not** a `<tool>` root: it holds loose JSONL files directly, not the `<tool>/<COURSE_CODE>/phase_<phase>/` shape this layout describes.)
+Observed `<tool>` roots under `runtime/training-captures/`: `courseforge`, `libv2`, `orchestrator`, `pipeline`, `semantik`, `textbook-pipeline`, `trainforge`. The set is **not closed** — `tool` is a free constructor argument, not an enum. (A `runtime/training-captures/decisions/` directory also exists but is **not** a `<tool>` root: it holds loose JSONL files directly, not the `<tool>/<COURSE_CODE>/phase_<phase>/` shape this layout describes.)
 
 ### Write buffering
 

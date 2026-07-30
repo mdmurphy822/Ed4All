@@ -24,7 +24,8 @@ Usage::
 
 ``--course-dir`` accepts either a real LibV2 course dir (chunks resolved via
 ``lib.libv2_storage.resolve_imscc_chunks_path``, which prefers
-``imscc_chunks/`` and falls back through ``dart_chunks/`` /  legacy
+``imscc_chunks/`` and falls back through the pre-rename chunkset dir /
+legacy
 ``corpus/``) or a synthetic fixture dir carrying ``imscc_chunks/chunks.jsonl``
 directly.
 

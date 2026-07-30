@@ -427,7 +427,7 @@ def write_trajectory_row(
     event: str = "phase_boundary",
     extra: Optional[dict] = None,
 ) -> None:
-    """Append one JSONL row to ``state/runs/<run_id>/vram_trajectory.jsonl``.
+    """Append one JSONL row to ``runtime/state/runs/<run_id>/vram_trajectory.jsonl``.
 
     Row shape: ``{run_id, phase, when, ts, event, free_mib, total_mib,
     probe_source, resident_models, cuda_available, **extra}``. ``when`` is the

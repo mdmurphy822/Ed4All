@@ -86,7 +86,7 @@ export TRAINFORGE_REQUIRE_EMBEDDINGS="${TRAINFORGE_REQUIRE_EMBEDDINGS:-true}"
 #    served ids=[...]"
 #    A seat launched WITHOUT --served-model-name reports its checkpoint path as
 #    the id, not a friendly name — e.g. the TRT-LLM seat in
-#    seats/launch-super-trtllm.sh serves the snapshot directory. Read the id off
+#    runtime/seats/launch-super-trtllm.sh serves the snapshot directory. Read the id off
 #    /v1/models and set it here; a guessed friendly name fails the preflight.
 #    NB: the two values below MUST describe the SAME seat as the context tokens
 #    above. The defaults name the Nano seat; if you point base_url at another

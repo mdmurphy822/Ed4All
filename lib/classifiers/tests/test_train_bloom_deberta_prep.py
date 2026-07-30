@@ -263,7 +263,7 @@ def test_build_multiclass_examples_empty_view_returns_empty_list(tmp_path: Path)
 
 def test_parse_args_defaults() -> None:
     args = trainer_mod._parse_args(["--bloom-level", "create"])
-    assert args.labels_path == Path("state/bloom_labels/labels.jsonl")
+    assert args.labels_path == Path("runtime/state/bloom_labels/labels.jsonl")
     assert args.head == "one-vs-rest"
     assert args.bloom_level == "create"
     assert args.base_model == trainer_mod.DEFAULT_BASE_MODEL

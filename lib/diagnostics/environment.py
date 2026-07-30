@@ -607,7 +607,7 @@ _STALE_RUN_LIST_CAP = 20
 
 
 def _resolve_workflows_dir():
-    """Resolve the ``state/workflows`` dir (honors the test ED4ALL_STATE_RUNS_DIR).
+    """Resolve the ``runtime/state/workflows`` dir (honors the test ED4ALL_STATE_RUNS_DIR).
 
     ``ED4ALL_STATE_RUNS_DIR`` points at ``<state_root>/runs`` (the same override
     ``gui/shared_state`` + ``lib.paths`` honor), so its PARENT is the state root
@@ -662,7 +662,7 @@ def _scan_ed4all_run_processes() -> List[int]:
 
 
 def _check_stale_runs(ctx: CheckContext) -> List[CheckResult]:
-    """Surface non-terminal ``state/workflows/WF-*.json`` records with no live run.
+    """Surface non-terminal ``runtime/state/workflows/WF-*.json`` records with no live run.
 
     The orchestrator has no reaper that stamps a crashed / killed CLI run
     terminal, so a ``WF-*.json`` can say ``RUNNING`` forever. This scans the

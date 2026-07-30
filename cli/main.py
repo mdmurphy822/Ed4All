@@ -127,8 +127,8 @@ except ImportError as _mbb_import_err:  # pragma: no cover
     )
 
 
-# Register Wave 74 'ed4all state prune' command — GC for state/runs and
-# state/workflows so per-run dirs/files don't accumulate forever.
+# Register Wave 74 'ed4all state prune' command — GC for runtime/state/runs and
+# runtime/state/workflows so per-run dirs/files don't accumulate forever.
 try:
     from cli.commands import register_state_command
 
@@ -216,7 +216,7 @@ except ImportError as _import_docs_err:  # pragma: no cover
 
 # Register 'ed4all harvest-bloom-labels' command — deterministic (no-LLM)
 # harvester that walks a project/export (+ optional LibV2 course) and collects
-# every artifact-asserted Bloom label into state/bloom_labels/labels.jsonl (the
+# every artifact-asserted Bloom label into runtime/state/bloom_labels/labels.jsonl (the
 # corpus behind the re-founded bloom_classifier_disagreement voter 1). Lazy
 # try/except so the CLI still loads if the harvester seams fail to import.
 try:

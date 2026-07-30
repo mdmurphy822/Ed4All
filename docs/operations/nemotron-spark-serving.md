@@ -111,7 +111,7 @@ orchestration time, before any synthesis output or provider is created:
    Staged synthesis fails closed if the ID is absent from the served list. This
    prevents silent model-mismatch 404s mid-phase. Read the id off `/v1/models`
    rather than guessing it: a seat launched without `--served-model-name`
-   (as `seats/launch-super-trtllm.sh` is) reports its checkpoint snapshot path
+   (as `runtime/seats/launch-super-trtllm.sh` is) reports its checkpoint snapshot path
    as the id.
 
 All three must be set in your shell environment before sourcing the run-env
@@ -285,7 +285,7 @@ python scripts/integration/benchmark_generation_providers.py \
 The harness resolves each provider through the SAME registry client the
 pipeline uses (`lib.llm.endpoints.build_openai_compatible_client`), prints a
 per-provider table (single tps / aggregate tps / scaling factor), and writes
-a JSON report to `state/benchmarks/generation_providers_<ts>.json`. An
+a JSON report to `runtime/state/benchmarks/generation_providers_<ts>.json`. An
 unreachable seat (server not up yet) is recorded as a per-provider error and
 the sweep continues. Time-to-first-token is **not** reported — the shared
 client does not stream tokens, so TTFT is left `null` rather than fabricated.
@@ -299,7 +299,7 @@ until memory or the scaling curve flattens.
 Concurrency is a property of the complete deployment and workload, not of the
 model name alone. Benchmark the exact model revision, engine image, server
 batch/token limits, prompt contract, and output allowance that production will
-use. Store raw reports under ignored `state/benchmarks/`; never copy
+use. Store raw reports under ignored `runtime/state/benchmarks/`; never copy
 course-derived prompts, responses, workflow IDs, machine paths, or local
 artifact hashes into tracked documentation.
 

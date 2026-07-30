@@ -7,7 +7,7 @@ The fixture pattern mirrors
 ``MCP/tests/test_generate_assessments_single_path.py``: a minimal
 capturing MCP that records the decorated tools, plus tmp-path
 redirection so the tests don't touch the real ``LibV2/courses/`` or
-``training-captures/`` trees.
+``runtime/training-captures/`` trees.
 """
 from __future__ import annotations
 

@@ -207,6 +207,6 @@ every applicable row is **PASS** with no open Level A/AA defect.
 |      |                 | axe DevTools | — | —      |                 |    | §4 |                    |              |                |
 
 > **Privacy reminder:** learner queries are logged locally to
-> `training-captures/` (JSONL, via `DecisionCapture`) on the same device, with no
+> `runtime/training-captures/` (JSONL, via `DecisionCapture`) on the same device, with no
 > telemetry path. Disclose this in the session consent language before any pilot
 > run that records real participant queries.

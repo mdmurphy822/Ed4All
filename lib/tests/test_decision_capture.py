@@ -28,7 +28,7 @@ except ImportError:
 @pytest.fixture
 def capture_dir(tmp_path):
     """Create temporary directories for capture output."""
-    training_dir = tmp_path / "training-captures"
+    training_dir = tmp_path / "runtime/training-captures"
     training_dir.mkdir(parents=True)
     return training_dir
 

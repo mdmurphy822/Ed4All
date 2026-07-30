@@ -454,7 +454,7 @@ def isolated_runtime_environment(workspace: Path) -> Iterator[None]:
     overrides = {
         "ED4ALL_LIBV2_ROOT": str((workspace / "runtime" / "libv2").resolve()),
         "ED4ALL_TRAINING_CAPTURES_DIR": str(
-            (workspace / "runtime" / "training-captures").resolve()
+            (workspace / "runtime" / "runtime/training-captures").resolve()
         ),
         "ED4ALL_STATE_RUNS_DIR": str(
             (workspace / "runtime" / "state-runs").resolve()

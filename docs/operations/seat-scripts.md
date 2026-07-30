@@ -1,23 +1,24 @@
-# `seats/` — local vLLM seat launch scripts
+# `runtime/seats/` — local vLLM seat launch scripts
 
 A **seat** is one long-lived local [vLLM](https://docs.vllm.ai) container that
 serves exactly one model on a fixed loopback port. The Ed4All pipeline never
 hardcodes a model or a URL — it addresses seats by a **logical name** and
-resolves everything else from data-driven env registries. The scripts in this
-directory are the machine-specific launch specs for one host's seat stack.
+resolves everything else from data-driven env registries. The scripts under `runtime/seats/` are the machine-specific launch specs for
+one host's seat stack.
 
 ## Why these scripts are not tracked
 
 Every real seat script carries host-specific detail — absolute HF-cache mount
 paths, concrete model ids, container names, and port / GPU-utilization pins
 tuned for one machine's GPU. Per the project's data-hygiene contract, that
-never lands in git. `.gitignore` ignores `seats/*` except this `README.md` and
-the sanitized `launch-seat.example.sh` template. Copy the template, fill the
+never lands in git. `runtime/` is wholly gitignored; this doc and the sanitized
+[`launch-seat.example.sh`](launch-seat.example.sh) template are the tracked
+reference. Copy the template into `runtime/seats/`, fill the
 `<PLACEHOLDERS>`, and keep your filled-in scripts local-only.
 
-> These scripts previously lived under the operator campaign harness'
-> `seats/` subdir. They now
-> live here; compat symlinks remain at the old path so existing
+> These scripts previously lived at the repo-root `seats/` dir (and before
+> that under the operator campaign harness). They now live in
+> `runtime/seats/`; a compat symlink remains at `seats/` so existing
 > `ED4ALL_SEAT_LAUNCH_SPECS` values keep resolving unchanged.
 
 ## The three seat registries

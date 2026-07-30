@@ -57,8 +57,10 @@ PROJECT_ROOT = Path(os.environ.get(
 #
 # The DATA-DIR basenames that relocate under ED4ALL_HOME. The basename is what
 # the dir is called underneath the data root; for the repo-relative default it
-# matches the in-tree layout exactly (state/, LibV2/, Courseforge/exports/,
-# training-captures/, SemantiK/output/). ``exports`` and ``semantik-output`` are
+# matches the in-tree layout exactly (runtime/state/, LibV2/, Courseforge/exports/,
+# runtime/training-captures/, SemantiK/output/ — the state and training-captures
+# BASENAMES under ED4ALL_HOME stay "state" / "training-captures"; only the
+# in-repo defaults nest under runtime/). ``exports`` and ``semantik-output`` are
 # nested under their parent component dirs in-repo but flatten to a single level
 # under ED4ALL_HOME (an ED4ALL_HOME deployment ships no code, only data).
 # ``semantik_output_dir`` dual-READs the legacy ``dart-output`` basename on a
@@ -133,10 +135,10 @@ LIB_PATH = PROJECT_ROOT / "lib"
 CONFIG_PATH = PROJECT_ROOT / "config"
 SCRIPTS_PATH = PROJECT_ROOT / "scripts"
 SCHEMAS_PATH = PROJECT_ROOT / "schemas"
-# state/ is a pure DATA root: relocates under ED4ALL_HOME when set. The per-dir
+# runtime/state/ is a pure DATA root: relocates under ED4ALL_HOME when set. The per-dir
 # ED4ALL_STATE_RUNS_DIR override (read at call time in ``get_state_runs_dir``)
 # still wins for the runs/ subtree specifically.
-STATE_PATH = _data_dir("state", PROJECT_ROOT / "state")
+STATE_PATH = _data_dir("state", PROJECT_ROOT / "runtime" / "state")
 
 # ============================================================================
 # LIBV2 SUBDIRECTORIES
@@ -163,10 +165,10 @@ STATE_LOCKS = STATE_PATH / "locks"
 # TRAINING CAPTURES
 # ============================================================================
 
-# training-captures/ is a pure DATA root: relocates under ED4ALL_HOME. The
+# runtime/training-captures/ is a pure DATA root: relocates under ED4ALL_HOME. The
 # per-dir ED4ALL_TRAINING_CAPTURES_DIR override (read at call time in
 # ``get_training_captures_dir``) still wins.
-TRAINING_DIR = _data_dir("training-captures", PROJECT_ROOT / "training-captures")
+TRAINING_DIR = _data_dir("training-captures", PROJECT_ROOT / "runtime" / "training-captures")
 TRAINING_DIR_LEGACY = TRAINING_DIR
 
 
@@ -200,18 +202,18 @@ def libv2_path() -> Path:
 
 
 def get_training_captures_dir() -> Path:
-    """Resolve the ``training-captures/`` root, env-overridable.
+    """Resolve the ``runtime/training-captures/`` root, env-overridable.
 
     Priority:
     1. ``ED4ALL_TRAINING_CAPTURES_DIR`` env var. NOTE: ``ED4ALL_LIBV2_ROOT``
-       intentionally does NOT govern ``training-captures/`` — the legacy
+       intentionally does NOT govern ``runtime/training-captures/`` — the legacy
        decision-capture mirror lives at the project root, not under LibV2,
        so it needs its own override. Used by the repo-root ``conftest.py``
        autouse isolation fixture to redirect the legacy mirror into
-       ``tmp_path`` and stop pytest runs from growing ``training-captures/``
+       ``tmp_path`` and stop pytest runs from growing ``runtime/training-captures/``
        by thousands of files.
     2. ``ED4ALL_HOME/training-captures`` when ``ED4ALL_HOME`` is set.
-    3. ``TRAINING_DIR`` (``PROJECT_ROOT / "training-captures"``) — the
+    3. ``TRAINING_DIR`` (``PROJECT_ROOT / "runtime/training-captures"``) — the
        canonical in-tree default. Default behavior unchanged when unset.
 
     Read at call time so tests can monkeypatch without re-importing.
@@ -355,12 +357,12 @@ def campaign_dir() -> Path:
 
 
 def get_state_runs_dir() -> Path:
-    """Resolve the ``state/runs/`` parent directory.
+    """Resolve the ``runtime/state/runs/`` parent directory.
 
     Priority:
     1. ``ED4ALL_STATE_RUNS_DIR`` env var (used by tests via the
        ``state_runs_isolated`` pytest fixture so unit tests don't
-       pollute the real project ``state/runs/``).
+       pollute the real project ``runtime/state/runs/``).
     2. ``ED4ALL_HOME/state/runs`` when ``ED4ALL_HOME`` is set.
     3. ``STATE_PATH / "runs"`` — the canonical project location.
 
@@ -370,7 +372,7 @@ def get_state_runs_dir() -> Path:
     env_override = os.environ.get("ED4ALL_STATE_RUNS_DIR")
     if env_override:
         return Path(env_override)
-    return _data_dir("state", PROJECT_ROOT / "state") / "runs"
+    return _data_dir("state", PROJECT_ROOT / "runtime" / "state") / "runs"
 
 
 # ============================================================================

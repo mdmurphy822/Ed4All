@@ -363,7 +363,7 @@ def test_run_progress_unknown_run_is_none(state_dir):
 # mirroring a real run, and the pure rate helper.
 
 # Four GLM-OCR batch rows straight off a real ledger
-# (state/runs/.../llm_usage.jsonl): concurrent batches — completions land
+# (runtime/state/runs/.../llm_usage.jsonl): concurrent batches — completions land
 # within ~3 min while each row's own duration is ~193-371 s, so the wall span
 # (earliest start = ts − duration → latest completion) is ~370.6 s, NOT the
 # ~954 s summed duration.
@@ -1305,7 +1305,7 @@ def test_training_synthesis_anchor_ignores_same_named_earlier_phase_path(
 
 def test_heading_judge_units_and_tail_from_judgments_dir(state_dir, tmp_path):
     """heading_judge is a growing DIRECTORY (one {stem}.heading_judgments.json
-    per chapter under state/runs/<run_id>/heading_judge/ —
+    per chapter under runtime/state/runs/<run_id>/heading_judge/ —
     MCP/tools/pipeline_tools.py::_run_heading_judge), not one appended file:
     units = matching files, tail = newest files with their (bounded) JSON
     payload; a corrupt unit file yields a label-only row."""
@@ -2094,7 +2094,7 @@ def test_endpoint_output_tail(client, state_dir, tmp_path):
 # state's params are the FRESHEST source — an --auto-name run starts under a
 # provisional slug and workflow_runner._maybe_apply_auto_name REBINDS
 # params.course_name (+ display_title) mid-run, persisting back into
-# state/workflows/<WF-id>.json — while the GUI run record keeps its
+# runtime/state/workflows/<WF-id>.json — while the GUI run record keeps its
 # creation-time name. run_progress must surface the live name (never-raise;
 # unknown → None so the client omits the element).
 

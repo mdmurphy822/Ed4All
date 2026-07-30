@@ -4,7 +4,7 @@
 Hermetic: every module path constant is monkeypatched into ``tmp_path``; the
 campaign_flags dependency is injected via the ``_campaign_flags`` seam; ``/proc``
 is a fake tree; no subprocess of a real seat/run ever happens. Tests NEVER touch
-the real campaign, state/, or inputs/ trees.
+the real campaign, runtime/state/, or inputs/ trees.
 """
 
 from __future__ import annotations

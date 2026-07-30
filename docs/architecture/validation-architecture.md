@@ -522,10 +522,10 @@ their `_maybe_write_*` call sites — several behind default-off flags, where
 
 Two on-disk surfaces record gate results and they are not the same thing:
 
-- `state/runs/<RUN_ID>/checkpoints/<phase>_checkpoint.json` — written by
+- `runtime/state/runs/<RUN_ID>/checkpoints/<phase>_checkpoint.json` — written by
   `CheckpointManager` from the executor. Carries the **full gate chain** for the
   phase. Stamped `completed` when `gates_passed`, `failed` otherwise.
-- `state/workflows/<WORKFLOW_ID>.json` → `phase_outputs[<phase>]` — written by
+- `runtime/state/workflows/<WORKFLOW_ID>.json` → `phase_outputs[<phase>]` — written by
   `WorkflowRunner`. This is what `--resume` reads; a phase is skipped on resume
   only when it is marked complete and its gates did not fail.
 

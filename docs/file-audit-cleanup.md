@@ -6,7 +6,7 @@ the [`FILE_MANIFEST.md`](FILE_MANIFEST.md) orientation map.
 > **Nothing was deleted during the audit.** Every item below is a
 > **recommendation only**. DELETION REQUIRES HUMAN CONFIRMATION.
 >
-> **A live pipeline may be writing** to `state/runs/`, `state/workflows/`, and
+> **A live pipeline may be writing** to `runtime/state/runs/`, `runtime/state/workflows/`, and
 > `runtime/`. Do **not** delete any active-run artifact under those paths — prune
 > only clearly-completed/stale entries, and never touch in-flight runs.
 
@@ -21,11 +21,11 @@ GitHub. The `.gitignore` is comprehensive:
 
 - `runtime/` wholesale; `ed4all.egg-info/`, `__pycache__/`, `.pytest_cache/`,
   `*.egg-info/` all confirmed ignored.
-- `state/<dir>/*` per-dir rules **plus** the defensive `state/*/*` catch-all with
-  `!state/*/.gitkeep`, so a new `state/` subdir cannot leak.
+- `runtime/state/<dir>/*` per-dir rules **plus** the defensive `runtime/state/*/*` catch-all with
+  `!state/*/.gitkeep`, so a new `runtime/state/` subdir cannot leak.
 - Per-area blankets: `SemantiK/data/*`, `Courseforge/exports/*`,
   `Courseforge/inputs/textbooks/*`, `Trainforge/output/*`, `LibV2/courses/*`,
-  `LibV2/catalog/*`, `inputs/*`, `training-captures/<subdir>/*`.
+  `LibV2/catalog/*`, `inputs/*`, `runtime/training-captures/<subdir>/*`.
 - `ci/` is **USED** (referenced by `.github/` workflows) — not flagged.
 
 ### Uncommitted new work (not leaks — should be `git add`ed)
@@ -40,8 +40,8 @@ work to commit, not hygiene risks:
 
 ### One theoretical residual (no action)
 
-A loose non-`.log`, non-`nvidia_*` file dropped directly at `state/` **root**
-(e.g. `state/foo.json`) would not be caught by `state/*/*`. No such file exists
+A loose non-`.log`, non-`nvidia_*` file dropped directly at `runtime/state/` **root**
+(e.g. `runtime/state/foo.json`) would not be caught by `runtime/state/*/*`. No such file exists
 today; monitor only.
 
 ---
@@ -60,18 +60,18 @@ All items are **untracked + gitignored** (cannot leak to GitHub) — these are
 | `runtime/result_course_planning.json`, `runtime/result_w01.json` | no | Stray single-phase result dumps (Jun 8) | **high** |
 | `runtime/pipeline_*.log` (11 logs, incl. two ~945 KB) | no | Stray run logs (Jun 8), large + obsolete | **high** |
 | `runtime/qwen_test/` | no | May 3 model-comparison scratch dir | **high** |
-| `state/logs/*.log.contaminated` | no | Explicitly-named discarded/bad run log | **high** |
-| `state/workflows/*.json.pre-remediation.bak` | no | Hand-made `.bak` of a workflow state file | **high** |
+| `runtime/state/logs/*.log.contaminated` | no | Explicitly-named discarded/bad run log | **high** |
+| `runtime/state/workflows/*.json.pre-remediation.bak` | no | Hand-made `.bak` of a workflow state file | **high** |
 | `component_applier.log`, `imscc_extractor.log`, `remediation_validator.log` (repo root) | no | 0-byte stray logs (Jun 30) | **high** |
 | `runtime/build_corpus_pdfs.py` | no | Ad-hoc corpus-PDF builder (tracked equiv under `scripts/`) | medium |
 | `runtime/kg_prototype/` | no | Jun 8 KG prototype scratch, superseded, unwired | medium |
 | `runtime/gui_course_corpus/` + `runtime/gui_course_corpus_pdf/` | no | Jun 8 generated demo-course corpus (regenerable) | medium |
-| `state/logs/*.log` (old per-run diagnostic logs, some multi-MB) | no | Old per-run diagnostic logs | medium |
-| `state/nvidia_authoring_contract.md`, `state/nvidia_page_manifest.json`, `state/nvidia_remaining_dispatch.tsv` | no | Operator working notes at `state/` root (Jun 9) | medium |
-| `training-captures/courseforge/TEST_CHAIN/` | no | Decision captures under a test-run course code | medium |
+| `runtime/state/logs/*.log` (old per-run diagnostic logs, some multi-MB) | no | Old per-run diagnostic logs | medium |
+| `runtime/state/nvidia_authoring_contract.md`, `runtime/state/nvidia_page_manifest.json`, `runtime/state/nvidia_remaining_dispatch.tsv` | no | Operator working notes at `runtime/state/` root (Jun 9) | medium |
+| `runtime/training-captures/courseforge/TEST_CHAIN/` | no | Decision captures under a test-run course code | medium |
 | `inputs/**/*.log` (per-corpus run logs) | no | One-off pipeline run logs — **pipeline may still append** | low |
 | conversion-output scratch (dated `backup_pre_rerender_*` / `rerender_*` rounds under a corpus's gitignored working tree) | no | Dated backup + re-render scratch rounds — **live conversion may write here** | low |
-| `state/runs/` (accumulated timestamped dirs + a baseline snapshot `.md`) | no | Accumulated historical run-state — **LIVE pipeline writing here**; prune completed only | low |
+| `runtime/state/runs/` (accumulated timestamped dirs + a baseline snapshot `.md`) | no | Accumulated historical run-state — **LIVE pipeline writing here**; prune completed only | low |
 | `.codex` (repo root) | no | 0-byte editor/tool marker | low |
 
 ---
@@ -85,7 +85,7 @@ All items are **untracked + gitignored** (cannot leak to GitHub) — these are
 - `.pytest_cache/` (Courseforge, root).
 - `ed4all.egg-info/`, `.venv/` (root); `inputs/**/social_override.egg-info` —
   `*.egg-info/` rule.
-- `scripts/shots/` (rendered PNGs); `Trainforge/output/` course artifacts;
+- `runtime/shots/` (rendered PNGs); `Trainforge/output/` course artifacts;
   SemantiK `data/` caches.
 
 No un-ignored build artifacts were found in any area.
@@ -99,11 +99,11 @@ No un-ignored build artifacts were found in any area.
 | **Real gitignore gaps (leaks)** | **0** | Every untracked path resolves to an ignore rule |
 | Uncommitted source/docs to `git add` | 2 | `hybrid-vision-extraction.md`, `vision_ocr_probe.py` |
 | Trash candidates — high confidence | 10 rows (~50 files) | Mostly `runtime/` scratch + 3 root 0-byte logs + 2 hand-made `.bak`/`.contaminated` |
-| Trash candidates — medium confidence | 6 rows | runtime prototypes/corpora, old `state/logs`, nvidia notes, `TEST_CHAIN` captures |
-| Trash candidates — low confidence | 5 rows | Active-write paths (`state/runs/`, conversion-output scratch, `inputs/**/*.log`) + `.codex` |
+| Trash candidates — medium confidence | 6 rows | runtime prototypes/corpora, old `runtime/state/logs`, nvidia notes, `TEST_CHAIN` captures |
+| Trash candidates — low confidence | 5 rows | Active-write paths (`runtime/state/runs/`, conversion-output scratch, `inputs/**/*.log`) + `.codex` |
 | Un-ignored build artifacts | 0 | All caches/egg-info/PNGs already ignored |
 
 **Bottom line:** the repo has **no data-leak exposure**. All cleanup is optional
 local disk hygiene, concentrated in `runtime/` scratch and a few stray root logs.
-Defer anything under `state/runs/`, `runtime/`, and the conversion-output scratch
+Defer anything under `runtime/state/runs/`, `runtime/`, and the conversion-output scratch
 trees that the running pipeline may still touch.

@@ -18,7 +18,7 @@ loopback-only). When the seat is down:
 DEBUG MODE (``--debug [--run WF-...]``): builds a bounded diagnostic
 context for the given failed run (or the most recent failed run when
 ``--run`` is omitted — the campaign driver's ``last_failure.json`` pointer
-wins, then the newest FAILED state/workflows entry), prints a one-paragraph
+wins, then the newest FAILED runtime/state/workflows entry), prints a one-paragraph
 failure-summary banner, and starts the session with the root-cause-diagnosis
 system prompt. Same tool whitelist; no new capabilities.
 

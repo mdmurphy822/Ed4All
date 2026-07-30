@@ -193,7 +193,7 @@ def test_dry_run_plan_emits_both_preflight_keys(monkeypatch: pytest.MonkeyPatch)
     )
     assert "cloud_seat_preflight" in plan
     # Legacy key stays readable for one release (old dry-run consumers +
-    # doctor --run-id post-mortems + existing state/runs sidecars).
+    # doctor --run-id post-mortems + existing runtime/state/runs sidecars).
     assert "nvidia_preflight" in plan
     # Same object under both keys.
     assert plan["cloud_seat_preflight"] is plan["nvidia_preflight"]

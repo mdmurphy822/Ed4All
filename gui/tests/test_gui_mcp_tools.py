@@ -4,7 +4,7 @@ The MCP server imports its tool modules as top-level ``tools.*`` (it runs from
 inside ``MCP/``, putting that dir on ``sys.path``). We replicate that sys.path
 handling here, register the tools on a REAL ``FastMCP`` instance, and call the
 underlying coroutine functions to assert they round-trip through the SAME
-``state/gui/`` store the GUI reads — verifying the bridge, not a stub.
+``runtime/state/gui/`` store the GUI reads — verifying the bridge, not a stub.
 
 State is isolated via ``state_dir`` (``ED4ALL_STATE_RUNS_DIR`` -> tmp_path).
 """

@@ -1,7 +1,7 @@
 """Tests for ``gui.settings_store`` — defaults, round-trip, render, mask, apply.
 
 No fastapi needed (store is web-free). State is isolated via the ``state_dir``
-fixture (``ED4ALL_STATE_RUNS_DIR`` -> tmp_path) so the real ``state/gui/`` is
+fixture (``ED4ALL_STATE_RUNS_DIR`` -> tmp_path) so the real ``runtime/state/gui/`` is
 never written.
 """
 

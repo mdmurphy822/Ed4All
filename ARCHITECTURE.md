@@ -138,7 +138,7 @@ Exam Objectives --->|    collector        |    v
 **Output Artifacts**:
 - `Courseforge/exports/{project_id}/{course_name}.imscc` - Final course package
 - `Courseforge/exports/{project_id}/03_content_development/` - Generated HTML modules
-- `training-captures/courseforge/{COURSE_CODE}/` - Decision capture JSONL
+- `runtime/training-captures/courseforge/{COURSE_CODE}/` - Decision capture JSONL
 
 ---
 
@@ -202,7 +202,7 @@ Course Package -->|     (multi-LMS detect)   |
 
 **Output Artifacts**:
 - `Trainforge/output/{assessment_id}.json` - Assessment with questions, rationale, RAG metrics
-- `training-captures/trainforge/{COURSE_CODE}/` - Decision capture JSONL
+- `runtime/training-captures/trainforge/{COURSE_CODE}/` - Decision capture JSONL
 - `LibV2/courses/{slug}/imscc_chunks/chunks.jsonl` - IMSCC chunkset (Phase 7c rename of `corpus/chunks.jsonl`)
 
 ---
@@ -388,10 +388,10 @@ The unified MCP server (`MCP/server.py`) exposes all component tools through a s
 
 ## Decision Capture
 
-Every pipeline decision is logged to `training-captures/` in JSONL format for model training:
+Every pipeline decision is logged to `runtime/training-captures/` in JSONL format for model training:
 
 ```
-training-captures/
+runtime/training-captures/
   semantik/{COURSE_CODE}/             # SemantiK conversion captures
     decisions_{PDF_NAME}_{TIMESTAMP}.jsonl
   courseforge/{COURSE_CODE}/

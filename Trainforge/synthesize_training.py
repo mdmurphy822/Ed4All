@@ -1963,7 +1963,7 @@ def _verdict_policy_digest() -> Dict[str, Any]:
     original coupling look necessary: an auditor holding an accepted pair
     could no longer tell WHICH verdict policy judged it, so the only way to
     prove a pair was still valid was to re-key and regenerate it (the
-    archive-and-restart loop visible in ``state/backups/``).  The digest is
+    archive-and-restart loop visible in ``runtime/state/backups/``).  The digest is
     folded into ``synthesis_run_contract_components`` — which is stamped on
     decision-capture metadata, the fresh-start marker, and (via its sha) every
     journal row — but deliberately NOT into ``static_contract``, the only

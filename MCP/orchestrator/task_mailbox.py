@@ -5,14 +5,14 @@ Claude Code session (Wave 34).
 The orchestrator runs in a Python subprocess but needs to delegate individual
 content-generation tasks to subagents (the ``Agent`` tool) which only exist
 inside an enclosing Claude Code session. This module provides the bridge:
-a directory of JSON files under ``state/runs/{run_id}/mailbox/`` that the
+a directory of JSON files under ``runtime/state/runs/{run_id}/mailbox/`` that the
 dispatcher uses as a task queue and the outer session (or a wrapper script)
 uses as a work list.
 
 Directory layout
 ----------------
 
-``state/runs/{run_id}/mailbox/``
+``runtime/state/runs/{run_id}/mailbox/``
 
     ``pending/``      — task specs the dispatcher has written and is waiting on
     ``in_progress/``  — tasks an outer watcher has claimed (atomic move from ``pending/``)
@@ -67,12 +67,12 @@ class TaskClaimConflict(MailboxError):
 
 
 class TaskMailbox:
-    """File-based task mailbox under ``state/runs/{run_id}/mailbox/``.
+    """File-based task mailbox under ``runtime/state/runs/{run_id}/mailbox/``.
 
     Args:
         run_id: The workflow run identifier. Used as the subdirectory key.
         base_dir: Parent directory under which ``{run_id}/mailbox/`` lives.
-            Defaults to ``Path("state/runs")``.
+            Defaults to ``Path("runtime/state/runs")``.
     """
 
     def __init__(self, run_id: str, base_dir: Optional[Path] = None):
@@ -85,7 +85,7 @@ class TaskMailbox:
             # Honor ED4ALL_STATE_RUNS_DIR override so unit tests can
             # redirect mailbox dirs into tmp_path.
             env_override = os.environ.get("ED4ALL_STATE_RUNS_DIR")
-            base = Path(env_override) if env_override else Path("state/runs")
+            base = Path(env_override) if env_override else Path("runtime/state/runs")
         self.root = base / run_id / "mailbox"
         self.pending_dir = self.root / "pending"
         self.in_progress_dir = self.root / "in_progress"

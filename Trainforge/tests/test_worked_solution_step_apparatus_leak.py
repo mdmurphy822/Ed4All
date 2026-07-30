@@ -192,7 +192,7 @@ def test_real_instructional_prose_still_harvests() -> None:
 # After the step-prefix fix landed the production run regenerated and the gate
 # still failed at 0.75. Two of the four remaining VERB_LESS_STEM warnings were
 # apparatus that carries a label the marker set had never seen — verbatim from
-# `state/runs/<run>/checkpoints/trainforge_assessment_checkpoint.json`:
+# `runtime/state/runs/<run>/checkpoints/trainforge_assessment_checkpoint.json`:
 #
 #   Q-cbc366e9: 'Show solution The opposite of 7 is -7 because it is the same...'
 #   Q-c17ddc7e: 'Key Idea: Each digit in a whole number has a place value ...'

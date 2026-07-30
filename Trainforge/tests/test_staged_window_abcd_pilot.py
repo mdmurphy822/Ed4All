@@ -1336,7 +1336,7 @@ def test_micro_journal_verifier_ignores_decision_capture_catalog_side_effect(
     }) + "\n")
     cell_dir = tmp_path / "c1"
     catalog_path = (
-        cell_dir / "audit" / "training-captures" / "capture"
+        cell_dir / "audit" / "runtime/training-captures" / "capture"
         / "micro_synthesis_state" / "catalog-only.jsonl"
     )
     store = MicroResumeStore(catalog_path, fingerprint="a" * 64)

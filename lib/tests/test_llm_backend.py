@@ -261,7 +261,7 @@ class TestMailboxBrokeredBackend:
         """Typo-safety: passing a string path instead of a TaskMailbox must
         raise at construction — not mysteriously fail downstream."""
         with pytest.raises(TypeError, match="TaskMailbox"):
-            MailboxBrokeredBackend("state/runs/whatever/mailbox")  # type: ignore[arg-type]
+            MailboxBrokeredBackend("runtime/state/runs/whatever/mailbox")  # type: ignore[arg-type]
 
     def test_complete_sync_writes_pending_then_reads_completion(self, tmp_path):
         """Happy path: backend writes pending → operator writes completion

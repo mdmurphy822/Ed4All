@@ -24,7 +24,7 @@ mechanics:
    retry ladder stands unchanged (retry replays the sidecar → no work lost).
 
 Hermetic: ``ED4ALL_STATE_RUNS_DIR`` is redirected into ``tmp_path`` so the stop
-sentinels never touch the real ``state/runs/``. CPU-only; no models loaded; no
+sentinels never touch the real ``runtime/state/runs/``. CPU-only; no models loaded; no
 course slugs / paths; no new env flag.
 """
 
@@ -56,7 +56,7 @@ RUN_ID = "WF-TIMEOUT-GRACE"
 
 @pytest.fixture()
 def isolated_state_runs(tmp_path, monkeypatch):
-    """Redirect the state/runs parent into tmp; clear any inherited run id/home."""
+    """Redirect the runtime/state/runs parent into tmp; clear any inherited run id/home."""
     runs = tmp_path / "state_runs"
     runs.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("ED4ALL_STATE_RUNS_DIR", str(runs))

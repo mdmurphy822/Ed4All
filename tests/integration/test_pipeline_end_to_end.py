@@ -117,18 +117,18 @@ DETERMINISTIC_RUN_ENV = {
 
 
 ARTIFACT_PATHS_TO_CLEAN: tuple[Path, ...] = (
-    PROJECT_ROOT / "state" / "runs",
+    PROJECT_ROOT / "runtime" / "state" / "runs",
     PROJECT_ROOT / "Courseforge" / "exports",
     PROJECT_ROOT / "LibV2" / "courses" / COURSE_SLUG,
-    PROJECT_ROOT / "training-captures" / "trainforge" / COURSE_NAME,
-    PROJECT_ROOT / "training-captures" / "courseforge" / COURSE_NAME,
-    PROJECT_ROOT / "training-captures" / "semantik" / COURSE_NAME,
+    PROJECT_ROOT / "runtime/training-captures" / "trainforge" / COURSE_NAME,
+    PROJECT_ROOT / "runtime/training-captures" / "courseforge" / COURSE_NAME,
+    PROJECT_ROOT / "runtime/training-captures" / "semantik" / COURSE_NAME,
 )
 
 
 def _snapshot_existing() -> dict[Path, set[str]]:
     """Record existing entries at each cleanup target so we only remove
-    artifacts *this run* produced. Keeps shared dirs (``state/runs/``,
+    artifacts *this run* produced. Keeps shared dirs (``runtime/state/runs/``,
     ``Courseforge/exports/``) intact for any other workflows in flight."""
     snapshot: dict[Path, set[str]] = {}
     for target in ARTIFACT_PATHS_TO_CLEAN:
@@ -151,7 +151,7 @@ def _cleanup_new(snapshot: dict[Path, set[str]]) -> None:
                 shutil.rmtree(target, ignore_errors=True)
             continue
         if target.name == COURSE_NAME:
-            # training-captures/{tool}/{course} — same story.
+            # runtime/training-captures/{tool}/{course} — same story.
             if target.is_dir():
                 shutil.rmtree(target, ignore_errors=True)
             continue
@@ -307,13 +307,13 @@ def _assert_worker_beta(export_dir: Path) -> None:
     """Trainforge produced chunks.jsonl + concept_graph_semantic.json +
     misconceptions.json at the expected workspace location."""
     # The exact workspace path is Worker β's choice (contracts.md allows
-    # either ``state/runs/{run_id}/trainforge/`` or ``{export_dir}/trainforge/``).
+    # either ``runtime/state/runs/{run_id}/trainforge/`` or ``{export_dir}/trainforge/``).
     # Search both plus LibV2 archive location.
     candidates = [
         export_dir / "trainforge",
         PROJECT_ROOT / "LibV2" / "courses" / COURSE_SLUG / "corpus",
     ]
-    for run_dir in (PROJECT_ROOT / "state" / "runs").glob("*/trainforge"):
+    for run_dir in (PROJECT_ROOT / "runtime" / "state" / "runs").glob("*/trainforge"):
         candidates.append(run_dir)
 
     # Accept the flat layout (trainforge/chunks.jsonl), the new

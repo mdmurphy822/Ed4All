@@ -59,7 +59,7 @@ from lib.generation.stop_control import (
 )
 from lib.paths import SEMANTIK_PATH, get_state_runs_dir, semantik_output_dir
 
-# Workflow-state persistence discipline: the state/workflows/<id>.json doc is
+# Workflow-state persistence discipline: the runtime/state/workflows/<id>.json doc is
 # written by multiple processes (a run + a concurrent status/resume tool), so
 # every write MUST be temp+replace-atomic (a plain open('w')+dump interleave
 # corrupts the file mid-document — 2026-07-21 incident) and the writer holds a
@@ -75,7 +75,7 @@ _WORKFLOW_STATE_LOCK_TIMEOUT_SECONDS = 10.0
 #: Operator-facing recovery guidance for a corrupted workflow-state file.
 _WORKFLOW_STATE_RECOVERY_HINT = (
     "Check the <path>.tmp sibling for a partially-written document; phase "
-    "checkpoints under state/runs/<run_id>/checkpoints/ are the "
+    "checkpoints under runtime/state/runs/<run_id>/checkpoints/ are the "
     "authoritative recovery source."
 )
 
@@ -96,9 +96,9 @@ class AuthoringProviderRouteError(RuntimeError):
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-# state/ is a relocatable data root: source it from lib.paths so an ED4ALL_HOME
+# runtime/state/ is a relocatable data root: source it from lib.paths so an ED4ALL_HOME
 # deployment lands workflow state under the mounted data root. Byte-stable to
-# ``PROJECT_ROOT / "state"`` when ED4ALL_HOME is unset (lib.paths.STATE_PATH
+# ``PROJECT_ROOT / "runtime" / "state"`` when ED4ALL_HOME is unset (lib.paths.STATE_PATH
 # == PROJECT_ROOT/state in that case). Import is local so a bare lib.paths
 # import failure (very unlikely) degrades to the in-tree default.
 try:
@@ -106,7 +106,7 @@ try:
 
     STATE_PATH = _LIB_STATE_PATH
 except Exception:  # noqa: BLE001 — defensive: fall back to in-tree default
-    STATE_PATH = PROJECT_ROOT / "state"
+    STATE_PATH = PROJECT_ROOT / "runtime" / "state"
 
 
 # ------------------------------------------------------------------------
@@ -1895,7 +1895,7 @@ class WorkflowRunner:
         ollama (or a slow NVML probe) can NEVER block the async run loop at a
         phase boundary (this hook runs inline twice per phase). It snapshots
         free/total VRAM + the resident ollama models and appends a JSON line to
-        ``state/runs/<run_id>/vram_trajectory.jsonl`` (the SAME run dir the
+        ``runtime/state/runs/<run_id>/vram_trajectory.jsonl`` (the SAME run dir the
         executor writes its phase checkpoints into — ``run_id`` is the
         executor's ``run_id``, which resolves ``get_state_runs_dir() / run_id``
         identically to the checkpoint manager's ``run_path``). The whole hook is
@@ -2000,7 +2000,7 @@ class WorkflowRunner:
         Releases the resident ollama model(s) + torch allocator cache, then —
         ONLY when ``ED4ALL_VRAM_DOCTOR`` is also on — appends a
         ``lifecycle_sweep`` event row (carrying the evicted model names) to the
-        SAME ``state/runs/<run_id>/vram_trajectory.jsonl`` the doctor writes, so
+        SAME ``runtime/state/runs/<run_id>/vram_trajectory.jsonl`` the doctor writes, so
         a trajectory shows the lease hand-offs inline with the residency
         snapshots. The trajectory write is best-effort; the release arms are
         themselves never-raising.
@@ -3294,7 +3294,7 @@ class WorkflowRunner:
 
         # Bloom-label harvester (no-LLM post-build hook). Walks the resolved
         # project export (+ LibV2 course dir) and appends every de-duplicated
-        # artifact-asserted Bloom claim to state/bloom_labels/labels.jsonl (the
+        # artifact-asserted Bloom claim to runtime/state/bloom_labels/labels.jsonl (the
         # corpus behind the re-founded bloom_classifier_disagreement voter 1).
         # Gated OFF by default (ED4ALL_HARVEST_BLOOM_LABELS) so a default run is
         # byte-identical (nothing written). Best-effort — failure does NOT
@@ -4304,7 +4304,7 @@ class WorkflowRunner:
         default run is byte-identical (nothing written). When on, it walks the
         resolved Courseforge project export (+ the LibV2 course dir when
         archival ran) and appends every de-duplicated Bloom claim to the shared
-        ``state/bloom_labels/labels.jsonl`` store — the corpus behind the
+        ``runtime/state/bloom_labels/labels.jsonl`` store — the corpus behind the
         re-founded ``bloom_classifier_disagreement`` voter 1.
 
         Best-effort: any failure logs a warning and never alters
@@ -4681,7 +4681,7 @@ class WorkflowRunner:
            ``phase_outputs.training_synthesis.corpus_dir`` /
            ``phase_outputs.trainforge_assessment.trainforge_dir``.
 
-        The aggregator reads its cost inputs from ``state/runs/<run_id>/``
+        The aggregator reads its cost inputs from ``runtime/state/runs/<run_id>/``
         (checkpoints / vram_trajectory.jsonl / llm_usage.jsonl); the GPU +
         LLM sections are omitted when their source files are absent. Pure
         metering (no LLM decisions). Best-effort — failure logs a warning and
@@ -5058,7 +5058,7 @@ class WorkflowRunner:
         Opt-in and honest: a run without ``auto_name`` is byte-identical
         (this method returns before touching anything); a resolution failure
         KEEPS the provided course name (logged), never fabricates a title.
-        The run_id and the pre-existing ``state/runs/<run_id>`` dir keep the
+        The run_id and the pre-existing ``runtime/state/runs/<run_id>`` dir keep the
         provisional name (internal; they already embed the timestamp).
         """
         if not workflow_params.get("auto_name"):

@@ -14,7 +14,7 @@ whose thinking/effort config is DESIGN INTENT):
   reasoning TEXT on ``message.reasoning`` instead of a token count.
 
 REPORT-ONLY: reads persisted rows, touches no thinking flag, changes no
-behaviour. Point it at a run ledger (``state/runs/<id>/llm_usage.jsonl``) or a
+behaviour. Point it at a run ledger (``runtime/state/runs/<id>/llm_usage.jsonl``) or a
 standalone sidecar (``<SEMANTIK_DATA_DIR>/llm_usage/llm_usage.jsonl``).
 """
 from __future__ import annotations

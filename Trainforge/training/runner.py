@@ -252,7 +252,7 @@ class TrainingRunner:
 
         # Decision capture handle (Wave 89 added the trainforge-training
         # phase enum so this stream lives at:
-        #   training-captures/trainforge/<COURSE>/phase_trainforge-training/
+        #   runtime/training-captures/trainforge/<COURSE>/phase_trainforge-training/
         # plus the LibV2-mirrored copy under the slug.
         capture = self._build_capture()
 
@@ -1191,7 +1191,7 @@ class TrainingRunner:
     ) -> Path:
         """Mirror the decision capture into the run dir as ``training_run.jsonl``.
 
-        ``DecisionCapture`` already streams to ``training-captures/`` +
+        ``DecisionCapture`` already streams to ``runtime/training-captures/`` +
         the LibV2-mirrored capture dir; the run-dir mirror lets a
         consumer reading the model card find the rationale without
         knowing the project's capture conventions.

@@ -157,7 +157,7 @@ ed4all import-docs ./docs-tree --output ./corpus/
 # ed4all harvest-bloom-labels — deterministic (no-LLM) harvester: walks a
 # Courseforge project/export (+ optional --course-path LibV2 dir) and collects
 # every artifact-asserted Bloom label (objectives / blocks / assessment items)
-# into state/bloom_labels/labels.jsonl — the corpus behind the re-founded
+# into runtime/state/bloom_labels/labels.jsonl — the corpus behind the re-founded
 # bloom_classifier_disagreement voter 1 (ED4ALL_BLOOM_TRIVOTE). --dry-run counts
 # only. Also runs post-build under ED4ALL_HARVEST_BLOOM_LABELS.
 ed4all harvest-bloom-labels ./Courseforge/exports/PROJ-... --dry-run
@@ -310,7 +310,7 @@ Final packaging and export:
 
 ### CRITICAL REQUIREMENT
 
-**ALL LLM decisions MUST be logged** to `training-captures/` in JSONL format.
+**ALL LLM decisions MUST be logged** to `runtime/training-captures/` in JSONL format.
 
 ### Required Fields
 
@@ -321,7 +321,7 @@ Every decision event MUST include:
 
 ### Using Decision Capture
 
-Helper: `lib/decision_capture.py::DecisionCapture` — instantiate with `course_code`, `phase`, `tool`, then call `log_decision(decision_type, decision, rationale, alternatives_considered=[...])`. Output lands under `training-captures/<tool>/<COURSE_CODE>/phase_<phase>/decisions_*.jsonl`.
+Helper: `lib/decision_capture.py::DecisionCapture` — instantiate with `course_code`, `phase`, `tool`, then call `log_decision(decision_type, decision, rationale, alternatives_considered=[...])`. Output lands under `runtime/training-captures/<tool>/<COURSE_CODE>/phase_<phase>/decisions_*.jsonl`.
 
 Canonical decision-event shape: `schemas/events/decision_event.schema.json`. Long-form rationale + LLM call-site precedents: `docs/architecture/decision-capture.md`.
 
@@ -366,7 +366,7 @@ and the phase-name dispatch override.
 
 **Core file tools** (`MCP/tools/file_tools.py`) — `list_directory` / `read_file`
 / `file_info` run in a READ_ONLY sandbox; `write_file` in a RESTRICTED sandbox
-limited to `runtime/` and `state/`.
+limited to `runtime/` and `runtime/state/`.
 
 **SemantiK tools** — see `SemantiK/CLAUDE.md` (PDF→accessible-HTML conversion; emits the Source-Provenance `data-semantik-*` / `semantik:{slug}#{block_id}` contract).
 
@@ -376,7 +376,7 @@ limited to `runtime/` and `state/`.
 + agent dispatch + batch locking.
 
 **GUI tools** (`MCP/tools/gui_tools.py`) — the Claude-interaction surface for the
-Control-Plane GUI. All operate on the shared `state/gui/` store, so a Claude
+Control-Plane GUI. All operate on the shared `runtime/state/gui/` store, so a Claude
 session and the GUI stay in sync. Full detail:
 `gui/README.md § Claude Code integration`.
 
@@ -424,7 +424,7 @@ quality distribution, export-filter preview.
 
 ### GENERATION_PROGRESS.md
 
-Location: `state/GENERATION_PROGRESS.md`
+Location: `runtime/state/GENERATION_PROGRESS.md`
 
 Central progress tracking file:
 - Active workflows table
@@ -438,7 +438,7 @@ Use `StatusTracker` for multi-terminal coordination:
 ```python
 from MCP.ipc.status_tracker import StatusTracker
 
-tracker = StatusTracker()  # defaults to state/status/
+tracker = StatusTracker()  # defaults to runtime/state/status/
 tracker.update_status("content_generator", "IN_PROGRESS",
                       worker_id="W001", details={"file": "Module_3.html"})
 ```
@@ -743,7 +743,7 @@ Stops a batch when the same error pattern repeats:
 
 ### Phase Checkpointing
 
-Each phase completion creates a checkpoint in `state/runs/{run_id}/checkpoints/`:
+Each phase completion creates a checkpoint in `runtime/state/runs/{run_id}/checkpoints/`:
 - Enables crash recovery without re-running completed phases
 - Checkpoints include phase outputs and state snapshots
 

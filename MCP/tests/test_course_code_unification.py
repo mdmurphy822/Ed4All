@@ -108,7 +108,7 @@ def test_pipeline_orchestrator_reads_canonical_course_code(tmp_path, monkeypatch
     # Wave 74: ``_get_executor`` publishes ``params.run_id`` into
     # ``ED4ALL_RUN_ID``. Without this monkeypatch the env var leaks
     # between tests and a downstream extract_and_convert_pdf in a
-    # different test file recreates ``state/runs/WF-20260420-abc12345/``
+    # different test file recreates ``runtime/state/runs/WF-20260420-abc12345/``
     # via the auto-resolved MailboxBrokeredBackend.
     monkeypatch.setenv("ED4ALL_RUN_ID", "WF-20260420-abc12345")
     """``_get_executor`` should use ``params.canonical_course_code``

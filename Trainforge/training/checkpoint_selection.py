@@ -1,6 +1,6 @@
 """SFT-D S8 — checkpoint-selection-by-downstream-probes scaffolding.
 
-The SFT program (scratchpad/sft_data_program.md §C) is explicit that
+The SFT program (runtime/scratchpad/sft_data_program.md §C) is explicit that
 checkpoint selection must be driven by DOWNSTREAM probes — 110-q gold
 key-point coverage + sympy-verified assessment-answer correctness — using
 held-out pair loss only as an OVERFITTING TRIPWIRE, never the selector. Pair

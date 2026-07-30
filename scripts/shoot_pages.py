@@ -2,10 +2,10 @@
 
 RAM GUARD: Chromium typesetting ~2,800 MathJax equations per page can spike
 multiple GB — the 2026-07-04 13:09 WSL OOM was this stacked on a live
-synthesis run (9GB consumed in <2 min per state/qa/ram_watch.log). Refuses to
+synthesis run (9GB consumed in <2 min per runtime/state/qa/ram_watch.log). Refuses to
 launch under 6 GB MemAvailable and never runs alongside ed4all synthesis.
 
-Usage: python shoot_pages.py <name=path.html> [...]  (shots land in ./shots/)
+Usage: python shoot_pages.py <name=path.html> [...]  (shots land in runtime/shots/)
 """
 import subprocess
 import sys
@@ -20,7 +20,7 @@ if subprocess.run(["pgrep", "-f", "ed4all run textbook"], capture_output=True).s
 from playwright.sync_api import sync_playwright  # noqa: E402
 
 HERE = Path(__file__).parent
-OUT = HERE / "shots"
+OUT = HERE.parent / "runtime" / "shots"
 OUT.mkdir(exist_ok=True)
 pages = [a.split("=", 1) for a in sys.argv[1:]]
 if not pages:

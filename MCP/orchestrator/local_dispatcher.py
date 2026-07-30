@@ -219,7 +219,7 @@ class LocalDispatcher:
             env_override = os.environ.get("ED4ALL_STATE_RUNS_DIR")
             self.mailbox_base_dir = (
                 Path(env_override) if env_override
-                else self.project_root / "state" / "runs"
+                else self.project_root / "runtime" / "state" / "runs"
             )
         self.mailbox_timeout_seconds = float(mailbox_timeout_seconds)
         self.mailbox_poll_interval = float(mailbox_poll_interval)
@@ -259,7 +259,7 @@ class LocalDispatcher:
            return a stub ``PhaseOutput`` so dry-run / unit tests exercise
            dispatch without a real subagent pathway.
         3. ``agent_tool`` missing AND stub flag off → write the task spec
-           to ``state/runs/{run_id}/mailbox/pending/{task_id}.json`` and
+           to ``runtime/state/runs/{run_id}/mailbox/pending/{task_id}.json`` and
            block on ``TaskMailbox.wait_for_completion``. An outer Claude
            Code session (see ``ed4all mailbox watch``) claims the pending
            task, dispatches a real subagent via the ``Agent`` tool, and

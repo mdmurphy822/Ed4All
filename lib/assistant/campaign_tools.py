@@ -260,7 +260,7 @@ def _campaign_run_ids() -> set:
     tool may resume/stop.
 
     Authority is the launch-manifest ``launched-runs.jsonl`` (one provenance
-    row per launch, ``wf_id`` field). ``state/workflows`` accumulates ~months
+    row per launch, ``wf_id`` field). ``runtime/state/workflows`` accumulates ~months
     of unrelated dev runs; without this scope a single resume/stop tool call
     could fire a real ``ed4all run --resume`` / ``ed4all stop`` against a run
     the campaign never started. Reads/status stay unrestricted (they only
@@ -667,7 +667,7 @@ def _run_status_all() -> str:
 def _run_status_one(run_id: str) -> str:
     path = STATE_PATH / "workflows" / f"{run_id}.json"
     if not path.is_file():
-        return f"no workflow state for {run_id} (state/workflows/{run_id}.json missing)."
+        return f"no workflow state for {run_id} (runtime/state/workflows/{run_id}.json missing)."
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:  # noqa: BLE001
@@ -694,7 +694,7 @@ def _run_status_one(run_id: str) -> str:
 
 def campaign_run_status(run_id: str = "") -> str:
     """Read-only run monitor. No ``run_id`` → summarize every active
-    state/workflows record + recent launches. With ``run_id`` (RUN_ID_RE
+    runtime/state/workflows record + recent launches. With ``run_id`` (RUN_ID_RE
     validated) → that record + the last 40 lines of its campaign log."""
     run_id = str(run_id or "").strip()
     if run_id:
@@ -865,7 +865,7 @@ def campaign_resume_run(run_id: str) -> str:
             f"Refused: {run_id} is not in the campaign launch-manifest "
             f"(launched-runs.jsonl) — campaign tools resume/stop ONLY runs the "
             f"campaign itself launched, never the unrelated dev runs in "
-            f"state/workflows. If this run really needs resuming, do it directly "
+            f"runtime/state/workflows. If this run really needs resuming, do it directly "
             f"with `ed4all run --resume {run_id}`. Nothing was resumed."
         )
     refusal = preflight_launch()
@@ -927,7 +927,7 @@ def campaign_stop_run(run_id: str) -> str:
             f"Refused: {run_id} is not in the campaign launch-manifest "
             f"(launched-runs.jsonl) — campaign tools resume/stop ONLY runs the "
             f"campaign itself launched, never the unrelated dev runs in "
-            f"state/workflows. If this run really needs stopping, do it directly "
+            f"runtime/state/workflows. If this run really needs stopping, do it directly "
             f"with `ed4all stop {run_id}`. Nothing was stopped."
         )
     argv = ["ed4all", "stop", run_id]
@@ -1289,7 +1289,7 @@ def prepare_training_run(slug: str) -> Dict[str, Any]:
 
 
 def _newest_wf_after(launch_time: float) -> Optional[str]:
-    """The newest ``state/workflows/WF-*.json`` minted at/after ``launch_time``."""
+    """The newest ``runtime/state/workflows/WF-*.json`` minted at/after ``launch_time``."""
     wf_dir = STATE_PATH / "workflows"
     try:
         names = [

@@ -14,7 +14,7 @@ depend on:
   appends ``[phase] <name> <state>`` lines the WS streams to the wizard.
 
 Skipped on a default install with no ``fastapi`` (the ``gui`` extra is opt-in).
-State is isolated via ``state_dir`` / ``libv2_root`` so the real ``state/gui/``
+State is isolated via ``state_dir`` / ``libv2_root`` so the real ``runtime/state/gui/``
 and ``LibV2/`` are never touched. Synthetic only — no real model / network.
 """
 

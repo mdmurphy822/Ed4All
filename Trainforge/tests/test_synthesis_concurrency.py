@@ -203,7 +203,7 @@ def test_fresh_concurrent_live_edit_stops_before_next_batch(
     # test pass vacuously (DID NOT RAISE) instead of exercising the check.
     # Entries are resolved against PROJECT_ROOT, so the watched path is
     # repo-relative rather than an absolute tmp_path.
-    watched_relative = "state/watched-provider-contract.py"
+    watched_relative = "runtime/state/watched-provider-contract.py"
     watched = synthesis_module.PROJECT_ROOT / watched_relative
     watched.parent.mkdir(parents=True, exist_ok=True)
     watched.write_text("version = 1\n", encoding="utf-8")

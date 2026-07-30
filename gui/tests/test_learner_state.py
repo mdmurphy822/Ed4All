@@ -6,7 +6,7 @@ file-upload validation (oversized / disallowed-ext / traversal), and a
 concurrency-safe append (two parallel appends never corrupt the JSONL).
 
 All state lands under the ``state_dir`` temp redirect (``ED4ALL_STATE_RUNS_DIR``)
-so nothing touches the real ``state/``. No hardcoded production slug — a local
+so nothing touches the real ``runtime/state/``. No hardcoded production slug — a local
 test slug is used against the temp store only.
 """
 

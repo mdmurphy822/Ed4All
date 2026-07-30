@@ -1,7 +1,7 @@
 """GUI control-plane MCP tools — the Claude-interaction surface.
 
 Registered via ``register_gui_tools(mcp)`` from ``MCP/server.py`` alongside the
-other ``register_*`` tool modules. Every tool operates on the SAME ``state/gui/``
+other ``register_*`` tool modules. Every tool operates on the SAME ``runtime/state/gui/``
 store the FastAPI GUI reads/writes, so a Claude Code session drives/observes
 exactly what the GUI shows (the bidirectional bridge of build spec §8).
 
@@ -46,7 +46,7 @@ def register_gui_tools(mcp):
         """
         Return the masked GUI settings document.
 
-        Reads the canonical ``state/gui/settings.json`` (falling back to catalog
+        Reads the canonical ``runtime/state/gui/settings.json`` (falling back to catalog
         defaults if unset) and masks every ``*_API_KEY`` / ``*_KEY`` value to
         ``"set"`` / ``null`` so secrets never surface. This is exactly what the
         GUI's Settings tab displays.
@@ -96,7 +96,7 @@ def register_gui_tools(mcp):
         """
         List every run in the GUI run registry (newest first).
 
-        Mirrors ``state/gui/runs/<run_id>.json`` — the same records the GUI's
+        Mirrors ``runtime/state/gui/runs/<run_id>.json`` — the same records the GUI's
         Activity / Runs views render and that ``gui_enqueue_run`` writes.
         """
         try:

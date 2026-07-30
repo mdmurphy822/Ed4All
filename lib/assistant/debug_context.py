@@ -17,7 +17,7 @@ Run selection when ``run_id`` is ``None``:
    before use; never trusted as a path). The campaign dir is resolved by
    ``lib.paths.campaign_dir`` (``ED4ALL_CAMPAIGN_DIR``, default
    ``plans/campaign``).
-2. Otherwise the newest ``state/workflows/WF-*.json`` whose status is
+2. Otherwise the newest ``runtime/state/workflows/WF-*.json`` whose status is
    FAILED (by file mtime).
 
 No failed run found → :class:`DebugContextUnavailable` (loud, never a
@@ -80,7 +80,7 @@ def _read_pointer() -> Tuple[Optional[str], Optional[str]]:
 
 
 def _newest_failed_run_id() -> Optional[str]:
-    """Newest FAILED run in state/workflows (by mtime); id shape-validated."""
+    """Newest FAILED run in runtime/state/workflows (by mtime); id shape-validated."""
     workflows_dir = STATE_PATH / "workflows"
     if not workflows_dir.is_dir():
         return None
@@ -162,7 +162,7 @@ def build_debug_context(run_id: Optional[str] = None) -> Dict[str, Any]:
 
     Args:
         run_id: An explicit WF run id, or ``None`` to auto-resolve (pointer
-            file first, then the newest FAILED state/workflows entry).
+            file first, then the newest FAILED runtime/state/workflows entry).
 
     Returns:
         Dict with ``run_id``, ``source`` (``explicit`` /
@@ -194,7 +194,7 @@ def build_debug_context(run_id: Optional[str] = None) -> Dict[str, Any]:
             if newest is None:
                 raise DebugContextUnavailable(
                     "No failed run found: no usable last_failure.json pointer "
-                    "and no FAILED entry under state/workflows/. Nothing to "
+                    "and no FAILED entry under runtime/state/workflows/. Nothing to "
                     "debug."
                 )
             resolved, source = newest, "newest_failed"

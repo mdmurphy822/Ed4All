@@ -4,7 +4,7 @@
 
 When the orchestrator runs in ``--mode local`` without an ``agent_tool``
 callable, ``LocalDispatcher`` writes each phase task to a file-based
-``TaskMailbox`` under ``state/runs/{run_id}/mailbox/pending/`` and blocks
+``TaskMailbox`` under ``runtime/state/runs/{run_id}/mailbox/pending/`` and blocks
 on ``wait_for_completion``. The outer Claude Code session (or any cooperating
 process) needs to:
 
@@ -230,13 +230,13 @@ def mailbox_group():
 @click.option(
     "--run-id",
     required=True,
-    help="Workflow run id; determines the state/runs/{run_id}/mailbox/ path.",
+    help="Workflow run id; determines the runtime/state/runs/{run_id}/mailbox/ path.",
 )
 @click.option(
     "--base-dir",
     type=click.Path(file_okay=False),
     default=None,
-    help="Override state/runs parent dir (tests only).",
+    help="Override runtime/state/runs parent dir (tests only).",
 )
 @click.option(
     "--poll-interval",

@@ -12,13 +12,13 @@ Everything here is READ-ONLY and best-effort: it never mutates run state and
 never fabricates a run/slug/status. Sources:
 
 - **The queried run** — resolved exactly like ``progress_service.run_progress``:
-  a GUI run id (``state/gui/runs/`` via ``shared_state.read_run`` →
+  a GUI run id (``runtime/state/gui/runs/`` via ``shared_state.read_run`` →
   ``workflow_id``) OR a bare orchestrator workflow id
-  (``state/workflows/<id>.json`` read directly). Its ``params.course_name`` /
+  (``runtime/state/workflows/<id>.json`` read directly). Its ``params.course_name`` /
   ``params.course_code`` slugifies to the correlation key.
 - **Sibling build / training runs** — the newest run whose course slugifies to
   the same key, discovered by scanning BOTH ``run_service.list_runs()`` (GUI +
-  recency-windowed CLI records) AND every ``state/workflows/*.json`` directly
+  recency-windowed CLI records) AND every ``runtime/state/workflows/*.json`` directly
   (CLI/pilot-launched training runs have no GUI record). "Newest" is by
   ``started_at`` then workflow-file mtime.
 - **Completed training products** — ``LibV2/courses/<slug>/models/<model_id>/``
@@ -29,7 +29,7 @@ never fabricates a run/slug/status. Sources:
   emitted so the operator sees the full pipeline even before a stage starts.
 
 Bounded + honest: workflow-file reads reuse ``progress_service._read_workflow_state``
-(128 MB guard, never raises); the ``state/workflows/`` index scan is cached by
+(128 MB guard, never raises); the ``runtime/state/workflows/`` index scan is cached by
 directory mtime; an absent/corrupt/mid-write file is treated as absent; an
 unresolvable slug yields a single-stage chain with ``course_slug: null`` (never a
 guessed slug).
@@ -120,7 +120,7 @@ def _parse_started(value: Any) -> datetime:
 
 
 def _wf_mtime(workflow_id: str) -> float:
-    """mtime of ``state/workflows/<workflow_id>.json`` (0.0 when unreadable)."""
+    """mtime of ``runtime/state/workflows/<workflow_id>.json`` (0.0 when unreadable)."""
     if not workflow_id:
         return 0.0
     try:
@@ -130,9 +130,9 @@ def _wf_mtime(workflow_id: str) -> float:
         return 0.0
 
 
-# --------------------------------------------------- state/workflows/* index
+# --------------------------------------------------- runtime/state/workflows/* index
 
-# Cache the (expensive) full scan of ``state/workflows/*.json`` by DIRECTORY
+# Cache the (expensive) full scan of ``runtime/state/workflows/*.json`` by DIRECTORY
 # mtime — the dir mtime bumps whenever a workflow file is added/removed, which
 # is what changes the set of discoverable runs. Status is deliberately NOT
 # cached here (an in-place rewrite does not bump the dir mtime); the caller
@@ -228,7 +228,7 @@ def _collect_candidates(slug: str) -> Tuple[List[_Candidate], List[_Candidate]]:
     """Discover every BUILD + TRAINING run for ``slug`` across both sources.
 
     Sources: ``run_service.list_runs()`` (GUI + recency-windowed CLI records)
-    and a direct scan of ``state/workflows/*.json`` (catches older / never-GUI
+    and a direct scan of ``runtime/state/workflows/*.json`` (catches older / never-GUI
     training runs the list omits). De-duped by orchestrator workflow id — a
     workflow already surfaced by ``list_runs`` is not re-added from the scan.
     """

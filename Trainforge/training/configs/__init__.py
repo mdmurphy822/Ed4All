@@ -63,7 +63,7 @@ class TrainingConfig:
         "up_proj",
         "down_proj",
     ])
-    # SFT program recipe (scratchpad/sft_data_program.md §C): bf16 LoRA is
+    # SFT program recipe (runtime/scratchpad/sft_data_program.md §C): bf16 LoRA is
     # the DEFAULT (use_4bit=False) — the shipped adapter is a small 1.5B
     # course-tutor; QLoRA (4-bit) stays reachable behind this flag for
     # memory-constrained boxes. NB: LoRA already leaks less than full-FT;
@@ -92,7 +92,7 @@ class TrainingConfig:
     # the runner filters to the canonical schema keys before emit).       #
     # ------------------------------------------------------------------ #
     # Completion-only loss masking: train the loss over the assistant
-    # completion only, never the prompt (scratchpad/sft_data_program.md §C).
+    # completion only, never the prompt (runtime/scratchpad/sft_data_program.md §C).
     completion_only_loss: bool = True
     # Sample a batch and fail LOUD if the prompt isn't masked before the
     # full run (peft_trainer._verify_completion_only_loss_mask).

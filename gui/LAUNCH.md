@@ -77,8 +77,8 @@ ed4all gui --host 127.0.0.1 --port 8077
 
 ## Secrets
 
-API keys you enter in the GUI are stored locally in `state/gui/settings.json`,
-written owner-only (`0600`) and never committed (`state/gui/` is gitignored).
+API keys you enter in the GUI are stored locally in `runtime/state/gui/settings.json`,
+written owner-only (`0600`) and never committed (`runtime/state/gui/` is gitignored).
 They stay on your machine; nothing is sent anywhere except to the provider you
 explicitly route a task to.
 

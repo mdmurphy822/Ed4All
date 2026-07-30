@@ -1,6 +1,6 @@
 """Super-120B fused-page RE-SEGMENTATION stage (``SEMANTIK_SUPER_RESEGMENT``).
 
-Productionized from the validated ``scratchpad/super_pages.py`` prototype
+Productionized from the validated ``runtime/scratchpad/super_pages.py`` prototype
 (owner-approved 2026-07-15). Given ONE structureless FUSED page — the run-on
 paragraph blob SemantiK's per-page arranger emits when it cannot recover element
 boundaries — this stage reasons it back into logically-correct, typed accessible

@@ -59,7 +59,7 @@ _RUN_ID = "STOP_TRAIN_TESTRUN"
 # --------------------------------------------------------------------------- #
 @pytest.fixture()
 def stop_env(tmp_path, monkeypatch):
-    """Per-test sentinel isolation: tmp state/runs + a synthetic run_id."""
+    """Per-test sentinel isolation: tmp runtime/state/runs + a synthetic run_id."""
     runs = tmp_path / "runs"
     runs.mkdir()
     monkeypatch.setenv("ED4ALL_STATE_RUNS_DIR", str(runs))

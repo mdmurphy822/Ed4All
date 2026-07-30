@@ -8,7 +8,7 @@ disk the moment it lands, so a poll after a reconnect still finds it.
 
 Design (mirrors the ``gui.shared_state`` run-registry idiom):
 
-* One job = one ``state/gui/ask_jobs/<ask_id>.json`` file, written atomically
+* One job = one ``runtime/state/gui/ask_jobs/<ask_id>.json`` file, written atomically
   (tmpfile + ``os.replace``) so a reader never sees a partial record. The job
   record is the single source of truth — there is NO in-memory result cache, so
   a fresh process (uvicorn restart) serves a finished answer straight off disk.
@@ -74,7 +74,7 @@ _answer_fn: Optional[Callable[..., Dict[str, Any]]] = None
 
 
 def ask_jobs_dir() -> Path:
-    """Return ``state/gui/ask_jobs/`` (created lazily)."""
+    """Return ``runtime/state/gui/ask_jobs/`` (created lazily)."""
     path = shared_state.gui_state_dir() / "ask_jobs"
     path.mkdir(parents=True, exist_ok=True)
     return path

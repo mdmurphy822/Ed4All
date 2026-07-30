@@ -31,7 +31,7 @@ The named contract (plan AMENDMENT #10) exercised here:
   guard; the broader legacy suite lives in ``test_rewrite_batch_routing.py``).
 
 Sentinel isolation is fully hermetic: a per-test ``ED4ALL_STATE_RUNS_DIR`` +
-synthetic ``ED4ALL_RUN_ID`` (no dependency on the repo ``state/runs/``).
+synthetic ``ED4ALL_RUN_ID`` (no dependency on the repo ``runtime/state/runs/``).
 """
 
 from __future__ import annotations
@@ -173,7 +173,7 @@ class _Recorder:
 
 @pytest.fixture
 def _armed_env(tmp_path, monkeypatch):
-    """Per-test sentinel isolation: tmp state/runs + a synthetic run_id."""
+    """Per-test sentinel isolation: tmp runtime/state/runs + a synthetic run_id."""
     monkeypatch.setenv("ED4ALL_STATE_RUNS_DIR", str(tmp_path / "state" / "runs"))
     monkeypatch.setenv("ED4ALL_RUN_ID", _RUN_ID)
     stop_control.clear_stop(include_global=True)

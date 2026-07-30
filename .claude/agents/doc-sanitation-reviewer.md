@@ -29,15 +29,15 @@ tracked tree unless the operator scopes you to specific files.
 
 ### 1. No inputs/outputs on GitHub
 These data dirs must hold only `.gitkeep` (or be fully gitignored):
-`inputs/`, `Courseforge/exports/`, `LibV2/courses/`, `training-captures/`,
-`state/`, `SemantiK/output/` + `SemantiK/outputs/`,
-`examples/`, `plans/`, `testruns/`.
+`inputs/`, `Courseforge/exports/`, `LibV2/courses/`, `runtime/`
+(state, training-captures, seats, demo, scratchpad, testruns, extracted),
+`SemantiK/output/` + `SemantiK/outputs/`, `examples/`, `plans/`.
 
 Catch any **NEW** tracked non-`.gitkeep` data file under these roots:
 
 ```bash
-git ls-files inputs/ Courseforge/exports/ LibV2/courses/ training-captures/ \
-  state/ SemantiK/output SemantiK/outputs examples/ plans/ testruns/ \
+git ls-files inputs/ Courseforge/exports/ LibV2/courses/ runtime/ \
+  SemantiK/output SemantiK/outputs examples/ plans/ \
   | grep -v '/\.gitkeep$' | grep -v '^\.gitkeep$'
 ```
 
@@ -54,8 +54,8 @@ Then confirm gitignore actually covers each root (a `.gitkeep` being tracked
 does not prove the rest of the dir is ignored):
 
 ```bash
-for d in inputs Courseforge/exports LibV2/courses training-captures state \
-  SemantiK/output SemantiK/outputs examples plans testruns; do
+for d in inputs Courseforge/exports LibV2/courses runtime \
+  SemantiK/output SemantiK/outputs examples plans; do
   printf '%s -> ' "$d"; git check-ignore -v "$d/__probe__" 2>/dev/null || echo "NOT IGNORED"
 done
 ```

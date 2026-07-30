@@ -6,7 +6,7 @@ setting from another model revision, engine build, hardware profile, prompt
 contract, or output allowance.
 
 Raw manifests, prompts, responses, logs, and result ledgers belong under the
-gitignored `state/benchmarks/` tree. Tracked documentation must not contain
+gitignored `runtime/state/benchmarks/` tree. Tracked documentation must not contain
 course text, course slugs, workflow identifiers, machine paths, endpoint
 addresses, or hashes of local artifacts.
 

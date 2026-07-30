@@ -21,7 +21,7 @@ target_modules:
   - gate_proj
   - up_proj
   - down_proj
-# SFT program recipe (scratchpad/sft_data_program.md §C): bf16 LoRA is the
+# SFT program recipe (runtime/scratchpad/sft_data_program.md §C): bf16 LoRA is the
 # default for the shipped 1.5B course-tutor. Flip to `true` to fall back to
 # QLoRA (4-bit) on a memory-constrained box.
 use_4bit: false

@@ -24,7 +24,7 @@ ed4all run rag_training --corpus path/to/course.imscc --course-name MY_COURSE_10
 ed4all run trainforge_train --course-name <course-slug> --base-model <name>
 ```
 
-Pipeline output lands under `LibV2/courses/<slug>/` — `imscc_chunks/`, `graph/`, `training_specs/`, `models/`. (`Trainforge/output/` is only the default for a direct `python -m Trainforge.process_course --output ...` invocation.) Decision JSONL lands under `training-captures/trainforge/<COURSE_CODE>/`.
+Pipeline output lands under `LibV2/courses/<slug>/` — `imscc_chunks/`, `graph/`, `training_specs/`, `models/`. (`Trainforge/output/` is only the default for a direct `python -m Trainforge.process_course --output ...` invocation.) Decision JSONL lands under `runtime/training-captures/trainforge/<COURSE_CODE>/`.
 
 ## More
 

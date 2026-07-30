@@ -17,7 +17,7 @@ serve-mode wiring, the auth classification, and the invariants a change must not
 ## Layering (hard rule)
 
 ```
-gui/shared_state.py   state/gui/ paths + atomic writes + run registry + event log
+gui/shared_state.py   runtime/state/gui/ paths + atomic writes + run registry + event log
 gui/env_catalog.py    declarative env-knob catalog + provider list + routing→env
 gui/settings_store.py settings.json load/save/patch, secret split, env render
 gui/models.py         pydantic request/response models
@@ -115,7 +115,7 @@ A new retrieval-shaped endpoint must use `QUERY_METHODS` + the helper, not bare 
 
 ## Settings + secrets (`gui/settings_store.py`)
 
-Canonical store: `state/gui/settings.json` (schema `version: 1`; keys `env`,
+Canonical store: `runtime/state/gui/settings.json` (schema `version: 1`; keys `env`,
 `model_routing`, `retrieval`, `flags`, `assistant`). Split-file secret handling:
 
 - `_is_secret_key` = any env key ending `_API_KEY` or `_KEY`.
@@ -123,9 +123,9 @@ Canonical store: `state/gui/settings.json` (schema `version: 1`; keys `env`,
 - `mask_secrets` renders a secret as `"set"` or `None` — **write-only**; a GET
   never returns a credential value.
 - `render_env` / `apply_env` project the doc (plus `env_catalog.routing_to_env`)
-  into process env + `state/gui/.env.rendered`.
+  into process env + `runtime/state/gui/.env.rendered`.
 
-`gui/shared_state.py` owns every `state/gui/` path (`settings.json`,
+`gui/shared_state.py` owns every `runtime/state/gui/` path (`settings.json`,
 `.env.rendered`, `runs/`, `logs/<run_id>.log`, `uploads/`, `events.jsonl`) and all
 writes go through `_atomic_write_text` / `_atomic_write_json` (tmpfile +
 `os.replace`). Never open a state file and write it in place. `_state_root()`
@@ -150,7 +150,7 @@ tuples mirror `cli/commands/run.py` — **keep both in sync when a workflow land
 Studio stage-tracker rail + live stats band): a READ-ONLY merge of the run's
 `config/workflows.yaml` phase plan (mtime-cached; workflow-agnostic — never a
 hardcoded phase list) with the orchestrator workflow state's
-`_completed`/`_skipped` markers, `state/runs/<id>/checkpoints/` wall-clocks, a
+`_completed`/`_skipped` markers, `runtime/state/runs/<id>/checkpoints/` wall-clocks, a
 bounded incremental tail of the OP2 `llm_usage.jsonl` tap, a TTL-cached
 `/v1/models` probe over the `ED4ALL_SEAT_BASE_URLS` seat registry, and real
 in-phase unit progress (`stats.phase_units`) counted from the pipeline's own
@@ -180,7 +180,7 @@ mutates run state and never fabricates: unknown workflow → the observed
 no probe at all; no sidecar on disk → `phase_units` omitted entirely, and no
 totals are ever estimated. The same endpoint consumes optional, atomic,
 versioned phase snapshots from
-`state/runs/<run_id>/telemetry/<phase>.json`. Snapshot filenames are derived
+`runtime/state/runs/<run_id>/telemetry/<phase>.json`. Snapshot filenames are derived
 only from the workflow's planned phase names; schema/version/run/phase/state
 and metric types are validated fail-safe, so missing, partial, malformed, or
 cross-run documents are ignored wholesale. Valid snapshots are exposed on the
@@ -229,7 +229,7 @@ on a paused/stopping/incomplete/stalled?/failed run. The same module's
 `output_tail` backs `GET /api/runs/{run_id}/output-tail` (the Studio "Live
 output" panel): a bounded seek-from-end tail of the CURRENT phase's per-unit
 resume sidecar (or, for `heading_judge`, the newest per-chapter judgment
-files under `state/runs/<run_id>/heading_judge/` — a growing-directory
+files under `runtime/state/runs/<run_id>/heading_judge/` — a growing-directory
 source; `training_synthesis` tails its per-pair
 `training_specs/.synthesis_pairs_checkpoint.jsonl`; the `trainforge_train`
 `training` phase tails the NEWEST
@@ -256,10 +256,10 @@ Tests: `gui/tests/test_run_progress.py`.
 never mutates `status`) so a stale CLI `RUNNING` record no longer renders
 "Building" forever. It is stdlib-only + read-only + import-light (imported by
 BOTH `run_service.list_runs` and `progress_service.run_progress`; never writes
-`state/`). Signals: a `/proc` scan for live `ed4all run` processes matched on
+`runtime/state/`). Signals: a `/proc` scan for live `ed4all run` processes matched on
 ADJACENT `ed4all`/`run` argv tokens (never `pgrep -f`, which self-matches the
 wrapper shell), the graceful-stop sentinel
-`state/runs/<orch_run_id>/control/STOP_REQUESTED`, and workflow-file mtime.
+`runtime/state/runs/<orch_run_id>/control/STOP_REQUESTED`, and workflow-file mtime.
 A run ATTRIBUTES to a live process when any of its identifier tokens
 (corpus / project / course name / orchestrator run id / workflow `WF-<id>`)
 is a substring of that process's argv — the workflow id is what lets a bare
@@ -389,7 +389,7 @@ restrictive CSP is never clobbered. CR/LF are scrubbed and whitespace collapsed
 | `ED4ALL_GUI_LEARNER` | `gui/app.py`, `gui/server.py` | Legacy truthy learner-mode toggle (back-compat only). |
 | `ED4ALL_GUI_TOKEN` | `gui/auth.py` | Operator bearer token; falls back to `secrets.gui_token`. |
 | `ED4ALL_GUI_FRAME_ANCESTORS` | `gui/app.py` | CSP `frame-ancestors` source list for iframe embedding. |
-| `ED4ALL_STATE_RUNS_DIR` | `gui/shared_state.py` | Its *parent* is the resolved `state/` root. |
+| `ED4ALL_STATE_RUNS_DIR` | `gui/shared_state.py` | Its *parent* is the resolved `runtime/state/` root. |
 
 ---
 

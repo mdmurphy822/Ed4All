@@ -14,7 +14,7 @@ Contract verified here:
   phase returns, so a subsequent / nested phase never inherits a stale phase.
 
 Hermetic: ``ED4ALL_STATE_RUNS_DIR`` is redirected into ``tmp_path`` and no run
-state touches the real ``state/runs/``. No course slugs / paths anywhere.
+state touches the real ``runtime/state/runs/``. No course slugs / paths anywhere.
 """
 
 from __future__ import annotations

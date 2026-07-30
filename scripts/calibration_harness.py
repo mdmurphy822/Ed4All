@@ -21,7 +21,7 @@ For every discovered corpus (a LibV2 course slug or a Courseforge project export
 2. Courseforge ``02_validation_report/report.json`` — per-block GateResult summaries
    (``per_block[].gate_results[]``: gate_id / passed / issue_count / action). This is
    the richest, always-present source for outline/rewrite-tier gate fire-rates.
-3. Decision-capture JSONL under ``training-captures/*/<COURSE>/`` carrying
+3. Decision-capture JSONL under ``runtime/training-captures/*/<COURSE>/`` carrying
    ``block_validation_action`` / ``statistical_validation_*`` events (gate-level rollups
    with ``ml_features.gate_id`` / ``passed`` / ``block_count`` / ``issues_count``).
 4. ``<export>/courseforge_validation_report.json`` (the post-loop aggregator) —
@@ -452,7 +452,7 @@ def _training_captures_root() -> Path:
 
         return Path(get_training_captures_dir())
     except Exception:
-        return _repo_root() / "training-captures"
+        return _repo_root() / "runtime/training-captures"
 
 
 def _libv2_root() -> Path:

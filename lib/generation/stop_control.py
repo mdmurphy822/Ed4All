@@ -7,7 +7,7 @@ finishes the in-flight unit, checkpoints it, then raises
 ``GracefulStopRequested`` so the runner can halt downstream work and stamp the
 phase ``paused`` (never ``failed``). Worst-case loss is ONE in-flight LLM call.
 
-Two sentinel scopes, both under the resolved ``state/runs`` parent:
+Two sentinel scopes, both under the resolved ``runtime/state/runs`` parent:
 
 - Run-scoped: ``<state_runs>/<run_id>/control/STOP_REQUESTED`` — stops one run.
 - Global:    ``<state_runs>/STOP_ALL`` — stops every run (operator-owned; never
@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 #: Basename of the run-scoped sentinel, under ``<run_id>/control/``.
 RUN_SENTINEL_NAME = "STOP_REQUESTED"
-#: Basename of the global sentinel, directly under the state/runs parent.
+#: Basename of the global sentinel, directly under the runtime/state/runs parent.
 GLOBAL_SENTINEL_NAME = "STOP_ALL"
 
 

@@ -238,7 +238,7 @@ def _is_low_signal_heading(heading: str) -> bool:
     if text.isupper() and word_count <= 4 and len(text) <= 40:
         return True
 
-    # City + 2-letter state/country pattern (VANCOUVER BC).
+    # City + 2-letter runtime/state/country pattern (VANCOUVER BC).
     if _CITY_ABBREV_RE.match(text):
         return True
 

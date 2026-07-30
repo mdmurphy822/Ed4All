@@ -56,7 +56,7 @@ _RUN_ID = "STOP_LEGACY_GEN_TESTRUN"
 
 @pytest.fixture
 def _armed_env(state_runs_isolated, monkeypatch):
-    """Per-test sentinel isolation: tmp state/runs + a synthetic run_id."""
+    """Per-test sentinel isolation: tmp runtime/state/runs + a synthetic run_id."""
     monkeypatch.setenv("ED4ALL_RUN_ID", _RUN_ID)
     stop_control.clear_stop(include_global=True)
     yield

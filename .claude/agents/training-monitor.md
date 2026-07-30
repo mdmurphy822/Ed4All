@@ -20,7 +20,7 @@ For an active training run, expect to find:
 - Trainer logs (typically `LibV2/courses/<slug>/models/<model_id>/logs/`
   or wherever the orchestrator emits stdout/stderr).
 - Checkpoint dir (`.../checkpoints/`), with `model.safetensors` snapshots.
-- Decision capture log: `training-captures/.../training_run.jsonl`.
+- Decision capture log: `runtime/training-captures/.../training_run.jsonl`.
 - Live host: `nvidia-smi` / `rocm-smi`, `top`, `free`, `iostat`,
   `dmesg`, `journalctl`.
 - For RunPod runs: pod metadata under `/proc/net/dev` and (when
@@ -75,7 +75,7 @@ Confirm the training run emitted the canonical decision events:
 - `eval_run_decision`
 
 ```bash
-jq -r '.decision_type' training-captures/.../training_run.jsonl | sort -u
+jq -r '.decision_type' runtime/training-captures/.../training_run.jsonl | sort -u
 ```
 
 Missing any of these = FAIL (this is a Wave 90 contract).

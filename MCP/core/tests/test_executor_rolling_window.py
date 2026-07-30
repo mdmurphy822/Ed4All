@@ -27,7 +27,7 @@ sleep-free ordering; no real LLM / seat / docker / registry):
    no-failure run.
 
 Hermetic: ``ED4ALL_STATE_RUNS_DIR`` is redirected into ``tmp_path`` so stop
-sentinels + checkpoints never touch the real ``state/runs/``. No course slugs /
+sentinels + checkpoints never touch the real ``runtime/state/runs/``. No course slugs /
 paths / campaign names anywhere.
 """
 

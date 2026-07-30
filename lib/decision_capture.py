@@ -376,11 +376,11 @@ class DecisionCapture:
         # phase_start emits before a phase has been selected) don't crash.
         #
         # The legacy mirror root is resolved at construction time. NOTE:
-        # ``ED4ALL_LIBV2_ROOT`` does NOT govern ``training-captures/`` — the
+        # ``ED4ALL_LIBV2_ROOT`` does NOT govern ``runtime/training-captures/`` — the
         # mirror lives at the project root, not under LibV2, so it needs its
         # own override. The repo-root conftest autouse isolation fixture sets
         # ``ED4ALL_TRAINING_CAPTURES_DIR`` to tmp so a pytest run that exercises
-        # any LLM call path no longer grows the real ``training-captures/`` tree
+        # any LLM call path no longer grows the real ``runtime/training-captures/`` tree
         # by thousands of files.
         #
         # Resolution precedence:

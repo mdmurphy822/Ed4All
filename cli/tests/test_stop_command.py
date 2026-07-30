@@ -1,8 +1,8 @@
 """Graceful-stop CLI tests — ``ed4all stop`` + run.py signal/exit plumbing.
 
-Hermetic: every test isolates ``state/runs`` via ``ED4ALL_STATE_RUNS_DIR`` (so
+Hermetic: every test isolates ``runtime/state/runs`` via ``ED4ALL_STATE_RUNS_DIR`` (so
 sentinel writes land in a tmp dir, never the real project state) and
-monkeypatches ``lib.paths.STATE_PATH`` for the synthetic ``state/workflows/``
+monkeypatches ``lib.paths.STATE_PATH`` for the synthetic ``runtime/state/workflows/``
 records. No real workflow is run; the signal-handler and exit-code legs are
 driven directly.
 """
@@ -29,7 +29,7 @@ from lib.generation import stop_control
 # --------------------------------------------------------------------------
 @pytest.fixture
 def isolated_state(tmp_path, monkeypatch):
-    """Point state/runs (sentinels) + state/workflows (records) at a tmp dir."""
+    """Point runtime/state/runs (sentinels) + runtime/state/workflows (records) at a tmp dir."""
     import lib.paths as paths_mod
 
     state_root = tmp_path / "state"

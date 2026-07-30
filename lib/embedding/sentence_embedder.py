@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 
 _DEFAULT_MODEL_NAME = "all-MiniLM-L6-v2"
-_DEFAULT_CACHE_PATH = Path("state/embedding_cache.jsonl")
+_DEFAULT_CACHE_PATH = Path("runtime/state/embedding_cache.jsonl")
 #: Directory the model-folded persistent batch cache (:meth:`encode_batch_cached`)
 #: writes under. A NEW filename family (``embedding_cache.batch.<slug>.jsonl``,
 #: distinct from ``_DEFAULT_CACHE_PATH``) because the batch cache folds the model
@@ -337,7 +337,7 @@ class EmbeddingCache:
     """Content-addressed LRU cache for embedding vectors.
 
     Keyed on ``sha256(text)``. Persists to a JSONL file (default
-    ``state/embedding_cache.jsonl``) — one row per
+    ``runtime/state/embedding_cache.jsonl``) — one row per
     ``{"hash": <hex>, "vector": [<floats>]}``. The cache is loaded
     once per run on construction; misses append to the JSONL as they
     happen so a crash mid-run preserves what was computed before it.

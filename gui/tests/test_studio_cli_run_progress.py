@@ -1,7 +1,7 @@
 """Static-asset contract: create.js degraded Build-progress for CLI-launched runs.
 
 A run launched via ``ed4all run ...`` exists only in orchestrator state — the
-GUI run registry (``state/gui/runs/``) never saw it, so ``GET /api/runs/<id>``
+GUI run registry (``runtime/state/gui/runs/``) never saw it, so ``GET /api/runs/<id>``
 404s as ``unknown_run`` BY DESIGN (run_service reads only the GUI registry),
 while ``GET /api/runs/<id>/progress`` (progress_service) deliberately accepts
 the bare orchestrator workflow id ("CLI-launched runs are observable too").
@@ -14,7 +14,7 @@ The Build-progress page must therefore DEGRADE instead of hard-failing:
   (``mountStageRail`` — the same helper the normal path uses, so the
   terminal-stop logic exists exactly once) with NO explanatory banner;
 * it honestly OMITS the WS log console and the cancel control — the GUI never
-  launched this process, so ``state/gui/logs/<id>.log`` and the driver task do
+  launched this process, so ``runtime/state/gui/logs/<id>.log`` and the driver task do
   not exist (no stubs, no fabricated capabilities).
 
 Client-side JS can't be driven headless here, so per ``gui/CLAUDE.md`` this is

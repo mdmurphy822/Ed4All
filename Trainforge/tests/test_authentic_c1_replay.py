@@ -138,7 +138,7 @@ def _fixture(tmp_path):
     _write_jsonl(source / "http_attempts.jsonl", attempts)
     _write_jsonl(source / "call-intents.jsonl", intents)
     _write_jsonl(
-        source / "audit" / "training-captures" / "decisions_generic.jsonl",
+        source / "audit" / "runtime/training-captures" / "decisions_generic.jsonl",
         captures,
     )
     return source, manifest_path

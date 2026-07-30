@@ -37,7 +37,7 @@ pgrep -f "ed4all run textbook" && echo "SYNTHESIS RUNNING — wait"
 Regenerate the assembled end-user HTML from the current pipeline output
 (the exact command depends on what you changed — conversion output lands
 as `*_conv.html`, final-assembled pages as `*_final.html`). Stage the
-pages you want to review under a working dir, e.g. `state/qa/visual/`.
+pages you want to review under a working dir, e.g. `runtime/state/qa/visual/`.
 
 ### 2. Assemble the shoot manifest
 
@@ -49,7 +49,7 @@ depths so callouts, tables, and the TOC all land in frame.
 scroll fractions per page:
 
 ```bash
-cd state/qa/visual
+cd runtime/state/qa/visual
 python ../../../scripts/shoot_pages.py \
   ch02=ch02_conv.html ch09=ch09_conv.html ch04=ch04_conv.html
 # → shots/<name>_<scheme>_<depth>.png
@@ -64,7 +64,7 @@ defects so the human sweep can focus on aesthetics:
 python scripts/render_audit.py \
   ch02_conv=state/qa/visual/ch02_conv.html \
   ch09_conv=state/qa/visual/ch09_conv.html \
-  --json-out state/qa/visual/render_audit.json
+  --json-out runtime/state/qa/visual/render_audit.json
 ```
 
 Per page it flags (non-zero exit on any failure):

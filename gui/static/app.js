@@ -1729,7 +1729,7 @@ async function renderRetrieval(view) {
 
 /* =====================================================================
  * TAB: Activity (Claude <-> GUI)
- * NOTE: The spec (§2/§8) defines the event store as state/gui/events.jsonl,
+ * NOTE: The spec (§2/§8) defines the event store as runtime/state/gui/events.jsonl,
  *   exposed to Claude via MCP gui_post_event/gui_read_events. The spec's
  *   §6 REST contract does not enumerate a dedicated events route, so this
  *   tab targets GET /api/activity/events and POST /api/activity/post.
@@ -1740,7 +1740,7 @@ async function renderRetrieval(view) {
 async function renderActivity(view) {
   clear(view);
   view.appendChild(el('h1', { text: 'Activity (Claude ↔ GUI)' }));
-  view.appendChild(el('p', { class: 'subtitle', text: 'Bidirectional event log between Claude Code sessions and this GUI (state/gui/events.jsonl).' }));
+  view.appendChild(el('p', { class: 'subtitle', text: 'Bidirectional event log between Claude Code sessions and this GUI (runtime/state/gui/events.jsonl).' }));
 
   const feed = el('div', { class: 'card' }, [el('div', { class: 'loading', text: 'Loading events…' })]);
   const msgIn = el('textarea', { placeholder: 'Post a message to Claude (written as a gui-sourced event)…' });

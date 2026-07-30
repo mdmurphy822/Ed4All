@@ -1,7 +1,7 @@
 """UPLOADS router for the Ed4All control-plane GUI.
 
 Mounted at ``/api/uploads`` (see ``gui/app.py::_ROUTER_MOUNTS``). Saves uploaded
-corpora (PDF / IMSCC) under ``state/gui/uploads/<upload_id>/`` so the saved file
+corpora (PDF / IMSCC) under ``runtime/state/gui/uploads/<upload_id>/`` so the saved file
 paths can feed ``--corpus`` on a subsequent pipeline launch.
 
 Real, no stubs: files are validated by extension and (when available) by

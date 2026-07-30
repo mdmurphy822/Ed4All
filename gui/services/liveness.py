@@ -2,7 +2,7 @@
 
 The Runs listing and the progress endpoint both persist a run's LAST-WRITTEN
 status (``RUNNING`` etc.), but the orchestrator has no reaper that stamps a
-crashed / stopped CLI run terminal. So a ``state/workflows/WF-*.json`` still
+crashed / stopped CLI run terminal. So a ``runtime/state/workflows/WF-*.json`` still
 saying ``RUNNING`` renders "Building" forever even when the ``ed4all run``
 process is gone, draining, or wedged (the owner hit exactly this: an
 ``ed4all stop``-ed run still showing "Building"). This module derives an honest
@@ -17,7 +17,7 @@ process is gone, draining, or wedged (the owner hit exactly this: an
     substring of that process's argv — the workflow id is what lets a bare
     ``--resume WF-<id>`` process self-attribute,
   * the graceful-stop sentinel
-    (``state/runs/<orch_run_id>/control/STOP_REQUESTED``),
+    (``runtime/state/runs/<orch_run_id>/control/STOP_REQUESTED``),
   * the workflow-state file mtime (staleness fallback).
 
 Read-only + stdlib-only + import-light (no fastapi), so it can be imported by
@@ -117,7 +117,7 @@ def scan_pipeline_processes() -> List[Tuple[int, List[str]]]:
 
 
 def _resolve_state_root(state_root: Optional[Path]) -> Path:
-    """Resolve the ``state/`` root (honors the test ``ED4ALL_STATE_RUNS_DIR``)."""
+    """Resolve the ``runtime/state/`` root (honors the test ``ED4ALL_STATE_RUNS_DIR``)."""
     if state_root is not None:
         return Path(state_root)
     from gui import shared_state  # noqa: PLC0415 — lazy, avoids web deps
@@ -128,7 +128,7 @@ def _resolve_state_root(state_root: Optional[Path]) -> Path:
 def stop_sentinel_present(
     orch_run_id: Optional[str], *, state_root: Optional[Path] = None
 ) -> bool:
-    """True when ``state/runs/<orch_run_id>/control/STOP_REQUESTED`` exists.
+    """True when ``runtime/state/runs/<orch_run_id>/control/STOP_REQUESTED`` exists.
 
     The per-run graceful-stop sentinel the pipeline drops on ``ed4all stop``.
     Read-only; a missing / unreadable path is simply ``False``.

@@ -1,7 +1,7 @@
 """Build-cost metering aggregator — roadmap OP2.
 
 Deterministic post-loop aggregator that sums the resource cost of a build
-from the artifacts every run already drops under ``state/runs/<run_id>/``:
+from the artifacts every run already drops under ``runtime/state/runs/<run_id>/``:
 
 * **Per-phase wall-clock** — from ``checkpoints/*.json`` (``started_at`` /
   ``completed_at``). Always emitted (a run that got far enough to aggregate
@@ -125,7 +125,7 @@ class BuildCostAggregator:
     Parameters
     ----------
     run_dir:
-        The ``state/runs/<run_id>/`` directory carrying ``checkpoints/``,
+        The ``runtime/state/runs/<run_id>/`` directory carrying ``checkpoints/``,
         ``vram_trajectory.jsonl``, and ``llm_usage.jsonl``. When unset it is
         resolved as ``get_state_runs_dir() / run_id``.
     course_code:

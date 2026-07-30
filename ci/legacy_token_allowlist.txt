@@ -387,7 +387,7 @@ scripts/tests/test_structure_scorecard.py
 tests/offline/test_retrieval_offline.py
 
 # ── LEGACY CAPTURE-MIRROR IGNORE (WHAT-MUST-STAY) ──────
-# .gitignore keeps the training-captures/dart/ ignore rule so the pre-SemantiK
+# .gitignore keeps the runtime/training-captures/dart/ ignore rule so the pre-SemantiK
 # local capture-mirror dir (never tracked) stays ignored. A .gitignore pattern
 # line cannot carry an inline marker, so the single 'dart' spelling is pinned.
 .gitignore	dart

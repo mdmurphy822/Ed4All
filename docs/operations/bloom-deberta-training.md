@@ -40,7 +40,7 @@ at all.
 
    ```bash
    python -m lib.classifiers.training.train_bloom_deberta \
-     --labels-path state/bloom_labels/labels.jsonl \
+     --labels-path runtime/state/bloom_labels/labels.jsonl \
      --head multiclass \
      --base-model models/base/deberta-v3-base \
      --output-dir models/bloom_classifiers/multiclass \
@@ -206,49 +206,49 @@ not background a second one while the first runs):
 
 ```bash
 python -m lib.classifiers.training.train_bloom_deberta \
-  --labels-path state/bloom_labels/labels.jsonl \
+  --labels-path runtime/state/bloom_labels/labels.jsonl \
   --bloom-level remember \
   --base-model models/base/deberta-v3-base \
   --output-dir models/bloom_classifiers/remember \
   --seed 42
 
 python -m lib.classifiers.training.train_bloom_deberta \
-  --labels-path state/bloom_labels/labels.jsonl \
+  --labels-path runtime/state/bloom_labels/labels.jsonl \
   --bloom-level understand \
   --base-model models/base/deberta-v3-base \
   --output-dir models/bloom_classifiers/understand \
   --seed 42
 
 python -m lib.classifiers.training.train_bloom_deberta \
-  --labels-path state/bloom_labels/labels.jsonl \
+  --labels-path runtime/state/bloom_labels/labels.jsonl \
   --bloom-level apply \
   --base-model models/base/deberta-v3-base \
   --output-dir models/bloom_classifiers/apply \
   --seed 42
 
 python -m lib.classifiers.training.train_bloom_deberta \
-  --labels-path state/bloom_labels/labels.jsonl \
+  --labels-path runtime/state/bloom_labels/labels.jsonl \
   --bloom-level analyze \
   --base-model models/base/deberta-v3-base \
   --output-dir models/bloom_classifiers/analyze \
   --seed 42
 
 python -m lib.classifiers.training.train_bloom_deberta \
-  --labels-path state/bloom_labels/labels.jsonl \
+  --labels-path runtime/state/bloom_labels/labels.jsonl \
   --bloom-level evaluate \
   --base-model models/base/deberta-v3-base \
   --output-dir models/bloom_classifiers/evaluate \
   --seed 42
 
 python -m lib.classifiers.training.train_bloom_deberta \
-  --labels-path state/bloom_labels/labels.jsonl \
+  --labels-path runtime/state/bloom_labels/labels.jsonl \
   --bloom-level create \
   --base-model models/base/deberta-v3-base \
   --output-dir models/bloom_classifiers/create \
   --seed 42
 ```
 
-`state/bloom_labels/labels.jsonl` is `ed4all harvest-bloom-labels`'s default
+`runtime/state/bloom_labels/labels.jsonl` is `ed4all harvest-bloom-labels`'s default
 output store — if it does not exist yet (or is stale against the courses you
 want represented), harvest first:
 

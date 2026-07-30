@@ -57,7 +57,7 @@ _CORPUS_INPUT_SUFFIXES = frozenset({
 # Derived paths
 SEMANTIK_BATCH_OUTPUT_DIR = PROJECT_ROOT / "SemantiK" / "batch_output"
 COURSEFORGE_INPUTS = PROJECT_ROOT / "Courseforge" / "inputs" / "textbooks"
-TRAINING_CAPTURES = PROJECT_ROOT / "training-captures"
+TRAINING_CAPTURES = PROJECT_ROOT / "runtime/training-captures"
 
 
 # Snapshot of the project root at import time so ``courseforge_exports_dir`` can
@@ -8525,7 +8525,7 @@ def register_pipeline_tools(mcp):
         try:
             # Read workflow state directly (get_workflow_status is a closure
             # inside register_orchestrator_tools, not importable at module level)
-            workflow_path = PROJECT_ROOT / "state" / "workflows" / f"{workflow_id}.json"
+            workflow_path = PROJECT_ROOT / "runtime" / "state" / "workflows" / f"{workflow_id}.json"
             if not workflow_path.exists():
                 return json.dumps({"error": f"Workflow not found: {workflow_id}"})
             with open(workflow_path) as f:
@@ -21846,7 +21846,7 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
 #   * graceful stop: the run-scoped stop sentinel is polled between
 #     chapters (``check_stop`` — the standard phase-helper contract).
 #   * OP2 metering: the subprocess env carries SEMANTIK_LLM_USAGE_PATH =
-#     ``state/runs/<run_id>/llm_usage.jsonl`` + SEMANTIK_LLM_USAGE_PHASE =
+#     ``runtime/state/runs/<run_id>/llm_usage.jsonl`` + SEMANTIK_LLM_USAGE_PHASE =
 #     ``heading_judge`` so each judge POST rows into the run's usage tap
 #     (``semantik_structure/glmocr/heading_judge.py::_emit_usage_row``).
 # =============================================================================
@@ -27175,7 +27175,7 @@ def _build_tool_registry() -> dict:
              into ``corpus/`` (preserves the MCP-tool variant's behavior so
              existing provenance-flag tests keep passing).
           3. Heuristic fallback — scan ``Courseforge/exports/*/trainforge/``
-             and ``state/runs/*/trainforge/`` for the most recently modified
+             and ``runtime/state/runs/*/trainforge/`` for the most recently modified
              ``chunks.jsonl``. Absence is not an error — features flags fall
              back to ``false`` with a warning.
 
@@ -27419,7 +27419,7 @@ def _build_tool_registry() -> dict:
                         or (tf / "corpus" / "chunks.jsonl").exists()
                     ):
                         candidates.append(tf)
-            runs_root = PROJECT_ROOT / "state" / "runs"
+            runs_root = PROJECT_ROOT / "runtime" / "state" / "runs"
             if runs_root.exists():
                 for run_dir in runs_root.iterdir():
                     if not run_dir.is_dir():

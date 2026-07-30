@@ -848,7 +848,7 @@ Five independent surfaces carry provenance. Each surface answers "where did this
 
 ### 5.1 Decision ledger (JSONL)
 
-**Surface:** append-only JSONL files under `training-captures/<tool>/<course>/phase_<phase>/decisions_*.jsonl`.
+**Surface:** append-only JSONL files under `runtime/training-captures/<tool>/<course>/phase_<phase>/decisions_*.jsonl`.
 **Producer:** `lib/decision_capture.py::DecisionCapture` (line 139; `log_decision` at line 441).
 **Contract:** `schemas/events/decision_event.schema.json` (+ `trainforge_decision.schema.json`).
 **Key fields for provenance:** `event_id`, `seq`, `run_id`, `task_id`, `inputs_ref[]` (InputRef), `outputs[]` (OutputArtifact), `prompt_ref`.

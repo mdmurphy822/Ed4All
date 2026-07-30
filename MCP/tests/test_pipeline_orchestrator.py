@@ -42,7 +42,7 @@ def _make_config() -> OrchestratorConfig:
 class TestConstruction:
     """Wave 74: opted into ``state_runs_isolated`` so the
     PipelineOrchestrator's downstream TaskExecutor doesn't write
-    ``state/runs/run_<timestamp>/`` into the project state.
+    ``runtime/state/runs/run_<timestamp>/`` into the project state.
     """
 
     def test_default_mode_is_local(self, tmp_path: Path):
@@ -191,7 +191,7 @@ class TestBuildPhaseInput:
 @pytest.mark.usefixtures("state_runs_isolated")
 class TestRun:
     """Wave 74: opt into ``state_runs_isolated`` so end-to-end ``run``
-    paths don't leak ``state/runs/run_<timestamp>/`` into project state.
+    paths don't leak ``runtime/state/runs/run_<timestamp>/`` into project state.
     """
 
     @pytest.mark.asyncio

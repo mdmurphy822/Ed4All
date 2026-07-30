@@ -86,60 +86,40 @@ Trainforge/output/*
 !Trainforge/output/.gitkeep
 
 # =============================================================================
-# Ed4All - Runtime & State
+# Ed4All - runtime/ (the unified gitignored data root, 2026-07-29 reorg)
 # =============================================================================
-# Ignore both root-level runtime files and newly introduced runtime
-# directories. Re-open one directory level solely so the existing per-root
-# .gitkeep exceptions below remain effective; nested contents stay ignored.
-state/*
-!state/*/
-state/locks/*
-!state/locks/.gitkeep
-state/logs/*
-!state/logs/.gitkeep
-state/progress/*
-!state/progress/.gitkeep
-state/status/*
-!state/status/.gitkeep
-state/workflows/*
-!state/workflows/.gitkeep
-state/runs/*
-!state/runs/.gitkeep
-state/gui/*
-!state/gui/.gitkeep
-# Defensive catch-all: ANY subdir under state/ holds runtime output — ignore its
-# contents so a NEW runtime dir (e.g. state/benchmarks/, state/qa/) can never leak
-# to git. Keep the .gitkeep placeholders. (Prevents "folders that just happen".)
-state/*/*
-!state/*/.gitkeep
-# Operator working notes dropped at the state/ root (untracked scratch)
-state/nvidia_*
+# Everything mutable lives under runtime/: state/, training-captures/, seats/,
+# demo/, extracted/, testruns/, scratchpad/, shots/, and any new scratch dir
+# (a new scratch dir gets runtime/<name>/, never a new repo root — see
+# docs/architecture/repo-organization.md). Only .gitkeep sentinels are tracked;
+# everything else under runtime/ stays local.
+runtime/*
+!runtime/state/
+runtime/state/*
+!runtime/state/*/
+# Defensive catch-all: ANY subdir under runtime/state/ holds runtime output —
+# ignore its contents so a NEW runtime dir (e.g. runtime/state/benchmarks/)
+# can never leak to git. Keep the .gitkeep placeholders. (Prevents "folders
+# that just happen".)
+runtime/state/*/*
+!runtime/state/*/.gitkeep
+# Operator working notes dropped at the state root (untracked scratch)
+runtime/state/nvidia_*
+!runtime/training-captures/
+runtime/training-captures/*
+!runtime/training-captures/*/
+runtime/training-captures/*/*
+!runtime/training-captures/*/.gitkeep
+# The legacy capture mirror dir holds pre-rename local capture data (never
+# tracked); the ignore rule must outlive the code rename.
+runtime/training-captures/dart/
 
-runtime/
-
-# Extraction scratch root (intake/extraction working dir — never committed)
-extracted/
-
-# Training captures (generated data)
-# The legacy capture mirror dir holds pre-rename local capture data
-# (never tracked); the ignore rule must outlive the code rename.
-training-captures/dart/
-training-captures/semantik/*
-!training-captures/semantik/.gitkeep
-training-captures/courseforge/*
-!training-captures/courseforge/.gitkeep
-training-captures/trainforge/*
-!training-captures/trainforge/.gitkeep
-training-captures/textbook-pipeline/*
-!training-captures/textbook-pipeline/.gitkeep
-training-captures/pipeline/*
-!training-captures/pipeline/.gitkeep
-training-captures/orchestrator/*
-!training-captures/orchestrator/.gitkeep
-training-captures/libv2/*
-!training-captures/libv2/.gitkeep
-training-captures/decisions/*
-!training-captures/decisions/.gitkeep
+# Compat symlinks at the old root locations (kept until the paused run
+# WF-20260728 finishes and operator env files stop referencing seats/*.sh;
+# then delete the symlinks and these three rules).
+/state
+/training-captures
+/seats
 
 # MCP runtime
 MCP/runtime/
@@ -167,7 +147,7 @@ Thumbs.db
 
 # Logs
 *.log
-state/GENERATION_PROGRESS.md
+runtime/state/GENERATION_PROGRESS.md
 
 # Examples — sample fixtures + generated output, kept local-only
 examples/
@@ -175,9 +155,6 @@ examples/
 # Top-level inputs/ — corpus PDFs + local scratch; directory kept, contents ignored
 inputs/*
 !inputs/.gitkeep
-
-# Ad-hoc pipeline testruns (gitignored)
-testruns/
 
 # Codex CLI sentinel — empty marker file the agent leaves; not project state
 .codex
@@ -249,17 +226,6 @@ schemas/training/schema_translation_catalog.*.yaml
 # Plans directory — local-only working notes, never committed
 # =============================================================================
 plans/
-
-# =============================================================================
-# Seat launch scripts — machine-specific deployment infra, never tracked
-# =============================================================================
-# seats/*.sh carry absolute host paths (HF cache mounts), concrete model ids,
-# and port/GPU-utilization pins for ONE machine's vLLM stack. They are the
-# ED4ALL_SEAT_LAUNCH_SPECS targets. Only the sanitized template + the README
-# ship; every real seat script stays local-only.
-seats/*
-!seats/README.md
-!seats/launch-seat.example.sh
 
 # =============================================================================
 # Windows-from-WSL leftovers
@@ -375,12 +341,10 @@ SemantiK/scripts/_figure_fetch_lib.py
 # Calibration harness generated measurement artifact (scripts/calibration_harness.py)
 /calibration_report.json
 
-# QA harness artifacts (gold-compare reports, scorecards, rendered chapters, page screenshots) — carry licensed course content
-state/qa/
-# Repo-root working scratch (rendered chapter iterations)
-scratchpad/
-scripts/shots/
-state/replay_data/
+# QA harness artifacts (gold-compare reports, scorecards, rendered chapters,
+# page screenshots) carry licensed course content; they live under runtime/
+# (runtime/state/qa/, runtime/scratchpad/, runtime/shots/,
+# runtime/state/replay_data/) and are covered by the runtime/* rule above.
 
 # --- pre-push sanitization (2026-07-20) ---
 # Per-run operator env stacks: carry real API keys (e.g. SPARK_API_KEY) + endpoint URLs.
@@ -390,14 +354,7 @@ run-env.*.sh
 # Editor/operator backups
 *.bak
 # Regenerable derived caches (content-addressed embeddings; ~10MB, no corpus text)
-state/embedding_cache*.jsonl
-
-# Operator-local demo LMS deployment (OpenOLAT stack: compose, config, provisioning)
-demo/
-
-# Catch-all hardening (2026-07-21): ANY capture tool dir not enumerated above
-# stays out of git (tracked .gitkeep files are unaffected by ignore rules).
-training-captures/*
+runtime/state/embedding_cache*.jsonl
 
 # No env-detail shell profiles tracked at project root (operator stacks live
 # untracked; the sanitized template is docs/operations/run-env.example.sh)
@@ -429,9 +386,3 @@ ed4all-backup*.tar.gz
 # the operator's gitignored inputs/<profile>/launch scripts and concrete seat
 # pins freely (tracked docs stay free of local-path references).
 docs/operations/dgx-spark.md
-
-# var/ — the single gitignored home for ad-hoc operator scratch (see
-# docs/architecture/repo-organization.md § 2). New scratch dirs go here,
-# never as new top-level roots; extracted/, testruns/, scratchpad/ retire
-# into var/ in Phase 2 (their rules above stay until then).
-var/

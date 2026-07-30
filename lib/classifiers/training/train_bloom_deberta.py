@@ -215,7 +215,7 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     )
     ap.add_argument(
         "--labels-path", type=Path,
-        default=Path("state/bloom_labels/labels.jsonl"),
+        default=Path("runtime/state/bloom_labels/labels.jsonl"),
         help="Harvested Bloom-label store (ed4all harvest-bloom-labels output).",
     )
     ap.add_argument(

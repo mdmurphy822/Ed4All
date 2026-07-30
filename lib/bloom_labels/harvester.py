@@ -24,8 +24,8 @@ Contract:
   (``HarvestResult.missing_artifacts``), never raised. A structurally
   malformed row (bad JSON, non-dict) is skipped and counted
   (``malformed_skipped``).
-* **Store location** — ``state/bloom_labels/labels.jsonl`` (a subdirectory
-  under ``state/`` — covered by the ``.gitignore`` ``state/*/*`` catch-all, so
+* **Store location** — ``runtime/state/bloom_labels/labels.jsonl`` (a subdirectory
+  under ``runtime/state/`` — covered by the ``.gitignore`` ``runtime/state/*/*`` catch-all, so
   the harvested corpus is never committed).
 """
 from __future__ import annotations
@@ -69,7 +69,7 @@ _BLOOM_LEVELS: Tuple[str, ...] = (
 )
 _BLOOM_LEVEL_SET = frozenset(_BLOOM_LEVELS)
 
-#: Default label store — a SUBDIR under ``state/`` (root-level ``state/`` files
+#: Default label store — a SUBDIR under ``runtime/state/`` (root-level ``runtime/state/`` files
 #: are NOT covered by the ``.gitignore`` catch-all; a subdir is).
 DEFAULT_STORE_PATH: Path = STATE_PATH / "bloom_labels" / "labels.jsonl"
 
@@ -470,7 +470,7 @@ def harvest_bloom_labels(
             file). Walked recursively for objectives / blocks / assessments.
         course_path: Optional additional LibV2 course dir (archive-form
             objectives, assessments).
-        store_path: Override the default ``state/bloom_labels/labels.jsonl``.
+        store_path: Override the default ``runtime/state/bloom_labels/labels.jsonl``.
         run_id: Provenance run id stamped on each row; defaults to
             ``ED4ALL_RUN_ID`` or ``"unknown"``.
         model_provenance: Force the ``model_provenance`` field (else resolved

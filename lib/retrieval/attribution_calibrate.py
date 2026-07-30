@@ -620,7 +620,7 @@ def _default_retrieve(
 def _default_capture_dir(repo_root: Optional[Path], course_slug: str) -> Path:
     """Resolve the live citation-prune capture dir for a course.
 
-    ``training-captures/libv2/<slug>/phase_libv2-answer/`` (plan §4). Honors
+    ``runtime/training-captures/libv2/<slug>/phase_libv2-answer/`` (plan §4). Honors
     ``ED4ALL_TRAINING_CAPTURES_DIR`` via ``lib.paths`` when importable.
     """
     try:
@@ -629,7 +629,7 @@ def _default_capture_dir(repo_root: Optional[Path], course_slug: str) -> Path:
         base = get_training_captures_dir()
     except Exception:  # noqa: BLE001 — fall back to repo-relative
         root = Path(repo_root) if repo_root else Path(__file__).resolve().parents[2]
-        base = root / "training-captures"
+        base = root / "runtime/training-captures"
     return Path(base) / "libv2" / course_slug / "phase_libv2-answer"
 
 

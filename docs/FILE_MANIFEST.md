@@ -112,7 +112,7 @@ and tool registry.
 | ci/ | `integrity_check.py` + `validator_test_allowlist.txt` — the CI gate (referenced by `.github/` workflows; **USED**, do not flag) |
 | scripts/ core | `build_demo_course.py`, `calibration_harness.py`, `calibrate_phase4_thresholds.py`, `mailbox_servicer.py`, `gpu_guard.sh`, `render_audit.py`, `semantik_rerender.py`, `structure_scorecard.py`, `gold_compare.py`, `retrieval_smoke.py`, `repair_partial_resume_state.py`, `run_post_courseforge_tail.py`, OCR/raster probes, `codegen/sync_provenance_enum.py`, `scripts/integration/*`, `scripts/tests/*` |
 | Provenance-only (tracked, dead-by-design) | `scripts/archive/` (14 `wave*`/`test_wave*` one-shot LibV2 migration scripts + `README.md`) — kept for audit per documented rationale; **not** trash |
-| **DATA / RUNTIME (gitignored)** | `scripts/shots/` (rendered PNGs from `shoot_pages.py`), `**/__pycache__/` |
+| **DATA / RUNTIME (gitignored)** | `runtime/shots/` (rendered PNGs from `shoot_pages.py`), `**/__pycache__/` |
 
 ## docs + plans + examples
 
@@ -150,11 +150,11 @@ and tool registry.
 
 | Kind | Paths |
 |------|-------|
-| Tracked core | Exactly 14 `.gitkeep` placeholders preserving the dir skeleton (`state/{gui,locks,logs,progress,runs,status,workflows}`, `training-captures/{courseforge,semantik,decisions,libv2,orchestrator,textbook-pipeline,trainforge}`) |
-| **DATA / RUNTIME (gitignored)** | `runtime/` (pure scratch); `state/runs/` + `state/workflows/*.json` (live run state, actively written); `state/GENERATION_PROGRESS.md`; `state/gui/`; `state/{locks,status,progress}`; `state/benchmarks/`; `training-captures/**/*.jsonl` (15,802 decision-capture files — the mandated capture sink) |
+| Tracked core | Exactly 14 `.gitkeep` placeholders preserving the dir skeleton (`runtime/state/{gui,locks,logs,progress,runs,status,workflows}`, `runtime/training-captures/{courseforge,semantik,decisions,libv2,orchestrator,textbook-pipeline,trainforge}`) |
+| **DATA / RUNTIME (gitignored)** | `runtime/` (pure scratch); `runtime/state/runs/` + `runtime/state/workflows/*.json` (live run state, actively written); `runtime/state/GENERATION_PROGRESS.md`; `runtime/state/gui/`; `runtime/state/{locks,status,progress}`; `runtime/state/benchmarks/`; `runtime/training-captures/**/*.jsonl` (15,802 decision-capture files — the mandated capture sink) |
 
-> The `.gitignore` here is exemplary: `runtime/` wholesale; `state/<dir>/*`
-> per-dir rules **plus** a defensive `state/*/*` catch-all with
+> The `.gitignore` here is exemplary: `runtime/` wholesale; `runtime/state/<dir>/*`
+> per-dir rules **plus** a defensive `runtime/state/*/*` catch-all with
 > `!state/*/.gitkeep`, so a new state subdir cannot leak.
 
 ## root — top-level docs, packaging, container/build

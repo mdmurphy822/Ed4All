@@ -1320,7 +1320,7 @@ async function renderProgress(shell, runId) {
     ]);
   } catch (e) {
     // Degraded re-attach for CLI-launched runs. run_service only reads the
-    // GUI run registry (state/gui/runs/) BY DESIGN, so a bare orchestrator
+    // GUI run registry (runtime/state/gui/runs/) BY DESIGN, so a bare orchestrator
     // workflow id — `ed4all run ...` from a terminal — 404s here as
     // unknown_run even while the pipeline is live. progress_service
     // deliberately accepts that same id ("CLI-launched runs are observable
@@ -1553,7 +1553,7 @@ async function renderProgress(shell, runId) {
  *
  * WHY this exists: `ed4all run ...` writes orchestrator state that
  * progress_service reads, but never a GUI run record, a GUI log file
- * (state/gui/logs/<id>.log), or an in-process driver task. So on this page:
+ * (runtime/state/gui/logs/<id>.log), or an in-process driver task. So on this page:
  *   - the runProgressConsole (WS log console) is OMITTED — its log source
  *     does not exist, and faking a stream would violate the no-stubs rule;
  *   - the cancel button is OMITTED — there is no driver task to cancel, so

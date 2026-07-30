@@ -31,7 +31,7 @@ def _write_workflow(
     run_id: str | None = None,
     updated_at: str | None = None,
 ) -> Path:
-    """Create a synthetic ``state/workflows/{workflow_id}.json`` file."""
+    """Create a synthetic ``runtime/state/workflows/{workflow_id}.json`` file."""
     path = workflows_dir / f"{workflow_id}.json"
     payload = {
         "id": workflow_id,
@@ -44,7 +44,7 @@ def _write_workflow(
 
 
 def _write_run_dir(runs_dir: Path, run_id: str, *, files: int = 1) -> Path:
-    """Create a synthetic ``state/runs/{run_id}/`` directory with junk."""
+    """Create a synthetic ``runtime/state/runs/{run_id}/`` directory with junk."""
     run_path = runs_dir / run_id
     run_path.mkdir(parents=True, exist_ok=True)
     for i in range(files):

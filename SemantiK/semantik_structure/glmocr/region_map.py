@@ -5,7 +5,7 @@ Deterministic, data-driven, NO LLM. Maps a PP-DocLayoutV3 ``native_label``
 ``region_kind`` vocabulary the downstream adapter renders
 (``heading`` / ``paragraph`` / ``figure`` / ``table`` / ``math`` / ``list`` /
 ``metadata_drop``), plus the pedagogical / apparatus / furniture demotions
-validated in ``scratchpad/glmocr/build_html.py``.
+validated in ``runtime/scratchpad/glmocr/build_html.py``.
 
 Publisher apparatus vocabulary is DATA (wide-net owner doctrine): the marker
 lexicon is loaded from ``schemas/taxonomies/openstax_lexicon.json`` +

@@ -17,8 +17,7 @@ htmlcov/
 plans/
 
 # Local data dirs — these are /data volumes at runtime, not image content.
-state/
-training-captures/
+runtime/
 Trainforge/output/
 Courseforge/exports/
 Courseforge/inputs/exam-objectives/*.json

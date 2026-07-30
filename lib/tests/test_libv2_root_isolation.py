@@ -3,7 +3,7 @@
 Covers the env-overridable resolvers added to ``lib/paths.py`` and the
 ``LibV2Storage`` / ``DecisionCapture`` construction-time root derivation
 that stops a pytest run from littering the real in-tree ``LibV2/`` tree
-with empty skeleton dirs (or growing ``training-captures/`` by thousands
+with empty skeleton dirs (or growing ``runtime/training-captures/`` by thousands
 of files).
 
 Root cause (pre-fix):
@@ -14,11 +14,11 @@ Root cause (pre-fix):
     auto_create=True)`` → ``ensure_directories()`` which mkdir'd
     ``LibV2/courses/<slug>/...`` + ``LibV2/catalog/<COURSE>/...`` in the
     REAL tree for any test exercising an LLM call path, plus mirrored
-    decision JSONL into the real ``training-captures/`` tree.
+    decision JSONL into the real ``runtime/training-captures/`` tree.
 
 Precedence contract: explicit kwarg > ``ED4ALL_LIBV2_ROOT`` >
 ``lib.paths.LIBV2_PATH`` default. ``ED4ALL_LIBV2_ROOT`` does NOT govern
-``training-captures/`` — that has its own ``ED4ALL_TRAINING_CAPTURES_DIR``
+``runtime/training-captures/`` — that has its own ``ED4ALL_TRAINING_CAPTURES_DIR``
 override (default ``lib.paths.TRAINING_DIR``).
 
 Test-suite isolation design: the repo-root conftest's session-scoped
@@ -43,7 +43,7 @@ from lib.libv2_storage import LibV2Storage
 
 # The REAL in-tree roots (literals, immune to the session-scope patch).
 REAL_LIBV2 = paths.PROJECT_ROOT / "LibV2"
-REAL_CAPTURES = paths.PROJECT_ROOT / "training-captures"
+REAL_CAPTURES = paths.PROJECT_ROOT / "runtime/training-captures"
 
 
 def _real_courses_snapshot() -> set:

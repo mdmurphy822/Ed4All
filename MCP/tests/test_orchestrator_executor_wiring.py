@@ -5,7 +5,7 @@
 Constructing it with none of those is silently wrong, not loud:
 
 * ``TaskExecutor.run_id`` falls back to a timestamp, so ``run_path`` becomes
-  ``state/runs/run_{ts}/`` instead of the workflow's run directory —
+  ``runtime/state/runs/run_{ts}/`` instead of the workflow's run directory —
   ``CheckpointManager`` writes to an orphan dir nobody reads and
   ``LockfileManager`` operates outside the workflow's namespace.
 * ``self.capture is None`` makes every ``phase_start`` /
@@ -62,13 +62,13 @@ def synthetic_workflow_state(tmp_path, monkeypatch):
     )
     # TaskExecutor resolves run_path via ``lib.paths.get_state_runs_dir``,
     # which honors ``ED4ALL_STATE_RUNS_DIR``. Set it so this test's executor
-    # checkpoints land in tmp_path instead of the project state/runs/.
+    # checkpoints land in tmp_path instead of the project runtime/state/runs/.
     monkeypatch.setenv("ED4ALL_STATE_RUNS_DIR", str(tmp_path / "runs"))
     # ``_get_executor`` also exports ``ED4ALL_RUN_ID`` into the process env
     # (so downstream pipeline tools can build a MailboxBrokeredBackend bound
     # to this run's mailbox). monkeypatch so it is restored on teardown —
     # otherwise an unrelated later test calling ``build_backend()`` reads the
-    # stale id and recreates ``state/runs/<old-run-id>/``.
+    # stale id and recreates ``runtime/state/runs/<old-run-id>/``.
     monkeypatch.setenv("ED4ALL_RUN_ID", run_id)
     return run_id, state
 
@@ -133,7 +133,7 @@ def test_get_executor_without_state_still_works_for_legacy_callers(state_runs_is
     """Back-compat: _get_executor() with no args (legacy signature) still works.
 
     Uses ``state_runs_isolated`` so the timestamp-fallback ``run_path``
-    lands in tmp_path instead of polluting project ``state/runs/``.
+    lands in tmp_path instead of polluting project ``runtime/state/runs/``.
     """
     orch = PipelineOrchestrator(mode="local")
     executor = orch._get_executor()  # no workflow_state — legacy call shape

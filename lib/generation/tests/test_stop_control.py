@@ -2,7 +2,7 @@
 
 ``lib/generation/stop_control.py`` is the stdlib-only "checkpoint on command"
 sentinel layer: it writes / probes / clears the run-scoped and global stop
-sentinels under the resolved ``state/runs`` parent and raises the typed
+sentinels under the resolved ``runtime/state/runs`` parent and raises the typed
 ``GracefulStopRequested`` at unit boundaries. These tests pin path resolution
 (explicit arg beats env; ``ED4ALL_STATE_RUNS_DIR`` honored), request/clear
 roundtrip, run-vs-global scoping isolation, the typed raise payload, the
@@ -34,7 +34,7 @@ from lib.generation.stop_control import (  # noqa: E402
 
 @pytest.fixture()
 def runs_dir(tmp_path, monkeypatch):
-    """Isolate the state/runs parent into a tmp dir for the whole test."""
+    """Isolate the runtime/state/runs parent into a tmp dir for the whole test."""
     d = tmp_path / "runs"
     d.mkdir()
     monkeypatch.setenv("ED4ALL_STATE_RUNS_DIR", str(d))

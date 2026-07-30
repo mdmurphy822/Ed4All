@@ -27,7 +27,7 @@ neutralized so every synthesized pair is accepted (these tests exercise the
 STOP mechanism, NOT grounding calibration — that is covered elsewhere), and
 the stop sentinel written into an isolated ``ED4ALL_STATE_RUNS_DIR`` via the
 ``state_runs_isolated`` fixture so a test never touches the real
-``state/runs/`` of a live run (risk R1 / R2 in the plan).
+``runtime/state/runs/`` of a live run (risk R1 / R2 in the plan).
 """
 
 from __future__ import annotations
@@ -181,7 +181,7 @@ def _strip_volatile(pairs: List[dict]) -> str:
 
 @pytest.fixture(autouse=True)
 def _clear_global_sentinel(state_runs_isolated):
-    """Every test in this module runs under an isolated ``state/runs`` and
+    """Every test in this module runs under an isolated ``runtime/state/runs`` and
     clears the operator-owned global ``STOP_ALL`` on teardown so a mid-test
     arm never leaks into a sibling test.
     """

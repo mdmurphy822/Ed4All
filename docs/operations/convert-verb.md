@@ -34,7 +34,7 @@ ed4all convert INPUT --output DIR [--doc-title TITLE] \
 * **No course.** There is no `--course-name`, no learning objectives, no
   modules, no IMSCC packaging.
 * **No run directory / run id.** It does not create workflow run state under
-  `state/runs/`.
+  `runtime/state/runs/`.
 * **No LibV2 writes and no vector index.** The output lands only in the
   directory you pass to `--output`; nothing is archived or indexed. To build a
   course from converted HTML, feed the output directory to the full pipeline:

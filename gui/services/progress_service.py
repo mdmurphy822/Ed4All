@@ -10,15 +10,15 @@ mutates run state:
   ``textbook_to_course``). Each phase gets a coarse presentation ``group``
   (conversion / planning / generation / validation / packaging / archive /
   training / finalization) derived from name rules, never from phase indices.
-- **Run state** — the GUI run record (``state/gui/runs/<run_id>.json``) resolved
-  to its orchestrator workflow state (``state/workflows/<workflow_id>.json``):
+- **Run state** — the GUI run record (``runtime/state/gui/runs/<run_id>.json``) resolved
+  to its orchestrator workflow state (``runtime/state/workflows/<workflow_id>.json``):
   ``phase_outputs`` ``_completed``/``_skipped`` markers, ``failed_phase``,
   ``status``. A bare orchestrator workflow id is accepted as a fallback so a
   CLI-launched run can be observed too.
-- **Phase wall-clock** — ``state/runs/<params.run_id>/checkpoints/
+- **Phase wall-clock** — ``runtime/state/runs/<params.run_id>/checkpoints/
   <phase>_checkpoint.json`` ``started_at``/``completed_at`` pairs (the same
   files ``BuildCostAggregator`` reads).
-- **LLM usage** — the OP2 usage tap's ``state/runs/<params.run_id>/
+- **LLM usage** — the OP2 usage tap's ``runtime/state/runs/<params.run_id>/
   llm_usage.jsonl``. Reads are BOUNDED: an incremental accumulator remembers the
   byte offset per file and parses only appended rows (first attach parses at
   most ``_USAGE_FIRST_ATTACH_MAX_BYTES``), keeping the endpoint cheap at a
@@ -36,7 +36,7 @@ mutates run state:
   join: usage ``ts`` is tz-aware UTC, checkpoint times are naive host-local;
   both are joined in EPOCH space (``_ts_epoch`` / ``_wall_epoch``), the same
   per-writer-frame discipline as ``_parse_dt``/``_now_for``.
-- **VRAM** — ``state/runs/<params.run_id>/vram_trajectory.jsonl`` (the
+- **VRAM** — ``runtime/state/runs/<params.run_id>/vram_trajectory.jsonl`` (the
   ``ED4ALL_VRAM_DOCTOR`` output; row shape per
   ``lib/llm/vram_doctor.py::append_trajectory_row``). ``stats.detail.vram``
   surfaces the latest sample (``free_mib``/``total_mib``/phase boundary) + the
@@ -132,7 +132,7 @@ _SAFE_PHASE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def _state_root() -> Path:
-    """Resolve the ``state/`` root exactly like ``gui.shared_state`` does."""
+    """Resolve the ``runtime/state/`` root exactly like ``gui.shared_state`` does."""
     env_override = os.environ.get("ED4ALL_STATE_RUNS_DIR")
     if env_override:
         return Path(env_override).parent
@@ -142,7 +142,7 @@ def _state_root() -> Path:
 
 
 def _runs_dir() -> Path:
-    """Resolve the ``state/runs/`` dir (checkpoints + usage tap live here)."""
+    """Resolve the ``runtime/state/runs/`` dir (checkpoints + usage tap live here)."""
     from lib.paths import get_state_runs_dir  # noqa: PLC0415
 
     return Path(get_state_runs_dir())
@@ -475,7 +475,7 @@ def _observed_env_verdicts(
 
 
 def _read_workflow_state(workflow_id: str) -> Optional[Dict[str, Any]]:
-    """Read ``state/workflows/<workflow_id>.json`` (bounded, never raises)."""
+    """Read ``runtime/state/workflows/<workflow_id>.json`` (bounded, never raises)."""
     if not workflow_id:
         return None
     path = _state_root() / "workflows" / f"{workflow_id}.json"
@@ -1183,7 +1183,7 @@ def _usage_detail(
 #                               — a growing DIRECTORY, not one appended file:
 #                               one ``{stem}.heading_judgments.json`` (plus
 #                               escalations + judged HTML) lands per chapter
-#                               under ``state/runs/<run_id>/heading_judge/``,
+#                               under ``runtime/state/runs/<run_id>/heading_judge/``,
 #                               so this entry uses ``mode: "dir"`` + ``glob``
 #                               (units = matching files, tail = newest files).
 #
@@ -1191,7 +1191,7 @@ def _usage_detail(
 # run's params / an earlier phase's outputs); ``libv2_course`` = the LibV2
 # course dir derived from the chunking / concept-graph output paths;
 # ``trainforge_corpus`` = the Trainforge corpus dir derived from the
-# trainforge_assessment output paths; ``run_dir`` = ``state/runs/
+# trainforge_assessment output paths; ``run_dir`` = ``runtime/state/runs/
 # <params.run_id>/``. All come from REAL run state — never a pattern composed
 # from a course name.
 #
@@ -1410,7 +1410,7 @@ def _resolve_unit_anchor(
                 return anchor
         return None
     if kind == "run_dir":
-        # state/runs/<params.run_id>/ — the orchestrator run dir
+        # runtime/state/runs/<params.run_id>/ — the orchestrator run dir
         # (heading_judge writes its per-chapter outputs here).
         run_id = params.get("run_id")
         if isinstance(run_id, str) and run_id.strip():
@@ -1943,8 +1943,8 @@ def _seat_activity(
 def run_progress(run_id: str) -> Optional[Dict[str, Any]]:
     """Build the ``/api/runs/{run_id}/progress`` payload; None → 404.
 
-    ``run_id`` is a GUI run id (``state/gui/runs/``); a bare orchestrator
-    workflow id (``state/workflows/<id>.json``) is accepted as a fallback so
+    ``run_id`` is a GUI run id (``runtime/state/gui/runs/``); a bare orchestrator
+    workflow id (``runtime/state/workflows/<id>.json``) is accepted as a fallback so
     CLI-launched runs are observable too.
     """
     record = shared_state.read_run(run_id)
@@ -2313,7 +2313,7 @@ def run_progress(run_id: str) -> Optional[Dict[str, Any]]:
     # provisional slug and the workflow runner REBINDS ``params.course_name``
     # mid-run (workflow_runner._maybe_apply_auto_name persists the rebound
     # name — and ``display_title``, the human H1 title — back into
-    # ``state/workflows/<id>.json``), while the GUI run record keeps its
+    # ``runtime/state/workflows/<id>.json``), while the GUI run record keeps its
     # creation-time name forever. Read-only + never-raise: unknown → None
     # (the client omits the element rather than inventing a name).
     course_name: Optional[str] = None

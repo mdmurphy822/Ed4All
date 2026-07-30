@@ -18,7 +18,7 @@ Covers plan §P1 for the executor / schemas / checkpoint owner:
   ``is_paused`` for the ``paused`` status.
 
 Hermetic: ``ED4ALL_STATE_RUNS_DIR`` is redirected into ``tmp_path`` so the stop
-sentinels + run checkpoints never touch the real ``state/runs/`` (no course
+sentinels + run checkpoints never touch the real ``runtime/state/runs/`` (no course
 slugs / paths anywhere). No new env flag is introduced.
 """
 
@@ -45,7 +45,7 @@ RUN_ID = "WF-STOP-TEST"
 
 @pytest.fixture()
 def isolated_state_runs(tmp_path, monkeypatch):
-    """Redirect the state/runs parent into tmp; clear any inherited run id/home."""
+    """Redirect the runtime/state/runs parent into tmp; clear any inherited run id/home."""
     runs = tmp_path / "state_runs"
     runs.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("ED4ALL_STATE_RUNS_DIR", str(runs))

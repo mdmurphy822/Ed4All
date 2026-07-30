@@ -25,7 +25,7 @@ from lib.assistant.tools import MAX_TOOL_RESULT_CHARS, dispatch_tool
 
 @pytest.fixture()
 def fake_state(monkeypatch, tmp_path):
-    """Isolated state/ + campaign + LibV2 roots wired into the tools module."""
+    """Isolated runtime/state/ + campaign + LibV2 roots wired into the tools module."""
     state = tmp_path / "state"
     (state / "workflows").mkdir(parents=True)
     campaign = tmp_path / "campaign"

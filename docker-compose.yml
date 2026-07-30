@@ -91,7 +91,7 @@ services:
       # (<=0.70), so 0.80 adds no fabrication risk.
       ED4ALL_ANSWER_ANCHOR_CONTAINMENT: "0.80"
     volumes:
-      # Mutable state/training/upload data lives on a named volume mounted at
+      # Mutable runtime/state/training/upload data lives on a named volume mounted at
       # /data (= ED4ALL_HOME). The repo's CODE is NOT bind-mounted — the image
       # already contains it; mounting the repo over /app would shadow it.
       - ed4all-data:/data

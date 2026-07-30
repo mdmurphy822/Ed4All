@@ -86,7 +86,7 @@ STATE_DIR = "state"
 CONFIG_DIR = "config"
 SCHEMAS_DIR = "schemas"
 LIB_DIR = "lib"
-TRAINING_CAPTURES_DIR = "training-captures"
+TRAINING_CAPTURES_DIR = "runtime/training-captures"
 LIBV2_DIR = "LibV2"
 
 # Standard state subdirectories

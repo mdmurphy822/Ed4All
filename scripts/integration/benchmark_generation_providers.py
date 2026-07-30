@@ -500,7 +500,7 @@ def main() -> int:
     ap.add_argument(
         "--output",
         default=None,
-        help="JSON report path (default: state/benchmarks/"
+        help="JSON report path (default: runtime/state/benchmarks/"
              "generation_providers_<ts>.json).",
     )
     args = ap.parse_args()

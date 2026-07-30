@@ -92,7 +92,7 @@ class RunSummarizer:
 
         Args:
             run_id: Run identifier
-            runs_root: Root path for runs (defaults to state/runs)
+            runs_root: Root path for runs (defaults to runtime/state/runs)
         """
         self.run_id = run_id
         self.runs_root = runs_root or STATE_PATH / "runs"

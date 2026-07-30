@@ -5,7 +5,7 @@ Deterministic, LLM-free emitter that turns the W10 assessment product
 rationale-augmented, open-book instruction-following training pairs for the
 course-pinned 1.5B LoRA adapter.
 
-Design contract (``scratchpad/sft_data_program.md`` §A / §D-Phase-1):
+Design contract (``runtime/scratchpad/sft_data_program.md`` §A / §D-Phase-1):
 
 * **Format diversity, not volume, is the scaling axis at 1.5B.** Every item
   fans out into up to six *rationale-augmented* formats — the target teaches

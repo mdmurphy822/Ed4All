@@ -1,6 +1,6 @@
 """Process-liveness + honest run-state derivation (the incomplete/dead-run defect).
 
-A CLI-launched ``ed4all run`` whose ``state/workflows/WF-*.json`` still says
+A CLI-launched ``ed4all run`` whose ``runtime/state/workflows/WF-*.json`` still says
 ``RUNNING`` used to render "Building" forever after the process was stopped or
 died (the orchestrator has no reaper). ``gui.services.liveness`` derives an
 honest ``effective_status`` from real signals — a ``/proc`` scan for live

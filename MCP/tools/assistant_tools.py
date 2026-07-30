@@ -86,7 +86,7 @@ def register_assistant_tools(mcp):
 
         Args:
             wf_id: Optional workflow id (``WF-YYYYMMDD-xxxxxxxx``). Omit to
-                summarize every active ``state/workflows`` record + recent
+                summarize every active ``runtime/state/workflows`` record + recent
                 launches; pass one to get that record + the tail of its log.
                 An invalid id is refused by the underlying validator.
         """

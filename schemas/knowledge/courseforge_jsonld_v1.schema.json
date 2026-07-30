@@ -81,7 +81,7 @@
       "properties": {
         "runId": {
           "type": "string",
-          "description": "Pipeline run identifier (matches state/runs/{run_id}/)."
+          "description": "Pipeline run identifier (matches runtime/state/runs/{run_id}/)."
         },
         "pipelineVersion": {
           "type": "string",

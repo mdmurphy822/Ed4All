@@ -8,7 +8,7 @@ accessible name.
 
 Contract (owner doctrine — never fabricate, never fail the conversion):
   * the VLM PROPOSES alt/long_desc/caption; the WCAG prompt (ported from
-    ``scratchpad/alttext/prompt.py``) demands function-first, ≤125-char alt.
+    ``runtime/scratchpad/alttext/prompt.py``) demands function-first, ≤125-char alt.
   * a seat that is unreachable / errors leaves the placeholder + records a
     loud escalation; the conversion never fails.
   * generated content is marked ``alt_source="generated"`` /
@@ -37,7 +37,7 @@ from . import (
 
 logger = logging.getLogger(__name__)
 
-# ── WCAG prompt contract (ported verbatim intent from scratchpad/alttext). ──
+# ── WCAG prompt contract (ported verbatim intent from runtime/scratchpad/alttext). ──
 SYSTEM = (
     "You are an accessibility (WCAG 2.2 AA) expert writing alternative text for "
     "figures in an educational textbook. You are given a cropped figure image plus "

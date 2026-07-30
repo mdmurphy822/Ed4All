@@ -26,7 +26,7 @@ def resolve_progress_path(run_id: Optional[str] = None) -> Optional[Path]:
     if not resolved:
         return None
     runs = os.environ.get("ED4ALL_STATE_RUNS_DIR", "").strip()
-    root = Path(runs) if runs else Path("state/runs")
+    root = Path(runs) if runs else Path("runtime/state/runs")
     return root / resolved / PROGRESS_RELATIVE_PATH
 
 

@@ -137,7 +137,7 @@ class PipelineOrchestrator:
         return STATE_PATH
 
     def _captures_dir(self, tool: str, course_code: str, phase: str) -> Path:
-        captures = self.project_root / "training-captures" / tool / course_code
+        captures = self.project_root / "runtime/training-captures" / tool / course_code
         return captures / f"phase_{phase}"
 
     # ---------------------------------------------------------- dispatcher
@@ -182,7 +182,7 @@ class PipelineOrchestrator:
         Wave 23 Sub-task B: pre-Wave-23 this method built an executor
         with no ``run_id``, no ``run_path``, and no ``capture=``. That
         left ``TaskExecutor.run_id`` auto-generating from a timestamp
-        (so checkpoints landed in an orphan ``state/runs/run_{ts}/``
+        (so checkpoints landed in an orphan ``runtime/state/runs/run_{ts}/``
         dir nobody ever reads), and ``self.capture is None`` meant the
         ``phase_start`` / ``phase_completion`` / ``task_retry`` /
         ``workflow_execution`` emit sites at
@@ -193,7 +193,7 @@ class PipelineOrchestrator:
         ``TTC_{course_name}_{timestamp}`` run IDs minted by
         ``create_textbook_pipeline``) and builds:
 
-        - ``run_path`` at ``state/runs/{run_id}/`` — matches what
+        - ``run_path`` at ``runtime/state/runs/{run_id}/`` — matches what
           ``CheckpointManager`` + ``LockfileManager`` use.
         - ``capture = DecisionCapture(course_code=normalize_course_code(...),
           phase="orchestrator", tool="pipeline", ...)`` — the course

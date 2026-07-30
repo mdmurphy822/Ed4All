@@ -9,7 +9,7 @@ Two tiers:
   full-mode app — skipped on a default install with no fastapi (mirrors the rest
   of ``gui/tests``).
 
-State is isolated via ``state_dir`` / ``libv2_root`` so the real ``state/gui/``
+State is isolated via ``state_dir`` / ``libv2_root`` so the real ``runtime/state/gui/``
 and ``LibV2/`` are never touched.
 """
 

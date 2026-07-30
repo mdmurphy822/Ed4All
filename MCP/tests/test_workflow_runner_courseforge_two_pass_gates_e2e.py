@@ -65,7 +65,7 @@ from MCP.core.workflow_runner import WorkflowRunner
 # Minimal Courseforge project export under tmp_path:
 #
 #   tmp_path/
-#     state/workflows/<workflow_id>.json   (workflow state)
+#     runtime/state/workflows/<workflow_id>.json   (workflow state)
 #     Courseforge/exports/<project_id>/
 #       project_config.json
 #       01_learning_objectives/
@@ -760,7 +760,7 @@ def test_rewrite_html_shape_gate_fires_on_recorded_json_wrapped_emit(
     # Test 2's secondary assertion is on the validator's own emit,
     # which we can read off the executor's gate_results envelope on
     # the phase task result. The phase task result is persisted in
-    # workflow state at state/workflows/<id>.json::tasks[].
+    # workflow state at runtime/state/workflows/<id>.json::tasks[].
     workflow_state = json.loads(
         (tmp_path / "state" / "workflows" / f"{workflow_id}.json")
         .read_text(encoding="utf-8")

@@ -15,7 +15,7 @@ from Trainforge.training.configs import TrainingConfig, load_config  # noqa: E40
 
 def test_qwen_recipe_defaults():
     cfg = load_config("qwen2.5-1.5b")
-    # SFT recipe (scratchpad/sft_data_program.md §C).
+    # SFT recipe (runtime/scratchpad/sft_data_program.md §C).
     assert cfg.lora_rank == 16
     assert cfg.lora_alpha == 2 * cfg.lora_rank
     assert cfg.learning_rate == pytest.approx(2e-4)

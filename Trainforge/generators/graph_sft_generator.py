@@ -4,7 +4,7 @@ Deterministic, LLM-free emitter that turns ``concept_graph_semantic.json`` +
 its prerequisite DAG into open-book, verbalized instruction pairs for the
 course-pinned 1.5B LoRA adapter.
 
-Design contract (``scratchpad/sft_data_program.md`` §A rows 8-10 + §D-Phase-2):
+Design contract (``runtime/scratchpad/sft_data_program.md`` §A rows 8-10 + §D-Phase-2):
 
 * **Open-book, verbalized.** Every pair is grounded in the graph frame itself
   (the concept labels + typed edges supplied in the prompt), never free-form

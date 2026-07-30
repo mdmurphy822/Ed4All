@@ -50,7 +50,7 @@ def _build_capture(course_code: str = "TEST_001") -> DecisionCapture:
     """Helper: build a DecisionCapture with streaming disabled.
 
     Streaming=False sidesteps file-handle setup so the test stays fast and
-    doesn't pollute training-captures/. session_id is set in __init__ before
+    doesn't pollute runtime/training-captures/. session_id is set in __init__ before
     any I/O so the disambiguator fires regardless of streaming mode.
     """
     return DecisionCapture(
@@ -64,14 +64,14 @@ def _build_capture(course_code: str = "TEST_001") -> DecisionCapture:
 def test_session_ids_unique_under_concurrent_init(tmp_path, monkeypatch):
     """100 captures spawned in parallel from the same process must all
     receive distinct session_ids."""
-    # Redirect captures away from the real training-captures/ tree so the
+    # Redirect captures away from the real runtime/training-captures/ tree so the
     # test is hermetic. LibV2Storage + LEGACY_TRAINING_DIR each create
     # directories on init; pointing them at tmp_path avoids polluting the
     # repo and keeps the test fast.
     monkeypatch.setenv("LIBV2_ROOT", str(tmp_path / "libv2"))
     monkeypatch.setattr(
         "lib.decision_capture.LEGACY_TRAINING_DIR",
-        tmp_path / "training-captures",
+        tmp_path / "runtime/training-captures",
     )
 
     n_workers = 100
@@ -106,7 +106,7 @@ def test_session_id_format_remains_parseable(tmp_path, monkeypatch):
     monkeypatch.setenv("LIBV2_ROOT", str(tmp_path / "libv2"))
     monkeypatch.setattr(
         "lib.decision_capture.LEGACY_TRAINING_DIR",
-        tmp_path / "training-captures",
+        tmp_path / "runtime/training-captures",
     )
 
     cap = _build_capture()
@@ -134,7 +134,7 @@ def test_session_id_timestamp_prefix_preserved(tmp_path, monkeypatch):
     monkeypatch.setenv("LIBV2_ROOT", str(tmp_path / "libv2"))
     monkeypatch.setattr(
         "lib.decision_capture.LEGACY_TRAINING_DIR",
-        tmp_path / "training-captures",
+        tmp_path / "runtime/training-captures",
     )
 
     cap = _build_capture()

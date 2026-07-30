@@ -5,7 +5,7 @@ description: Hybrid (BM25 + semantic) search over the tracked codebase via the l
 
 # code-search
 
-Query the local hybrid code index (`state/code_index/`, gitignored):
+Query the local hybrid code index (`runtime/state/code_index/`, gitignored):
 
 ```bash
 python scripts/code_index.py query "<natural-language or symbol-ish query>" -k 8

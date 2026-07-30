@@ -4,7 +4,7 @@ Regression net for the metering gap where every Courseforge tier dispatch
 (outline / rewrite / content-generator) POSTed via
 ``_dispatch_call_with_usage`` → ``OpenAICompatibleClient._post_with_retry``
 DIRECTLY — bypassing ``chat_completion`` and therefore the OP2 usage tap —
-so ``state/runs/<run_id>/llm_usage.jsonl`` went silent for the whole
+so ``runtime/state/runs/<run_id>/llm_usage.jsonl`` went silent for the whole
 two-pass Courseforge surface while ``BuildCostAggregator`` undercounted.
 
 The fix mirrors the tap at the ``_base`` seam through the SHARED
