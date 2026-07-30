@@ -1,0 +1,7 @@
+{
+  "description": "An objective synthesized at bloom_level=remember (the lowest rung) requests the apply rung -- two rungs above its own ceiling. The ladder capped at the objective's own bloom_level must reject this: an objective can never author at a rung higher than its own declared bloom_level.",
+  "objective_id": "TO-02",
+  "objective_bloom_level": "remember",
+  "requested_rung": "apply",
+  "expect": "reject"
+}

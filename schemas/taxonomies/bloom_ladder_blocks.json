@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/taxonomies/v1/bloom_ladder_blocks.schema.json",
+  "title": "Bloom Ladder Blocks",
+  "description": "Canonical Bloom-ladder rung table: one rung per Bloom's Revised Taxonomy cognitive level, each declaring the Courseforge BLOCK_TYPES subset permitted at that rung plus the rung's misconception-card probe-authoring guidance. Source of truth for the Bloom-ladder loader (`lib/ontology/bloom_ladder.py`) consumed by the block planner / content-generation ladder-capping logic (ED4ALL_BLOOM_LADDER). The schema is dual-use: it both describes the shape (via $defs) and carries the data itself as the `default` value on each level property, so loaders can read the defaults directly (mirrors `schemas/taxonomies/bloom_verbs.json`).",
+  "$comment": "block_types values are drawn ONLY from the existing 30-member Courseforge/scripts/blocks.py::BLOCK_TYPES frozenset (mirrored for import-light validation by lib/generation/block_catalog.py) -- no new BLOCK_TYPES tokens are minted here. misconception_probe.card_class / claim_class / correction_class are pinned VERBATIM to the existing misconception-card / misconception-claim / misconception-correction HTML class-token contract read by Trainforge/generators/synthesis_window_contract.py:222-238 -- zero-touch, additive guidance only.",
+  "type": "object",
+  "required": ["remember", "understand", "apply", "analyze", "evaluate", "create"],
+  "additionalProperties": false,
+  "$defs": {
+    "BloomLevel": {
+      "type": "string",
+      "enum": ["remember", "understand", "apply", "analyze", "evaluate", "create"]
+    },
+    "ProbeStrategy": {
+      "type": "string",
+      "description": "The misconception-authoring pattern the rung's misconception-card should probe with. One canonical strategy per rung.",
+      "enum": [
+        "direct_negation",
+        "partial_truth",
+        "off_by_one",
+        "reversal",
+        "false_analogy",
+        "overextension"
+      ]
+    },
+    "MisconceptionProbe": {
+      "type": "object",
+      "description": "Per-rung misconception-card probe guidance. card_class / claim_class / correction_class are the existing (zero-touch) HTML class tokens the rewrite tier already emits -- see Courseforge/generators/_rewrite_provider.py and Trainforge/generators/synthesis_window_contract.py:222-238.",
+      "required": ["probe_strategy", "card_class", "claim_class", "correction_class"],
+      "additionalProperties": false,
+      "properties": {
+        "probe_strategy": { "$ref": "#/$defs/ProbeStrategy" },
+        "card_class": { "type": "string", "const": "misconception-card" },
+        "claim_class": { "type": "string", "const": "misconception-claim" },
+        "correction_class": { "type": "string", "const": "misconception-correction" }
+      }
+    },
+    "RungEntry": {
+      "type": "object",
+      "description": "One Bloom-ladder rung: its ordinal position, the block_types permitted at this rung, and its misconception-card probe guidance.",
+      "required": ["ordinal", "block_types", "misconception_probe"],
+      "additionalProperties": false,
+      "properties": {
+        "ordinal": {
+          "type": "integer",
+          "description": "1-indexed rung position, low (remember=1) to high (create=6) cognitive complexity.",
+          "minimum": 1,
+          "maximum": 6
+        },
+        "block_types": {
+          "type": "array",
+          "description": "Courseforge BLOCK_TYPES tokens permitted at this rung. Non-empty, deduplicated, drawn only from the canonical 30-member palette.",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "misconception_probe": { "$ref": "#/$defs/MisconceptionProbe" }
+      }
+    }
+  },
+  "properties": {
+    "remember": {
+      "$ref": "#/$defs/RungEntry",
+      "description": "Rung 1 -- Remember. Recall / recognition-oriented block types; misconception probes as a flat wrong-fact negation.",
+      "default": {
+        "ordinal": 1,
+        "block_types": ["objective", "vocab_card", "acronym", "recap", "flip_card_grid", "key_idea"],
+        "misconception_probe": {
+          "probe_strategy": "direct_negation",
+          "card_class": "misconception-card",
+          "claim_class": "misconception-claim",
+          "correction_class": "misconception-correction"
+        }
+      }
+    },
+    "understand": {
+      "$ref": "#/$defs/RungEntry",
+      "description": "Rung 2 -- Understand. Explanation / paraphrase-oriented block types; misconception probes as a claim that is right in part and wrong in part.",
+      "default": {
+        "ordinal": 2,
+        "block_types": ["concept", "explanation", "summary_takeaway", "callout", "table", "self_check_question"],
+        "misconception_probe": {
+          "probe_strategy": "partial_truth",
+          "card_class": "misconception-card",
+          "claim_class": "misconception-claim",
+          "correction_class": "misconception-correction"
+        }
+      }
+    },
+    "apply": {
+      "$ref": "#/$defs/RungEntry",
+      "description": "Rung 3 -- Apply. Procedure / worked-practice block types; misconception probes as a procedural step-order slip.",
+      "default": {
+        "ordinal": 3,
+        "block_types": ["example", "worked_example", "activity", "problem", "checklist", "formula"],
+        "misconception_probe": {
+          "probe_strategy": "off_by_one",
+          "card_class": "misconception-card",
+          "claim_class": "misconception-claim",
+          "correction_class": "misconception-correction"
+        }
+      }
+    },
+    "analyze": {
+      "$ref": "#/$defs/RungEntry",
+      "description": "Rung 4 -- Analyze. Decomposition / relationship block types; misconception probes as a swapped cause-and-effect direction.",
+      "default": {
+        "ordinal": 4,
+        "block_types": ["misconception", "diagram", "prereq_set", "discussion_prompt", "scenario"],
+        "misconception_probe": {
+          "probe_strategy": "reversal",
+          "card_class": "misconception-card",
+          "claim_class": "misconception-claim",
+          "correction_class": "misconception-correction"
+        }
+      }
+    },
+    "evaluate": {
+      "$ref": "#/$defs/RungEntry",
+      "description": "Rung 5 -- Evaluate. Judgment / critique block types; misconception probes as an invalid comparison to a superficially-similar case.",
+      "default": {
+        "ordinal": 5,
+        "block_types": ["reflection_prompt", "discussion_prompt", "assessment_item", "scenario"],
+        "misconception_probe": {
+          "probe_strategy": "false_analogy",
+          "card_class": "misconception-card",
+          "claim_class": "misconception-claim",
+          "correction_class": "misconception-correction"
+        }
+      }
+    },
+    "create": {
+      "$ref": "#/$defs/RungEntry",
+      "description": "Rung 6 -- Create. Synthesis / production block types; misconception probes as a rule over-generalized past its valid domain.",
+      "default": {
+        "ordinal": 6,
+        "block_types": ["activity", "assessment_item", "resources", "multimedia", "hook", "guided_practice"],
+        "misconception_probe": {
+          "probe_strategy": "overextension",
+          "card_class": "misconception-card",
+          "claim_class": "misconception-claim",
+          "correction_class": "misconception-correction"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "description": "An objective synthesized at bloom_level=remember (the lowest rung) requests the remember rung itself. The ladder capped at the objective's own bloom_level must admit this -- a rung is always available at its own ceiling.",
+  "objective_id": "TO-01",
+  "objective_bloom_level": "remember",
+  "requested_rung": "remember",
+  "expect": "accept"
+}

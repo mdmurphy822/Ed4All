@@ -1,0 +1,45 @@
+{
+  "description": "WI-03 accept fixture: one well-formed decision event per new decision_type enum member (bloom_ladder_block_selection, bloom_ladder_ceiling_enforcement, misconception_card_authoring, dpo_pair_from_misconception). Each must validate against schemas/events/decision_event.schema.json. Dict-wrapped (not a top-level array) per the schema-fixture convention -- registry builders rglob schemas/**/*.json and expect dict-shaped documents.",
+  "events": [
+    {
+      "run_id": "WF-20260729-bloom_ladder_test_block_selection",
+      "timestamp": "2026-07-29T12:00:00Z",
+      "operation": "content_generation_rewrite",
+      "decision_type": "bloom_ladder_block_selection",
+      "decision": "selected_block_template_for_analyze_level",
+      "rationale": "block_id=week_01_content_02#example_derivative_03; objective_id=CO-05; ceiling_level=evaluate; selected_level=analyze; source_blocks=3; match_quality=0.92; reason=best_instructional_fit_for_target_level",
+      "tool": "courseforge",
+      "phase": "courseforge-content-generator-rewrite"
+    },
+    {
+      "run_id": "WF-20260729-bloom_ladder_test_ceiling_enforcement",
+      "timestamp": "2026-07-29T12:01:00Z",
+      "operation": "content_generation_outline",
+      "decision_type": "bloom_ladder_ceiling_enforcement",
+      "decision": "clamped_block_level_to_ceiling",
+      "rationale": "block_id=week_02_content_01#objective_example_01; objective_id=TO-03; declared_level=evaluate; objective_ceiling=analyze; enforcement_action=clamp_to_analyze; justification=exceeds_objective_bloom_ceiling; instruction_blocks_attached=2",
+      "tool": "courseforge",
+      "phase": "courseforge-content-generator-outline"
+    },
+    {
+      "run_id": "WF-20260729-bloom_ladder_test_misconception_authoring",
+      "timestamp": "2026-07-29T12:02:00Z",
+      "operation": "training_synthesis",
+      "decision_type": "misconception_card_authoring",
+      "decision": "authored_misconception_card",
+      "rationale": "chunk_id=MATH_101_chunk_0042; misconception_focus=sign_error_in_quadratic_formula; distractor_group_count=3; pedagogical_intent=error_diagnosis; anchor_complexity=intermediate; model=qwen2.5:14b; provider=local; success=True; card_id=MCPT-MATH101-01",
+      "tool": "trainforge",
+      "phase": "trainforge-training"
+    },
+    {
+      "run_id": "WF-20260729-bloom_ladder_test_dpo_misconception_pair",
+      "timestamp": "2026-07-29T12:03:00Z",
+      "operation": "training_synthesis",
+      "decision_type": "dpo_pair_from_misconception",
+      "decision": "accepted_misconception_dpo_pair",
+      "rationale": "chunk_id=MATH_101_chunk_0042; misconception_id=MCPT-MATH101-01; misconception_target=common_sign_error; rejected_completion_signature=incorrect_sign_substitution; anchor_embedding_cosine=0.94; distraction_quality=0.88; pair_index=42; pair_source=misconception_card_authored; editorial_validated=True",
+      "tool": "trainforge",
+      "phase": "trainforge-training"
+    }
+  ]
+}
