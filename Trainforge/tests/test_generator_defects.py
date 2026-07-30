@@ -314,7 +314,7 @@ class TestQualityReportHonesty:
 
 # ---------------------------------------------------------------------------
 # Flow metrics (METRICS_SEMANTIC_VERSION 4) — Worker B
-# See docs/metrics/flow-metrics.md for the methodology these tests pin.
+# See docs/operations/flow-metrics.md for the methodology these tests pin.
 # ---------------------------------------------------------------------------
 
 

@@ -311,7 +311,7 @@
       "type": "object",
       "required": ["course_id", "module_id", "lesson_id"],
       "additionalProperties": false,
-      "description": "Chunk provenance block. Per REC-CTR-01 course_id/module_id/lesson_id are the structural core and strictly required; additionalProperties=false prevents silent drift. Audit-trail fields (html_xpath, char_span, item_path) support the Section 508 / ADA Title II round-trip contract documented at docs/compliance/audit-trail.md. Wave 10 adds optional source_references[] threading SemantiK/Courseforge provenance end-to-end; see schemas/knowledge/source_reference.schema.json for the canonical shape.",
+      "description": "Chunk provenance block. Per REC-CTR-01 course_id/module_id/lesson_id are the structural core and strictly required; additionalProperties=false prevents silent drift. Audit-trail fields (html_xpath, char_span, item_path) support the Section 508 / ADA Title II round-trip contract documented at docs/reference/audit-trail.md. Wave 10 adds optional source_references[] threading SemantiK/Courseforge provenance end-to-end; see schemas/knowledge/source_reference.schema.json for the canonical shape.",
       "properties": {
         "course_id": {
           "type": "string",

@@ -58,7 +58,7 @@ Summary lift at recall@1 on both courses exceeds the +3-point threshold I set at
 - **Use `text` (chunk body) for top-10+ broad retrieval.** Synthesis, multi-concept aggregation, rerank candidates. Summary regresses meaningfully here on data-poor corpora.
 - **Use `text` when `summary`/`retrieval_text` are empty/degenerate** — which is corpus-dependent. COURSE_D's summaries are weaker because COURSE_D's upstream metadata is thin (see Worker M1). Fix the enrichment pipeline (Worker M2) and the summary regression on COURSE_D likely shrinks.
 
-This is documented in `docs/libv2/reference-retrieval.md` so consumers don't re-derive it.
+This is documented in `docs/reference/reference-retrieval.md` so consumers don't re-derive it.
 
 ## Interaction with Worker M1 findings
 

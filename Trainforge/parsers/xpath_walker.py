@@ -29,7 +29,7 @@ XPath 1.0. The round-trip contract is:
     start, end = chunk.source.char_span
     assert element_text[start:end] starts with the first sentence of
            chunk.text (modulo whitespace normalization; see
-           docs/compliance/audit-trail.md for tolerance details).
+           docs/reference/audit-trail.md for tolerance details).
 """
 
 from __future__ import annotations

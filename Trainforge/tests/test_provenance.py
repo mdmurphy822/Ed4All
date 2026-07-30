@@ -7,7 +7,7 @@ Title II buyers. These tests lock the round-trip contract:
     start, end = chunk.source.char_span
     substring = element_text[start:end]
     # substring must equal chunk.text modulo documented normalization drift
-    # (whitespace collapse — see docs/compliance/audit-trail.md).
+    # (whitespace collapse — see docs/reference/audit-trail.md).
 
 The six tests below exercise: round-trip extraction, span invariants,
 overflow guard, xpath format, coverage, and multi-part disjointness.

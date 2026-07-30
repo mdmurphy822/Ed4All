@@ -91,7 +91,7 @@ from Trainforge.chunker import (
 # v4: adds five flow metrics that surface silent metadata drops:
 #     content_type_label_coverage, key_terms_coverage,
 #     key_terms_with_definitions_rate, misconceptions_present_rate,
-#     interactive_components_rate. See docs/metrics/flow-metrics.md. (Worker B)
+#     interactive_components_rate. See docs/operations/flow-metrics.md. (Worker B)
 # v5: adds top-level `package_completeness` aggregate — a flat mean of the
 #     five enrichment coverage fractions. Answers "of the metadata this
 #     package claims to provide, how much actually landed." NOT inside
@@ -108,7 +108,7 @@ METRICS_SEMANTIC_VERSION = 5
 #   - `source.html_xpath` and `source.char_span` (Worker E): audit-trail
 #     provenance stamped on every chunk.
 # The string also lands on manifest.json as `chunk_schema_version`. One bump
-# per release train; see ADR-001 Contract 1 and docs/contributing/workers.md
+# per release train; see ADR-001 Contract 1 and docs/architecture/workers.md
 # for the rebase protocol.
 CHUNK_SCHEMA_VERSION = "v4"
 
@@ -1705,7 +1705,7 @@ class CourseProcessor:
         emitted from a merge boundary carry the union'd audit fields
         ``_create_chunk`` then stamps onto the chunk dict.
 
-        See docs/compliance/audit-trail.md for the round-trip contract
+        See docs/reference/audit-trail.md for the round-trip contract
         on ``source.html_xpath`` / ``source.char_span``.
         """
 
@@ -1825,7 +1825,7 @@ class CourseProcessor:
             source["heading_suspect"] = True
         # Audit-trail provenance (Section 508 / ADA Title II). Every chunk
         # ties back to the source IMSCC HTML element it was derived from.
-        # See docs/compliance/audit-trail.md for the round-trip contract.
+        # See docs/reference/audit-trail.md for the round-trip contract.
         if html_xpath:
             source["html_xpath"] = html_xpath
         if char_span is not None:
@@ -4199,7 +4199,7 @@ class CourseProcessor:
         # ------------------------------------------------------------------
         # Flow metrics (METRICS_SEMANTIC_VERSION 4). Surface silent metadata
         # drops between parser -> chunk that current coverage metrics don't
-        # reveal. See docs/metrics/flow-metrics.md for full methodology.
+        # reveal. See docs/operations/flow-metrics.md for full methodology.
         # ------------------------------------------------------------------
         flow_metrics, flow_methodology, flow_integrity = self._compute_flow_metrics(chunks)
 
@@ -4337,7 +4337,7 @@ class CourseProcessor:
         upstream (denominator=0 ⇒ ratio=0.0 and the methodology string calls
         out the caveat).
 
-        See ``docs/metrics/flow-metrics.md`` for the full explanation of
+        See ``docs/operations/flow-metrics.md`` for the full explanation of
         what each metric catches and how to read its value.
         """
         total = len(chunks) or 1

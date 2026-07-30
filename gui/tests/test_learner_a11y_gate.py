@@ -369,7 +369,7 @@ def test_advisory_note_first_child_of_warnings_fragment():
 
 # --------------------------------------------------------------------------- #
 # 3) Manual-pass prep — automatable preconditions from the checklist doc
-#    (docs/accessibility/learner-ui-manual-pass.md). What a screen-reader pass
+#    (docs/operations/learner-ui-manual-pass.md). What a screen-reader pass
 #    cannot be done in CI; these assert the preconditions that ARE expressible.
 # --------------------------------------------------------------------------- #
 

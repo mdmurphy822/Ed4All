@@ -5,7 +5,7 @@ in `Trainforge/process_course.py`. That worker landed the initial version; the
 other two amend their added fields in-place as they merge into the
 `chunk-schema-v4` rebase branch (see
 [`ADR-001` Contract 1](../architecture/ADR-001-pipeline-shape.md#contract-1--chunk-schema-versioning)
-and [`docs/contributing/workers.md`](../contributing/workers.md)).
+and [`docs/architecture/workers.md`](../contributing/workers.md)).
 
 ## Why v4 exists
 

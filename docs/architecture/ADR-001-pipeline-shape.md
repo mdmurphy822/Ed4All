@@ -107,7 +107,7 @@ Workers B, D, and E each add fields to the chunk object. Policy:
 
 - Single string constant `CHUNK_SCHEMA_VERSION` in `Trainforge/process_course.py`. Starts at `"v3"` (implied by the current chunk shape, not yet declared). The first worker to touch chunk schema declares the constant and bumps to `"v4"`.
 - The version string lands on `manifest.json` as `chunk_schema_version` and on every chunk object as `schema_version`.
-- Workers B, D, and E share a single rebase point: branch `chunk-schema-v4` off `main`. B, D, and E each branch from `chunk-schema-v4`, not from `main`. The last of the three to merge rebases `chunk-schema-v4` onto `main` and merges. This is documented in `docs/contributing/workers.md`.
+- Workers B, D, and E share a single rebase point: branch `chunk-schema-v4` off `main`. B, D, and E each branch from `chunk-schema-v4`, not from `main`. The last of the three to merge rebases `chunk-schema-v4` onto `main` and merges. This is documented in `docs/architecture/workers.md`.
 - One bump per release train, batched. No worker bumps independently.
 
 ### Contract 2 — `METRICS_SEMANTIC_VERSION` ownership

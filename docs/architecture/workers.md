@@ -8,7 +8,7 @@ If you are writing a new worker and your change touches any of ADR-001's Contrac
 
 | Letter | Branch | PR label | Status | Scope (one sentence) | Key files | Depends on |
 |---|---|---|---|---|---|---|
-| A | `claude/fix-package-quality-FyMue` (this worktree) | `worker-a` | in-flight | Ship ADR-001 plus this coordination doc; unblock B–G. | `docs/architecture/ADR-001-pipeline-shape.md`, `docs/contributing/workers.md`, `VERSIONING.md` | none |
+| A | `claude/fix-package-quality-FyMue` (this worktree) | `worker-a` | in-flight | Ship ADR-001 plus this coordination doc; unblock B–G. | `docs/architecture/ADR-001-pipeline-shape.md`, `docs/architecture/workers.md`, `VERSIONING.md` | none |
 | B | `worker-b/flow-metrics` | `worker-b` | blocked on A | Add five flow metrics to the base-pass quality report and bump `METRICS_SEMANTIC_VERSION` 3 → 4. | `Trainforge/process_course.py`, `Trainforge/tests/test_generator_defects.py` | A; `chunk-schema-v4` rebase point |
 | C | `worker-c/training-pairs` | `worker-c` | blocked on A | Synthesize SFT/DPO instruction-pair training specs from aligned chunks. | `Trainforge/training_specs/*`, `lib/decision_capture.py`, `Trainforge/tests/fixtures/mini_course_training/` | A |
 | D | `worker-d/chunk-summaries-and-recall` | `worker-d` | blocked on A | Add per-chunk summary and `retrieval_text` fields; extend recall metrics. | `Trainforge/process_course.py`, `Trainforge/tests/fixtures/mini_course_summaries/` | A; `chunk-schema-v4` rebase point |
@@ -17,7 +17,7 @@ If you are writing a new worker and your change touches any of ADR-001's Contrac
 | G | `worker-g/cross-package-index` | `worker-g` | done | Cross-package concept index + staleness check. | `LibV2/tools/*`, `LibV2/catalog/*` | A, F |
 | H | `worker-h/courseforge-lo-specificity` | `worker-h` | done | Courseforge per-week learningObjectives specificity — fixes LO-fanout defect. | `Courseforge/scripts/generate_course.py`, `Courseforge/scripts/validate_page_objectives.py` | A |
 | I | `worker-i/packager-validation-gate` | `worker-i` | in review (PR #5) | Wire `validate_page_objectives.py` into `package_multifile_imscc.py` as a pre-package gate. | `Courseforge/scripts/package_multifile_imscc.py` | H |
-| J | `worker-j/libv2-reference-retrieval` | `worker-j` | in review | Reference retrieval: rationale payload, metadata-aware scoring, hand-curated gold queries, ADR-002 scope line. | `LibV2/tools/libv2/retriever.py`, `LibV2/tools/libv2/retrieval_scoring.py`, `LibV2/tools/libv2/cli.py`, `LibV2/tools/libv2/eval_harness.py`, `LibV2/courses/*/retrieval/`, `docs/architecture/ADR-002-retrieval-scope.md`, `docs/libv2/reference-retrieval.md` | A |
+| J | `worker-j/libv2-reference-retrieval` | `worker-j` | in review | Reference retrieval: rationale payload, metadata-aware scoring, hand-curated gold queries, ADR-002 scope line. | `LibV2/tools/libv2/retriever.py`, `LibV2/tools/libv2/retrieval_scoring.py`, `LibV2/tools/libv2/cli.py`, `LibV2/tools/libv2/eval_harness.py`, `LibV2/courses/*/retrieval/`, `docs/architecture/ADR-002-retrieval-scope.md`, `docs/reference/reference-retrieval.md` | A |
 
 ## Coordination protocol
 
@@ -96,7 +96,7 @@ Contracts you depend on:
 - ADR-001 (docs/architecture/ADR-001-pipeline-shape.md): read before touching
   quality_report.json, METRICS_SEMANTIC_VERSION, CHUNK_SCHEMA_VERSION,
   lib/decision_capture.py, or Trainforge/tests/fixtures/mini_course_*.
-- docs/contributing/workers.md: your row in the A–G table, plus the coordination
+- docs/architecture/workers.md: your row in the A–G table, plus the coordination
   protocol sections that apply to your letter.
 
 Branch: worker-<letter>/<slug>

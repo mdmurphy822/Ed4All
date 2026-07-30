@@ -455,7 +455,7 @@ def check_cross_package_index_freshness(repo_root: Path) -> Optional[FsckIssue]:
     one) or when the catalog is up to date. Returns a warning-severity
     ``FsckIssue`` with category ``stale_catalog`` otherwise.
 
-    Worker G added this check; see ``docs/libv2/cross-package-index.md``.
+    Worker G added this check; see ``docs/reference/cross-package-index.md``.
     """
     repo_root = Path(repo_root)
     catalog_path = repo_root / "LibV2" / "catalog" / "cross_package_concepts.json"

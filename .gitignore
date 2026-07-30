@@ -42,7 +42,7 @@ coverage.xml
 # are intentionally not tracked so this repository stays course-agnostic.
 # Reference-retrieval fixtures live in
 # LibV2/tools/libv2/tests/test_eval_harness_retrieval.py; users curate their
-# own per-course gold queries locally (see docs/libv2/reference-retrieval.md
+# own per-course gold queries locally (see docs/reference/reference-retrieval.md
 # "Adding gold queries to your own corpus").
 LibV2/courses/*
 !LibV2/courses/.gitkeep
@@ -429,3 +429,9 @@ ed4all-backup*.tar.gz
 # the operator's gitignored inputs/<profile>/launch scripts and concrete seat
 # pins freely (tracked docs stay free of local-path references).
 docs/operations/dgx-spark.md
+
+# var/ — the single gitignored home for ad-hoc operator scratch (see
+# docs/architecture/repo-organization.md § 2). New scratch dirs go here,
+# never as new top-level roots; extracted/, testruns/, scratchpad/ retire
+# into var/ in Phase 2 (their rules above stay until then).
+var/

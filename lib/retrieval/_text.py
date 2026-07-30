@@ -11,7 +11,7 @@ Keeping the normalization in one place guarantees the citation anchor, the
 gold-set loader, and the chunk-sweep scorer all measure containment the same
 way. The whitespace-collapse contract mirrors
 ``Trainforge/tests/test_provenance.py::_normalize_ws`` and the audit-trail
-normalization documented at ``docs/compliance/audit-trail.md``.
+normalization documented at ``docs/reference/audit-trail.md``.
 """
 
 from __future__ import annotations

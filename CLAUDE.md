@@ -237,6 +237,12 @@ image shipping `[gui,server,embedding]` on CPU torch): `docs/operations/docker.m
 
 Per-subsystem layout lives in each subsystem's `CLAUDE.md` (see § Individual Project Guides).
 
+Top-level placement rules — which zone a new file/dir belongs to, the closed
+top-level allowlist, the `scripts/` and `docs/` taxonomies, and what is
+deliberately never reorganized — live in
+[`docs/architecture/repo-organization.md`](docs/architecture/repo-organization.md)
+(enforced by `ci/layout_guard.py`).
+
 ### Test fixtures
 
 Fixtures live with the code they exercise. A fixture that exercises only one

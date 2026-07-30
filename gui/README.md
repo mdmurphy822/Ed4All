@@ -1095,7 +1095,7 @@ Conformance is enforced two ways:
   answer statuses, error copies, and a wrapped source page) and fails on any
   Level A/AA finding.
 - **Manual, each cycle** — the screen-reader + keyboard-only walkthrough in
-  [`docs/accessibility/learner-ui-manual-pass.md`](../docs/accessibility/learner-ui-manual-pass.md)
+  [`docs/operations/learner-ui-manual-pass.md`](../docs/operations/learner-ui-manual-pass.md)
   (NVDA + Firefox, VoiceOver + Safari, keyboard-only tab order, axe DevTools
   sweep, 200 % zoom / High-Contrast / target-size spot checks), with a
   pass/fail sign-off log.
