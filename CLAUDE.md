@@ -804,11 +804,11 @@ Summary by workflow (counts derived from `config/workflows.yaml`):
 
 | Workflow | Critical | Warning | Total |
 |----------|---------:|--------:|------:|
-| `course_generation` | 33 | 31 | 64 |
+| `course_generation` | 33 | 33 | 66 |
 | `rag_training` | 4 | 3 | 7 |
-| `textbook_to_course` | 64 | 75 | 139 |
+| `textbook_to_course` | 64 | 79 | 143 |
 | `trainforge_train` | 2 | 0 | 2 |
-| **Total** | **103** | **109** | **212** |
+| **Total** | **103** | **115** | **218** |
 
 Per-wave gate-landing history (additions, demotions, deferred severity flips, with the intermediate running subtotals at each wave): `docs/validation/gate-history.md`. The table above is the current authoritative count; the history file's per-wave subtotals are provenance-only and do not sum to the current total.
 
@@ -822,11 +822,11 @@ Per-flag rows live in per-subsystem reference docs under `docs/operations/` (one
 
 | Prefix | Owner | Flag count |
 |--------|-------|-----------:|
-| `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` | [`docs/operations/behavior-flags-trainforge.md`](docs/operations/behavior-flags-trainforge.md) | 76 |
+| `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` | [`docs/operations/behavior-flags-trainforge.md`](docs/operations/behavior-flags-trainforge.md) | 77 |
 | `NVIDIA_*` (vendor endpoint-registry row for the hosted large-model seat — `NVIDIA_API_KEY` / `NVIDIA_BASE_URL` / `NVIDIA_LARGE_MODEL`) | [`docs/operations/behavior-flags-trainforge.md`](docs/operations/behavior-flags-trainforge.md) | 3 |
 | `SEMANTIK_*` (SemantiK semantic-cascade converter; also honors the single legacy `DART_THETA_DEVICE` compat env, aliased to `SEMANTIK_THETA_DEVICE`) <!-- legacy-token: allow --> | [`docs/operations/behavior-flags-semantik.md`](docs/operations/behavior-flags-semantik.md) | 164 |
 | `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`docs/operations/behavior-flags-courseforge.md`](docs/operations/behavior-flags-courseforge.md) | 46 |
-| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 259 |
+| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 262 |
 
 ### Cross-cutting flags (root-owned)
 
