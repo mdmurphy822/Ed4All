@@ -824,8 +824,8 @@ Per-flag rows live in per-subsystem reference docs under `docs/operations/` (one
 |--------|-------|-----------:|
 | `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` | [`docs/operations/behavior-flags-trainforge.md`](docs/operations/behavior-flags-trainforge.md) | 77 |
 | `NVIDIA_*` (vendor endpoint-registry row for the hosted large-model seat — `NVIDIA_API_KEY` / `NVIDIA_BASE_URL` / `NVIDIA_LARGE_MODEL`) | [`docs/operations/behavior-flags-trainforge.md`](docs/operations/behavior-flags-trainforge.md) | 3 |
-| `SEMANTIK_*` (SemantiK semantic-cascade converter; also honors the single legacy `DART_THETA_DEVICE` compat env, aliased to `SEMANTIK_THETA_DEVICE`) <!-- legacy-token: allow --> | [`docs/operations/behavior-flags-semantik.md`](docs/operations/behavior-flags-semantik.md) | 164 |
-| `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`docs/operations/behavior-flags-courseforge.md`](docs/operations/behavior-flags-courseforge.md) | 46 |
+| `SEMANTIK_*` (SemantiK semantic-cascade converter; also honors the single legacy `DART_THETA_DEVICE` compat env, aliased to `SEMANTIK_THETA_DEVICE`) <!-- legacy-token: allow --> | [`docs/operations/behavior-flags-semantik.md`](docs/operations/behavior-flags-semantik.md) | 224 |
+| `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`docs/operations/behavior-flags-courseforge.md`](docs/operations/behavior-flags-courseforge.md) | 45 |
 | `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 262 |
 
 ### Cross-cutting flags (root-owned)
@@ -839,7 +839,7 @@ row per flag. That file is the index; grep it by flag name:
 grep -n 'ED4ALL_NLI_CROSSBLOCK' docs/operations/behavior-flags.md
 ```
 
-The `LLM_*` env vars (`LLM_MODE`, `LLM_PROVIDER`, `LLM_MODEL`) are CLI runtime knobs documented in § Quick Start above. Other `ED4ALL_*` vars — the GUI server vars (`ED4ALL_GUI_HOST` / `_PORT` / `_LEARNER` / `_MODE` / `_TOKEN`), the test-only fixture/gating overrides (incl. `ED4ALL_NLI_VALIDATORS_FACTORY`, the picklable-factory dotted-path seam the `ED4ALL_NLI_MICROBATCH_VALIDATORS` process pool uses to build each worker's NLI — default the production singleton loader), and the four rewrite-tier `ED4ALL_REWRITE_*` + the W10 `ED4ALL_ASSESSMENT_PROSE_PROVIDER` flags owned by the subsystem flag docs — are enumerated verbatim in [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md).
+The `LLM_*` env vars (`LLM_MODE`, `LLM_PROVIDER`, `LLM_MODEL`) are CLI runtime knobs documented in § Quick Start above. Other `ED4ALL_*` vars — the GUI server vars (`ED4ALL_GUI_HOST` / `_PORT` / `_LEARNER` / `_MODE` / `_TOKEN`), the test-only fixture/gating overrides (incl. `ED4ALL_NLI_VALIDATORS_FACTORY`, the picklable-factory dotted-path seam the `ED4ALL_NLI_MICROBATCH_VALIDATORS` process pool uses to build each worker's NLI — default the production singleton loader), and the four rewrite-tier `ED4ALL_REWRITE_*` + the two W10 assessment flags `ED4ALL_ASSESSMENT_PROSE_PROVIDER` / `ED4ALL_ASSESSMENT_DIVERSIFIED` owned by the subsystem flag docs — are enumerated verbatim in [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md).
 
 ---
 

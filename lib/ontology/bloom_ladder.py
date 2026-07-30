@@ -31,7 +31,7 @@ This module is a pure data loader: it mints no BLOCK_TYPES tokens, never
 mutates `compute_content_hash` inputs, and never touches the misconception
 card's existing `misconception-card` / `misconception-claim` /
 `misconception-correction` class tokens -- see
-`Trainforge/generators/synthesis_window_contract.py:222-238`.
+`Trainforge/generators/synthesis_window_contract.py::_role_and_polarity`.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ __all__ = [
 
 # ---------------------------------------------------------------------------
 # Constants -- the zero-touch misconception-card class-token contract
-# (Trainforge/generators/synthesis_window_contract.py:222-238), pinned
+# (Trainforge/generators/synthesis_window_contract.py::_role_and_polarity), pinned
 # verbatim here so a drifted schema entry fails loudly at load time.
 # ---------------------------------------------------------------------------
 
