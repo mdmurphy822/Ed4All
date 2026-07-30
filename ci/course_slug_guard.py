@@ -90,26 +90,34 @@ ALLOWLIST_FILE = "ci/course_slug_allowlist.txt"
 _SELF_PATHS: Set[str] = {
     "ci/course_slug_guard.py",
     "ci/tests/test_course_slug_guard.py",
+    # The allowlist file itself holds per-file token entries by design.
+    ALLOWLIST_FILE,
 }
 
 # (family, pattern). Each matches a naming SCHEME so future members of the
 # family are caught without a code edit. See the module docstring for why a
 # broad kebab-case rule is rejected. Case-sensitive: the ``PROJ-``/``TTC_``
 # envelopes are uppercase, the slug families lowercase.
+# Boundary note: ``\b`` does NOT break between ``_`` and a letter (both
+# word chars), so a slug embedded in an underscore-joined identifier
+# (``openstax_ea2e_scan_eval_chunk_00276``) evades a ``\b``-anchored
+# pattern. Every family therefore (a) opens with a ``(?<![A-Za-z0-9])``
+# lookbehind instead of ``\b`` and (b) accepts ``[-_]`` joiners, so the
+# underscore spelling of a slug is caught too.
 _PATTERN_SOURCES: List[Tuple[str, str]] = [
     # Algebra corpora keyed by real ingestion lane + index.
-    ("alg-glm", r"\balg-glm-\d+"),
-    ("alg-vendor", r"\balg-vendor(?:-[a-z0-9]+)*"),
-    ("alg-scan", r"\balg-scan(?:-[a-z0-9]+)*"),
-    ("alg-mc3", r"\balg-mc3(?:-[a-z0-9]+)*"),
+    ("alg-glm", r"(?<![A-Za-z0-9])alg[-_]glm[-_]\d+"),
+    ("alg-vendor", r"(?<![A-Za-z0-9])alg[-_]vendor(?:[-_][a-z0-9]+)*"),
+    ("alg-scan", r"(?<![A-Za-z0-9])alg[-_]scan(?:[-_][a-z0-9]+)*"),
+    ("alg-mc3", r"(?<![A-Za-z0-9])alg[-_]mc3(?:[-_][a-z0-9]+)*"),
     # NVIDIA RAG demo line + numeric index.
-    ("nvidiarag", r"\bnvidiarag-\d+"),
+    ("nvidiarag", r"(?<![A-Za-z0-9])nvidiarag[-_]\d+"),
     # OpenStax-derived algebra corpora.
-    ("openstax-alg", r"\bopenstax-alg[a-z0-9-]*"),
+    ("openstax-alg", r"(?<![A-Za-z0-9])openstax[-_]alg[a-z0-9_-]*"),
     # keet-* family.
-    ("keet", r"\bkeet-[a-z0-9]+"),
+    ("keet", r"(?<![A-Za-z0-9])keet[-_][a-z0-9]+"),
     # Courseforge export id envelope around an ``alg-*`` slug.
-    ("PROJ-alg", r"\bPROJ-alg[a-z0-9-]*"),
+    ("PROJ-alg", r"(?<![A-Za-z0-9])PROJ[-_]alg[a-z0-9_-]*"),
     # Concrete textbook run id: TTC_<course>_<6+ digit timestamp>. The
     # embedded timestamp is what distinguishes a real id from the legit
     # format template ``TTC_{course_name}_{timestamp}``.
@@ -126,15 +134,16 @@ _PATTERN_SOURCES: List[Tuple[str, str]] = [
     # without allowlisting most of them, so deliberately NOT patterned),
     # each of these is specific enough to have no legitimate neutral use.
     #
-    # ``ea2e`` is word-boundary + case-insensitive (it appears as EA2e /
-    # EA2E in citations); the rest are case-sensitive lowercase literals.
-    ("ea2e", r"(?i:\bea2e\b)"),
+    # ``ea2e`` / the surnames are case-insensitive (they appear as EA2e /
+    # EA2E in citations); the multi-part descriptors accept ``[-_]``
+    # joiners (see the boundary note above _PATTERN_SOURCES).
+    ("ea2e", r"(?i:(?<![A-Za-z0-9])ea2e(?![A-Za-z0-9]))"),
     ("cnx-org", r"\bcnx\.org\b"),
-    ("marecek", r"\bmarecek\b"),
-    ("anthony-smith", r"\banthony-smith\b"),
-    ("honeycutt", r"\bhoneycutt\b"),
-    ("openstax-scan", r"\bopenstax-scan(?:-[a-z0-9]+)*"),
-    ("elementary-algebra-2e", r"\belementary-algebra-2e\b"),
+    ("marecek", r"(?i:(?<![A-Za-z0-9])marecek(?![A-Za-z0-9]))"),
+    ("anthony-smith", r"(?<![A-Za-z0-9])anthony[-_]smith(?![A-Za-z0-9])"),
+    ("honeycutt", r"(?i:(?<![A-Za-z0-9])honeycutt(?![A-Za-z0-9]))"),
+    ("openstax-scan", r"(?<![A-Za-z0-9])openstax[-_]scan(?:[-_][a-z0-9]+)*"),
+    ("elementary-algebra-2e", r"(?<![A-Za-z0-9])elementary[-_]algebra[-_]2e(?![A-Za-z0-9])"),
 ]
 
 COURSE_SLUG_PATTERNS: List[Tuple[str, re.Pattern]] = [
