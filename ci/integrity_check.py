@@ -39,7 +39,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # CONFIGURATION
 # ============================================================================
 
-DEFAULT_RUNS_PATH = PROJECT_ROOT / "runs"
+DEFAULT_RUNS_PATH = PROJECT_ROOT / "state" / "runs"
 DEFAULT_SCHEMAS_PATH = PROJECT_ROOT / "schemas"
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config"
 
