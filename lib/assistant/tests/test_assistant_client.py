@@ -58,7 +58,7 @@ def _body(content="hello", tool_calls=None):
     "url",
     [
         "http://spark:8004/v1",
-        "http://192.168.0.147:8004/v1",
+        "http://203.0.113.5:8004/v1",
         "https://integrate.api.nvidia.com/v1",
         "http://evil.example.com/v1",
     ],

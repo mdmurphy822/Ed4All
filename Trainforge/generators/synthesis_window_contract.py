@@ -442,7 +442,7 @@ def resolve_chunk_key_terms(
     """Return a chunk's ``key_terms``, recovering authored vocabulary cards.
 
     ``key_terms`` is populated on **0%** of every archived course measured
-    (openstax / alg / mmo), because the parser harvests it only from JSON-LD
+    (three independently built corpora), because the parser harvests it only from JSON-LD
     (``keyTerms`` / ``blocks[].key_terms``) and the rewrite tier emits
     vocabulary as HTML cards instead. The content is right there in the chunk:
     one measured course carries 300 ``vocab_card`` blocks, 248

@@ -1,8 +1,7 @@
 """Bloom-ladder initiative addendum AD-02 — ``DpoYieldProjectionValidator``.
 
-DPO-yield famine guard. The July famine failure class (see
-``docs/architecture/decision-capture.md`` precedent + project memory
-``project_dpo_famine_root_cause_and_fix``) is that **eligibility is not
+DPO-yield famine guard. The July famine failure class (see the
+``docs/architecture/decision-capture.md`` precedent) is that **eligibility is not
 admission**: a corpus can look "DPO-ready" at the ``synthesis_quota`` /
 content-gate layer and still emit zero trainer-admissible preference pairs,
 because ``Trainforge/training/compute_backend.py::is_dpo_editorial_record``

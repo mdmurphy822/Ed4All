@@ -86,7 +86,7 @@ _OPAQUE_LABEL_RES: Tuple[re.Pattern, ...] = (
 )
 
 # A slug-shaped token run with an embedded digit group, e.g.
-# ``q_openstax_scan_chunk_00190_co-01``. Used only when the declared label is
+# ``q_sample_course_chunk_00190_co-01``. Used only when the declared label is
 # byte-identical to the node id, which is the tell that no human label exists.
 _ID_SHAPED_RE = re.compile(r"^\S+$")
 _DIGIT_RUN_RE = re.compile(r"\d{2,}")
