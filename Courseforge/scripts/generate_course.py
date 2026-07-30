@@ -62,6 +62,7 @@ from lib.generation.recall_self_check import (  # noqa: E402
     resolve_recall_format,
     resolve_recall_self_check as _resolve_recall_self_check,
 )
+from lib.generation.bloom_ladder_blocks import resolve_bloom_ladder  # noqa: E402
 
 # Phase 2: sentinel page_id for renderer call sites that don't yet thread
 # the canonical page_id from ``generate_week``. Block.__post_init__
@@ -3000,6 +3001,43 @@ def _render_scenario(block: "Block") -> str:
     return "\n".join(parts)
 
 
+# ---------------------------------------------------------------------------
+# Bloom-ladder initiative (WI-09) — render-dispatch arm gated on
+# ``resolve_bloom_ladder()``. When the WI-06 planner
+# (``lib/generation/block_planner.py::_apply_bloom_ladder_selection``) injects
+# a rung-representative block, its descriptor dict carries ``ladder_rung``
+# (every rung type) and, for a ``misconception`` block chosen as that rung's
+# probe representative, ``mc_bloom_rung`` too (mirrors the existing
+# ``mc_named_concept`` threading in ``_build_misconception_blocks``). This
+# helper reads those two keys off a per-block descriptor dict and forwards
+# them onto the new ``Block.ladder_rung`` / ``Block.mc_bloom_rung`` fields —
+# the SAME dispatch every block-builder site below already uses for its own
+# type-specific extras (``mc_named_concept`` / ``confidence_prompt`` /
+# ``recall_format``). No new BLOCK_TYPES token; no renderer table change —
+# each block's EXISTING per-type render function (``_render_*`` /
+# ``_build_*_blocks``) renders it as usual, at whichever rung it was planned
+# for, since ``Block.to_html_attrs()`` / ``Block.to_jsonld_entry()`` already
+# project the rung additively (blocks.py, ED4ALL_BLOOM_LADDER).
+# ---------------------------------------------------------------------------
+def _bloom_ladder_kwargs(d: Dict[str, Any]) -> Dict[str, Any]:
+    """Gated on ``resolve_bloom_ladder()`` — returns ``{}`` when the flag is
+    off, so a flag-off ``Block(...)`` call is byte-identical (no kwargs
+    added) regardless of what the descriptor dict carries. Values are read
+    tolerantly (non-empty ``str`` only), so an absent/empty/non-string value
+    never sets a field.
+    """
+    if not resolve_bloom_ladder():
+        return {}
+    out: Dict[str, Any] = {}
+    rung = d.get("ladder_rung")
+    if isinstance(rung, str) and rung.strip():
+        out["ladder_rung"] = rung.strip()
+    mc_rung = d.get("mc_bloom_rung")
+    if isinstance(mc_rung, str) and mc_rung.strip():
+        out["mc_bloom_rung"] = mc_rung.strip()
+    return out
+
+
 def _render_self_check(
     questions: List[Dict],
     *,
@@ -3080,6 +3118,10 @@ def _render_self_check(
             # recall_self_check — carry the planner-stamped recall_format (None
             # unless the question supplies one + the flag is on → byte-stable off).
             recall_format=q_recall_format,
+            # Bloom-ladder (WI-09) — thread the WI-06 planner's ladder_rung
+            # extras when the question descriptor carries them ({} on the
+            # flag-off path → byte-stable).
+            **_bloom_ladder_kwargs(q),
         )
         sc_attrs = block.to_html_attrs()
         # C3-4 — confidence-capture control (gated by ED4ALL_REFLECTION_
@@ -3551,6 +3593,10 @@ def _render_activities(
             objective_ids=(obj_ref,) if obj_ref else (),
             source_ids=tuple(act_ids) if act_ids else (),
             source_primary=act_primary,
+            # Bloom-ladder (WI-09) — thread the WI-06 planner's ladder_rung
+            # extras when the activity descriptor carries them ({} on the
+            # flag-off path → byte-stable).
+            **_bloom_ladder_kwargs(act),
         )
         act_attrs = block.to_html_attrs()
         parts.append(f"""
@@ -4280,6 +4326,10 @@ def _build_misconception_blocks(
             mc_named_concept=(m.get("mc_named_concept") or None),
             mc_predict_prompt=(m.get("mc_predict_prompt") or None),
             mc_reconcile=(m.get("mc_reconcile") or None),
+            # Bloom-ladder (WI-09) — thread the WI-06 planner's ladder_rung /
+            # mc_bloom_rung extras when the misconception descriptor carries
+            # them ({} on the flag-off path → byte-stable).
+            **_bloom_ladder_kwargs(m),
         )
         blocks.append(block)
     return blocks
@@ -4367,6 +4417,10 @@ def _build_activity_blocks(
             objective_ids=(obj_ref,) if obj_ref else (),
             source_ids=tuple(act_ids) if act_ids else (),
             source_primary=act_primary,
+            # Bloom-ladder (WI-09) — thread the WI-06 planner's ladder_rung
+            # extras when the activity descriptor carries them ({} on the
+            # flag-off path → byte-stable).
+            **_bloom_ladder_kwargs(act),
         )
         blocks.append(block)
     return blocks
@@ -4415,6 +4469,10 @@ def _build_self_check_blocks(
             # C3-4 — confidence-capture prompt (hash-excluded, not projected to
             # JSON-LD); None unless the question supplies one → byte-stable.
             confidence_prompt=(q.get("confidence_prompt") or None),
+            # Bloom-ladder (WI-09) — thread the WI-06 planner's ladder_rung
+            # extras when the question descriptor carries them ({} on the
+            # flag-off path → byte-stable).
+            **_bloom_ladder_kwargs(q),
         )
         blocks.append(block)
     return blocks

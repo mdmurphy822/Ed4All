@@ -64,7 +64,18 @@ def load_block_catalog() -> List[Dict]:
     """Return the catalog ``blocks`` list (defensive copy per entry).
 
     Each list item is a dict carrying ``block_type`` / ``label`` /
-    ``use_when`` / ``conveys`` / ``bloom_fit`` / ``format_summary``.
+    ``use_when`` / ``conveys`` / ``bloom_fit`` / ``format_summary``, plus the
+    optional ``bloom_ceiling`` and (Bloom-ladder initiative, WI-10)
+    ``ladder_rungs`` — the Bloom-ladder rung(s)
+    (``schemas/taxonomies/bloom_ladder_blocks.json``) this type may serve,
+    already capped at the entry's own ``bloom_ceiling`` in the YAML source.
+    Absent on entries the ladder taxonomy doesn't name, or whose entire
+    taxonomy-named rung set exceeds their ``bloom_ceiling``. No transformation
+    happens here — the field surfaces verbatim like every other catalog key;
+    see ``Courseforge/config/block_catalog.yaml``'s header comment for the
+    authoring contract and
+    ``lib/generation/tests/test_bloom_ladder_catalog_invariant.py`` for the
+    consistency guard.
     """
     blocks = _load_raw()["blocks"]
     # Defensive shallow copy so a caller mutating an entry can't poison

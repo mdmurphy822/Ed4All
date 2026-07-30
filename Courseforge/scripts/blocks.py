@@ -200,6 +200,36 @@ def _block_quality_rubric_emit_enabled() -> bool:
     )
 
 
+# Bloom-ladder initiative (WI-09) — ED4ALL_BLOOM_LADDER emit gate. Default OFF:
+# with this unset the two new Block fields (``ladder_rung`` / ``mc_bloom_rung``,
+# both hash-excluded — see ``compute_content_hash``) are never projected to
+# HTML/JSON-LD, so every existing snapshot / contentHash stays byte-identical.
+# Local mirror of the canonical resolver — lib/generation/bloom_ladder_blocks.py
+# ::resolve_bloom_ladder — reading the SAME env var + truthy tokens (mirrors the
+# ED4ALL_MISCONCEPTION_RICH / ``_misconception_rich_emit_enabled`` posture:
+# blocks.py stays import-light and never pulls in lib.generation).
+_BLOOM_LADDER_EMIT_ENV = "ED4ALL_BLOOM_LADDER"
+
+# Block types that already emit ``data-cf-bloom-level`` unconditionally from
+# ``bloom_level`` in their own per-type ``to_html_attrs`` dispatch
+# (``_objective_attrs`` / ``_self_check_question_attrs`` / ``_activity_attrs``).
+# The ladder's universal tail-append below skips these so the attribute is
+# never duplicated on the same wrapper element.
+_BLOOM_LEVEL_ATTR_ALREADY_EMITTED: frozenset = frozenset(
+    {"objective", "self_check_question", "activity"}
+)
+
+
+def _bloom_ladder_emit_enabled() -> bool:
+    """Read ``ED4ALL_BLOOM_LADDER`` each call so tests can toggle it.
+
+    Default off — the two ladder-provenance fields are purely additive and
+    must not break byte-stable emit. Falsey / garbage values → off
+    (parse-with-fallback, mirroring :func:`_misconception_rich_emit_enabled`).
+    """
+    return os.environ.get(_BLOOM_LADDER_EMIT_ENV, "").strip().lower() in _EMIT_BLOCKS_TRUTHY
+
+
 def _esc(text: str) -> str:
     """HTML-escape mirroring ``html.escape`` (matches ``html_mod.escape`` in generate_course.py)."""
     return _html_mod.escape(text)
@@ -1219,6 +1249,27 @@ class Block:
     mc_named_concept: Optional[str] = None
     mc_predict_prompt: Optional[str] = None
     mc_reconcile: Optional[str] = None
+    # Bloom-ladder initiative (WI-09) — rung provenance. ``ladder_rung`` names
+    # the Bloom level this block was authored/selected at when the WI-06
+    # planner pass (``lib/generation/block_planner.py::
+    # _apply_bloom_ladder_selection``) injected it as a rung representative
+    # (one of the six canonical levels, capped at the parent objective's OWN
+    # ``bloom_level`` ceiling — never above it). ``mc_bloom_rung`` is the
+    # narrower sibling set ONLY on a ``misconception`` block injected as that
+    # SAME rung's misconception-probe representative (WI-01 taxonomy); every
+    # other block type leaves it ``None``. Both are unconditionally
+    # constructible (no flag gates field assignment — only EMIT is gated) and
+    # default ``None`` for every block the ladder never touches. Additive
+    # Optional/None defaults and INTENTIONALLY excluded from
+    # compute_content_hash() (the hash payload is an explicit 5-key allowlist;
+    # mirrors the UDL / IB5 / misconception_rich fields above) so a ladder
+    # retro-fit never drifts an existing block hash; the default-None state
+    # keeps legacy / flag-off blocks byte-identical. Read by
+    # ``to_html_attrs()`` (additive ``data-cf-bloom-level`` wrapper attr) and
+    # ``to_jsonld_entry()`` (``bloomLadderRung`` / ``mcBloomRung``), both
+    # gated by ED4ALL_BLOOM_LADDER.
+    ladder_rung: Optional[str] = None
+    mc_bloom_rung: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.block_type not in BLOCK_TYPES:
@@ -1298,13 +1349,15 @@ class Block:
         calibration fields, the C3-3 ``self_rating_prompt`` /
         ``objective_assessment_thread`` B01 objective-enrichment fields, the
         C3-4 ``confidence_prompt`` B07 self-check confidence-capture field, the
-        recall_self_check ``recall_format`` B07 recall variant, and the
+        recall_self_check ``recall_format`` B07 recall variant, the
         misconception_rich ``mc_named_concept`` / ``mc_predict_prompt`` /
-        ``mc_reconcile`` B03/B12 productive-failure fields so a
+        ``mc_reconcile`` B03/B12 productive-failure fields, and the
+        Bloom-ladder initiative's ``ladder_rung`` / ``mc_bloom_rung`` rung-
+        provenance fields (WI-09) so a
         touch-only / budget-only / classifier-retrofit / objective-
         delivery-retrofit / anatomy-slot-back-derivation / rubric-scoring /
         anchored-rubric-attach / udl-coverage-retrofit / ib5-field-attach /
-        option-feedback-attach / callout-kind-attach
+        option-feedback-attach / callout-kind-attach / ladder-rung-attach
         revision keeps a stable hash. The payload below is an explicit 5-key
         allowlist, so any new field is excluded by construction. ``content`` (the BODY slot) IS in the payload; the other
         five anatomy slots are derived-or-authored metadata ABOUT the same
@@ -1453,6 +1506,26 @@ class Block:
         # unchanged; this promotes it to every block + adds the combined chip.
         if _block_quality_rubric_emit_enabled():
             attrs += self._bloom_triple_attrs()
+        # Bloom-ladder initiative (WI-09) — data-cf-bloom-level marks the rung
+        # this block was authored at when the WI-06 planner injected it as a
+        # ladder representative. DOUBLE-gated: behind ED4ALL_BLOOM_LADDER
+        # (default OFF) AND only-when-``ladder_rung``-set, so legacy /
+        # flag-off snapshots stay byte-identical (mirrors the UDL /
+        # quality-rubric tail-append posture immediately above). Skipped for
+        # objective / self_check_question / activity — those three already
+        # emit ``data-cf-bloom-level`` unconditionally from ``bloom_level`` in
+        # their own per-type dispatch above; re-emitting it here would
+        # duplicate the attribute. A ``misconception`` card emits NO
+        # ``data-cf-bloom-level`` from its own dispatch (``attrs=""`` above)
+        # — this IS that card's ONLY additive wrapper attr from the ladder
+        # (design decision: no new misconception-card / -claim / -correction
+        # class tokens).
+        if (
+            _bloom_ladder_emit_enabled()
+            and self.ladder_rung
+            and block_type not in _BLOOM_LEVEL_ATTR_ALREADY_EMITTED
+        ):
+            attrs += f' data-cf-bloom-level="{_esc(self.ladder_rung)}"'
         return attrs
 
     def _knowledge_type(self) -> Optional[str]:
@@ -1648,10 +1721,10 @@ class Block:
         """
         block_type = self.block_type
         if block_type == "objective":
-            return self._objective_jsonld()
-        if block_type == "misconception":
-            return self._misconception_jsonld()
-        if block_type in _CONTENT_SECTION_BLOCK_TYPES or block_type in {
+            entry = self._objective_jsonld()
+        elif block_type == "misconception":
+            entry = self._misconception_jsonld()
+        elif block_type in _CONTENT_SECTION_BLOCK_TYPES or block_type in {
             "explanation",
             "example",
             "concept",
@@ -1659,10 +1732,36 @@ class Block:
         }:
             # Legacy `_build_sections_metadata` shape — only fired when
             # the Block represents a section heading.
-            return self._section_jsonld()
-        # Default Phase-2 shape: small audit-only entry for the new
-        # `blocks[]` array.
-        return self._minimal_block_jsonld()
+            entry = self._section_jsonld()
+        else:
+            # Default Phase-2 shape: small audit-only entry for the new
+            # `blocks[]` array.
+            entry = self._minimal_block_jsonld()
+        # Bloom-ladder initiative (WI-09) — additive ``bloomLadderRung`` /
+        # ``mcBloomRung`` keys, appended AFTER dispatch so every shape (legacy
+        # or Phase-2-minimal) projects the same rung-provenance keys the same
+        # way. Gated + only-when-set inside the helper; returns {} on the
+        # flag-off path, so every existing JSON-LD shape stays byte-identical.
+        entry.update(self._bloom_ladder_jsonld_fields())
+        return entry
+
+    def _bloom_ladder_jsonld_fields(self) -> Dict[str, Any]:
+        """WI-09 — ``{bloomLadderRung, mcBloomRung}`` when ED4ALL_BLOOM_LADDER
+        is on and the respective ``Block`` field is set.
+
+        Returns ``{}`` on the flag-off path or when neither field is set, so
+        legacy JSON-LD stays byte-identical (mirrors the ``observedBloomLevel``
+        / ``qualityRubric`` only-when-set posture in
+        :meth:`_minimal_block_jsonld`).
+        """
+        if not _bloom_ladder_emit_enabled():
+            return {}
+        out: Dict[str, Any] = {}
+        if isinstance(self.ladder_rung, str) and self.ladder_rung.strip():
+            out["bloomLadderRung"] = self.ladder_rung.strip()
+        if isinstance(self.mc_bloom_rung, str) and self.mc_bloom_rung.strip():
+            out["mcBloomRung"] = self.mc_bloom_rung.strip()
+        return out
 
     def _objective_jsonld(self) -> Dict[str, Any]:
         """Match `_build_objectives_metadata:1364-1420`."""

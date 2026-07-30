@@ -911,6 +911,20 @@ _RELOCATED_SEGMENT_INDICES: frozenset = frozenset(
 # from this map carries only the KEEP-global system prompt (its contract is
 # unchanged). The lead-in PEDAGOGICAL-DEPTH segment (8) rides with the per-
 # type pedagogical bullets it introduces.
+# "misconception" is deliberately ABSENT from this map. Its Bloom-ladder
+# (WI-08) per-rung probe guidance (`_misconception_ladder_probe_contract_suffix`)
+# is per-BLOCK content (the rung is read from that block's own `bloom_level`
+# at author time) and can never live in this table — every entry here is a
+# fixed INDEX into the shared, import-time-constant `_REWRITE_SYSTEM_PROMPT`,
+# so registering a rung here would mean either baking ONE rung in for every
+# misconception block (wrong) or adding text that appears unconditionally
+# regardless of `ED4ALL_BLOOM_LADDER` (breaks byte-identical-when-off). The
+# suffix is instead appended directly to the misconception contract (like
+# `_recall_self_check_contract_suffix` / `_misconception_productive_failure_
+# contract_suffix` above it) — already scoped to misconception blocks only,
+# and already covered by the dynamic whole-prompt fit-window budget (see
+# that function's docstring), so it cannot silently re-trip the 8192-window
+# scaffold-overflow class even without an entry here.
 _RELOCATED_SEGMENTS_BY_BLOCK_TYPE: Dict[str, Tuple[int, ...]] = {
     "concept": (4, 8, 9, 11, 16, 21),
     "explanation": (4, 8, 9, 11, 21),
@@ -1601,6 +1615,135 @@ def _misconception_productive_failure_contract_suffix(block: Any) -> str:
         f"understanding), grounded in the source. The `misconception-predict` and "
         f"`misconception-reconcile` paragraphs are BOTH required. Do not fabricate "
         f"a concept the source does not discuss."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Bloom-ladder (WI-08) — per-rung misconception probe authoring suffix.
+# ---------------------------------------------------------------------------
+#
+# One probe strategy per Bloom rung (`lib.ontology.bloom_ladder.PROBE_STRATEGIES`
+# / `schemas/taxonomies/bloom_ladder_blocks.json`). Human-authoring guidance for
+# each strategy token — the WI-01 taxonomy carries only the strategy NAME per
+# rung, not authoring prose, so the prompt-facing description lives here,
+# beside its one consumer.
+_PROBE_STRATEGY_GUIDANCE: Dict[str, str] = {
+    "direct_negation": (
+        "state the flat NEGATION of the correct fact — the learner asserts "
+        "the opposite of what is true"
+    ),
+    "partial_truth": (
+        "state a claim that is TRUE in a narrower special case but is "
+        "wrongly OVERGENERALIZED to the whole rule"
+    ),
+    "off_by_one": (
+        "make an OFF-BY-ONE / BOUNDARY slip while applying the correct "
+        "procedure (an inclusive/exclusive bound, a step skipped or "
+        "repeated once)"
+    ),
+    "reversal": (
+        "REVERSE the roles or order of two related quantities or steps "
+        "(e.g. swap numerator/denominator, cause/effect, before/after)"
+    ),
+    "false_analogy": (
+        "apply a FALSE ANALOGY drawn from a superficially similar but "
+        "structurally different case"
+    ),
+    "overextension": (
+        "OVEREXTEND a valid rule or pattern beyond the domain where it "
+        "actually applies"
+    ),
+}
+
+
+def _misconception_ladder_probe_contract_suffix(block: Any) -> str:
+    """Bloom-ladder (WI-08) — flag-gated per-rung misconception probe suffix.
+
+    Read at author time behind ``resolve_bloom_ladder()`` (mirroring the
+    ``ED4ALL_REWRITE_FIT_WINDOW`` conditional-contract pattern, NEVER
+    appended unconditionally — see
+    ``_recall_self_check_contract_suffix`` /
+    ``_misconception_productive_failure_contract_suffix`` for the same
+    shape). Returns ``""`` when the flag is off, the block is not a
+    ``misconception`` card, or the block carries no resolvable
+    ``bloom_level`` (the rung) — off-path output bytes are unchanged.
+
+    ADDITIVE ONLY over the existing misconception contract
+    (``_BLOCK_TYPE_OUTPUT_CONTRACTS["misconception"]``): the
+    ``misconception-card`` / ``misconception-claim`` /
+    ``misconception-correction`` class tokens stay byte-identical. This
+    suffix asks the model to ALSO stamp ``data-cf-bloom-level`` on the
+    wrapper div and to author the claim/correction from the rung's
+    misconception-probe strategy (WI-01 taxonomy,
+    ``lib.ontology.bloom_ladder.misconception_probe_for``), phrasing both
+    paragraphs the same way an assessment-item distractor is phrased —
+    from the source's own wording and worked values — so they survive the
+    Arm-A ``source_backs`` token-subset check
+    (``Trainforge/generators/staged_synthesis_micro.py::source_backs``).
+
+    Not registered in ``_RELOCATED_SEGMENTS_BY_BLOCK_TYPE``: that map only
+    relocates EXISTING segments of the shared, module-constant
+    ``_REWRITE_SYSTEM_PROMPT`` (computed once, unconditionally, at import
+    time) into a per-type contract when ``ED4ALL_REWRITE_FIT_WINDOW`` is
+    ON. This guidance is per-BLOCK (the rung comes from ``block.bloom_level``,
+    a runtime value), so it cannot live in that static, import-time-fixed
+    segment table without either (a) appearing unconditionally for every
+    block type regardless of ``ED4ALL_BLOOM_LADDER`` — breaking the
+    byte-identical-when-off contract — or (b) baking a single rung into a
+    module constant, which is wrong for a per-block ladder. Instead this
+    suffix is appended directly onto the misconception block's own output
+    contract (mirroring the two suffix functions above), so it is already
+    scoped to ONLY misconception blocks (never inflating any other block
+    type's prompt) and is already measured by the dynamic whole-prompt
+    fit-window budget (``_select_source_chunks_for_budget`` renders the
+    REAL per-block scaffold, this suffix included, via
+    ``_scaffold_prompt_for_block`` -> ``_render_user_prompt`` /
+    ``_render_escalated_user_prompt``) — an oversized misconception
+    scaffold still raises ``_ScaffoldOverflowError`` and stamps
+    ``rewrite_scaffold_overflow`` exactly like every other block type, so
+    this addition cannot silently re-trip the 8192-window overflow class.
+    """
+    if block is None or getattr(block, "block_type", None) != "misconception":
+        return ""
+    try:
+        from lib.generation.bloom_ladder_blocks import resolve_bloom_ladder
+    except Exception:  # noqa: BLE001
+        return ""
+    if not resolve_bloom_ladder():
+        return ""
+    rung = getattr(block, "bloom_level", None)
+    if not (isinstance(rung, str) and rung.strip()):
+        return ""
+    level = rung.strip().lower()
+    try:
+        from lib.ontology.bloom_ladder import misconception_probe_for
+
+        probe = misconception_probe_for(level)
+    except ValueError:
+        # Not one of the six canonical Bloom levels — never fabricate a
+        # rung; skip the suffix (byte-identical to no ladder assignment).
+        return ""
+    strategy = probe.get("probe_strategy", "")
+    guidance = _PROBE_STRATEGY_GUIDANCE.get(
+        strategy,
+        "target the misconception a learner at this Bloom rung is most "
+        "likely to hold",
+    )
+    return (
+        f" BLOOM-LADDER RUNG (data-cf-bloom-level). This misconception "
+        f"card is authored at the {level!r} rung of the ladder capped at "
+        f"this objective's own bloom_level — stamp "
+        f"`data-cf-bloom-level=\"{level}\"` on the OUTERMOST "
+        f"`misconception-card` div (additive; the card / claim / "
+        f"correction class names stay exactly as specified above). PROBE "
+        f"STRATEGY ({strategy!r}): {guidance} — author the faulty belief "
+        f"as exactly that kind of error, never a strategy from a HIGHER "
+        f"rung. SOURCE-ADJACENT PHRASING: phrase the `misconception-claim` "
+        f"and `misconception-correction` text the SAME way an "
+        f"assessment_item distractor is phrased — reusing the source's own "
+        f"wording and worked values (never a term the source never uses) — "
+        f"so both paragraphs are recognizably grounded in the supplied "
+        f"source material."
     )
 
 
@@ -3561,6 +3704,7 @@ class RewriteProvider(_BaseLLMProvider):
         )
         output_contract += _recall_self_check_contract_suffix(block)
         output_contract += _misconception_productive_failure_contract_suffix(block)
+        output_contract += _misconception_ladder_probe_contract_suffix(block)
         required_attrs_line = _required_attrs_directive(
             block.block_type, block.block_id
         )
@@ -3680,6 +3824,7 @@ class RewriteProvider(_BaseLLMProvider):
         )
         output_contract += _recall_self_check_contract_suffix(block)
         output_contract += _misconception_productive_failure_contract_suffix(block)
+        output_contract += _misconception_ladder_probe_contract_suffix(block)
         required_attrs_line = _required_attrs_directive(
             block.block_type, block.block_id
         )
@@ -4065,6 +4210,9 @@ class RewriteProvider(_BaseLLMProvider):
                     minted_curies=stampable,
                     dropped_cited_chunk_ids=dropped_cited_chunk_ids,
                 )
+                self._emit_misconception_ladder_decision(
+                    block=block, html_response=injected_html
+                )
                 return _apply_rewrite_touch(
                     block=block,
                     html_response=injected_html,
@@ -4119,6 +4267,9 @@ class RewriteProvider(_BaseLLMProvider):
                     pruned_curie_count=len(outline_curies) - len(enforceable),
                     dropped_cited_chunk_ids=dropped_cited_chunk_ids,
                 )
+                self._emit_misconception_ladder_decision(
+                    block=block, html_response=html_response
+                )
                 return _apply_rewrite_touch(
                     block=block,
                     html_response=html_response,
@@ -4171,6 +4322,9 @@ class RewriteProvider(_BaseLLMProvider):
                     enforced_curie_count=len(enforceable),
                     pruned_curie_count=len(outline_curies) - len(enforceable),
                     dropped_cited_chunk_ids=dropped_cited_chunk_ids,
+                )
+                self._emit_misconception_ladder_decision(
+                    block=block, html_response=injected_html
                 )
                 return _apply_rewrite_touch(
                     block=block,
@@ -4227,6 +4381,9 @@ class RewriteProvider(_BaseLLMProvider):
             enforced_curie_count=len(last_enforceable),
             pruned_curie_count=len(outline_curies) - len(last_enforceable),
             dropped_cited_chunk_ids=dropped_cited_chunk_ids,
+        )
+        self._emit_misconception_ladder_decision(
+            block=block, html_response=injected_html
         )
         return _apply_rewrite_touch(
             block=block,
@@ -4474,6 +4631,9 @@ class RewriteProvider(_BaseLLMProvider):
                     block.block_id, []
                 ),
             )
+            self._emit_misconception_ladder_decision(
+                block=block, html_response=fragment
+            )
             results[block.block_id] = _apply_rewrite_touch(
                 block=block,
                 html_response=fragment,
@@ -4555,6 +4715,64 @@ class RewriteProvider(_BaseLLMProvider):
                 f"minted CURIEs) and were skipped (anti-fabrication — never a "
                 f"fabricated token). Single dispatch this attempt "
                 f"(attempt={attempt + 1})."
+            ),
+        )
+
+    def _emit_misconception_ladder_decision(
+        self, *, block: Block, html_response: str
+    ) -> None:
+        """Bloom-ladder (WI-08) — emit ``misconception_card_authoring``.
+
+        Fired once per successfully-authored ``misconception`` block when
+        ``ED4ALL_BLOOM_LADDER`` is on and the block carries a resolvable
+        ``bloom_level`` (the rung). No-op (byte-identical — no capture
+        emitted) when the flag is off, the block is not a misconception
+        card, or the rung doesn't resolve against the six canonical Bloom
+        levels — mirrors the no-op contract of
+        ``_misconception_ladder_probe_contract_suffix``, which supplies the
+        same rung + probe_strategy to the prompt. The rationale
+        interpolates the call's dynamic signals (block id/page, provider/
+        model, rung, probe_strategy, output length) per the LLM call-site
+        instrumentation contract — no static boilerplate.
+        """
+        if getattr(block, "block_type", None) != "misconception":
+            return
+        try:
+            from lib.generation.bloom_ladder_blocks import resolve_bloom_ladder
+        except Exception:  # noqa: BLE001
+            return
+        if not resolve_bloom_ladder():
+            return
+        rung = getattr(block, "bloom_level", None)
+        if not (isinstance(rung, str) and rung.strip()):
+            return
+        level = rung.strip().lower()
+        try:
+            from lib.ontology.bloom_ladder import misconception_probe_for
+
+            probe = misconception_probe_for(level)
+        except ValueError:
+            return
+        strategy = probe.get("probe_strategy", "<unknown>")
+        self._emit_decision(
+            decision_type="misconception_card_authoring",
+            decision=(
+                f"authored misconception card block_id={block.block_id} "
+                f"at rung={level} (probe_strategy={strategy})"
+            ),
+            rationale=(
+                f"Bloom-ladder (ED4ALL_BLOOM_LADDER) misconception "
+                f"authoring for block_id={block.block_id} "
+                f"(page={block.page_id}) via provider={self._provider}, "
+                f"model={self._model}: rung={level} is capped at this "
+                f"objective's own bloom_level and drives "
+                f"probe_strategy={strategy!r} from the WI-01 taxonomy "
+                f"(lib.ontology.bloom_ladder.misconception_probe_for). The "
+                f"wrapper is stamped data-cf-bloom-level={level!r} and the "
+                f"claim/correction prose is phrased from source-adjacent, "
+                f"distractor-style wording so it survives the Arm-A "
+                f"source_backs token-subset check. Output "
+                f"{len(html_response or '')} chars authored this call."
             ),
         )
 

@@ -89,6 +89,10 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from lib.generation.block_catalog import load_block_catalog
+from lib.generation.bloom_ladder_blocks import (
+    ladder_plan_for_objective,
+    resolve_bloom_ladder,
+)
 from lib.ontology.bloom import BLOOM_LEVELS
 
 logger = logging.getLogger(__name__)
@@ -113,6 +117,7 @@ __all__ = [
     "_apply_integration_floor",
     "_apply_dual_coding_floor",
     "_apply_w6_within_week_passes",
+    "_apply_bloom_ladder_selection",
     "build_cross_week_retrieval_blocks",
 ]
 
@@ -3859,14 +3864,18 @@ def _to_page_plan(
         # consumer's unpack is arity-tolerant.
         itype = blk.get("interaction_type")
         fade = blk.get("fade_state")
-        # Track-A stamp fields (ED4ALL_RECALL_SELF_CHECK / ED4ALL_MISCONCEPTION_RICH):
+        # Track-A stamp fields (ED4ALL_RECALL_SELF_CHECK / ED4ALL_MISCONCEPTION_RICH)
+        # plus the Bloom-ladder initiative's WI-06 stamp fields (ED4ALL_BLOOM_LADDER):
         # carried as a SINGLE trailing optional dict at tuple index 5, appended
         # ONLY when at least one is set, so a flag-off run stays byte-stable at
         # the legacy 3/4/5-tuple shape. When the extras dict is present, indices
         # 3 (interaction_type-or-None) and 4 (fade_state-or-None) are forced
         # present so positional consistency holds (extras at 5 implies 3,4 exist).
         extras: Dict[str, Any] = {}
-        for _field in ("recall_format", "mc_named_concept", "mc_predict_prompt", "mc_reconcile"):
+        for _field in (
+            "recall_format", "mc_named_concept", "mc_predict_prompt", "mc_reconcile",
+            "ladder_rung", "mc_bloom_rung",
+        ):
             _val = blk.get(_field)
             if _val:
                 extras[_field] = _val
@@ -3895,6 +3904,214 @@ def _to_page_plan(
                 (blk["block_type"], blk["target_bloom"], target_co_ids)
             )
     return plan
+
+
+def _bloom_ladder_objective_ceiling(co: Dict[str, Any]) -> Optional[str]:
+    """Resolve a CO's OWN synthesized ceiling for the Bloom-ladder walk.
+
+    Tolerant ``bloom_level`` / ``bloomLevel`` fallback (lowercased, stripped)
+    -- the same shape the synthesized-objectives projection uses at
+    ``lib/validators/pair/objective_delivery.py:574-636`` -- because this is
+    the OBJECTIVE'S OWN declared cognitive demand (the ladder ceiling), never
+    a per-BLOCK property (that is :func:`_resolve_target_bloom`'s job, left
+    untouched). Returns ``None`` (no ladder for this CO) when the value is
+    missing / not a string / not one of the six canonical Bloom levels --
+    never raises, so one malformed CO cannot break the whole planner.
+    """
+    raw = co.get("bloom_level") or co.get("bloomLevel")
+    if not isinstance(raw, str):
+        return None
+    level = raw.strip().lower()
+    return level if level in BLOOM_LEVELS else None
+
+
+def _emit_bloom_ladder_decisions(
+    *,
+    capture: Optional[Any],
+    to_id: str,
+    ceiling_by_co: Dict[str, str],
+    rung_levels_by_co: Dict[str, List[str]],
+    injected: List[Dict[str, Any]],
+    reroutes: int,
+) -> None:
+    """Emit the WI-06 ``bloom_ladder_block_selection`` /
+    ``bloom_ladder_ceiling_enforcement`` decision events (best-effort; a
+    capture failure never breaks the plan). Rationale interpolates the
+    per-CO resolved ceiling, the walked rung set, the injected count, and
+    the re-route outcome so each event is replayable post-hoc."""
+    if capture is None or not injected:
+        return
+    mc_count = sum(1 for b in injected if b.get("mc_bloom_rung"))
+    try:
+        capture.log_decision(
+            decision_type="bloom_ladder_block_selection",
+            decision=f"ladder_blocks_injected={len(injected)}",
+            rationale=(
+                f"bloom-ladder walked {len(ceiling_by_co)} CO(s) for "
+                f"{to_id or 'TO'}, each capped at its OWN synthesized "
+                "bloom_level ceiling ("
+                + ", ".join(
+                    f"{cid}->{ceiling}"
+                    for cid, ceiling in sorted(ceiling_by_co.items())
+                )
+                + f"); injected {len(injected)} rung-anchored block(s), "
+                f"including {mc_count} misconception probe(s), one per "
+                "taxonomy-permitted rung (WI-01)."
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logger.debug("bloom_ladder_block_selection capture raised: %s", exc)
+
+    try:
+        capture.log_decision(
+            decision_type="bloom_ladder_ceiling_enforcement",
+            decision=f"reroutes={reroutes}",
+            rationale=(
+                f"bloom-ladder ceiling enforcement for {to_id or 'TO'}: "
+                f"{reroutes} of {len(injected)} ladder-injected block(s) "
+                "exceeded their catalog bloom_ceiling and were re-routed by "
+                "the existing _apply_bloom_ceilings machinery (target_co_ids "
+                "preserved); rung sets walked per CO: "
+                + ", ".join(
+                    f"{cid}=[{'/'.join(levels)}]"
+                    for cid, levels in sorted(rung_levels_by_co.items())
+                )
+                + "."
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logger.debug("bloom_ladder_ceiling_enforcement capture raised: %s", exc)
+
+
+def _apply_bloom_ladder_selection(
+    *,
+    selected: List[Dict[str, Any]],
+    chapter_objectives: Sequence[Dict[str, Any]],
+    catalog_by_type: Dict[str, Dict[str, Any]],
+    block_types: frozenset,
+    capture: Optional[Any] = None,
+    course_code: str = "",
+    to_id: str = "",
+) -> List[Dict[str, Any]]:
+    """WI-06 -- Bloom-ladder planner selection pass (``ED4ALL_BLOOM_LADDER``).
+
+    Strict identity / byte-stable no-op when :func:`resolve_bloom_ladder` is
+    off -- returns ``selected`` unchanged.
+
+    When on: for every child CO carrying its OWN synthesized ceiling (see
+    :func:`_bloom_ladder_objective_ceiling` -- NEVER
+    :func:`_resolve_target_bloom`, whose declared/catalog arms resolve a
+    single BLOCK's target, not an objective's ceiling), walks
+    :func:`ladder_plan_for_objective` (== ``lib.ontology.bloom_ladder.
+    rungs_up_to``) from ``remember`` up to that ceiling ONLY. Per rung it
+    injects:
+
+    * ONE taxonomy-permitted (WI-01) representative block -- the
+      alphabetically-first ``rung.block_types`` member that is both in the
+      caller's active ``block_types`` set and not ``misconception``
+      (deterministic pick; a ``frozenset`` has no stable iteration order).
+    * Exactly ONE misconception-probe block, ONLY when the rung's own
+      taxonomy entry names ``misconception`` among its permitted types --
+      carrying that rung's own ``misconception_probe`` strategy in its
+      ``content_focus``.
+
+    Every injected descriptor's ``target_co_ids`` is ``[co_id]`` only -- no
+    CO id is ever invented. The injected set (not the pre-existing
+    ``selected`` list) is then routed through the existing
+    :func:`_apply_bloom_ceilings` re-route machinery, so a rung whose demand
+    exceeds its type's own catalog ``bloom_ceiling`` (e.g. ``misconception``'s
+    ``apply`` ceiling below the ``analyze`` rung it is taxonomy-named at)
+    re-routes exactly like any other over-ceiling block -- ``target_co_ids``
+    preserved (``_apply_bloom_ceilings`` never touches that field). Injected
+    entries are APPENDED to ``selected`` -- an existing block is never
+    removed, re-typed, or reordered by this pass.
+    """
+    if not resolve_bloom_ladder():
+        return selected
+
+    injected: List[Dict[str, Any]] = []
+    ceiling_by_co: Dict[str, str] = {}
+    rung_levels_by_co: Dict[str, List[str]] = {}
+    for co in chapter_objectives:
+        if not isinstance(co, dict):
+            continue
+        co_id = str(co.get("id") or "").strip()
+        if not co_id:
+            continue
+        ceiling = _bloom_ladder_objective_ceiling(co)
+        if ceiling is None:
+            continue
+        try:
+            rungs = ladder_plan_for_objective(ceiling)
+        except ValueError:
+            continue
+        ceiling_by_co[co_id] = ceiling
+        rung_levels_by_co[co_id] = [rung.level for rung in rungs]
+
+        for rung in rungs:
+            permitted = sorted(
+                bt for bt in rung.block_types
+                if bt in block_types and bt != "misconception"
+            )
+            if permitted:
+                bt = permitted[0]
+                injected.append({
+                    "block_type": bt,
+                    "page_type": _BLOCK_TYPE_DEFAULT_PAGE.get(bt, "content"),
+                    "target_co_ids": [co_id],
+                    "content_focus": (
+                        f"bloom-ladder rung {rung.level} (ordinal "
+                        f"{rung.ordinal}) for {co_id}, ceilinged at "
+                        f"{ceiling}"
+                    ),
+                    "target_bloom": rung.level,
+                    "ladder_rung": rung.level,
+                })
+
+            if "misconception" in rung.block_types and "misconception" in block_types:
+                strategy = str(
+                    rung.misconception_probe.get("probe_strategy") or ""
+                )
+                injected.append({
+                    "block_type": "misconception",
+                    "page_type": _BLOCK_TYPE_DEFAULT_PAGE.get(
+                        "misconception", "content",
+                    ),
+                    "target_co_ids": [co_id],
+                    "content_focus": (
+                        f"bloom-ladder rung {rung.level} misconception "
+                        f"probe ({strategy}) for {co_id}, ceilinged at "
+                        f"{ceiling}"
+                    ),
+                    "target_bloom": rung.level,
+                    "ladder_rung": rung.level,
+                    "mc_bloom_rung": rung.level,
+                })
+
+    if not injected:
+        return selected
+
+    types_before = [str(b.get("block_type")) for b in injected]
+    injected = _apply_bloom_ceilings(
+        selected=injected, catalog_by_type=catalog_by_type, block_types=block_types,
+    )
+    reroutes = sum(
+        1 for before, after in zip(
+            types_before, (str(b.get("block_type")) for b in injected),
+        )
+        if before != after
+    )
+
+    _emit_bloom_ladder_decisions(
+        capture=capture,
+        to_id=to_id,
+        ceiling_by_co=ceiling_by_co,
+        rung_levels_by_co=rung_levels_by_co,
+        injected=injected,
+        reroutes=reroutes,
+    )
+
+    return selected + injected
 
 
 def plan_week_blocks(
@@ -4134,6 +4351,19 @@ def plan_week_blocks(
         to_id=to_id,
     )
 
+    # WI-06: Bloom-ladder planner selection pass (ED4ALL_BLOOM_LADDER). Runs
+    # LAST (after the alignment floors + stamp passes) so it sees the final
+    # block set; strict identity / byte-stable no-op when the flag is off.
+    selected = _apply_bloom_ladder_selection(
+        selected=selected,
+        chapter_objectives=chapter_objectives,
+        catalog_by_type=catalog_by_type,
+        block_types=block_types,
+        capture=capture,
+        course_code=course_code,
+        to_id=to_id,
+    )
+
     page_plan = _to_page_plan(selected)
     _emit_block_plan_decision(
         capture=capture,
@@ -4277,6 +4507,30 @@ def _fallback_plan(
         course_code=course_code,
         to_id=to_id,
     )
+    # WI-06: Bloom-ladder selection pass ALSO runs on the fallback path (an
+    # LLM error must not strand the ladder feature, mirroring the IB7 /
+    # alignment-floor precedent above); strict NO-OP when ED4ALL_BLOOM_LADDER
+    # is off so the fixed-plan fallback stays byte-identical. Builds its own
+    # catalog_by_type (the fallback path doesn't otherwise need one) only
+    # when the flag is actually on, to avoid a wasted catalog load.
+    if resolve_bloom_ladder():
+        try:
+            _ladder_catalog_by_type = {
+                str(e.get("block_type")): e
+                for e in load_block_catalog() if e.get("block_type")
+            }
+        except Exception:  # noqa: BLE001 — never break the fallback
+            _ladder_catalog_by_type = {}
+        selected = _apply_bloom_ladder_selection(
+            selected=selected,
+            chapter_objectives=chapter_objectives or [],
+            catalog_by_type=_ladder_catalog_by_type,
+            block_types=_resolve_block_types(),
+            capture=capture,
+            course_code=course_code,
+            to_id=to_id,
+        )
+        page_plan = _to_page_plan(selected)
     _emit_block_plan_decision(
         capture=capture,
         course_code=course_code,

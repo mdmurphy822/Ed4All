@@ -95,6 +95,9 @@ from lib.llm.truncation_guard import (  # noqa: E402
 from lib.retrieval.answer_backend import (  # noqa: E402
     PromptTruncatedError as _PromptTruncatedError,
 )
+from lib.generation.bloom_ladder_blocks import (  # noqa: E402
+    resolve_bloom_ladder,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2836,6 +2839,64 @@ class OutlineProvider(_BaseLLMProvider):
                     "lifted_to": lifted_bloom,
                 }
                 candidate["bloom_level"] = lifted_bloom
+            # 6b. Bloom-ladder CEILING clamp (WI-07, gated on
+            #    ``ED4ALL_BLOOM_LADDER`` via ``resolve_bloom_ladder()``).
+            #    Symmetric to the floor lift immediately above: the ladder
+            #    caps every rung at the objective's OWN declared
+            #    ``bloom_level`` (design decision — never above the
+            #    objective's own ceiling), so an emit that survived the
+            #    floor lift STILL above ``objective_declared_floor`` (e.g.
+            #    a ``block.target_bloom`` that itself exceeds the
+            #    objective's declared level) is clamped back DOWN to the
+            #    ceiling. Reuses ``_BLOOM_LEVEL_ENUM`` / ``_BLOOM_LEVEL_RANK``
+            #    (the same normalization surface the numeric/case repair at
+            #    ``_repair_outline_bloom_level`` populates) so only a value
+            #    that already survived that repair is eligible — an
+            #    unmappable value is left alone here too and still fails
+            #    the strict validator below (fail-closed; no fabrication).
+            #    Flag-off: no-op, byte-identical to pre-WI-07 behavior.
+            bloom_ceiling_meta: Optional[Dict[str, Any]] = None
+            if resolve_bloom_ladder():
+                pre_clamp_bloom = candidate.get("bloom_level")
+                if (
+                    isinstance(pre_clamp_bloom, str)
+                    and pre_clamp_bloom in _BLOOM_LEVEL_ENUM
+                    and objective_declared_floor is not None
+                    and _BLOOM_LEVEL_RANK.get(pre_clamp_bloom, -1)
+                    > _BLOOM_LEVEL_RANK.get(objective_declared_floor, -1)
+                ):
+                    bloom_ceiling_meta = {
+                        "emitted": pre_clamp_bloom,
+                        "objective_ceiling": objective_declared_floor,
+                        "clamped_to": objective_declared_floor,
+                    }
+                    candidate["bloom_level"] = objective_declared_floor
+                    self._emit_decision(
+                        decision_type="bloom_ladder_ceiling_enforcement",
+                        decision=(
+                            f"clamped block {block.block_id!r} "
+                            f"(type={block.block_type}) bloom_level from "
+                            f"{pre_clamp_bloom!r} down to "
+                            f"{objective_declared_floor!r}"
+                        ),
+                        rationale=(
+                            f"outline block {block.block_id!r} "
+                            f"(type={block.block_type}) emitted "
+                            f"bloom_level={pre_clamp_bloom!r}, ranked above "
+                            f"its objective's declared ceiling "
+                            f"{objective_declared_floor!r}; "
+                            f"ED4ALL_BLOOM_LADDER caps every rung at the "
+                            f"objective's own bloom_level, so the emit was "
+                            f"clamped down instead of shipping above the "
+                            f"ladder ceiling."
+                        ),
+                        inputs_ref=[
+                            {
+                                "source_type": "block",
+                                "path_or_id": str(block.block_id),
+                            }
+                        ],
+                    )
             if isinstance(repair_meta, dict):
                 # Fold the shape-repair signals into the grounding-repair
                 # meta dict so the per-call decision capture records every
@@ -2860,6 +2921,8 @@ class OutlineProvider(_BaseLLMProvider):
                     )
                 if bloom_floor_meta is not None:
                     repair_meta["bloom_floor"] = bloom_floor_meta
+                if bloom_ceiling_meta is not None:
+                    repair_meta["bloom_ceiling"] = bloom_ceiling_meta
                 if objective_echo_repair is not None:
                     repair_meta["objective_echo_repair"] = (
                         objective_echo_repair

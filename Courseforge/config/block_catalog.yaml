@@ -51,6 +51,21 @@
 #                    bloom_fit behaviour (back-compat; the type is uncapped).
 #                    Must be a valid Bloom level >= the entry's bloom_fit
 #                    floor (asserted by lib/generation/tests/test_block_planner.py).
+#   ladder_rungs:    (Bloom-ladder initiative, WI-10 — OPTIONAL) the Bloom-ladder
+#                    rung(s) (schemas/taxonomies/bloom_ladder_blocks.json, loader
+#                    lib/ontology/bloom_ladder.py::blocks_permitted_at) this type
+#                    may serve — the taxonomy's blocks_permitted_at inverse for
+#                    this block_type, capped so no listed rung exceeds the
+#                    entry's own bloom_ceiling when one is declared (a rung the
+#                    taxonomy names that would exceed the ceiling is dropped,
+#                    never widened). ABSENCE => either the taxonomy does not name
+#                    this type at all (``chrome``, non-pedagogical), or every
+#                    rung the taxonomy names for it exceeds the type's
+#                    bloom_ceiling (``misconception``, ``resources`` — the
+#                    intersection is empty); in both cases the type carries no
+#                    ladder role and the dynamic ladder-capping logic skips it.
+#                    Invariant asserted by
+#                    lib/generation/tests/test_bloom_ladder_catalog_invariant.py.
 version: 1
 blocks:
   - block_type: objective
@@ -62,6 +77,7 @@ blocks:
       should serve a stated objective.
     conveys: The measurable outcome (audience + behavior + condition + degree) the content targets.
     bloom_fit: [remember, understand, apply, analyze, evaluate, create]
+    ladder_rungs: [remember]
     format_summary: "<li data-cf-objective-id> inside an .objectives <section>; JSON-LD learningObjectives entry."
     framework_block: B01
 
@@ -75,6 +91,7 @@ blocks:
     conveys: The definition, properties, and rationale of a domain concept.
     bloom_fit: [remember, understand]
     bloom_ceiling: apply
+    ladder_rungs: [understand]
     format_summary: "<section> heading + prose; JSON-LD sections entry with key terms."
     framework_block: B03
 
@@ -90,6 +107,7 @@ blocks:
       scaffolded derivation.
     conveys: A single illustrative instance making a just-taught concept concrete.
     bloom_fit: [understand, apply]
+    ladder_rungs: [apply]
     format_summary: "<section> with an .example-box or multi-step .worked-example."
     framework_block: B05
     framework_block_secondary: B03
@@ -104,6 +122,7 @@ blocks:
     conveys: A scored question + misconception-targeted distractors mapped to an objective.
     bloom_fit: [understand, apply, analyze, evaluate]
     bloom_ceiling: create
+    ladder_rungs: [evaluate, create]
     default_activity_types: [multiple_choice, multiple_response, true_false, numeric, fill_in_blank, matching, short_answer, essay]
     format_summary: "<div class=assessment-item> stem + <ol> of <li data-cf-distractor-index>; QTI downstream."
     framework_block: B14
@@ -118,6 +137,7 @@ blocks:
     conveys: Extended, multi-step exposition that develops a concept beyond its bare definition.
     bloom_fit: [understand, apply, analyze]
     bloom_ceiling: apply
+    ladder_rungs: [understand]
     format_summary: "<section> heading + several prose paragraphs; JSON-LD sections entry."
     framework_block: B03
 
@@ -129,6 +149,7 @@ blocks:
       objectives) so a learner can self-check readiness before starting.
     conveys: The earlier skills/topics this content builds on and assumes.
     bloom_fit: [remember, understand]
+    ladder_rungs: [analyze]
     format_summary: "<section> heading + <ol> of prior-skill refs."
     framework_block: B02
 
@@ -141,6 +162,7 @@ blocks:
     conveys: A guided set of practice items all exercising one named skill.
     bloom_fit: [apply, analyze]
     bloom_ceiling: analyze
+    ladder_rungs: [apply]
     default_activity_types: [fill_in_blank, drag_drop, ordering, matching, numeric, categorization, labeling]
     format_summary: "<div class=activity-card> instruction + practice items."
     framework_block: B08
@@ -166,6 +188,7 @@ blocks:
       for a 1-3 sentence alert, NOT a mini-lesson.
     conveys: A single most-important alert/tip about the surrounding content.
     bloom_fit: [remember, understand]
+    ladder_rungs: [understand]
     format_summary: "<div class=callout callout-{kind}> with data-cf-content-type=callout."
     framework_block: B12
 
@@ -177,6 +200,7 @@ blocks:
       vocabulary at once (one card per term), not a single term.
     conveys: A grid of term-front / definition-back vocabulary cards.
     bloom_fit: [remember, understand]
+    ladder_rungs: [remember]
     format_summary: "<div class=flip-card-grid> of per-card <div class=flip-card>."
     framework_block: B12
     framework_block_secondary: B03
@@ -190,6 +214,7 @@ blocks:
     conveys: A single formative question with a reveal answer for self-assessment.
     bloom_fit: [understand, apply]
     bloom_ceiling: apply
+    ladder_rungs: [understand]
     default_activity_types: [multiple_choice, true_false, fill_in_blank, short_answer, numeric]
     format_summary: "<div class=self-check self-check-item> question + <details> reveal."
     framework_block: B07
@@ -202,6 +227,7 @@ blocks:
       just taught, not to introduce new material.
     conveys: A distilled bullet list of the section's most important points.
     bloom_fit: [remember, understand]
+    ladder_rungs: [understand]
     format_summary: "<section> heading + short <ul> with data-cf-content-type=summary."
     framework_block: B13
 
@@ -216,6 +242,7 @@ blocks:
       metacognitive self-reflection.
     conveys: An open-ended self-reflection question about the learner's own thinking.
     bloom_fit: [understand, evaluate]
+    ladder_rungs: [evaluate]
     format_summary: "<section> heading + <p> open-ended self-reflection question(s)."
     framework_block: B11
 
@@ -232,6 +259,7 @@ blocks:
     # consolidates peer viewpoints into a new position). The bloom_ceiling
     # admits Create so the bloom_type_range gate never down-routes a discussion.
     bloom_ceiling: create
+    ladder_rungs: [analyze, evaluate]
     default_activity_types: [essay, short_answer, branching_scenario]
     format_summary: "<section> heading + <p> open-ended group discussion question(s)."
     framework_block: B10
@@ -255,6 +283,7 @@ blocks:
       terms; never a fresh assessment or new worked example.
     conveys: A short restatement of previously-taught key terms.
     bloom_fit: [remember, understand]
+    ladder_rungs: [remember]
     format_summary: "<section> heading + short <ul>/prose recap of prior terms."
     framework_block: B02
 
@@ -268,6 +297,7 @@ blocks:
     conveys: A realistic situation grounded in the source plus a prompt to apply the concept to it.
     bloom_fit: [apply, analyze, evaluate]
     bloom_ceiling: evaluate
+    ladder_rungs: [analyze, evaluate]
     default_activity_types: [branching_scenario, short_answer, hotspot, categorization, essay]
     format_summary: "<div class=scenario-card> scenario prose + an apply <p> prompt."
     framework_block: B09
@@ -282,6 +312,7 @@ blocks:
     conveys: One stated practice problem with a reveal-on-demand worked solution.
     bloom_fit: [apply, analyze]
     bloom_ceiling: analyze
+    ladder_rungs: [apply]
     default_activity_types: [numeric, fill_in_blank, short_answer, ordering, drag_drop]
     format_summary: "<div class=problem-card> problem <p> + <details> reveal solution."
     framework_block: B08
@@ -298,6 +329,7 @@ blocks:
       vocab_card carrying a source deep-link (no LLM authoring).
     conveys: One domain term and its definition.
     bloom_fit: [remember, understand]
+    ladder_rungs: [remember]
     format_summary: "<div class=vocab-card> term + definition."
     framework_block: B12
     framework_block_secondary: B03
@@ -312,6 +344,7 @@ blocks:
     conveys: One highlighted formula plus a one-line naming of each variable.
     bloom_fit: [remember, understand, apply]
     bloom_ceiling: apply
+    ladder_rungs: [apply]
     format_summary: "<div class=formula-card> centered formula + variable gloss."
     framework_block: B03
     framework_block_secondary: B06
@@ -325,6 +358,7 @@ blocks:
       not a point to remember.
     conveys: An ordered set of concrete, checkable steps or criteria.
     bloom_fit: [apply, evaluate]
+    ladder_rungs: [apply]
     format_summary: "<ul class=checklist> of <li class=checklist-item> actionable items."
     framework_block: B08
     framework_block_secondary: B13
@@ -341,6 +375,7 @@ blocks:
       table whenever the source presents tabular / multi-column data.
     conveys: A row-by-column comparison of several items across shared dimensions.
     bloom_fit: [understand, analyze]
+    ladder_rungs: [understand]
     format_summary: "<table> with <caption>, <thead> <th scope=col>, one <tr> per row."
     framework_block: B06
     framework_block_secondary: B03
@@ -356,6 +391,7 @@ blocks:
       single vocabulary term (use vocab_card) or unrelated definitions.
     conveys: An acronym / mnemonic and the term each letter expands to.
     bloom_fit: [remember, understand]
+    ladder_rungs: [remember]
     format_summary: "<div class=acronym-card> mnemonic + <dl> of paired <dt>letter / <dd>term."
     framework_block: B06
     framework_block_secondary: B12
@@ -371,6 +407,7 @@ blocks:
       principle, flagged. One emphasized idea, not a mini-lesson.
     conveys: The single most important principle / takeaway, set apart for emphasis.
     bloom_fit: [remember, understand]
+    ladder_rungs: [remember]
     format_summary: "<aside class=key-idea> with a Key Idea framing label + 1-3 sentences."
     framework_block: B12
 
@@ -389,6 +426,7 @@ blocks:
       what the learner already has and primes them for what follows.
     conveys: An attention-gaining activation prompt that surfaces prior knowledge before content.
     bloom_fit: [remember, understand]
+    ladder_rungs: [create]
     format_summary: "<section class=hook> activation prompt <p> + forward-transition <p>."
     framework_block: B02
 
@@ -404,6 +442,7 @@ blocks:
       diagram) or prose (use explanation).
     conveys: A time-based audio/video artifact with its full caption/AD/transcript/controls a11y stack.
     bloom_fit: [understand, apply]
+    ladder_rungs: [create]
     format_summary: "<figure class=multimedia> <video controls> + <track kind=captions> + transcript <details> + audio-description note."
     framework_block: B04
 
@@ -421,6 +460,7 @@ blocks:
       framework reserves; `example` is NOT renamed or removed.
     conveys: A subgoal-labeled, per-step-justified worked procedure with an explicit fade stage.
     bloom_fit: [understand, apply]
+    ladder_rungs: [apply]
     format_summary: "<section class=worked-example> ordered <li> steps each with a subgoal label + a why gloss; data-cf-fade-state."
     framework_block: B05
     framework_block_secondary: B08
@@ -436,6 +476,7 @@ blocks:
       multimedia block when the artifact is static (not time-based).
     conveys: A dual-coded spatial/relational artifact with a structured long-description + data-table equivalent.
     bloom_fit: [understand, analyze]
+    ladder_rungs: [analyze]
     format_summary: "<figure class=diagram> image/svg + <figcaption> short + long-desc <details> + a <table> data equivalent."
     framework_block: B06
     framework_block_secondary: B03
@@ -479,6 +520,7 @@ blocks:
     conveys: A faded-scaffold set of practice items that follow a worked example and build toward independent skill performance.
     bloom_fit: [apply, analyze, evaluate, create]
     bloom_ceiling: create
+    ladder_rungs: [create]
     default_activity_types: [fill_in_blank, drag_drop, ordering, matching, numeric, categorization, short_answer]
     format_summary: "<div class=guided-practice-card> faded practice items (worked | completion | independent) following a worked example."
     framework_block: B08
