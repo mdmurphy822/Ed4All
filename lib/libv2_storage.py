@@ -83,6 +83,46 @@ VECTOR_INDEX_DIRNAME = "vector_index"
 VECTOR_INDEX_MANIFEST_FILENAME = "manifest.json"
 
 
+def has_vector_index(course_dir: Union[str, Path]) -> bool:
+    """Does ``<course_dir>/vector_index/manifest.json`` exist?
+
+    The honest ``engine="auto"`` resolution signal: a built semantic index
+    leaves a ``manifest.json`` provenance file behind. A cheap stat — no load,
+    no numpy, no torch — so a deps-slim operator box can take the lexical path
+    without importing the embedding stack.
+    """
+    manifest = Path(course_dir) / VECTOR_INDEX_DIRNAME / VECTOR_INDEX_MANIFEST_FILENAME
+    return manifest.is_file()
+
+
+def resolve_auto_engine(engine: Optional[str], course_dir: Union[str, Path]) -> str:
+    """Resolve a requested retrieval engine to a concrete one.
+
+    ``"auto"`` (or an empty/None value) resolves to ``"hybrid-rrf"`` when the
+    course has a vector index, else ``"lexical"``. hybrid-rrf — BM25 fused with
+    semantic via reciprocal-rank fusion — is the benchmark-selected engine:
+    pure semantic never beat the BM25 baseline, so ``auto`` routes through the
+    fused engine rather than the semantic arm alone whenever an index exists.
+
+    Any explicit engine passes through verbatim. That is load-bearing: an
+    explicit ``semantic`` against a missing index must surface as a typed error
+    from the pipeline (``SemanticIndexMissing``), never a silent downgrade to
+    BM25 — the anti-silent-degradation contract.
+
+    This is the SINGLE resolver for the ``auto`` seam. Both entry points that
+    expose it — the ``libv2 answer-grounded`` CLI and the GUI learner ask
+    service — call it, because two independent copies of these three lines had
+    already drifted to different engines behind the same flag name.
+    """
+    # Strip BEFORE defaulting: a whitespace-only string is truthy, so
+    # ``(engine or "auto").strip()`` would yield "" and pass an empty engine
+    # straight through to the pipeline. Blank in any form means auto.
+    requested = (engine or "").strip().lower()
+    if requested and requested != "auto":
+        return requested
+    return "hybrid-rrf" if has_vector_index(course_dir) else "lexical"
+
+
 def resolve_imscc_chunks_dir(
     course_dir: Union[str, Path],
     filename: Optional[str] = None,
@@ -903,6 +943,8 @@ __all__ = [
     'CHUNKSET_KIND_TO_DIRNAME',
     'VECTOR_INDEX_DIRNAME',
     'VECTOR_INDEX_MANIFEST_FILENAME',
+    'has_vector_index',
+    'resolve_auto_engine',
     'OBJECTIVES_ARCHIVE_FILENAME',
     'project_objectives_for_archive',
 ]

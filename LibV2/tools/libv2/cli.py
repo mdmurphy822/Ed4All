@@ -3355,13 +3355,13 @@ def _render_grounded_answer_text(result) -> None:
 @click.option("--course", "-c", required=True, help="Course slug to answer over (single-course scope)")
 @click.option("--engine", type=click.Choice(["auto", "lexical", "semantic", "hybrid-rrf"]),
               default="lexical",
-              help="Retrieval engine. 'auto' resolves to 'semantic' when a vector "
-                   "index exists for the course, else 'lexical' (BM25). "
-                   "'hybrid-rrf' (BM25 fused with semantic via reciprocal-rank "
-                   "fusion) is the benchmark-selected engine — pass it explicitly "
-                   "for the best retrieval quality when an index is present. "
-                   "semantic/hybrid-rrf fail closed against a pre-index tree — "
-                   "never a silent downgrade.")
+              help="Retrieval engine. 'auto' resolves to 'hybrid-rrf' (BM25 fused "
+                   "with semantic via reciprocal-rank fusion) when a vector index "
+                   "exists for the course, else 'lexical' (BM25) — hybrid-rrf is "
+                   "the benchmark-selected engine, since pure semantic never beat "
+                   "the BM25 baseline. Pass 'semantic' explicitly for the semantic "
+                   "arm alone. semantic/hybrid-rrf fail closed against a pre-index "
+                   "tree — never a silent downgrade.")
 @click.option("--limit", "-n", type=int, default=8, help="Max passages to retrieve / pass to the composer")
 @click.option("--with-groundedness", is_flag=True,
               help="Score the composed answer per-claim via the NLI harness "
@@ -3404,21 +3404,15 @@ def answer_grounded(ctx, query: str, course: str, engine: str, limit: int,
         print_error(f"course not found: {course_dir}")
         sys.exit(1)
 
-    # 'auto' resolves at the CLI seam: semantic when a vector index exists,
-    # else lexical. The pipeline never silently downgrades a *requested*
-    # semantic engine; 'auto' makes the choice explicit and visible.
-    resolved_engine = engine
-    if engine == "auto":
-        # Source the two string constants from the numpy-free lower layer so
-        # probing for index presence (the lexical/auto path) does not import
-        # the numpy-laden vector_index module on a deps-slim operator box.
-        from lib.libv2_storage import (
-            VECTOR_INDEX_DIRNAME,
-            VECTOR_INDEX_MANIFEST_FILENAME as MANIFEST_FILENAME,
-        )
+    # 'auto' resolves at the CLI seam through the ONE shared resolver (the
+    # numpy-free lower layer, so probing for index presence does not import the
+    # numpy-laden vector_index module on a deps-slim operator box). The GUI ask
+    # service resolves through the same function — this used to be a local copy
+    # that had drifted to 'semantic'. The pipeline never silently downgrades a
+    # *requested* engine; 'auto' makes the choice explicit and visible.
+    from lib.libv2_storage import resolve_auto_engine  # noqa: PLC0415
 
-        has_index = (course_dir / VECTOR_INDEX_DIRNAME / MANIFEST_FILENAME).exists()
-        resolved_engine = "semantic" if has_index else "lexical"
+    resolved_engine = resolve_auto_engine(engine, course_dir)
 
     capture = DecisionCapture(course_code=course, phase="libv2-answer", tool="libv2")
 

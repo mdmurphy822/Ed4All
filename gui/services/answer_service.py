@@ -47,28 +47,32 @@ def _has_vector_index(libv2_root: Path, slug: str) -> bool:
     """Cheap fs check: does ``courses/<slug>/vector_index/manifest.json`` exist?
 
     The honest "auto" resolution signal (D5): a built semantic index leaves a
-    ``manifest.json`` provenance file. No load, no torch — just a stat.
+    ``manifest.json`` provenance file. No load, no torch — just a stat. Thin
+    root+slug wrapper over the shared course-dir helper.
     """
-    manifest = libv2_root / "courses" / slug / "vector_index" / "manifest.json"
-    return manifest.is_file()
+    from lib.libv2_storage import has_vector_index  # noqa: PLC0415
+
+    return has_vector_index(libv2_root / "courses" / slug)
 
 
 def _resolve_engine(engine: str, libv2_root: Path, slug: str) -> str:
     """Resolve the requested engine to a concrete engine BEFORE the pipeline call.
 
-    ``"auto"`` → ``"hybrid-rrf"`` when a vector index manifest exists for the
-    course, else ``"lexical"``. hybrid-rrf (BM25 fused with semantic via
-    reciprocal-rank fusion) is the benchmark-selected default — pure semantic
-    never beat the BM25 baseline, so ``auto`` routes through the fused engine
-    when an index is available. Any explicit engine (``lexical`` / ``semantic``
-    / ``hybrid-rrf``) passes through verbatim — an explicit ``semantic`` against
-    a missing index surfaces as a typed 503 in the router
+    Delegates to ``lib.libv2_storage.resolve_auto_engine`` — the SINGLE resolver
+    for this seam, shared with the ``libv2 answer-grounded`` CLI. This wrapper
+    exists only to adapt (root, slug) to the shared helper's course-dir
+    signature; the policy itself must not be re-stated here, because a local
+    copy of it is exactly how the CLI and GUI drifted to different engines
+    behind the same ``auto`` flag.
+
+    ``"auto"`` → ``"hybrid-rrf"`` when a vector index manifest exists, else
+    ``"lexical"``. Any explicit engine passes through verbatim — an explicit
+    ``semantic`` against a missing index surfaces as a typed 503 in the router
     (anti-silent-degradation contract), never a downgrade.
     """
-    requested = (engine or "auto").strip().lower()
-    if requested == "auto":
-        return "hybrid-rrf" if _has_vector_index(libv2_root, slug) else "lexical"
-    return requested
+    from lib.libv2_storage import resolve_auto_engine  # noqa: PLC0415
+
+    return resolve_auto_engine(engine, libv2_root / "courses" / slug)
 
 
 def ask(

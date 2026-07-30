@@ -69,7 +69,10 @@ Keep the subject under 72 characters. Use the body for context if the change isn
 
 ## Pull Request Process
 
-1. Branch from `main`. Name your branch descriptively (e.g., `fix/trainforge-bloom-validation`).
+1. Branch from `dev-v0.4.0`, the repository's default branch and active trunk.
+   Name your branch descriptively (e.g., `fix/trainforge-bloom-validation`).
+   `main` is a frozen pre-v0.4.0 artifact with an unrelated history — do not
+   branch from it, and do not open PRs against it.
 2. Make sure all tests pass locally before opening a PR.
 3. In the PR body, describe **what** changed and **why**. Link related issues.
 4. One approval required to merge. Squash-merge preferred for single-purpose branches.

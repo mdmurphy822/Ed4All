@@ -272,7 +272,10 @@ libv2 answer-grounded "What is a SHACL NodeShape?" --course demo-course-1
 libv2 answer-grounded "Explain RRF fusion" -c demo-course-2 --engine semantic
 libv2 answer-grounded "Define a derivative" -c demo-course-3 --json --with-groundedness
 
-# --engine auto picks semantic when a vector index exists, else lexical.
+# --engine auto picks hybrid-rrf when a vector index exists, else lexical — the
+# benchmark-selected default (pure semantic never beat BM25). Resolved by the ONE
+# shared `lib.libv2_storage.resolve_auto_engine`, which the GUI ask service also
+# calls; an explicit engine is never rewritten. Pass `semantic` for that arm alone.
 # --log persists the Q&A under courses/<slug>/queries/ (answered_by=grounded:<model_id>).
 
 # Eval harness over a course gold set (BM25/semantic) — emits

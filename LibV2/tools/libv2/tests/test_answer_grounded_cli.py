@@ -15,7 +15,8 @@ local server, NO vector index. Coverage:
   with operator guidance), SemanticIndexMissing (exit 1, build guidance).
 - unknown engine rejected by click.Choice (exit 2 — usage error).
 - unknown course fails closed (exit 1).
-- ``--engine auto`` resolves semantic when an index manifest exists, else lexical.
+- ``--engine auto`` resolves hybrid-rrf when an index manifest exists, else lexical
+  (the benchmark-selected default, shared verbatim with the GUI ask service).
 - delegations: answer-eval / refusal-calibrate forward argv + exit code.
 """
 
@@ -292,12 +293,31 @@ class TestTypedErrorExits:
 
 
 class TestEngineAutoAndValidation:
-    def test_auto_resolves_semantic_when_index_present(self, monkeypatch, tmp_path):
+    def test_auto_resolves_hybrid_rrf_when_index_present(self, monkeypatch, tmp_path):
+        """auto -> hybrid-rrf, NOT semantic.
+
+        hybrid-rrf is the benchmark-selected engine (pure semantic never beat
+        the BM25 baseline), and it is what the GUI ask service has always
+        resolved auto to. The CLI resolved to ``semantic`` until both were
+        moved onto the one shared resolver.
+        """
         pytest.importorskip("numpy")  # _make_course(with_index) imports vector_index (needs [embedding])
         _make_course(tmp_path, with_index=True)
         seen = {}
         _patch(monkeypatch, lambda *a, **k: (seen.update(k), _answered())[1])
         res = _invoke(tmp_path, "answer-grounded", "q", "--course", _SLUG, "--engine", "auto")
+        assert res.exit_code == 0, res.output
+        assert seen["engine"] == "hybrid-rrf"
+
+    def test_explicit_semantic_is_not_rewritten_to_hybrid(self, monkeypatch, tmp_path):
+        """Only ``auto`` is resolved; an explicit engine passes through verbatim."""
+        pytest.importorskip("numpy")
+        _make_course(tmp_path, with_index=True)
+        seen = {}
+        _patch(monkeypatch, lambda *a, **k: (seen.update(k), _answered())[1])
+        res = _invoke(
+            tmp_path, "answer-grounded", "q", "--course", _SLUG, "--engine", "semantic"
+        )
         assert res.exit_code == 0, res.output
         assert seen["engine"] == "semantic"
 
