@@ -1138,6 +1138,84 @@ def _resolve_objectives_path(
     return None
 
 
+def _build_bloom_ladder_ceiling(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """Inputs for ``BloomLadderCeilingValidator`` (``bloom_ladder_ceiling``) — WI-21.
+
+    Wired at BOTH ``inter_tier_validation`` and ``post_rewrite_validation``
+    (course_generation + textbook_to_course share this ONE builder). The
+    validator's real input is the rewrite-tier ``blocks_final.jsonl`` (see
+    the validator module docstring — it is the read-only-off-disk backstop
+    over ladder provenance) plus the canonical ``synthesized_objectives.json``.
+
+    On a NORMAL full run ``content_generation_rewrite`` has not produced
+    ``blocks_final_path`` yet at ``inter_tier_validation`` time, so this
+    builder returns ``required_missing=['blocks_final_path']`` there and
+    the gate structurally skips — it only runs for real once
+    ``post_rewrite_validation`` fires. The SAME builder also serves the
+    ``courseforge-validate`` stage subcommand, which runs BOTH phases in
+    one pass against a project export pre-populated from disk
+    (``_synthesize_outline_output``); there
+    ``content_generation_rewrite.blocks_final_path`` IS already resolvable
+    at ``inter_tier_validation`` time too, so re-validating the ladder
+    ceiling works from either seam.
+    """
+    inputs: Dict[str, Any] = {}
+    cgr = phase_outputs.get("content_generation_rewrite") or {}
+    blocks_final = cgr.get("blocks_final_path") or workflow_params.get(
+        "blocks_final_path"
+    )
+    if isinstance(blocks_final, str) and blocks_final:
+        inputs["blocks_final_path"] = blocks_final
+    objectives_path = _resolve_objectives_path(phase_outputs, workflow_params)
+    if objectives_path:
+        inputs["synthesized_objectives_path"] = objectives_path
+    if "blocks_final_path" not in inputs:
+        return inputs, ["blocks_final_path"]
+    return inputs, []
+
+
+def _build_dpo_yield_projection(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """Inputs for ``DpoYieldProjectionValidator`` (``dpo_yield_projection``)
+    — Bloom-ladder addendum AD-02.
+
+    Shares chunk-path resolution with ``_build_training_synthesis``
+    (``imscc_chunks_path`` / ``chunks_path`` / ``semantik_chunks_path``
+    precedence) and objectives-path resolution with
+    ``_build_bloom_ladder_ceiling`` (``_resolve_objectives_path``) — the
+    projection has to see the SAME chunkset + canonical objectives the real
+    ``training_synthesis`` phase reads, or the famine projection means
+    nothing. ``min_dpo_pairs`` threads through only when the workflow
+    explicitly supplied one (no established pipeline route to it today; the
+    validator defaults to the trainer's own 50-pair floor when omitted).
+
+    ``chunks_path`` is the one required input — without a chunkset there is
+    nothing to project, so the gate structurally skips rather than passing
+    vacuously on a course with no corpus.
+    """
+    inputs: Dict[str, Any] = {}
+    chunks = _locate(
+        phase_outputs,
+        "imscc_chunks_path", "chunks_path", "semantik_chunks_path",
+    )
+    if chunks:
+        inputs["chunks_path"] = chunks
+    objectives_path = _resolve_objectives_path(phase_outputs, workflow_params)
+    if objectives_path:
+        inputs["objectives_path"] = objectives_path
+    min_dpo_pairs = workflow_params.get("min_dpo_pairs")
+    if min_dpo_pairs is not None:
+        inputs["min_dpo_pairs"] = min_dpo_pairs
+    if not chunks:
+        return inputs, ["chunks_path"]
+    return inputs, []
+
+
 def _resolve_staging_manifest_path(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
@@ -3342,6 +3420,24 @@ def default_router() -> GateInputRouter:
         "lib.validators.cross_week_spacing.CrossWeekSpacingValidator",
         _build_cross_week_spacing,
     )
+    # Bloom-ladder initiative WI-21 — bloom_ladder_ceiling, wired at BOTH
+    # inter_tier_validation and post_rewrite_validation in both two-pass
+    # workflows. See _build_bloom_ladder_ceiling for why the SAME builder
+    # structurally skips at inter_tier_validation on a normal full run
+    # (blocks_final_path not emitted yet) and runs for real at
+    # post_rewrite_validation.
+    r.register(
+        "lib.validators.bloom_ladder_ceiling.BloomLadderCeilingValidator",
+        _build_bloom_ladder_ceiling,
+    )
+    # Bloom-ladder initiative addendum AD-02 — dpo_yield_projection, wired at
+    # textbook_to_course::training_synthesis alongside synthesis_quota. See
+    # _build_dpo_yield_projection for the chunks_path / objectives_path /
+    # min_dpo_pairs input contract.
+    r.register(
+        "lib.validators.dpo_yield_projection.DpoYieldProjectionValidator",
+        _build_dpo_yield_projection,
+    )
     # Worker W7: assessment_item payload-shape gate. Same Block-input
     # surface as the four Block*Validators above (filters to
     # block_type == "assessment_item" internally), so it reuses the
@@ -3685,6 +3781,10 @@ def default_router() -> GateInputRouter:
         "lib.validators.pair.lo_refs.PairLearningOutcomeRefsValidator",
         "lib.validators.pair.objective_delivery.PairObjectiveDeliveryValidator",
         "lib.validators.pair.promotion.TrainingPairPromotionValidator",
+        # WI-21 — the WI-16 rejected-side entailment gate. IDENTICAL input
+        # contract to its pair-tier siblings above (preference_pairs_path +
+        # chunk-window resolution), so no dedicated builder is needed.
+        "lib.validators.pair.rejected_claim_entailment.RejectedClaimEntailmentValidator",
         # Deprecated module aliases still resolvable from older YAML.
         "lib.validators.pair_claim_support.PairClaimSupportValidator",
         "lib.validators.pair_lo_refs.PairLearningOutcomeRefsValidator",

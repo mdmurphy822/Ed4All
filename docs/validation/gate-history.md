@@ -635,3 +635,76 @@ on block HTML).
 > two-pass workflow): `course_generation` 29→30 warning / 63→64 total,
 > `textbook_to_course` 72→73 warning / 136→137 total, Total 104→106 warning /
 > 208→210 total.
+
+### Bloom-ladder initiative WI-21 — `bloom_ladder_ceiling` + `rejected_claim_entailment` gate wiring — 2026-07-29
+
+Wires the two Bloom-ladder-initiative validators built ahead of this landing
+(WI-15's `lib.validators.bloom_ladder_ceiling.BloomLadderCeilingValidator`,
+WI-16's `lib.validators.pair.rejected_claim_entailment.RejectedClaimEntailmentValidator`)
+into `config/workflows.yaml` + `MCP/hardening/gate_input_routing.py`. Both are
+**warning day-1**, gated by their own default-OFF flags/graceful-degrade
+contracts, and never block a build.
+
+- `bloom_ladder_ceiling` — wired at BOTH `inter_tier_validation` +
+  `post_rewrite_validation` in BOTH `course_generation` and
+  `textbook_to_course` (+4 warning). One shared builder
+  (`_build_bloom_ladder_ceiling`) threads `content_generation_rewrite`'s
+  `blocks_final_path` + the canonical `synthesized_objectives.json` path
+  regardless of which of the two phases fires: on a normal full run the
+  rewrite tier hasn't emitted yet at `inter_tier_validation` time, so that
+  seam structurally skips (`required_missing=['blocks_final_path']`) and the
+  gate runs for real only at `post_rewrite_validation`; the `courseforge-
+  validate` stage subcommand pre-populates the rewrite tier from disk and
+  runs both phases in one pass, so wiring both seams gives that subcommand
+  full ladder coverage too. The validator itself structured-skips (INFO
+  `BLOOM_LADDER_DISABLED`) when `ED4ALL_BLOOM_LADDER` is unset — byte-stable
+  off.
+- `rejected_claim_entailment` — wired at `textbook_to_course::training_synthesis`
+  alongside the existing pair-tier gates (+1 warning; `course_generation` has
+  no `training_synthesis` phase). Reuses the existing
+  `_build_training_synthesis` builder verbatim (its `preference_pairs_path` +
+  chunk-window resolution is exactly this validator's input contract) — no
+  new builder needed, just the registry entry. Flags a
+  `source="misconception"` preference pair whose `rejected` completion is
+  itself NLI-entailed by its cited source chunk (entailment ≥0.70); graceful-
+  degrades on missing NLI/embedding extras unless
+  `TRAINFORGE_REQUIRE_EMBEDDINGS` is set.
+
+The count table is re-derived from `config/workflows.yaml`:
+`course_generation` 31→33 warning / 64→66 total, `textbook_to_course`
+75→78 warning / 139→142 total, Total 109→114 warning / 212→217 total
+(critical unchanged at 103).
+
+### Bloom-ladder initiative addendum AD-02 — `dpo_yield_projection` gate wiring — 2026-07-29
+
+Wires `lib.validators.dpo_yield_projection.DpoYieldProjectionValidator` — the
+DPO-yield famine guard built alongside this landing — into
+`config/workflows.yaml` + `MCP/hardening/gate_input_routing.py`. Warning
+day-1, gated by its own structured-skip contract, never blocks a build.
+
+- `dpo_yield_projection` — wired at `textbook_to_course::training_synthesis`
+  alongside the existing `synthesis_quota` gate (+1 warning; `course_generation`
+  has no `training_synthesis` phase). New builder `_build_dpo_yield_projection`
+  threads `chunks_path` (required — `imscc_chunks_path` / `chunks_path` /
+  `semantik_chunks_path` precedence, mirroring `_build_training_synthesis`) +
+  `objectives_path` (`_resolve_objectives_path`, shared with
+  `_build_bloom_ladder_ceiling`) + an optional `min_dpo_pairs` override.
+  Projects the same admission chain the real synthesis run exercises
+  (`resolve_chunk_misconceptions` → `focus_chunk_on_canonical_objective` +
+  `pair_eligibility` → `micro_preference_eligibility` →
+  `is_dpo_editorial_record`, every predicate imported from the real
+  Trainforge modules rather than reimplemented) and fires
+  `DPO_YIELD_PROJECTION_BELOW_FLOOR` when the projected admissible count is
+  below `min_dpo_pairs` (default 50). Structured-skips on missing
+  `chunks_path` / `objectives_path`, and on a legacy corpus (zero recovered
+  misconception cards AND `ED4ALL_BLOOM_LADDER` unset) so pre-initiative
+  corpora never see a spurious famine warning. The same projection core
+  (`lib.validators.dpo_yield_projection.project_dpo_yield`) backs the
+  standalone `python -m Trainforge.scripts.model_dpo_yield` CLI, so an
+  operator can run the identical projection ahead of a manual synthesis
+  invocation, not just inside the gated pipeline.
+
+The count table is re-derived from `config/workflows.yaml`:
+`textbook_to_course` 78→79 warning / 142→143 total, Total 114→115 warning /
+217→218 total (`course_generation` unchanged at 33 warning / 66 total;
+critical unchanged at 103).

@@ -13,7 +13,15 @@ axes:
    through to :data:`_DEFAULT_ENTAILMENT_FLOOR` (0.40). A miss requires
    BOTH ``entailment < threshold`` AND ``contradiction > _CONTRADICTION_FLOOR``
    (0.50) — the contradiction guard filters surface-form variance from
-   genuine pedagogical misses.
+   genuine pedagogical misses. **Bloom-ladder initiative (WI-17):** a
+   block carrying WI-06's ``Block.ladder_rung`` provenance (only ever set
+   under ``ED4ALL_BLOOM_LADDER``) resolves its floor from the
+   per-(block_type, bloom_rung) table
+   :data:`_PER_BLOCK_TYPE_BLOOM_RUNG_ENTAILMENT_FLOOR` instead, falling
+   back to the per-block-type table above when the rung is unset / not a
+   canonical Bloom level / the (block_type, rung) pair has no dedicated
+   entry. A legacy block (``ladder_rung is None``) hits the per-type
+   table unchanged.
 
 2. **Bloom alignment**: ``bloom_gap = BLOOM_LEVELS.index(declared) -
    BLOOM_LEVELS.index(observed_block_bloom)``. ``gap >= 2`` triggers
@@ -166,6 +174,53 @@ _PER_BLOCK_TYPE_ENTAILMENT_FLOOR: Dict[str, float] = {
 }
 
 
+#: Per-(block_type, bloom_rung) entailment thresholds for ladder-authored
+#: blocks (Bloom-ladder initiative WI-17). Resolved ONLY when the audited
+#: block carries a non-empty ``Block.ladder_rung`` — WI-06's
+#: planner-stamped rung provenance, itself gated behind
+#: ``ED4ALL_BLOOM_LADDER`` (default OFF; see
+#: ``lib.generation.bloom_ladder_blocks.resolve_bloom_ladder``). When that
+#: flag is off no block ever carries ``ladder_rung``, so this table is
+#: never consulted and behavior stays byte-identical to the pre-WI-17
+#: validator. A legacy block (``ladder_rung is None``) always falls
+#: through to :data:`_PER_BLOCK_TYPE_ENTAILMENT_FLOOR` unchanged.
+#:
+#: Keyed on the (block_type, bloom_rung) pairs the bloom-ladder schema
+#: (``schemas/taxonomies/bloom_ladder_blocks.json``) actually permits for
+#: the ``_AUDITED_BLOCK_TYPES`` set (a combination the schema never
+#: produces, e.g. ``concept`` at ``apply``, has no entry and falls back to
+#: the per-block-type floor via
+#: :func:`_resolve_bloom_rung_threshold_table`).
+#:
+#: Rationale per rung (day-1 starting points; same "calibrate against a
+#: real corpus before a severity flip via
+#: ``lib.governance.calibration_gate.resolve_severity_flip``" posture as
+#: the base table above):
+#:   - ``understand``-rung concept / explanation / self_check_question and
+#:     ``apply``-rung example / activity: match the base per-type
+#:     floor — these are the ONLY rung each type is authored at under the
+#:     current ladder schema, so there is no cross-rung signal to
+#:     differentiate from the day-1 per-type calibration.
+#:   - ``create``-rung activity / assessment_item: LOOSER than the base
+#:     floor — a create-level task is a generative, open-ended synthesis
+#:     exercise that legitimately diverges from a literal restatement of
+#:     the objective's behavioral outcome; holding it to the base floor
+#:     would false-positive on genuinely on-target authoring.
+#:   - ``evaluate``-rung assessment_item: matches the base (tightest)
+#:     floor — judge/critique-style items stay close to the objective
+#:     statement.
+_PER_BLOCK_TYPE_BLOOM_RUNG_ENTAILMENT_FLOOR: Dict[Tuple[str, str], float] = {
+    ("concept", "understand"): 0.30,
+    ("explanation", "understand"): 0.45,
+    ("self_check_question", "understand"): 0.50,
+    ("example", "apply"): 0.40,
+    ("activity", "apply"): 0.40,
+    ("activity", "create"): 0.30,
+    ("assessment_item", "evaluate"): 0.55,
+    ("assessment_item", "create"): 0.45,
+}
+
+
 #: Contradiction floor — entailment misses only fire when contradiction
 #: is ALSO above this threshold. Filters surface-form variance from
 #: genuine misses.
@@ -310,6 +365,34 @@ def _resolve_threshold_table(
     return dict(_PER_BLOCK_TYPE_ENTAILMENT_FLOOR)
 
 
+def _resolve_bloom_rung_threshold_table(
+    inputs: Dict[str, Any],
+) -> Dict[Tuple[str, str], float]:
+    """Resolve the per-(block_type, bloom_rung) entailment threshold table.
+
+    Mirrors :func:`_resolve_threshold_table`'s merge/override hook.
+    Operators can override per-gate via
+    ``gate.config.thresholds.per_block_type_bloom_rung_entailment_floor``
+    in ``config/workflows.yaml``; the executor merges ``gate.config`` into
+    the inputs dict before calling the validator. The override shape is a
+    NESTED mapping ``{block_type: {bloom_rung: floor}}`` rather than a
+    flat table — the (block_type, bloom_rung) composite key cannot
+    round-trip through YAML/JSON as a Python tuple.
+    """
+    merged = dict(_PER_BLOCK_TYPE_BLOOM_RUNG_ENTAILMENT_FLOOR)
+    raw = inputs.get("per_block_type_bloom_rung_entailment_floor")
+    if isinstance(raw, dict):
+        for block_type, per_rung in raw.items():
+            if not isinstance(per_rung, dict):
+                continue
+            for rung, floor in per_rung.items():
+                try:
+                    merged[(str(block_type), str(rung))] = float(floor)
+                except (TypeError, ValueError):
+                    continue
+    return merged
+
+
 def _emit_decision(
     capture: Any,
     *,
@@ -330,6 +413,7 @@ def _emit_decision(
     objective_verb: Optional[str] = None,
     block_verb: Optional[str] = None,
     alignment_cap_at_1: bool = False,
+    ladder_rung: Optional[str] = None,
 ) -> None:
     """Emit one ``block_objective_delivery_check`` decision per audited
     (block, objective_id) pair.
@@ -339,7 +423,10 @@ def _emit_decision(
     declared_bloom, observed_bloom, bloom_gap,
     statement_entailment_score, contradiction_score, verb_match_count,
     the per-block-type entailment threshold used, whether NLI deps
-    were loaded, and the resolved status enum value.
+    were loaded, and the resolved status enum value. ``ladder_rung``
+    (WI-17) additionally records which entailment-floor table resolved
+    ``entailment_threshold`` — the per-(block_type, bloom_rung) table
+    when set, the legacy per-block-type table when ``None``.
     """
     if capture is None:
         return
@@ -379,6 +466,11 @@ def _emit_decision(
             f"block_verb={block_verb or 'n/a'!r}, "
             f"alignment_cap_at_1={alignment_cap_at_1}."
         )
+    # Ladder-rung provenance (WI-17) — only appended when the block
+    # actually carries a resolved rung, so the flag-off rationale stays
+    # byte-identical.
+    if ladder_rung is not None:
+        rationale += f" ladder_rung={ladder_rung!r}."
     try:
         capture.log_decision(
             decision_type="block_objective_delivery_check",
@@ -484,6 +576,7 @@ class BlockObjectiveDeliveryValidator:
             objectives_map = {}
 
         threshold_table = _resolve_threshold_table(inputs)
+        bloom_rung_table = _resolve_bloom_rung_threshold_table(inputs)
         nli = self._get_nli()
         nli_loaded = nli is not None
 
@@ -609,6 +702,25 @@ class BlockObjectiveDeliveryValidator:
             entailment_threshold = threshold_table.get(
                 block_type, _DEFAULT_ENTAILMENT_FLOOR
             )
+
+            # Bloom-ladder initiative (WI-17): a ladder-authored block
+            # (one carrying WI-06's ``ladder_rung`` provenance) resolves
+            # its entailment floor from the per-(block_type, bloom_rung)
+            # table instead, falling back to the per-block-type floor
+            # above when the rung is unset / not a canonical Bloom level /
+            # the (block_type, rung) pair has no dedicated entry. Legacy
+            # blocks (``ladder_rung is None``) hit the per-type floor
+            # unchanged — byte-identical to the pre-WI-17 behavior.
+            ladder_rung_norm: Optional[str] = None
+            raw_ladder_rung = _block_attr(block, "ladder_rung")
+            if isinstance(raw_ladder_rung, str):
+                candidate = raw_ladder_rung.strip().lower()
+                if candidate in _BLOOM_INDEX:
+                    ladder_rung_norm = candidate
+            if ladder_rung_norm is not None:
+                entailment_threshold = bloom_rung_table.get(
+                    (block_type, ladder_rung_norm), entailment_threshold
+                )
 
             alignment_entries: List[Dict[str, Any]] = list(
                 _block_attr(block, "objective_alignment") or ()
@@ -1000,6 +1112,7 @@ class BlockObjectiveDeliveryValidator:
                     objective_verb=obj_verb_for_entry,
                     block_verb=blk_verb_for_entry,
                     alignment_cap_at_1=alignment_cap_at_1,
+                    ladder_rung=ladder_rung_norm,
                 )
 
             # Persist the populated alignment field back onto the block
@@ -1057,6 +1170,7 @@ __all__ = [
     "_AUDITED_BLOCK_TYPES",
     "_DEFAULT_ENTAILMENT_FLOOR",
     "_PER_BLOCK_TYPE_ENTAILMENT_FLOOR",
+    "_PER_BLOCK_TYPE_BLOOM_RUNG_ENTAILMENT_FLOOR",
     "_CONTRADICTION_FLOOR",
     "_CODE_STATEMENT_UNDERSUPPORTED",
     "_CODE_BLOOM_UNDERMET",

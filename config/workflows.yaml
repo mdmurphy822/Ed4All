@@ -313,6 +313,30 @@ workflows:
               on_error: warn
             description: Gap #11 — same worked example (number-sequence signature) recurring across >= 3 blocks per module. Warning day-1.
 
+          # Bloom-ladder initiative WI-21 (WI-15 validator) — ceiling +
+          # completeness backstop over the ladder's ``ladder_rung`` /
+          # ``bloom_level`` provenance. Reads the rewrite-tier
+          # ``blocks_final.jsonl`` (builder is a structural no-op here on a
+          # normal full run, since content_generation_rewrite hasn't
+          # produced it yet at THIS seam — see
+          # ``MCP/hardening/gate_input_routing.py::_build_bloom_ladder_ceiling``);
+          # wired at this phase too so the ``courseforge-validate`` stage
+          # subcommand (which pre-populates the rewrite tier from disk and
+          # runs both validation phases in one pass) gets full ladder
+          # coverage from either seam. Structured no-op (INFO
+          # ``BLOOM_LADDER_DISABLED``) when ``ED4ALL_BLOOM_LADDER`` is
+          # unset; never blocks (``passed`` honors only critical issues,
+          # none of which this validator ever emits).
+          - gate_id: bloom_ladder_ceiling
+            validator: lib.validators.bloom_ladder_ceiling.BloomLadderCeilingValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Bloom-ladder initiative — never-above-ceiling + per-rung completeness backstop over rewrite-tier blocks vs. each objective's own bloom_level. Warning day-1; no-op when ED4ALL_BLOOM_LADDER is unset.
+
       - name: content_generation_rewrite
         agents: [content-generator]
         # NOTE: parallel/batch_by intentionally disabled. The handler
@@ -1028,6 +1052,27 @@ workflows:
               on_fail: warn
               on_error: warn
             description: C3-6 — course-level §6.5 cross-week distributed practice (spacing). Flags a substantive concept/objective taught+assessed entirely within one week with no spaced revisit. Warning day-1; deferred critical-flip; no-op when ED4ALL_BLOCK_QUALITY_RUBRIC unset.
+
+          # Bloom-ladder initiative WI-21 (WI-15 validator) — same gate_id
+          # as the inter_tier_validation wiring above; THIS is the seam
+          # where it actually runs on a normal full build, since
+          # content_generation_rewrite has by now emitted
+          # ``blocks_final.jsonl``. Two structural checks: (a) no block's
+          # own bloom_level / ladder_rung ranks above ANY of its target
+          # objectives' own synthesized bloom_level ceiling; (b) every
+          # objective with a resolvable ceiling has >=1 covering block at
+          # EACH rung from remember up to that ceiling. Structured no-op
+          # (INFO ``BLOOM_LADDER_DISABLED``) when ``ED4ALL_BLOOM_LADDER``
+          # is unset; never blocks (no critical issues emitted).
+          - gate_id: bloom_ladder_ceiling
+            validator: lib.validators.bloom_ladder_ceiling.BloomLadderCeilingValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Bloom-ladder initiative — never-above-ceiling + per-rung completeness backstop over rewrite-tier blocks vs. each objective's own bloom_level. Warning day-1; no-op when ED4ALL_BLOOM_LADDER is unset.
 
       # W10 (plan plans/finegrain/w10-assessments-qti-discussions-2026-06.md
       # §2.4 Option A) — pre-packaging PRODUCT-assessment synthesis. Mirror of
@@ -2964,6 +3009,30 @@ workflows:
               on_error: warn
             description: Gap #11 — same worked example (number-sequence signature) recurring across >= 3 blocks per module. Warning day-1.
 
+          # Bloom-ladder initiative WI-21 (WI-15 validator) — ceiling +
+          # completeness backstop over the ladder's ``ladder_rung`` /
+          # ``bloom_level`` provenance. Reads the rewrite-tier
+          # ``blocks_final.jsonl`` (builder is a structural no-op here on a
+          # normal full run, since content_generation_rewrite hasn't
+          # produced it yet at THIS seam — see
+          # ``MCP/hardening/gate_input_routing.py::_build_bloom_ladder_ceiling``);
+          # wired at this phase too so the ``courseforge-validate`` stage
+          # subcommand (which pre-populates the rewrite tier from disk and
+          # runs both validation phases in one pass) gets full ladder
+          # coverage from either seam. Structured no-op (INFO
+          # ``BLOOM_LADDER_DISABLED``) when ``ED4ALL_BLOOM_LADDER`` is
+          # unset; never blocks (``passed`` honors only critical issues,
+          # none of which this validator ever emits).
+          - gate_id: bloom_ladder_ceiling
+            validator: lib.validators.bloom_ladder_ceiling.BloomLadderCeilingValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Bloom-ladder initiative — never-above-ceiling + per-rung completeness backstop over rewrite-tier blocks vs. each objective's own bloom_level. Warning day-1; no-op when ED4ALL_BLOOM_LADDER is unset.
+
       - name: content_generation_rewrite
         agents: [content-generator]
         seats: [spark-super]  # SEAT SCHEDULE: Super-seat range (two-pass rewrite tier).
@@ -4327,6 +4396,27 @@ workflows:
               on_error: warn
             description: C3-6 — course-level §6.5 cross-week distributed practice (spacing). Flags a substantive concept/objective taught+assessed entirely within one week with no spaced revisit. Warning day-1; deferred critical-flip; no-op when ED4ALL_BLOCK_QUALITY_RUBRIC unset.
 
+          # Bloom-ladder initiative WI-21 (WI-15 validator) — same gate_id
+          # as the inter_tier_validation wiring above; THIS is the seam
+          # where it actually runs on a normal full build, since
+          # content_generation_rewrite has by now emitted
+          # ``blocks_final.jsonl``. Two structural checks: (a) no block's
+          # own bloom_level / ladder_rung ranks above ANY of its target
+          # objectives' own synthesized bloom_level ceiling; (b) every
+          # objective with a resolvable ceiling has >=1 covering block at
+          # EACH rung from remember up to that ceiling. Structured no-op
+          # (INFO ``BLOOM_LADDER_DISABLED``) when ``ED4ALL_BLOOM_LADDER``
+          # is unset; never blocks (no critical issues emitted).
+          - gate_id: bloom_ladder_ceiling
+            validator: lib.validators.bloom_ladder_ceiling.BloomLadderCeilingValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Bloom-ladder initiative — never-above-ceiling + per-rung completeness backstop over rewrite-tier blocks vs. each objective's own bloom_level. Warning day-1; no-op when ED4ALL_BLOOM_LADDER is unset.
+
       # W10 (plan plans/finegrain/w10-assessments-qti-discussions-2026-06.md
       # §2.4 Option A) — pre-packaging PRODUCT-assessment synthesis. Reuses
       # the Trainforge AssessmentGenerator + the license-clean provider seat
@@ -4825,6 +4915,30 @@ workflows:
               on_error: warn
             description: Wave 110 — estimate finite session dispatches separately from local/hosted provider requests
 
+          # Bloom-ladder initiative addendum AD-02 — DPO-yield famine guard.
+          # Eligibility is not admission: a corpus can look synthesis-ready
+          # and still emit zero trainer-admissible preference pairs, and the
+          # trainer only discovers a below-min_dpo_pairs corpus AFTER the
+          # multi-hour paraphrase loop has already run (dpo_fail_hard=true
+          # raises InsufficientPreferencePairsError post-hoc). This gate
+          # projects the same admission chain (resolve_chunk_misconceptions
+          # -> focus_chunk_on_canonical_objective -> pair_eligibility ->
+          # micro_preference_eligibility -> is_dpo_editorial_record) up
+          # front and warns before that wall-clock is spent. Warning day-1,
+          # never blocks (passed honors only critical issues, none emitted).
+          # Structured skip on a legacy corpus (zero misconception cards AND
+          # ED4ALL_BLOOM_LADDER unset) so byte-identical corpora built before
+          # this initiative never see a spurious famine warning.
+          - gate_id: dpo_yield_projection
+            validator: lib.validators.dpo_yield_projection.DpoYieldProjectionValidator
+            severity: warning
+            threshold:
+              min_dpo_pairs: 50
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Bloom-ladder addendum AD-02 — project DPO-admissible preference-pair yield before the paraphrase loop runs; structured skip on legacy corpora with zero misconception cards.
+
           - gate_id: min_edge_count
             validator: lib.validators.min_edge_count.MinEdgeCountValidator
             severity: critical
@@ -5000,6 +5114,30 @@ workflows:
               on_fail: block
               on_error: fail_closed
             description: Worker W2.E — per-pair promotion validator audit. Verifies every emitted pair carries promotion_status (the in-process filter ran). Critical because a missing stamp means a pair bypassed the 7-criterion filter.
+
+          # WI-16 — closes a hole in the claim-support family: the sibling
+          # pair_claim_support / pair_objective_delivery gates only ever
+          # score the CHOSEN side against its cited chunk; neither ever
+          # NLI-scores a misconception-sourced pair's REJECTED side, so an
+          # authoring slip that makes the "wrong" framing entailed by its
+          # own source chunk (the DPO signal then silently teaches AWAY
+          # from a statement the source itself asserts) went uncaught.
+          # Walks preference_pairs.jsonl filtered to source="misconception",
+          # NLI-scores each pair's rejected completion against its cited
+          # chunk's text; entailment >= 0.70 flags
+          # REJECTED_ENTAILED_BY_SOURCE. course_generation has no
+          # training_synthesis phase, so this gate is textbook_to_course-only.
+          # Warning-severity, always passed=True (day-1 calibration
+          # posture, mirrors pair_claim_support); graceful-degrades on
+          # missing NLI/embedding extras (NLI_DEPS_MISSING) unless
+          # TRAINFORGE_REQUIRE_EMBEDDINGS is set.
+          - gate_id: rejected_claim_entailment
+            validator: lib.validators.pair.rejected_claim_entailment.RejectedClaimEntailmentValidator
+            severity: warning
+            behavior:
+              on_fail: warn
+              on_error: fail_closed
+            description: WI-16 — NLI-scores a misconception-sourced preference pair's REJECTED completion against its cited source chunk; flags a "wrong" framing that is actually entailed by its own source. Warning day-1 (mirrors pair_claim_support); graceful-degrades on missing NLI/embedding extras.
 
       - name: libv2_archival
         agents: [libv2-archivist]
