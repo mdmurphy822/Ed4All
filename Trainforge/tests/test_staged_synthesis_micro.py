@@ -2574,7 +2574,7 @@ def test_empty_obligations_route_by_objective_semantics_not_block_id(monkeypatch
         )
     )
     provider._journaled = lambda _store, _cache, **kwargs: kwargs["call"]()
-    monkeypatch.setattr(micro, "build_evidence_window", lambda *_args: {
+    monkeypatch.setattr(micro, "build_evidence_window", lambda *_args, **_kwargs: {
         "blocks": [
             {
                 "block_id": "block-001",

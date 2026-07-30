@@ -2492,7 +2492,9 @@ class StagedSynthesisProvider:
         chunk_id = _clean(chunk.get("id") or chunk.get("chunk_id"))
         source = _clean(chunk.get("text"))
         try:
-            window = build_evidence_window(chunk, focus)
+            window = build_evidence_window(
+                chunk, focus, target_rung=focus.get("bloom_level"),
+            )
         except ValueError as exc:
             raise SynthesisProviderError(
                 str(exc),

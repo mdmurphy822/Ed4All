@@ -1,14 +1,49 @@
 """Compact, provenance-preserving evidence windows for staged synthesis."""
 from __future__ import annotations
 
+import os
 import re
 from typing import Any, Dict, Iterable, Mapping, Optional
 
 from bs4 import BeautifulSoup
 
+from lib.ontology.bloom import BLOOM_LEVELS
+
 
 WINDOW_CONTRACT_VERSION = "ed4all.staged-synthesis-window.v1"
 _OBJECTIVE_ATTRS = ("data-cf-objective-id", "data-cf-objective-ref")
+
+#: Bloom-ladder initiative (WI-11) — gates per-CARD bloom-rung recovery in
+#: ``_structured_misconception_pairs`` / ``resolve_chunk_misconceptions`` and
+#: the ``target_rung`` partition/annotation in ``build_evidence_window``.
+#: Default OFF; unset / falsey / garbage keeps every gated path byte-identical
+#: to the pre-ladder contract. See ``resolve_bloom_windows_enabled``.
+BLOOM_WINDOWS_ENV = "TRAINFORGE_BLOOM_WINDOWS"
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+#: The per-block Bloom-rung wrapper attribute a Courseforge block carries
+#: alongside ``data-cf-block-id`` (see ``Courseforge/scripts/blocks.py``).
+#: Reading it here is additive-only: the attribute already exists on authored
+#: markup independent of this flag, this module just starts consulting it.
+_BLOOM_LEVEL_ATTR = "data-cf-bloom-level"
+#: Ordinal lookup over the canonical six-level order (remember=0 .. create=5)
+#: so a rung ceiling comparison never hardcodes the taxonomy locally.
+_BLOOM_ORDINAL = {level: idx for idx, level in enumerate(BLOOM_LEVELS)}
+
+
+def resolve_bloom_windows_enabled(
+    env: Optional[Mapping[str, str]] = None,
+) -> bool:
+    """Resolve ``TRAINFORGE_BLOOM_WINDOWS`` (parse-with-fallback, default OFF).
+
+    Truthy (``1``/``true``/``yes``/``on``, case-insensitive) -> on;
+    unset / empty / falsey / garbage -> off. Read at call time (never cached
+    at import), so a test can drive it with an injected mapping and a
+    long-lived process never observes a stale value.
+    """
+    source = os.environ if env is None else env
+    raw = str(source.get(BLOOM_WINDOWS_ENV, "") or "").strip().lower()
+    return raw in _TRUTHY
 
 
 def _clean(value: Any) -> str:
@@ -256,6 +291,14 @@ def _structured_misconception_pairs(tag: Any) -> list[Dict[str, str]]:
     This is additive metadata only: block membership, ``role``, ``polarity``
     and ``text`` are untouched, so ``evidence_text``, the rendered window and
     every instruction-side consumer stay byte-identical.
+
+    TRAINFORGE_BLOOM_WINDOWS (default off): when on, each returned pair also
+    carries the CARD's own ``bloom_level``, recovered from ``tag``'s own
+    ``data-cf-bloom-level`` attribute — the same wrapper this function is
+    called on, since a misconception card is authored as one block. This is
+    the per-CARD rung; ``resolve_chunk_misconceptions`` decides how it trades
+    off against the chunk-wide fallback. Off, or the wrapper carries no rung
+    of its own -> no ``bloom_level`` key, so the return shape is unchanged.
     """
     claims: list[str] = []
     corrections: list[str] = []
@@ -271,11 +314,19 @@ def _structured_misconception_pairs(tag: Any) -> list[Dict[str, str]]:
             claims.append(text)
         elif role == "misconception_correction":
             corrections.append(text)
+    card_bloom_level = (
+        _clean(tag.get(_BLOOM_LEVEL_ATTR)).lower()
+        if resolve_bloom_windows_enabled()
+        else ""
+    )
     pairs: list[Dict[str, str]] = []
     for index, claim in enumerate(claims):
         if index >= len(corrections):
             break
-        pairs.append({"claim": claim, "correction": corrections[index]})
+        pair: Dict[str, str] = {"claim": claim, "correction": corrections[index]}
+        if card_bloom_level:
+            pair["bloom_level"] = card_bloom_level
+        pairs.append(pair)
     return pairs
 
 
@@ -309,6 +360,17 @@ def resolve_chunk_misconceptions(
     empty, from the chunk's OWN markup — never from another chunk, never
     synthesized.  A corpus whose chunker already lands structured
     misconceptions is therefore byte-identical through this function.
+
+    TRAINFORGE_BLOOM_WINDOWS (default off): a chunk-wide ``bloom_level``
+    (below) stamped onto EVERY recovered misconception is a latent
+    multi-rung collapse — a chunk holding cards at several Bloom rungs would
+    have every one of them mislabeled with the same chunk-level value. When
+    the flag is on, the per-CARD rung recovered by
+    :func:`_structured_misconception_pairs` (from that card's own
+    ``data-cf-bloom-level`` wrapper attribute) wins; the chunk-wide value is
+    used only when the card carries no rung of its own. Off, or a card
+    without its own rung, keeps the pre-existing chunk-wide-fallback
+    behavior byte-identical.
     """
     authored = chunk.get("misconceptions")
     if isinstance(authored, list) and any(
@@ -353,7 +415,14 @@ def resolve_chunk_misconceptions(
                 "mechanism_evidence": correction,
                 "source_block_id": block_id,
             }
-            if bloom_level:
+            # Per-CARD rung wins over the chunk-wide fallback (see the
+            # TRAINFORGE_BLOOM_WINDOWS docstring paragraph above); pair only
+            # carries "bloom_level" when the flag is on AND the card's own
+            # wrapper declared a rung, so this is a no-op when off.
+            card_bloom_level = _clean(pair.get("bloom_level"))
+            if card_bloom_level:
+                entry["bloom_level"] = card_bloom_level
+            elif bloom_level:
                 entry["bloom_level"] = bloom_level
             recovered.append(entry)
     return recovered
@@ -450,9 +519,34 @@ def resolve_chunk_key_terms(
 
 
 def build_evidence_window(
-    chunk: Mapping[str, Any], focus: Mapping[str, Any],
+    chunk: Mapping[str, Any],
+    focus: Mapping[str, Any],
+    target_rung: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Select objective-aligned semantic blocks, preserving false/correct polarity."""
+    """Select objective-aligned semantic blocks, preserving false/correct polarity.
+
+    ``target_rung`` (optional; consulted only when ``TRAINFORGE_BLOOM_WINDOWS``
+    is on) is a Bloom-ladder ceiling. A candidate block whose own
+    ``data-cf-bloom-level`` ranks ABOVE ``target_rung`` on the canonical
+    ``lib.ontology.bloom.BLOOM_LEVELS`` order is evidence authored for a
+    later rung and is excluded from this window; a block with no rung
+    annotation, or one at/below ``target_rung``, is kept and additionally
+    gains a ``bloom_level`` field recording its own rung. An unrecognized
+    ``target_rung`` (not one of the six canonical levels) is treated as "no
+    ceiling" -- every candidate is annotated but none is dropped on a
+    garbage value.
+
+    Flag off, or flag on with ``target_rung`` omitted (the caller-side
+    ladder wiring that supplies it is a separate work item), keeps every
+    block exactly ``{block_id, role, polarity, text}`` as before -- this
+    parameter is purely additive.
+    """
+    bloom_windows_on = resolve_bloom_windows_enabled()
+    target_ordinal = (
+        _BLOOM_ORDINAL.get(_clean(target_rung).lower())
+        if bloom_windows_on and target_rung
+        else None
+    )
     card = objective_card(focus)
     chunk_id = _clean(chunk.get("id") or chunk.get("chunk_id"))
     html = str(chunk.get("html") or "")
@@ -482,12 +576,22 @@ def build_evidence_window(
             if not text or key in seen:
                 continue
             seen.add(key)
+            block_bloom_level = ""
+            if bloom_windows_on:
+                block_bloom_level = _clean(tag.get(_BLOOM_LEVEL_ATTR)).lower()
+                if block_bloom_level and target_ordinal is not None:
+                    block_ordinal = _BLOOM_ORDINAL.get(block_bloom_level)
+                    if block_ordinal is not None and block_ordinal > target_ordinal:
+                        # Evidence authored for a later rung; not this window.
+                        continue
             block: Dict[str, Any] = {
                 "block_id": block_id,
                 "role": role,
                 "polarity": polarity,
                 "text": text,
             }
+            if block_bloom_level:
+                block["bloom_level"] = block_bloom_level
             misconception_pairs = _structured_misconception_pairs(tag)
             if misconception_pairs:
                 block["misconception_pairs"] = misconception_pairs
@@ -557,12 +661,23 @@ def build_evidence_window(
 
 
 def render_evidence_window(window: Mapping[str, Any]) -> str:
+    """Render each block as ``[id|role|polarity] text``.
+
+    A block carrying a ``bloom_level`` (only possible when
+    ``TRAINFORGE_BLOOM_WINDOWS`` is on and ``build_evidence_window`` annotated
+    it) renders a fourth tag segment: ``[id|role|polarity|bloom] text``. No
+    block in the window carries the key when the flag is off, so the
+    rendered string is byte-identical to before.
+    """
     lines = []
     for block in window["blocks"]:
-        lines.append(
-            f"[{block['block_id']}|{block['role']}|{block['polarity']}] "
-            f"{block['text']}"
+        rung = block.get("bloom_level")
+        tag = (
+            f"[{block['block_id']}|{block['role']}|{block['polarity']}|{rung}]"
+            if rung
+            else f"[{block['block_id']}|{block['role']}|{block['polarity']}]"
         )
+        lines.append(f"{tag} {block['text']}")
     return "\n".join(lines)
 
 
@@ -593,10 +708,12 @@ def canonical_quote(
 
 __all__ = [
     "WINDOW_CONTRACT_VERSION",
+    "BLOOM_WINDOWS_ENV",
     "build_evidence_window",
     "canonical_quote",
     "objective_card",
     "render_evidence_window",
+    "resolve_bloom_windows_enabled",
     "semantic_anchor_hypothesis",
     "semantic_anchor_forms",
     "semantic_anchor_records",

@@ -54,6 +54,7 @@ from Trainforge.generators.synthesis_window_contract import (
     build_evidence_window,
     canonical_quote,
     objective_card,
+    resolve_bloom_windows_enabled,
 )
 from Trainforge.generators.objective_execution_contract import (
     OBJECTIVE_REQUIREMENT_CONTRACT_VERSION,
@@ -1259,11 +1260,23 @@ def _learner_task_coverage(
 
 def micro_preference_eligibility(
     chunk: Mapping[str, Any], *, focus: Mapping[str, Any],
+    capture: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    """Resolve the exact source dependencies required by micro Stage E."""
+    """Resolve the exact source dependencies required by micro Stage E.
+
+    ``capture`` (optional; a ``DecisionCapture``-shaped object exposing
+    ``log_decision``) records a ``dpo_pair_from_misconception`` event per
+    Arm-A admitted candidate -- but ONLY when ``TRAINFORGE_BLOOM_WINDOWS``
+    is on, like every other behavior in this initiative, so a flag-off run
+    emits a byte-identical capture stream. ``None`` (the default, and every
+    pre-existing caller that does not thread one) is a silent no-op either
+    way, so this is purely additive telemetry.
+    """
     chunk_id = _clean(chunk.get("id") or chunk.get("chunk_id"))
     try:
-        window = build_evidence_window(chunk, focus)
+        window = build_evidence_window(
+            chunk, focus, target_rung=focus.get("bloom_level"),
+        )
     except ValueError as exc:
         reason = "preference_misconception_source_polarity_unresolved"
         telemetry = {
@@ -1345,7 +1358,22 @@ def micro_preference_eligibility(
         if not mechanism:
             rejection_counts["mechanism_missing"] += 1
             continue
-        canonical_id = canonical_mc_id(claim, correction, bloom_level)
+        # Arm A previously minted every card's id (and stamped every
+        # candidate's own "bloom_level") from the single function-scoped
+        # ``bloom_level`` (the objective/chunk-wide value) -- collapsing a
+        # chunk that mixes cards at several rungs onto one shared id seed.
+        # TRAINFORGE_BLOOM_WINDOWS on: the CARD's own ``bloom_level`` (set
+        # by ``resolve_chunk_misconceptions`` / an authoring pipeline that
+        # already populates the schema-legal per-item field) wins; absent
+        # -> the chunk-wide value is still the fallback. Off, or the item
+        # carries no rung of its own, keeps the pre-existing byte-identical
+        # chunk-wide behavior.
+        rung = bloom_level
+        if resolve_bloom_windows_enabled():
+            card_rung = _clean(item.get("bloom_level")).lower()
+            if card_rung:
+                rung = card_rung
+        canonical_id = canonical_mc_id(claim, correction, rung)
         incoming_id = _clean(item.get("id"))
         if incoming_id and incoming_id != canonical_id:
             rejection_counts["id_mismatch"] += 1
@@ -1355,11 +1383,30 @@ def micro_preference_eligibility(
             "misconception": claim,
             "correction": correction,
             "mechanism_evidence": mechanism,
-            "bloom_level": bloom_level,
+            "bloom_level": rung,
             "source_block_id": _clean(item.get("source_block_id")) or chunk_id,
             "source_role": "misconception_claim",
             "source_polarity": "incorrect_with_correction",
         })
+        if capture is not None and resolve_bloom_windows_enabled():
+            capture.log_decision(
+                decision_type="dpo_pair_from_misconception",
+                decision=(
+                    f"Admitted DPO misconception candidate {canonical_id} "
+                    f"for chunk {chunk_id} at rung {rung or 'unset'}"
+                ),
+                rationale=(
+                    f"mc_id={canonical_id}, chunk_id={chunk_id}, "
+                    f"rung={rung or 'unset'}, source_backs_claim=True, "
+                    f"source_backs_correction=True; Arm A admits this "
+                    f"candidate only once both the claim and its "
+                    f"correction are lexically backed by the evidence "
+                    f"window and the recomputed canonical id agrees with "
+                    f"any supplied one, so this event fires once per "
+                    f"admitted candidate each time Arm A evaluates this "
+                    f"chunk's eligibility."
+                ),
+            )
 
     # Arm A is the DESIGNED path and Arm B below is its fallback for corpora
     # whose blocks carry no structural split. Once the chunk read seam
@@ -2492,7 +2539,9 @@ class MicroStagedSynthesisProvider(StagedSynthesisProvider):
             focus, synthesis_seed=self._synthesis_seed,
         )
         if kind == "preference":
-            eligibility = micro_preference_eligibility(chunk, focus=focus)
+            eligibility = micro_preference_eligibility(
+                chunk, focus=focus, capture=self._capture,
+            )
             if not eligibility["eligible"]:
                 raise SynthesisProviderError(
                     "micro preference input lacks a usable source-backed "
@@ -2565,7 +2614,9 @@ class MicroStagedSynthesisProvider(StagedSynthesisProvider):
         learner_task: str = "",
     ) -> list[Dict[str, Any]]:
         """Return the one canonical objective-routed scalar-claim block order."""
-        window = build_evidence_window(chunk, focus)
+        window = build_evidence_window(
+            chunk, focus, target_rung=focus.get("bloom_level"),
+        )
         eligible = [
             dict(block) for block in window["blocks"]
             if block["polarity"] in {"factual", "corrective"}
@@ -2746,7 +2797,9 @@ class MicroStagedSynthesisProvider(StagedSynthesisProvider):
     def _task_design(self, chunk: Mapping[str, Any]) -> Dict[str, Any]:
         focus = self._focus(chunk)
         chunk_id = _clean(chunk.get("id") or chunk.get("chunk_id"))
-        window = build_evidence_window(chunk, focus)
+        window = build_evidence_window(
+            chunk, focus, target_rung=focus.get("bloom_level"),
+        )
         allowed_numeric_text = " ".join([
             _stable_json(objective_card(focus)),
             *(_clean(block.get("text")) for block in window["blocks"]),
@@ -3728,7 +3781,9 @@ class MicroStagedSynthesisProvider(StagedSynthesisProvider):
     ) -> Dict[str, Any]:
         self._check_stop(0)
         focus = self._focus(chunk)
-        eligibility = micro_preference_eligibility(chunk, focus=focus)
+        eligibility = micro_preference_eligibility(
+            chunk, focus=focus, capture=self._capture,
+        )
         if not eligibility["eligible"]:
             raise SynthesisProviderError(
                 "micro preference input lacks a usable source-backed "
