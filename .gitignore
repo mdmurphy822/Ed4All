@@ -414,3 +414,12 @@ docs/vendor/
 # fresh checkout). Root-level, distinct from SemantiK/models/ above.
 /models/base/
 /models/bloom_classifiers/
+
+# =============================================================================
+# Operator archive outputs at repo root — support bundles + data-dir backups
+# =============================================================================
+# `ed4all support-bundle` / `ed4all backup` default (and are documented) to
+# repo-root .tar.gz paths; the backup archives the full data dir, so these
+# must never be committable.
+ed4all-support*.tar.gz
+ed4all-backup*.tar.gz
