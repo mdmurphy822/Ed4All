@@ -1,7 +1,7 @@
 """``ed4all libv2 validate-packet`` (Wave 75 Worker D + Wave 78).
 
 Operator-facing wrapper around
-:class:`lib.validators.libv2_packet_integrity.PacketIntegrityValidator`.
+:class:`lib.validators.libv2.packet_integrity.PacketIntegrityValidator`.
 
 Runs SHACL-style integrity rules on a LibV2 archive
 (``LibV2/courses/<slug>/``) and emits either a human-readable summary
@@ -34,7 +34,7 @@ from typing import Optional
 import click
 
 from lib.paths import LIBV2_PATH
-from lib.validators.libv2_packet_integrity import (
+from lib.validators.libv2.packet_integrity import (
     PacketIntegrityValidator,
     ValidationResult,
 )

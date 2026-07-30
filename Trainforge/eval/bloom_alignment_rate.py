@@ -13,7 +13,7 @@ extras not installed) or the ensemble fails to load any member,
 :meth:`evaluate` returns ``{bloom_alignment_rate: None,
 deps_missing: True}`` with a warning log instead of crashing the
 harness. Mirrors the surface used by
-:mod:`lib.validators.bloom_classifier_disagreement`.
+:mod:`lib.validators.bloom.classifier_disagreement`.
 
 Aggregate output is folded into ``eval_report.json`` under the
 top-level ``bloom_alignment_rate`` block by

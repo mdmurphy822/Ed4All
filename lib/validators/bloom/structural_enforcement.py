@@ -2,7 +2,7 @@
 
 Closes the GPT-feedback §1.5 surface gap (Bloom enforcement is
 classification-only). Whereas
-:class:`lib.validators.bloom_classifier_disagreement.BloomClassifierDisagreementValidator`
+:class:`lib.validators.bloom.classifier_disagreement.BloomClassifierDisagreementValidator`
 *classifies* the surface text and complains when the BERT ensemble
 disagrees with the declared ``bloom_level``, this validator *enforces*
 deterministic structural rules per Bloom level — clause-count floor +

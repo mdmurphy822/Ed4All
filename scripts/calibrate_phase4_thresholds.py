@@ -382,7 +382,7 @@ def _build_bert_ensemble_evaluator(
     the calibration loop still produces a confusion matrix shape so a
     fixture-driven CI smoke test can exercise the script end-to-end.
     """
-    from lib.validators.bloom_classifier_disagreement import (
+    from lib.validators.bloom.classifier_disagreement import (
         BloomClassifierDisagreementValidator,
     )
 
@@ -774,7 +774,7 @@ def _classify_with_per_member_temperature(
 
 def _extract_text_for_holdout(row: HoldoutRow, block: Any) -> Optional[str]:
     """Reuse the validator's text extraction for ECE classification."""
-    from lib.validators.bloom_classifier_disagreement import (
+    from lib.validators.bloom.classifier_disagreement import (
         _extract_text_for_classification,
     )
 
@@ -929,7 +929,7 @@ def sweep_dispersion_threshold(
     F1 work.
     """
     from lib.classifiers.bloom_bert_ensemble import BloomBertEnsemble
-    from lib.validators.bloom_classifier_disagreement import (
+    from lib.validators.bloom.classifier_disagreement import (
         BloomClassifierDisagreementValidator,
     )
 

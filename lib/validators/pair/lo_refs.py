@@ -15,7 +15,7 @@ Surface mirror of three precedents:
 * :class:`lib.validators.objective_source_refs.ObjectiveSourceRefValidator`
   (Courseforge-side objective-LO chunk-id resolution) — W4.B is the
   pair-side mirror.
-* :class:`lib.validators.training_pair_promotion.TrainingPairPromotionValidator.validate_pair`
+* :class:`lib.validators.pair.promotion.TrainingPairPromotionValidator.validate_pair`
   (line 494-781) — same per-pair filter surface signature; mirrors the
   ``(promotion_status, rejection_reason, new_fields)`` return triple.
 

@@ -667,7 +667,7 @@ def import_model(
     """
     # Local import keeps the validator dep optional for lighter callers
     # that only use ``import_course``.
-    from lib.validators.libv2_model import LibV2ModelValidator
+    from lib.validators.libv2.model import LibV2ModelValidator
 
     run_dir = Path(run_dir)
     if not run_dir.exists():

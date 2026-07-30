@@ -3951,7 +3951,7 @@ def run_synthesis(
     # Contract preflight precedes the try-body because optional deterministic
     # generators inside it also emit DecisionCapture events. Every event from
     # this invocation must carry the same sealed identity.
-    from lib.validators.pair_objective_delivery import (
+    from lib.validators.pair.objective_delivery import (
         _load_synthesized_objectives_for_w4c,
     )
     _objectives_candidates = (
@@ -4554,7 +4554,7 @@ def run_synthesis(
         # low Bloom alignment, generic rationale). Lazy-loads the
         # embedder + pinned zero-shot Bloom classifier on first use; degrades gracefully
         # to Jaccard when [embedding] extras are absent.
-        from lib.validators.training_pair_promotion import (
+        from lib.validators.pair.promotion import (
             TrainingPairPromotionValidator,
         )
         _promotion_validator = TrainingPairPromotionValidator(
@@ -4573,11 +4573,11 @@ def run_synthesis(
         # per-pair filter still drops the pair so the audit trail and
         # disk emit stay consistent. W4.B is critical-severity at the
         # gate-runner surface (phantom-LO is a structural mismatch).
-        from lib.validators.pair_claim_support import (
+        from lib.validators.pair.claim_support import (
             PairClaimSupportValidator,
             summarize_claim_support_rejection,
         )
-        from lib.validators.pair_lo_refs import (
+        from lib.validators.pair.lo_refs import (
             PairLearningOutcomeRefsValidator,
         )
         _claim_support_validator = PairClaimSupportValidator()
@@ -4644,7 +4644,7 @@ def run_synthesis(
         # (``terminal_outcomes``/``component_objectives``) so the same
         # call site works whether the corpus is being rebuilt from a
         # fresh Courseforge run or replayed from a LibV2 archive.
-        from lib.validators.pair_objective_delivery import (
+        from lib.validators.pair.objective_delivery import (
             PairObjectiveDeliveryValidator,
         )
         # Staged-v4 makes canonical objective resolution part of the pair

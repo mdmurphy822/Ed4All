@@ -6,7 +6,7 @@ in a training pair's completion (instruction kind) or chosen surface
 :class:`lib.validators.claim_support.ClaimSupportValidator` (Wave 2
 W2.F, Courseforge block-level) but at a different seam: training-pair
 emit, immediately AFTER
-:class:`lib.validators.training_pair_promotion.
+:class:`lib.validators.pair.promotion.
 TrainingPairPromotionValidator.validate_pair` returns ``"validated"``.
 
 Wave 5 W5.D extends the per-pair fan-out: when the cited chunk carries
@@ -1052,7 +1052,7 @@ class PairClaimSupportValidator:
     """Per-pair-per-claim NLI entailment gate.
 
     Two surfaces (mirrors
-    :class:`lib.validators.training_pair_promotion.
+    :class:`lib.validators.pair.promotion.
     TrainingPairPromotionValidator`):
 
     1. :meth:`validate_pair` — per-pair pre-write filter called from

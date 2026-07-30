@@ -3,7 +3,7 @@
 Currently exposes :class:`BloomBertEnsemble` — a 3-member ensemble of
 HuggingFace BERT-family models that votes on the Bloom's-taxonomy level
 of a candidate text. The ensemble is consumed by
-:class:`lib.validators.bloom_classifier_disagreement.BloomClassifierDisagreementValidator`
+:class:`lib.validators.bloom.classifier_disagreement.BloomClassifierDisagreementValidator`
 to flag outline-tier ``objective`` / ``assessment_item`` blocks whose
 declared ``bloom_level`` disagrees with the ensemble winner OR whose
 ensemble dispersion (entropy of normalised votes) exceeds the

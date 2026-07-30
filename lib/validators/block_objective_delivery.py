@@ -46,7 +46,7 @@ the per-block-type entailment thresholds are day-1 starting points and
 must be calibrated against a real corpus before a severity flip.
 
 Graceful-degrade contract (mirrors
-:mod:`lib.validators.bloom_classifier_disagreement` and
+:mod:`lib.validators.bloom.classifier_disagreement` and
 :mod:`lib.validators.objective_assessment_similarity`):
 
 * NLI loader missing → emit :data:`_CODE_NLI_DEPS_MISSING` warning,
@@ -282,7 +282,7 @@ def _block_attr(block: Any, key: str) -> Any:
     """Get ``block.<key>`` for dataclass blocks OR ``block[<key>]`` for dicts.
 
     Mirror of the helper in
-    :mod:`lib.validators.bloom_classifier_disagreement`. Lets the
+    :mod:`lib.validators.bloom.classifier_disagreement`. Lets the
     validator stay shape-agnostic over the dataclass / dict round-trip.
     """
     if hasattr(block, key):
@@ -320,7 +320,7 @@ def _coerce_blocks(
 ) -> Tuple[List[Any], Optional[GateIssue]]:
     """Pull a ``List[Block]`` out of ``inputs["blocks"]``.
 
-    Mirrors :func:`lib.validators.bloom_classifier_disagreement._coerce_blocks`.
+    Mirrors :func:`lib.validators.bloom.classifier_disagreement._coerce_blocks`.
     """
     raw = inputs.get("blocks")
     if raw is None:

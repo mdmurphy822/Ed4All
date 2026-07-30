@@ -3232,10 +3232,11 @@ def default_router() -> GateInputRouter:
         "lib.validators.bloom.alignment.BloomAlignmentValidator",
         _build_bloom_alignment,
     )
-    # W-D10 T10.1 back-compat: re-register under the legacy flat path so
-    # any caller still passing the pre-subpackage dotted path resolves
-    # to the same builder. Drop alongside the shim removal in the next
-    # minor version.
+    # W-D10 back-compat: re-register under the T10.0-era subpackage-attr
+    # path (``lib.validators.bloom.<Class>``, resolvable via
+    # bloom/__init__) so any caller still passing that dotted form
+    # resolves to the same builder. Drop alongside the shim removal in
+    # the next minor version.
     r.register(
         "lib.validators.bloom.BloomAlignmentValidator",
         _build_bloom_alignment,

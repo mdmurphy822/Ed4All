@@ -18,7 +18,7 @@ chunk's actual context, or a stale/edited chunk), the pair's DPO
 signal silently points a trained model AWAY from a statement the
 source itself asserts. Nothing upstream catches this — the claim
 support gates never read ``rejected``, and
-:class:`lib.validators.training_pair_promotion.
+:class:`lib.validators.pair.promotion.
 TrainingPairPromotionValidator` only checks that ``chosen`` /
 ``rejected`` are sufficiently distinct, never their individual
 truth-value against the source.

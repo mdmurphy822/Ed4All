@@ -20,7 +20,7 @@ following back into the same course slug under
 
 The runner is the **single Wave 89 → Wave 90 contract surface**: the
 emitted card must validate against
-:class:`lib.validators.libv2_model.LibV2ModelValidator` (Wave 89). When
+:class:`lib.validators.libv2.model.LibV2ModelValidator` (Wave 89). When
 ``dry_run=True`` the runner skips the trainer and writes only the
 model-card stub + decision capture, so tests can exercise the full
 emit path on CPU-only CI.
