@@ -56,6 +56,8 @@ from lib.classifiers.bloom_bert_ensemble import (
     is_strict_mode,
 )
 from lib.classifiers.bloom_zero_shot import (
+    heads_vote,
+    resolve_trivote_heads_mode,
     resolve_trivote_mode,
     trivote_disagreement,
     verb_vote,
@@ -309,6 +311,7 @@ class BloomClassifierDisagreementValidator:
         dispersion_threshold: float = _DISPERSION_THRESHOLD,
         confidence_floor: float = _DISAGREEMENT_CONFIDENCE_FLOOR,
         nli: Optional[Any] = None,
+        heads: Optional[Any] = None,
     ) -> None:
         self._ensemble = ensemble  # lazy-instantiated when None (legacy path)
         self._dispersion_threshold = float(dispersion_threshold)
@@ -317,6 +320,13 @@ class BloomClassifierDisagreementValidator:
         # (any object exposing ``score_batch(*, pairs)``); None => the
         # trivote path lazily pulls the process-singleton at validate time.
         self._nli = nli
+        # ED4ALL_BLOOM_TRIVOTE_HEADS voter-2 backend. Injectable for tests
+        # (any object exposing ``classify(text, *, floor=...)`` — the
+        # BloomDebertaHeads shape); None => lazily pulled via
+        # BloomDebertaHeads.get_or_load() ONLY when the flag is on (see
+        # ``_resolve_heads``), so an off-flag run never even imports
+        # ``bloom_deberta_heads``.
+        self._heads = heads
 
     def _get_ensemble(self) -> BloomBertEnsemble:
         if self._ensemble is None:
@@ -631,6 +641,39 @@ class BloomClassifierDisagreementValidator:
             logger.debug("trivote: NLI singleton load failed: %s", exc)
             return None
 
+    def _resolve_heads(self) -> Any:
+        """Return a live voter-2 fine-tuned-heads backend, or ``None``.
+
+        Returns ``None`` immediately when ``ED4ALL_BLOOM_TRIVOTE_HEADS``
+        is not truthy — voter 2 stays on the zero-shot backend, and
+        (production) this module never even imports
+        ``bloom_deberta_heads``, so an off-flag run is byte-identical to
+        before this backend existed.
+
+        When the flag IS on: tests inject ``heads=`` on the constructor
+        so this never reaches the real loader; production passes
+        ``None`` and this pulls
+        :meth:`lib.classifiers.bloom_deberta_heads.BloomDebertaHeads.get_or_load`.
+        Any load failure / missing checkpoints (the whole-ladder
+        graceful degrade) resolves to ``None`` => the caller falls back
+        to the zero-shot backend, exactly like a missing NLI model
+        degrades the legacy voter-2 path — a build never fails on
+        absent weights.
+        """
+        if not resolve_trivote_heads_mode():
+            return None
+        if self._heads is not None:
+            return self._heads
+        try:
+            from lib.classifiers.bloom_deberta_heads import BloomDebertaHeads
+
+            return BloomDebertaHeads.get_or_load()
+        except Exception as exc:  # noqa: BLE001 — graceful-degrade => fall back
+            logger.debug(
+                "trivote: BloomDebertaHeads.get_or_load failed: %s", exc
+            )
+            return None
+
     def _validate_trivote(
         self,
         blocks: List[Any],
@@ -640,14 +683,26 @@ class BloomClassifierDisagreementValidator:
         """Three-voter re-founding of the disagreement gate.
 
         Per audited unit the three voters are the generator's OWN asserted
-        ``bloom_level`` (voter 1, read from the block metadata), the
-        zero-shot DeBERTa level (voter 2), and the deterministic verb level
-        (voter 3). The gate asks *"does the generator's own Bloom claim
-        survive independent checks"*:
+        ``bloom_level`` (voter 1, read from the block metadata), voter 2
+        (voter 2, see below), and the deterministic verb level (voter 3).
+        The gate asks *"does the generator's own Bloom claim survive
+        independent checks"*:
+
+        Voter 2 is the zero-shot DeBERTa entailment backend
+        (:func:`~lib.classifiers.bloom_zero_shot.zero_shot_bloom`) by
+        default. ``ED4ALL_BLOOM_TRIVOTE_HEADS`` swaps it for the six
+        fine-tuned one-vs-rest heads'
+        (:func:`~lib.classifiers.bloom_zero_shot.heads_vote`) argmax +
+        confidence whenever
+        :meth:`~lib.classifiers.bloom_deberta_heads.BloomDebertaHeads.get_or_load`
+        returns a live instance — missing/unloadable weights degrade
+        silently back to the zero-shot backend (see
+        :meth:`_resolve_heads`). Whichever backend produced it, the SAME
+        confidence-floor abstention check applies below.
 
         - ``BERT_ENSEMBLE_DISAGREEMENT`` — the asserted level is backed by
           NO independent voter (verb disagreement fires on its own —
-          deterministic; a zero-shot-only disagreement must clear the
+          deterministic; a voter-2-only disagreement must clear the
           confidence floor).
         - ``BERT_ENSEMBLE_DISPERSION_HIGH`` — the pairwise mismatch fraction
           across present voters exceeds the dispersion threshold.
@@ -656,10 +711,12 @@ class BloomClassifierDisagreementValidator:
           fabricated pass).
         """
         nli = self._resolve_nli()
+        heads = self._resolve_heads()
 
-        # Strict mode: the zero-shot NLI voter is mandatory. Fail closed
-        # (mirrors the legacy strict raise) when it is unavailable.
-        if is_strict_mode() and nli is None:
+        # Strict mode: voter 2 (whichever backend is active) is mandatory.
+        # Fail closed (mirrors the legacy strict raise) only when NEITHER
+        # backend is available.
+        if is_strict_mode() and nli is None and heads is None:
             for block in blocks:
                 if _block_attr(block, "block_type") not in _AUDITED_BLOCK_TYPES:
                     continue
@@ -714,16 +771,22 @@ class BloomClassifierDisagreementValidator:
             declared = _block_attr(block, "bloom_level")
             block_id = _block_attr(block, "block_id")
 
-            # Voter 2 (zero-shot) + voter 3 (verb). Voter 1 is ``declared``.
-            zs = zero_shot_bloom(text, nli=nli)
-            zs_level = zs[0] if zs else None
-            zs_conf = zs[1] if zs else None
+            # Voter 2 (heads backend when ED4ALL_BLOOM_TRIVOTE_HEADS resolved
+            # a live BloomDebertaHeads instance above, else zero-shot) +
+            # voter 3 (verb). Voter 1 is ``declared``.
+            v2 = heads_vote(text, heads=heads) if heads is not None else (
+                zero_shot_bloom(text, nli=nli)
+            )
+            zs_level = v2[0] if v2 else None
+            zs_conf = v2[1] if v2 else None
             verb_level, verb_evidence = verb_vote(text)
 
-            # The confidence floor governs voter-2 participation: a zero-shot
+            # The confidence floor governs voter-2 participation: a voter-2
             # winner below the floor is too weak to count, so the voter
             # abstains (suppresses low-confidence noise) rather than casting
-            # a shaky vote. ``zs_conf`` is still recorded for the capture.
+            # a shaky vote — applies identically to whichever backend
+            # produced ``zs_conf``. ``zs_conf`` is still recorded for the
+            # capture.
             if zs_level is not None and (
                 zs_conf is None or zs_conf < self._confidence_floor
             ):

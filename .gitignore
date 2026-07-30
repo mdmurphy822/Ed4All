@@ -405,3 +405,12 @@ training-captures/*
 
 # Vendor model docs (NVIDIA Nemotron model cards) — local reference, not distributed
 docs/vendor/
+
+# Bloom-ladder initiative WI-13: operator-trained per-Bloom-level DeBERTa
+# heads + their pre-seeded local base-model snapshot. GPU training
+# artifacts (~400MB per head x 6, plus the base checkpoint) — never
+# shipped in-repo; lib/classifiers/bloom_deberta_heads.py graceful-degrades
+# to "no fourth voter" when these directories are absent (the default on a
+# fresh checkout). Root-level, distinct from SemantiK/models/ above.
+/models/base/
+/models/bloom_classifiers/

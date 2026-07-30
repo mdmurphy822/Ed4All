@@ -23,6 +23,15 @@ The three voters:
    (NO second DeBERTa load — the same model already resident for
    ``block_prose_entailment`` / ``claim_support`` / ``objective_
    entailment``). NLI unavailable => the voter abstains.
+
+   ``ED4ALL_BLOOM_TRIVOTE_HEADS`` (default OFF, meaningful only when
+   ``ED4ALL_BLOOM_TRIVOTE`` is also on) swaps THIS voter's backend for
+   the six fine-tuned one-vs-rest heads
+   (:func:`heads_vote` /
+   :class:`lib.classifiers.bloom_deberta_heads.BloomDebertaHeads`)
+   when a live head ensemble is loaded — see :func:`heads_vote` for the
+   selection contract. The validator (not this module) decides which
+   backend to call per run.
 3. **Verb ontology** (:func:`verb_vote`) — the deterministic verb-based
    level from the canonical :func:`lib.ontology.bloom.detect_bloom_level`.
    No canonical verb in the text => the voter abstains (NOT a fabricated
@@ -61,6 +70,29 @@ def resolve_trivote_mode() -> bool:
     reload. Garbage / unset => False (legacy path).
     """
     raw = os.environ.get(_TRIVOTE_ENV_VAR, "").strip().lower()
+    return raw in _TRUTHY_VALUES
+
+
+#: Voter-2 backend flag. Default OFF => voter 2 stays on
+#: :func:`zero_shot_bloom` (byte-identical trivote behavior). Only
+#: meaningful when :func:`resolve_trivote_mode` is also on — trivote
+#: itself must be enabled before there's a voter 2 to swap the backend
+#: of. Same parse-with-fallback truthy set as the master flag.
+_TRIVOTE_HEADS_ENV_VAR = "ED4ALL_BLOOM_TRIVOTE_HEADS"
+
+
+def resolve_trivote_heads_mode() -> bool:
+    """Return True when ``ED4ALL_BLOOM_TRIVOTE_HEADS`` is truthy.
+
+    Read at ``validate()`` time, same as :func:`resolve_trivote_mode`.
+    Garbage / unset => False (voter 2 stays on the zero-shot NLI
+    backend). Truthy alone does not guarantee the heads backend is
+    actually used — the caller still needs
+    :meth:`lib.classifiers.bloom_deberta_heads.BloomDebertaHeads.get_or_load`
+    to return a live instance (see :func:`heads_vote`); a truthy flag
+    with no loadable weights degrades silently back to zero-shot.
+    """
+    raw = os.environ.get(_TRIVOTE_HEADS_ENV_VAR, "").strip().lower()
     return raw in _TRUTHY_VALUES
 
 
@@ -194,6 +226,78 @@ def zero_shot_bloom(
 
 
 # ---------------------------------------------------------------------------
+# Fine-tuned-heads voter-2 backend (ED4ALL_BLOOM_TRIVOTE_HEADS).
+# ---------------------------------------------------------------------------
+
+
+def heads_vote(
+    text: str,
+    *,
+    heads: Optional[Any] = None,
+) -> Optional[Tuple[str, float]]:
+    """Alternate voter-2 backend: six fine-tuned one-vs-rest DeBERTa heads.
+
+    Drop-in replacement for :func:`zero_shot_bloom` at the voter-2 call
+    site — returns the SAME leading ``(level, confidence)`` shape the
+    caller (``BloomClassifierDisagreementValidator._validate_trivote``)
+    already destructures off ``zero_shot_bloom``'s three-tuple, so the
+    caller's confidence-floor abstention check downstream is untouched
+    regardless of which backend produced the vote.
+
+    Delegates to
+    :meth:`lib.classifiers.bloom_deberta_heads.BloomDebertaHeads.classify`
+    with ``floor=0.0`` — this backend returns the RAW argmax winner +
+    confidence, deliberately bypassing the heads module's own (higher,
+    0.5) internal abstention floor. Abstention is the CALLER's job here:
+    the trivote gate's :data:`~lib.validators.bloom.classifier_
+    disagreement._DISAGREEMENT_CONFIDENCE_FLOOR` (0.4) must apply
+    identically to whichever voter-2 backend is active, so this function
+    hands back a raw vote and lets that one floor decide.
+
+    Returns ``None`` (=> the voter abstains) when:
+
+    - ``text`` is empty / whitespace, OR
+    - no ``heads`` instance is available (unloadable / missing
+      checkpoints — the whole-ladder graceful degrade) and none was
+      injected.
+
+    ``heads`` is injectable for tests (any object exposing
+    ``classify(text, *, floor=...) -> Optional[Tuple[str, float]]``,
+    the :class:`~lib.classifiers.bloom_deberta_heads.BloomDebertaHeads`
+    shape). Production passes ``None`` and this pulls the process-
+    singleton via ``BloomDebertaHeads.get_or_load()`` (no import of
+    ``bloom_deberta_heads`` — and therefore no torch/transformers probe
+    — unless a caller actually reaches this function).
+    """
+    if not text or not text.strip():
+        return None
+
+    holder = heads
+    if holder is None:
+        try:
+            from lib.classifiers.bloom_deberta_heads import BloomDebertaHeads
+
+            holder = BloomDebertaHeads.get_or_load()
+        except Exception as exc:  # noqa: BLE001 — graceful-degrade => abstain
+            logger.debug(
+                "heads_vote: BloomDebertaHeads.get_or_load failed: %s", exc
+            )
+            holder = None
+    if holder is None:
+        return None
+
+    try:
+        result = holder.classify(text.strip(), floor=0.0)
+    except Exception as exc:  # noqa: BLE001 — per-call failure => abstain
+        logger.warning("heads_vote: classify raised: %s", exc)
+        return None
+    if result is None:
+        return None
+    level, confidence = result
+    return (level, round(float(confidence), 4))
+
+
+# ---------------------------------------------------------------------------
 # Verb-ontology voter.
 # ---------------------------------------------------------------------------
 
@@ -323,7 +427,9 @@ def trivote_disagreement(
 
 __all__ = [
     "resolve_trivote_mode",
+    "resolve_trivote_heads_mode",
     "zero_shot_bloom",
+    "heads_vote",
     "verb_vote",
     "trivote_disagreement",
     "_BLOOM_HYPOTHESIS_TEMPLATES",
