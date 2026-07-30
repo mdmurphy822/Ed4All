@@ -3,9 +3,9 @@
 Contract:
     enrich(blocks: list[ResolvedBlock]) -> list[ResolvedBlock]
 
-The pipeline is fully self-contained: no external LLM APIs. Each
-enrichment subtask is handled by a small local model or deterministic
-code. See project memory `feedback_no_external_llms.md`.
+The pipeline is fully self-contained: no external LLM APIs (a standing
+project constraint). Each enrichment subtask is handled by a small local
+model or deterministic code.
 
 Subtask routing:
     FIGURE                -> alt_text + extended_description (if complex)

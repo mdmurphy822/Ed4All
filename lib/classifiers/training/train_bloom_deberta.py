@@ -16,9 +16,9 @@ level (input: harvested block/objective/assessment-item text; output: 1
 
 **``--head multiclass``.** ONE run trains a single ``num_labels=6`` softmax
 head over all six levels at once instead of six independent binary heads —
-the addendum's answer to the thin-class tail (live corpus: understand 928 /
-apply 793 / remember 591 / analyze 348 / evaluate 142 / create 81 — a
-one-vs-rest evaluate/create head trains on only 81/142 positives). Writes
+the addendum's answer to the thin-class tail (a measured harvest ran roughly
+930 / 790 / 590 / 350 / 140 / 80 across understand..create — a one-vs-rest
+evaluate/create head trains on only ~100-150 positives). Writes
 ``<heads-dir>/multiclass/final/`` by default.
 ``--bloom-level`` is forbidden with ``--head multiclass`` (argparse error) —
 see ``docs/operations/bloom-deberta-training.md`` DECISION PROTOCOL for when

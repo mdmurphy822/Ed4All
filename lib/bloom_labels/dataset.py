@@ -213,8 +213,9 @@ def class_balance_report(rows: Sequence[LabelRow]) -> Dict[str, Any]:
     reads as an explicit ``0``, never a silent absence). ``thin_levels``
     names every level whose count falls below half the balanced "fair share"
     (``total / 6``) -- on the live corpus this is exactly the
-    create/evaluate tail (understand 928 / apply 793 / remember 591 /
-    analyze 348 / evaluate 142 / create 81), surfaced explicitly so a
+    create/evaluate tail (roughly 930 / 790 / 590 /
+    350 / 140 / 80 for understand / apply / remember / analyze /
+    evaluate / create), surfaced explicitly so a
     downstream trainer never silently starves those heads.
     """
     counts: Dict[str, int] = {level: 0 for level in BLOOM_LEVELS}

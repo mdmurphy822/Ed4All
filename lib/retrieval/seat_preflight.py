@@ -3,7 +3,7 @@
 A vLLM seat that was ``docker start``-ed after a stop can pass its
 ``/v1/models`` readiness poll and yet emit degenerate soup / ``null``
 content on the first real request (the mode-collapse-after-restart
-failure class documented in the project memory: a restarted seat killed
+failure class observed in production: a restarted seat killed
 44/44 QC windows while answering readiness probes cleanly). Any consumer
 that trusts such a seat silently produces garbage.
 

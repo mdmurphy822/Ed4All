@@ -216,9 +216,9 @@ def test_class_balance_report_includes_all_levels_with_zero_when_absent():
 
 
 def test_class_balance_report_flags_thin_levels_like_live_corpus():
-    # Scaled ~10x down from the live-corpus counts documented in dataset.py
-    # (understand 928 / apply 793 / remember 591 / analyze 348 / evaluate
-    # 142 / create 81) — same shape, thin create/evaluate tail.
+    # Synthetic distribution with the shape a real harvest shows — dense
+    # low-Bloom levels, thin create/evaluate tail (the property the report
+    # must flag); the exact values are arbitrary.
     counts = {
         "understand": 93,
         "apply": 79,

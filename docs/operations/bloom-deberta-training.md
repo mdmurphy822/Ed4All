@@ -25,10 +25,10 @@ agent dispatches any of this — `train_bloom_deberta.py` is not registered in
 
 ## Decision protocol — train multiclass FIRST
 
-The corpus is heavily imbalanced on the high end of the ladder (live
-harvest: understand 928 / apply 793 / remember 591 / analyze 348 /
-evaluate 142 / create 81) — a one-vs-rest `evaluate`/`create` head trains on
-only 142/81 positives. Before committing to six separate one-vs-rest runs,
+The corpus is heavily imbalanced on the high end of the ladder (a measured
+harvest ran roughly 930 / 790 / 590 / 350 / 140 / 80 across
+understand..create) — a one-vs-rest `evaluate`/`create` head trains on only
+a low-hundreds tail of positives. Before committing to six separate one-vs-rest runs,
 train the single multiclass head first: it is ONE GPU run, not six, and it
 directly answers whether the six-head ladder is worth the other five runs
 at all.
@@ -267,9 +267,9 @@ measured benchmark).** `deberta-v3-base` is a ~184M-parameter encoder; a
 binary (one-vs-rest) classification head at `--max-length 256` /
 `--batch-size 16` / 3 epochs with early stopping is a small fit — expect low
 single-digit GiB of VRAM (fp16 on CUDA) and low tens of minutes per level on
-a modern single GPU, with the thin tail (`create` ≈ 81 rows, `evaluate` ≈
-142 rows) finishing fastest and the dense low-Bloom levels (`understand` ≈
-928, `apply` ≈ 793, `remember` ≈ 591) taking longest. Time the first
+a modern single GPU, with the thin tail (`create` / `evaluate`,
+low-hundreds of rows) finishing fastest and the dense low-Bloom levels
+(`understand` / `apply` / `remember`, high-hundreds each) taking longest. Time the first
 (thinnest) level yourself and extrapolate — do not treat the figures above
 as a promised number for your corpus or hardware; run label counts vary run
 to run as the harvester ingests more courses.
@@ -308,9 +308,9 @@ tokenizer (`lib/classifiers/training/train_bloom_deberta.py`, the same
 **Thin-class caveat (applies to BOTH modes).** The corpus is heavily
 imbalanced on the high end of the ladder — `class_balance_report`
 (`lib/bloom_labels/dataset.py`) flags any level under half the balanced
-"fair share" as `thin`, and on the live harvest that is exactly `create`
-(≈81 rows) and `evaluate` (≈142 rows) against hundreds for the low-Bloom
-levels. Class-weighted cross-entropy loss is always applied (no opt-out
+"fair share" as `thin`, and on a measured harvest that was exactly `create`
+and `evaluate` (low-hundreds of rows) against high-hundreds for the
+low-Bloom levels. Class-weighted cross-entropy loss is always applied (no opt-out
 flag, in either mode) to counteract this, but weighting a loss function
 cannot manufacture examples that were never harvested — a `create` or
 `evaluate` class trained on a few dozen positives will have a noisier
