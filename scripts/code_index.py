@@ -53,7 +53,9 @@ _INDEXED_SUFFIXES = {
     ".ttl", ".txt", ".toml", ".cfg", ".ini", ".html", ".css", ".js",
     ".sql", ".xml", ".example", ".env",
 }
-_MAX_FILE_BYTES = 512 * 1024  # bigger tracked files are data-shaped, skip
+_MAX_FILE_BYTES = 4 * 1024 * 1024  # only skip truly huge files; the one
+# tracked file over the old 512KB cap was MCP/tools/pipeline_tools.py —
+# the tool-registry hub, exactly what the index must cover
 _CHUNK_LINES = 60
 _CHUNK_STRIDE = 45  # 15-line overlap so a symbol split across a seam still hits
 _RRF_K = 60
