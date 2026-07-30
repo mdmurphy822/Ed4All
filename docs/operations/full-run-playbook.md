@@ -16,7 +16,7 @@ placeholders — substitute your own.
 | Topic | Doc |
 |---|---|
 | Per-stage invocation, timeout knobs, corpus-prep gotchas, graceful-stop semantics | [`pipeline-invocation.md`](pipeline-invocation.md) |
-| Single-box big-model deployment + env profile | [`dgx-spark.md`](dgx-spark.md) |
+| Single-box big-model deployment + env profile | `dgx-spark.md` (untracked operator-local runbook, like `spark-profile.md`) |
 | Big-memory concurrent-serving flag profile | [`spark-profile.md`](spark-profile.md) |
 | Serving the large local models (vLLM / Ollama) | [`nemotron-spark-serving.md`](nemotron-spark-serving.md) |
 | License-clean provider routing for training data | [`license-clean-run.md`](license-clean-run.md), [`../LICENSING.md`](../LICENSING.md) |
@@ -307,7 +307,7 @@ Verified `ed4all run` options (`cli/commands/run.py`): `--corpus`,
 > `packaging` lands before `content_generation_rewrite`. Export
 > `COURSEFORGE_TWO_PASS=true` first, then `--dry-run` matches §2.2 exactly.
 
-> **Conflict on `--provider local`.** [`dgx-spark.md`](dgx-spark.md) § (f)
+> **Conflict on `--provider local`.** `dgx-spark.md` (operator-local) § (f)
 > documents `ed4all run textbook-to-course --provider local …`. That value is
 > **rejected** by the current CLI: `--api-provider/--provider` is a
 > `click.Choice(["anthropic", "openai", "nvidia"])`, and passing `local` exits

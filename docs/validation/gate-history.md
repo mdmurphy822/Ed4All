@@ -70,7 +70,7 @@ focused on the current authoritative counts.
 > `objective_entailment` (course_planning, textbook_to_course). The
 > calibration-gated critical flip (which also promotes `claim_support` to
 > critical) is DEFERRED — see the `# TODO(calibration)` markers in
-> `config/workflows.yaml` and `plans/finegrain/w4-nli-grounding-gate.md` §4.
+> `config/workflows.yaml` and the operator-local `w4-nli-grounding-gate` plan §4.
 > The count table is re-derived again at the critical-flip landing.
 
 > WS3 landing (CO↔TO semantic-alignment detection gate): `co_terminal_alignment`
@@ -115,7 +115,7 @@ focused on the current authoritative counts.
 > `post_rewrite_validation` in BOTH `course_generation` + `textbook_to_course`
 > (+1 warning each). It is the fabrication control for NUMERIC / math content
 > the number-blind NLI gate (`block_prose_entailment`) cannot provide —
-> established this session (`plans/finegrain/content-block-quality-2026-06.md`
+> established this session (the operator-local `content-block-quality-2026-06` plan
 > iters 5/5b): DeBERTa-v3-mnli scores the fabrication `-40/88 = -5/11` (absent
 > from all 72 real chunks) ABOVE every grounded math claim, and
 > `groundedness._is_computational` EXEMPTS such claims. The gate cross-checks
@@ -133,7 +133,7 @@ focused on the current authoritative counts.
 > W10 landing (assessment surface — QTI quizzes + assignments + discussions):
 > a new pre-packaging `assessment_synthesis` phase added BEFORE `packaging` in
 > BOTH `course_generation` + `textbook_to_course` (plan
-> `plans/finegrain/w10-assessments-qti-discussions-2026-06.md` §2.4 Option A).
+> the operator-local `w10-assessments-qti-discussions-2026-06` plan §2.4 Option A).
 > Validator-only phase (`agents: []`) routed by phase NAME to
 > `run_assessment_synthesis` via `_PHASE_TOOL_MAPPING`. Three gates wired on it
 > (+2 critical, +1 warning per workflow): `qti_well_formed`

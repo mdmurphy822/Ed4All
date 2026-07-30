@@ -423,3 +423,9 @@ docs/vendor/
 # must never be committable.
 ed4all-support*.tar.gz
 ed4all-backup*.tar.gz
+
+# Untracked operator runbook for the single-box big-model deployment profile
+# (dgx-spark). Kept local-only alongside spark-profile.md so it can reference
+# the operator's gitignored inputs/<profile>/launch scripts and concrete seat
+# pins freely (tracked docs stay free of local-path references).
+docs/operations/dgx-spark.md
