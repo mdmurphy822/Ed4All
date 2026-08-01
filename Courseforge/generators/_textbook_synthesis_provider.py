@@ -960,12 +960,19 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
                     api_key_override=self._api_key,
                     capture=None,  # capture fires at the provider seat
                 )
+            # The W-D12 backend accepts the same per-call ``extra_payload``
+            # the base local/together path forwards. Dropping it here left
+            # every registry-provider call (spark-super) UNCONSTRAINED — the
+            # grammar/response_format schema never reached the seat, so dense
+            # windows overran max_tokens (finish_reason='length') or emitted
+            # JSON-invalid escapes that exhausted the parse-retry budget.
             text = backend.complete_sync(
                 self._system_prompt,
                 user_prompt,
                 model=self._model,
                 max_tokens=int(self._max_tokens),
                 temperature=float(self._temperature),
+                extra_payload=extra_payload or None,
             )
             return text or "", 0
         except SynthesisProviderError as exc:

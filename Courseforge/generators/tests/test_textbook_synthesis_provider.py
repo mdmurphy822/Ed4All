@@ -305,6 +305,42 @@ def test_registry_provider_routes_through_wd12_backend(monkeypatch):
     assert out["structure_enrichment"]["provider"] == "acme"
 
 
+def test_registry_provider_forwards_grammar_extra_payload(monkeypatch):
+    """The W-D12 backend branch forwards ``extra_payload`` verbatim.
+
+    Regression (introalgebra-bc-02 attempt 4): the registry-provider branch of
+    ``_dispatch_call`` dropped ``extra_payload``, so the grammar /
+    ``response_format`` schema never reached the seat — window synthesis ran
+    UNCONSTRAINED and dense windows truncated (ch7#w1) or emitted unparseable
+    JSON (ch9#w0), each a §5.4 chapter-content loss.
+    """
+    monkeypatch.delenv(ENV_PROVIDER, raising=False)
+    fake_registry = dict(tsp._OPENAI_COMPATIBLE_PROVIDERS)
+    fake_registry["acme"] = {"base_url_default": "http://acme/v1"}
+    monkeypatch.setattr(tsp, "_OPENAI_COMPATIBLE_PROVIDERS", fake_registry)
+
+    class _RecordingBackend:
+        def __init__(self) -> None:
+            self.kwargs: Dict[str, Any] = {}
+
+        def complete_sync(self, *args: Any, **kwargs: Any) -> str:
+            self.kwargs = kwargs
+            return "{}"
+
+    backend = _RecordingBackend()
+    p = TextbookSynthesisProvider(
+        provider="acme",
+        openai_compatible_backend=backend,
+    )
+    grammar = {"response_format": {"type": "json_schema"}}
+    p._dispatch_call("hello", extra_payload=grammar)
+    assert backend.kwargs.get("extra_payload") == grammar
+
+    # No grammar payload → the kwarg is passed as None (byte-stable body).
+    p._dispatch_call("hello", extra_payload=None)
+    assert backend.kwargs.get("extra_payload") is None
+
+
 # ===========================================================================
 # Stage 1 — synthesize_outline
 # ===========================================================================
