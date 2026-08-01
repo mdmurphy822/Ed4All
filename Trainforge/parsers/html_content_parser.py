@@ -664,19 +664,26 @@ class HTMLTextExtractor(HTMLParser):
         replaces it with
 
             <span class="semantik-figure-notation" role="img"
-                  aria-label="{expression} (image not recoverable)">[figure]</span>
+                  aria-label="{expression} (image not recoverable)">{body}</span>
 
         which is right for the scan lane it was written for — there the image
         really is unrecoverable. On a vendor-HTML maths textbook the ``alt`` it
         folds into ``aria-label`` IS the mathematics, so without this the only
-        thing reaching chunk text is the literal token ``[figure]``. Measured on
-        one converted book: 15,721 ``[figure]`` placeholders against 27
-        surviving LaTeX tokens, i.e. essentially every equation destroyed at
-        extraction, after conversion had preserved 90% of them.
+        thing reaching chunk text is the placeholder body. Measured on one
+        converted book: 15,721 placeholders against 27 surviving LaTeX tokens,
+        i.e. essentially every equation destroyed at extraction, after
+        conversion had preserved 90% of them.
 
-        Returns True when the element's own subtree text should be suppressed,
-        so the ``[figure]`` literal does not land beside the expression it was
-        standing in for.
+        NOTE (2026-08-01): ``_figure_placeholder`` now emits the ``alt`` as the
+        VISIBLE body too — ``\\(TeX\\)`` when it is TeX-shaped, plain text when
+        it is a figure description — instead of the literal token ``[figure]``.
+        That fixed the LEARNER page, which this substitution never touched. The
+        ``aria-label`` is unchanged, so the contract read here is unchanged, and
+        suppressing the element's own subtree text is still correct: it now
+        avoids emitting the expression TWICE (body + aria-label) rather than
+        avoiding a stray ``[figure]`` beside it.
+
+        Returns True when the element's own subtree text should be suppressed.
         """
         attrs_map = {key: (value or "") for key, value in attrs}
         classes = str(attrs_map.get("class", "")).lower()

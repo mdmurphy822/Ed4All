@@ -1236,22 +1236,53 @@ def strip_tikz_figures(text: str) -> str:
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[(?P<alt>[^\]]*)\]\(\s*(?P<target>[^)]*)\)")
 
 
+#: An ``alt`` that looks like TeX rather than prose. Publisher corpora that
+#: render math as images (QuickLaTeX/MathJax exporters) put the TeX SOURCE in
+#: ``alt``, so the expression is fully recoverable without ever fetching the
+#: image — see :func:`_figure_placeholder`.
+_TEX_ALT_RE = re.compile(r"\\[A-Za-z]+|[\\{}^_]|\$")
+
+
 def _figure_placeholder(alt: str, *, html: bool) -> str:
     r"""The shared accessible not-recoverable-figure placeholder.
 
-    HTML mode → the ``.semantik-figure-notation`` span (``alt`` HTML-escaped into the
-    ``aria-label``); plain mode → a bare ``[figure: {alt}]``. The single source
-    of truth for both :func:`strip_markdown_images` and
-    :func:`strip_literal_img_tags` so the two fabricated-image sanitizers emit an
-    identical placeholder.
+    HTML mode → the ``.semantik-figure-notation`` span (``alt`` HTML-escaped
+    into the ``aria-label``); plain mode → a bare ``[figure: {alt}]``. The
+    single source of truth for both :func:`strip_markdown_images` and
+    :func:`strip_literal_img_tags` so the two fabricated-image sanitizers emit
+    an identical placeholder.
+
+    **Visible text carries the alt.** It used to be the literal token
+    ``[figure]``, with the alt reachable only through ``aria-label``. That is
+    fine for the chunker — ``Trainforge/parsers/html_content_parser.py``
+    deliberately substitutes the ``aria-label`` for the element's own text — but
+    it silently guts the LEARNER page on any corpus that renders math as
+    images: a vendor algebra textbook converted to 15,790 opaque ``[figure]``
+    tokens across 16,876 images, so a reader saw "Evaluate [figure] when
+    [figure]" (measured 2026-08-01, BCcampus introductory algebra). Sighted
+    readers lost the math entirely and screen-reader users got raw TeX with a
+    conversion annotation glued on.
+
+    A TeX-shaped ``alt`` is emitted inside ``\( … \)`` so MathJax renders real
+    math on the page; prose ``alt`` (a genuine figure description) is emitted
+    as plain visible text. Either way the ``aria-label`` is UNCHANGED, so every
+    downstream consumer that reads it — the chunker's substitution, the
+    ``(image not recoverable)`` annotation stripper, the external-refs gate —
+    keeps its existing contract. Idempotent: the emitted span carries neither
+    ``![`` nor ``<img``, so re-application cannot match it.
     """
     alt = (alt or "").strip() or "Figure"
     if not html:
         return f"[figure: {alt}]"
     label = _html_escape(f"{alt} (image not recoverable)", quote=True)
+    body = _html_escape(alt, quote=False)
+    if _TEX_ALT_RE.search(alt):
+        # Delimit rather than transform: the TeX is the publisher's own source,
+        # and rewriting it here would be a second, lossier transcription.
+        body = rf"\({body}\)"
     return (
         '<span class="semantik-figure-notation" role="img" '
-        f'aria-label="{label}">[figure]</span>'
+        f'aria-label="{label}">{body}</span>'
     )
 
 
