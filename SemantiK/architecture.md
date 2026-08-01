@@ -19,6 +19,16 @@ For the WCAG / standards mapping that governs each output element, see
 [`docs/ontology.md`](docs/ontology.md). For the historical eight-stage refactor
 that this design supersedes, see [`docs/refactor_plan.md`](docs/refactor_plan.md).
 
+> **Both of those files are missing from this tree** — neither
+> `SemantiK/docs/ontology.md` nor `SemantiK/docs/refactor_plan.md` has ever
+> been committed (verified against full git history 2026-08-01;
+> `SemantiK/docs/` holds only `running-on-8gb.md`). This matters more than a
+> dead link: `ontology.md` is cited *normatively* at ten points below — "per
+> `docs/ontology.md` §7", "§6 must NOT include theta", "§2.3" — so those
+> claims currently have no readable source. Treat the assertions in this file
+> as the operative ones until the ontology doc lands, and don't add new
+> deferrals to it.
+
 ---
 
 ## 1. Design principle
@@ -662,7 +672,9 @@ remains**:
 
 ## 7. Exits — no human escalation (Stage 13)
 
-Per [`feedback_no_external_llms.md`](../../.claude/projects/-home-mdmur-Projects-Semantic/memory/feedback_no_external_llms.md):
+Per the standing local-only runtime constraint (see [`CLAUDE.md`](CLAUDE.md)
+§ Overview — no cloud LLM is required at runtime; the hosted large-model
+endpoint is an opt-in quality seat, never a dependency):
 runtime is local-only. There is also no human-in-the-loop. The pipeline has
 exactly four exit actions, decided by the combination of WCAG hard-gate
 status and theta:
@@ -860,8 +872,8 @@ measurement justifies it.
 | Constraint | Source | Implication |
 |---|---|---|
 | RTX 3060 8 GB VRAM | hardware | No concurrent Qwen adapter contexts; batch-by-adapter |
-| `build_qwen` must run serial | [`feedback_qwen_build_serial.md`](../../.claude/projects/-home-mdmur-Projects-Semantic/memory/feedback_qwen_build_serial.md) | 4 shards sequentially, never parallel |
-| No external LLMs at runtime | [`feedback_no_external_llms.md`](../../.claude/projects/-home-mdmur-Projects-Semantic/memory/feedback_no_external_llms.md) | All inference is local |
+| `build_qwen` must run serial | standing owner constraint (8 GB VRAM — parallel adapter contexts poison CUDA) | 4 shards sequentially, never parallel |
+| No external LLMs at runtime | standing owner constraint; see [`CLAUDE.md`](CLAUDE.md) § Overview | All inference is local |
 | WSL2 Ubuntu 24.04, Python 3.12, CUDA 12.1+ | dev environment | Council BERTs run on transformers + PEFT (encoder+heads); Qwen specialists run on llama.cpp (decoder-only LLMs); cross-encoders / theta scorer use DeBERTa-v3-small via transformers |
 
 **Council base encoder — ModernBERT-base** (~150 M params, MIT, 8K context,

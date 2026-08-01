@@ -480,8 +480,13 @@ Tool-local; describes the transformation contract used when upgrading older Boot
 ### RunManifest
 
 **Definition:** `schemas/events/run_manifest.schema.json`.
-**Instance production:** `lib/run_manager.py` (at run initialization; written once, never mutated).
-**Instance consumption:** run discovery, fsck, replay engine.
+**Instance production:** *none in the current tree.* The documented producer
+`lib/run_manager.py` was deleted in `ff012ee4` ("Remove unused files") and
+nothing replaced it — no module writes `run_manifest.json` today, so this
+schema has consumers but no producer. Do not cite a producer path here until
+one exists.
+**Instance consumption:** `lib/replay_engine.py`, `lib/libv2_fsck.py`
+(filename constant: `lib/path_constants.py::RUN_MANIFEST_FILE`).
 
 **Required fields:** `run_id` (`^RUN_[0-9]{8}_[0-9]{6}_[a-f0-9]{8}$`), `created_at`, `workflow_type ∈ {course_generation, rag_training, textbook_to_course, trainforge_train}`, `config_hashes` (`workflows_yaml`, `agents_yaml`, `schemas` — all `^sha256:[a-f0-9]{64}$`), `immutable` (const `true`).
 
@@ -1014,8 +1019,8 @@ Every identifier scheme currently in use.
 | Misconception ID | `<chunk_id>_mc_<NN>_<hash>` | `access_201_chunk_00042_mc_01_a3f8` | `preference_factory.py:140-143` |
 | Event ID | `^EVT_[a-f0-9]{16}$` | `EVT_a3f8c1d2e4b5f6a7` | `lib/decision_capture.py:46-59` (fallback); `lib/sequence_manager.py` (primary) |
 | Task ID | `^T-[a-f0-9]{8}$` | `T-a3f8c1d2` | Orchestrator executor |
-| Run ID (tool-scoped) | `{TOOL}_{COURSE}_{YYYYMMDD_HHMMSS}` (free text; `^[A-Za-z0-9_]+$` on audit event) | `trainforge_access_201_20260419_101530` | `lib/run_manager.py` |
-| Run ID (hardened) | `^RUN_[0-9]{8}_[0-9]{6}_[a-f0-9]{8}$` | `RUN_20260419_101530_a3f8c1d2` | `lib/run_manager.py` (hardened mode) |
+| Run ID (tool-scoped) | `{TOOL}_{COURSE}_{YYYYMMDD_HHMMSS}` (free text; `^[A-Za-z0-9_]+$` on audit event) | `trainforge_access_201_20260419_101530` | *no live minter* (was `lib/run_manager.py`, deleted in `ff012ee4`) |
+| Run ID (hardened) | `^RUN_[0-9]{8}_[0-9]{6}_[a-f0-9]{8}$` | `RUN_20260419_101530_a3f8c1d2` | *no live minter* (was `lib/run_manager.py`, deleted in `ff012ee4`); consumers resolve via `lib/paths.py::resolve_run_path` |
 | Content hash | 64-hex for SHA-256; also `sha256:<hex>` prefix form in run manifest | `sha256:a3f8…` | `lib/provenance.py::hash_file` |
 | Git commit | 40-hex | (40 hex chars) | run-manifest capture |
 | Session ID | free-string | (tool-specific) | `lib/run_finalizer.py` |

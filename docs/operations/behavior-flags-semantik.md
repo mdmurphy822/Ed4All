@@ -11,6 +11,29 @@ grep -n '<FLAG_NAME>' docs/operations/behavior-flags-semantik.md
 Ownership and the per-prefix index live in the root `CLAUDE.md`
 § Opt-In Behavior Flags.
 
+## Documented here but NOT implemented (audited 2026-08-01)
+
+Ten rows below name env vars that **no tracked file reads**. Setting them has
+no effect — the pipeline will not warn, it will simply ignore them. Verified by
+exact-token search across all tracked non-Markdown files, plus a check that no
+code builds `SEMANTIK_*` names dynamically (`os.environ[f"..."]` / prefix
+iteration), so these are not false negatives.
+
+`SEMANTIK_ANCHOR_TRUNCATE`, `SEMANTIK_API_KEY`, `SEMANTIK_CONCURRENCY`,
+`SEMANTIK_CONTEXT_TEXT_TRUNCATE`, `SEMANTIK_HEADING_TEXT_TRUNCATE`,
+`SEMANTIK_MAX_COVERAGE_RESPLIT_ROUNDS`, `SEMANTIK_MAX_PENDING_PER_WINDOW`,
+`SEMANTIK_MIN_PENDING_PER_SPLIT`, `SEMANTIK_MIN_PENDING_WINDOW_CAP`,
+`SEMANTIK_MODEL`.
+
+Note `SEMANTIK_MODEL` specifically: `SEMANTIK_MODEL_DIR` **is** implemented and
+is a different flag. A substring grep for `SEMANTIK_MODEL` hits ten files and
+looks live; an exact-token search returns nothing.
+
+Their rows are kept rather than deleted pending an owner call — either
+implement them or drop the rows. Whichever way it goes, update the per-prefix
+count in the root `CLAUDE.md` § Opt-In Behavior Flags table in the same change
+(226 today, counting these ten).
+
 ---
 
 SemantiK (the license-clean semantic-cascade PDF→structured-content converter

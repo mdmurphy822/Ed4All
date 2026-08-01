@@ -237,11 +237,19 @@ image shipping `[gui,server,embedding]` on CPU torch): `docs/operations/docker.m
 
 Per-subsystem layout lives in each subsystem's `CLAUDE.md` (see § Individual Project Guides).
 
-Top-level placement rules — which zone a new file/dir belongs to, the closed
-top-level allowlist, the `scripts/` and `docs/` taxonomies, and what is
-deliberately never reorganized — live in
+Placement rules at every level — which zone a new file/dir belongs to, the
+closed top-level allowlist, the `scripts/` and `docs/` taxonomies, the
+subsystem *interior* schema and its per-directory flat-file caps (§7), and what
+is deliberately never reorganized — live in
 [`docs/architecture/repo-organization.md`](docs/architecture/repo-organization.md)
-(enforced by `ci/layout_guard.py`).
+(enforced by `ci/layout_guard.py`, five checks).
+
+Two rules bite most often when adding a file: a new flat `lib/*.py` is a
+violation (new cross-cutting code goes in a `lib/<topic>/` subpackage), and a
+capped interior directory cannot grow a new loose code file — check
+`ci/layout_allowlist.txt` for its `flatcap:` line. Both are ratchets: the
+numbers only ever go down, and raising one is an exception to justify in the
+same PR.
 
 ### Test fixtures
 
@@ -364,9 +372,12 @@ modules for the current tool list and signatures. Documented below is only what
 the source does NOT make obvious: the sandbox tiers, the registry-only tools,
 and the phase-name dispatch override.
 
-**Core file tools** (`MCP/tools/file_tools.py`) — `list_directory` / `read_file`
-/ `file_info` run in a READ_ONLY sandbox; `write_file` in a RESTRICTED sandbox
-limited to `runtime/` and `runtime/state/`.
+**Core file tools** (`MCP/server.py` — the `@mcp.tool()` defs and their
+`ToolCapability` registrations both live there; there is no
+`MCP/tools/file_tools.py`) — `list_directory` / `read_file` / `file_info` run
+in a READ_ONLY sandbox rooted at `ALLOWED_FILE_ROOT`; `write_file` in a
+RESTRICTED sandbox whose `allowed_paths` are `runtime/` and the top-level
+`state/` compat symlink.
 
 **SemantiK tools** — see `SemantiK/CLAUDE.md` (PDF→accessible-HTML conversion; emits the Source-Provenance `data-semantik-*` / `semantik:{slug}#{block_id}` contract).
 
@@ -480,8 +491,14 @@ tracker.update_status("content_generator", "IN_PROGRESS",
 4. chunking
    └── Emit the SemantiK chunkset from the staged HTML via the
        `semantik-chunker` agent (deterministic, no LLM dispatch).
-       Outputs: semantik_chunks_path + semantik_chunks_sha256. Gated on
-       chunkset_manifest + chunk_wcag_status.
+       Outputs: semantik_chunks_path + semantik_chunks_sha256, plus a
+       per-file `source_html_parse_outcomes` histogram. The staged-HTML
+       parse runs across a `spawn` process pool sized by
+       `ED4ALL_HTML_PARSE_WORKERS` (0/1 = the byte-identical serial
+       path); pooled and serial emit are identical by construction.
+       Files that parse to nothing are recorded under named
+       `source_coverage.drop_reasons` keys, never silently dropped.
+       Gated on chunkset_manifest + chunk_wcag_status.
 
 5. objective_extraction
    └── Parse staged SemantiK HTML into textbook_structure.json (chapters,
@@ -735,6 +752,14 @@ operator-owned global `STOP_ALL` also **blocks new/resumed runs** until
 timeout-to-pause grace windows, SemantiK chapter-seam granularity):
 `docs/operations/pipeline-invocation.md` § 7.
 
+**Exception — the pooled staged-HTML parse.** When `ED4ALL_HTML_PARSE_WORKERS`
+resolves above 1, the `chunking` phase parses across a process pool, so a stop
+request drains roughly `3 × worker_count` in-flight files rather than one unit.
+Those files are re-parsed on resume (parsing is deterministic and cheap — no
+LLM call is lost), but the "worst-case loss is one unit" phrasing above does
+not apply to that phase. `ED4ALL_HTML_PARSE_WORKERS=1` restores single-unit
+granularity on the byte-identical serial path.
+
 ### Poison Pill Detection
 
 Stops a batch when the same error pattern repeats:
@@ -830,9 +855,9 @@ Per-flag rows live in per-subsystem reference docs under `docs/operations/` (one
 |--------|-------|-----------:|
 | `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` | [`docs/operations/behavior-flags-trainforge.md`](docs/operations/behavior-flags-trainforge.md) | 77 |
 | `NVIDIA_*` (vendor endpoint-registry row for the hosted large-model seat — `NVIDIA_API_KEY` / `NVIDIA_BASE_URL` / `NVIDIA_LARGE_MODEL`) | [`docs/operations/behavior-flags-trainforge.md`](docs/operations/behavior-flags-trainforge.md) | 3 |
-| `SEMANTIK_*` (SemantiK semantic-cascade converter; also honors the single legacy `DART_THETA_DEVICE` compat env, aliased to `SEMANTIK_THETA_DEVICE`) <!-- legacy-token: allow --> | [`docs/operations/behavior-flags-semantik.md`](docs/operations/behavior-flags-semantik.md) | 224 |
+| `SEMANTIK_*` (SemantiK semantic-cascade converter; also honors the single legacy `DART_THETA_DEVICE` compat env, aliased to `SEMANTIK_THETA_DEVICE`) <!-- legacy-token: allow --> | [`docs/operations/behavior-flags-semantik.md`](docs/operations/behavior-flags-semantik.md) | 226 |
 | `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`docs/operations/behavior-flags-courseforge.md`](docs/operations/behavior-flags-courseforge.md) | 45 |
-| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 262 |
+| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 272 |
 
 ### Cross-cutting flags (root-owned)
 
@@ -881,7 +906,10 @@ Validators (`lib/validators/`) — wiring in `docs/validation/gates.md`. Load-be
 
 - `kg_quality.py` — KG-quality report; thresholds **0.95 / 0.95 / 0.95 / 0.5** (completeness / consistency / accuracy / coverage). (As of the coverage-semantics redesign, the `coverage` floor thresholds chunk-anchored DomainConcept concept-node grounding — the share of concept nodes touched by ≥1 chunk-evidenced edge — NOT the old asserted/(asserted+derived) edge share; the legacy ratio survives unthresholded as `asserted_edge_share`.)
 - `curie_anchoring` (binary per-pair anchoring sentinel) — default **`min_pair_anchoring_rate=0.95`**; supersedes deprecated `curie_preservation` shim (Wave 135c→135d migration).
-- Statistical-tier embedding validators (`objective_assessment_similarity`, `concept_example_similarity`, `objective_roundtrip_similarity`, `bloom_classifier_disagreement`, `co_terminal_alignment`, `source_coverage`) graceful-degrade contract: missing `[embedding]` pyproject extras emit warning-severity `EMBEDDING_DEPS_MISSING` GateIssue with `passed=True` unless `TRAINFORGE_REQUIRE_EMBEDDINGS=true` flips to fail-closed.
+- Statistical-tier embedding validators — the eight that load a `SentenceEmbedder` via `try_load_embedder`: `objective_assessment_similarity`, `concept_example_similarity`, `objective_roundtrip_similarity`, `co_terminal_alignment`, `source_coverage`, `rewrite_source_grounding`, `terminal_objective_source_grounding`, `distractor_misconception_alignment` (13 gate wirings in `config/workflows.yaml`). Two DISTINCT contracts:
+  - **Missing `[embedding]` extras** → warning-severity `EMBEDDING_DEPS_MISSING` GateIssue with `passed=True`, unless `TRAINFORGE_REQUIRE_EMBEDDINGS=true` flips it fail-closed (that flip then wins over `on_error: warn`). Unchanged.
+  - **Extras present, requested `ED4ALL_EMBEDDING_DEVICE` absent** (default `cuda`, no CUDA→CPU fallback) → `EmbeddingModelUnavailable`, a type unrelated to `EmbeddingDepsMissing`. Always fatal: the validators `preload()` before their audit loop and re-raise it past their per-encode handlers, and `ValidationGateManager.run_gate` carries a typed passthrough that returns `passed=False` + critical `EMBEDDING_MODEL_UNAVAILABLE` **without consulting `behavior_on_error`**, so `on_error: warn` can no longer rewrite it to a pass. Pin `ED4ALL_EMBEDDING_DEVICE=cpu` on GPU-less hosts — that explicit opt-out is the only supported downgrade.
+  - Caveats that survive: all 13 wirings are declared `severity: warning`, so a device failure is a recorded FAILED gate but does not by itself halt the phase; a *typo'd* device token raises a plain `ValueError` and still warn-passes; `distractor_misconception_alignment` does not honor `TRAINFORGE_REQUIRE_EMBEDDINGS` on missing extras (pre-existing, deliberate). `bloom_classifier_disagreement` is NOT on this contract — it shares the `[embedding]` extras group but loads a BERT ensemble (`BertEnsembleDepsMissing` / `TRAINFORGE_REQUIRE_BERT_ENSEMBLE`). Full detail + the residual holes: `docs/architecture/validation-architecture.md` § 4.1-4.3.
 
 `schemas/knowledge/course.schema.json` is the canonical shape for Trainforge-emitted `course.json` consumed by LibV2.
 

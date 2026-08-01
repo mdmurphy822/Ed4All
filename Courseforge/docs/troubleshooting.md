@@ -142,7 +142,9 @@ Before generating ANY IMSCC package:
 - `itemmetadata` with `cc_profile` on each question item
 - Question types: `cc.multiple_choice.v0p1`, `cc.true_false.v0p1`, `cc.fib.v0p1`, `cc.essay.v0p1`
 
-**Fix Script**: `scripts/fix_quiz_metadata.py` can add missing metadata to existing packages
+**Fix Script**: none ships today. `scripts/fix_quiz_metadata.py` was documented
+here but has never existed in the tree (verified against full git history
+2026-08-01) — regenerate the package instead of trying to patch it in place.
 
 ---
 
