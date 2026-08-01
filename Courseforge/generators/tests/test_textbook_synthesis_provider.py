@@ -609,9 +609,13 @@ def test_author_terminal_lenient_list_payload():
 
 
 def test_author_terminal_parse_exhaustion_returns_none():
-    """Fail-SOFT: parse exhaustion → None (not a raise); capture success=false."""
+    """Fail-SOFT: parse exhaustion → None (not a raise); capture success=false.
+
+    Three garbage replies — one per attempt of the parse-retry budget added
+    with the constrained-dispatch fix (pre-fix this surface was single-shot).
+    """
     capture = _FakeCapture()
-    p = _provider(["not json at all"], capture=capture)
+    p = _provider(["not json at all"] * 3, capture=capture)
     to = p.author_terminal_for_cluster(
         _cluster_cos(), course_name="ALG_101", cluster_index=3
     )
@@ -621,6 +625,52 @@ def test_author_terminal_parse_exhaustion_returns_none():
         if e["decision_type"] == "terminal_objective_authoring"
     )
     assert "success=False" in ev["rationale"]
+
+
+def test_author_terminal_retries_past_bad_reply():
+    """A garbage first reply no longer demotes the TO to the template —
+    the retry loop recovers on the second attempt."""
+    p = _provider(
+        ["not json at all", json.dumps(_author_terminal_payload())]
+    )
+    to = p.author_terminal_for_cluster(
+        _cluster_cos(), course_name="ALG_101", cluster_index=4
+    )
+    assert to is not None
+    assert to["statement"]
+
+
+def test_author_terminal_forwards_grammar_payload(monkeypatch):
+    """The cluster-author call dispatches schema-constrained (regression:
+    it was the last synthesis surface running unconstrained)."""
+    monkeypatch.delenv(ENV_PROVIDER, raising=False)
+    fake_registry = dict(tsp._OPENAI_COMPATIBLE_PROVIDERS)
+    fake_registry["acme"] = {"base_url_default": "http://acme/v1"}
+    monkeypatch.setattr(tsp, "_OPENAI_COMPATIBLE_PROVIDERS", fake_registry)
+
+    class _RecordingBackend:
+        def __init__(self) -> None:
+            self.kwargs: Dict[str, Any] = {}
+
+        def complete_sync(self, *args: Any, **kwargs: Any) -> str:
+            self.kwargs = kwargs
+            return json.dumps(_author_terminal_payload())
+
+    backend = _RecordingBackend()
+    p = TextbookSynthesisProvider(
+        provider="acme",
+        openai_compatible_backend=backend,
+        grammar_mode="response_format",
+    )
+    to = p.author_terminal_for_cluster(
+        _cluster_cos(), course_name="ALG_101", cluster_index=1
+    )
+    assert to is not None
+    rf = (backend.kwargs.get("extra_payload") or {}).get("response_format")
+    assert rf and rf["type"] == "json_schema"
+    assert (
+        rf["json_schema"]["schema"]["required"] == ["terminal_objective"]
+    )
 
 
 def test_author_terminal_decision_capture_fires():

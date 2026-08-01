@@ -550,6 +550,25 @@ _RECONCILE_SCHEMA: Dict[str, Any] = {
     },
 }
 
+# WS1 — constrained-output schema for ``author_terminal_for_cluster``. One
+# terminal objective summarizing one CO cluster. Added after the
+# introalgebra-bc-02 attempt-5 finding: this was the last synthesis surface
+# dispatching UNCONSTRAINED (no grammar payload, single parse attempt, no
+# retry), so one unparseable reply per run degraded a whole chapter's TO to
+# the "…the concepts and skills of…" template. The normaliser also accepts a
+# lenient ``terminal_objectives`` list; the schema pins the canonical object
+# form.
+_AUTHOR_TERMINAL_SCHEMA: Dict[str, Any] = {
+    "$schema": _DRAFT_2020,
+    "type": "object",
+    "required": ["terminal_objective"],
+    "properties": {
+        "terminal_objective": _objective_item_schema(
+            with_sub_objectives=False
+        ),
+    },
+}
+
 
 def _bloom_verb_examples(*, per_level: int = 5) -> str:
     """Render a deterministic per-level sample of canonical Bloom *action*
@@ -1699,23 +1718,53 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
 
         cos = list(cluster_cos or [])
 
-        user_prompt = self._render_user_prompt(
+        base_prompt = self._render_user_prompt(
             mode="author_terminal",
             cluster_cos=cos,
             course_name=course_name,
             cluster_index=cluster_index,
         )
-        text, retry_count = self._dispatch_call(user_prompt)
-        parsed = self._extract_json_lenient(text)
-
+        # Constrained dispatch + parse-retry budget, mirroring
+        # ``synthesize_window_objectives``: the grammar payload bounds the
+        # reply at SAMPLE time on schema-supporting backends, and the retry
+        # loop backstops backends that ignore it. Pre-fix this surface was a
+        # single unconstrained attempt — one bad reply per run silently
+        # demoted a chapter's TO to the deterministic template.
+        extra_payload = self._build_synthesis_grammar_payload(
+            schema=_AUTHOR_TERMINAL_SCHEMA
+        )
+        text = ""
+        retry_count = 0
         terminal: Optional[Dict[str, Any]] = None
         last_error: Optional[str] = None
-        if parsed is None:
-            last_error = "lenient JSON parse returned None"
-        else:
+        attempt = 0
+        while attempt < _MAX_SYNTHESIS_PARSE_RETRIES:
+            user_prompt = base_prompt
+            if attempt > 0 and last_error:
+                user_prompt = (
+                    f"{base_prompt}\n\n"
+                    "Your previous output was rejected: "
+                    f"{last_error}\n"
+                    "Return ONLY a JSON object with a single key "
+                    "'terminal_objective' whose value is the objective "
+                    "object."
+                )
+            text, _rc = self._dispatch_call(
+                user_prompt, extra_payload=extra_payload or None
+            )
+            retry_count += int(_rc)
+            parsed = self._extract_json_lenient(text)
+            if parsed is None:
+                last_error = "lenient JSON parse returned None"
+                attempt += 1
+                continue
             terminal = self._normalise_author_terminal_payload(parsed)
             if terminal is None:
                 last_error = "no terminal_objective in payload"
+                attempt += 1
+                continue
+            last_error = None
+            break
 
         self._emit_per_call_decision(
             mode="author_terminal",
