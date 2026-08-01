@@ -36,6 +36,7 @@ NO models / NO GPU: pure BeautifulSoup parsing + the model-free adapter.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Union
 
 from lib.semantik.adapter import (
@@ -79,6 +80,46 @@ _BLOCK_TAGS = frozenset(_TAG_TO_REGION_KIND) | {"figure"}
 
 # §3.4 — a heading at this level (or shallower) opens a new chapter.
 _CHAPTER_HEADING_TAGS = frozenset({"h1", "h2"})
+
+# §3.4a — ONE-FILE-PER-CHAPTER corpora.
+#
+# The rule above assumes one file = one SECTION of a larger work, so h1/h2 are
+# both "section-level" and either may open a chapter. A publisher that ships one
+# file PER CHAPTER inverts it: h1 IS the chapter ("CHAPTER 3 Measurement,
+# Perimeter, Area, and Volume") and its h2s are that chapter's sections.
+# Opening a chapter at each h2 then explodes the structure — a 9-file vendor
+# algebra textbook produced 843 chapters from 948 h2s, tripping the
+# chunk_health CHAPTER_EXPLOSION gate and stopping the build (2026-08-01).
+#
+# Detection is a POSITIVE match on the h1 naming a chapter division, not a
+# count heuristic: a one-file-per-book corpus carries a book TITLE in h1, which
+# cannot match, so that path stays byte-identical.
+_CHAPTER_TITLE_RE = re.compile(
+    r"^\s*(?:chapter|unit|module|part|lesson)\s*[-–—:.]?\s*"
+    r"(?:\d+|[ivxlc]+\b|one|two|three|four|five|six|seven|eight|nine|ten)\b",
+    re.IGNORECASE,
+)
+
+
+def _document_opens_one_chapter(roots: Sequence[Any]) -> Optional[str]:
+    """The chapter title when this document is ONE chapter (§3.4a), else None.
+
+    Counts DISTINCT chapter-naming ``h1`` titles, not occurrences. Publishers
+    repeat the chapter title as a running header on every section — the source
+    of the algebra corpus carries the same ``CHAPTER 1 …`` h1 **57 times** — so
+    counting occurrences would reject exactly the shape this detects. Two
+    DIFFERENT chapter titles mean a genuine multi-chapter file, where the
+    existing h1/h2 boundary rule is already right.
+    """
+    titles: Dict[str, str] = {}
+    for root in roots:
+        for h1 in root.find_all("h1"):
+            text = _normalize_text(h1.get_text(" ", strip=True))
+            if _CHAPTER_TITLE_RE.match(text):
+                titles.setdefault(text.casefold(), text)
+                if len(titles) > 1:
+                    return None
+    return next(iter(titles.values())) if len(titles) == 1 else None
 
 # §3.4 overflow guard — hard ceiling on blocks per chapter so a long
 # publisher section (which may carry hundreds of p/li blocks under a single
@@ -220,6 +261,29 @@ def build_chapters_ir_from_html(
             page_title = page.get("title") or page.get("page")
             page_specs.append((page_title, root))
 
+    # §3.4a — decide the chapter-boundary rule ONCE for the document.
+    #
+    # When the document names ONE chapter, the file IS that chapter and NO
+    # heading opens another. That is deliberately stronger than "open at h1":
+    # this publisher uses <h1> for the chapter title, the numbered sections
+    # ("1.1 Whole Numbers"), the subsections, AND repeated end-of-section
+    # apparatus ("Answers" x5, "Glossary" x4, "Key Concepts" x5) — 57 h1s, 37
+    # distinct, carrying no usable hierarchy. Any heading-level rule over
+    # markup that degenerate just picks a different wrong answer (h1+h2 gave
+    # 843 chapters; h1-only with running-header dedup still gave 485).
+    # The file boundary is the one trustworthy signal, and for a
+    # one-file-per-chapter corpus it is exactly right.
+    sole_chapter_title = _document_opens_one_chapter([r for _, r in page_specs])
+    one_chapter_doc = sole_chapter_title is not None
+    chapter_tags: set = set() if one_chapter_doc else set(_CHAPTER_HEADING_TAGS)
+    # The overflow guard exists so a long publisher SECTION cannot produce a
+    # chapter that trips the extractor's >40-section collapse. In §3.4a mode a
+    # chapter legitimately holds a whole chapter's worth of blocks, so applying
+    # the same 40-block ceiling would simply re-create the explosion as
+    # "(cont.)" chapters. Let the chapter stay whole and leave over-long
+    # chapters to the resegmenter, which splits them on real structure.
+    max_blocks = None if one_chapter_doc else _MAX_BLOCKS_PER_CHAPTER
+
     chapters: List[_AdapterChapter] = []
     current: Optional[_AdapterChapter] = None
     raw_index = 0
@@ -232,7 +296,9 @@ def build_chapters_ir_from_html(
     def _ensure_current() -> _AdapterChapter:
         nonlocal current
         if current is None:
-            _open_chapter(doc_title)
+            # §3.4a — title the sole chapter from the h1 that names it, not
+            # from the filename fallback.
+            _open_chapter(sole_chapter_title or doc_title)
         assert current is not None
         return current
 
@@ -242,7 +308,7 @@ def build_chapters_ir_from_html(
         # under one h2 can carry hundreds of p/li blocks).
         nonlocal current
         ch = _ensure_current()
-        if len(ch.blocks) >= _MAX_BLOCKS_PER_CHAPTER:
+        if max_blocks is not None and len(ch.blocks) >= max_blocks:
             base = ch.title
             cont = base if base.endswith("(cont.)") else f"{base} (cont.)"
             _open_chapter(cont)
@@ -273,9 +339,21 @@ def build_chapters_ir_from_html(
             name = node.name
             level = _heading_level(name)
 
-            if name in _CHAPTER_HEADING_TAGS:
+            if name in chapter_tags:
                 heading_text = _normalize_text(node.get_text(" ", strip=True))
                 if heading_text:
+                    # §3.4a — a REPEATED chapter title is a running header, not
+                    # a new chapter. Publishers stamp the chapter heading on
+                    # every section page (57 identical h1s in the algebra
+                    # corpus); opening a chapter per occurrence is the same
+                    # explosion by another route.
+                    if (
+                        current is not None
+                        and _normalize_text(current.title).casefold()
+                        == heading_text.casefold()
+                    ):
+                        raw_index += 1
+                        continue
                     _open_chapter(heading_text)
                     page_opened = True
                     raw_index += 1
