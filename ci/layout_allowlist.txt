@@ -152,7 +152,12 @@ flatcap:Trainforge/rag=8
 flatcap:Trainforge/rag/inference_rules=12
 flatcap:Trainforge/scripts=17
 flatcap:Trainforge/training=11
-flatcap:ci=8
+# ci/ gained foreign_repo_guard.py (committed 2026-08-01) — the cap was
+# seeded while that file was still untracked. Raised 8 -> 9: ci/ is a
+# cohesive package of guards + their allowlists (repo-organization.md
+# § 2), so flat IS its correct shape; it is not an untaxonomized
+# container. A NEW guard may raise this line; anything else may not.
+flatcap:ci=9
 flatcap:cli/commands=20
 flatcap:gui=8
 flatcap:gui/routers=11

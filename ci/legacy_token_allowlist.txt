@@ -414,3 +414,18 @@ MCP/tests/test_dart_chunking_module_title.py	dart
 # runs still ``--resume``. The auto-name test parametrizes over it to pin that
 # alias coverage.
 MCP/tests/test_workflow_runner_auto_name.py	dart
+
+# ── PARALLEL-PARSE STOP-SITE TEST (WHAT-MUST-STAY) ───────────────────────────
+# The chunking phase's graceful-stop site_id is the literal ``dart_chunking``
+# — the registry key that kept its legacy name for checkpoint/read-compat
+# (root CLAUDE.md § Agent Registry). The pooled-vs-serial stop test asserts on
+# that exact id, so renaming the literal here would stop testing the real
+# site. Renaming the site itself would invalidate paused resume state.
+MCP/tests/test_parallel_parse_wiring.py	dart
+
+# ── WITHIN-PACKAGE DEDUP FIXTURE (WHAT-MUST-STAY) ────────────────────────────
+# The dedup fixture mirrors the chunker's parsed-block dataclass, whose
+# ``data_dart_unit`` / ``_subclass`` / ``_opener`` / ``_flows`` fields carry
+# the legacy ``data-dart-*`` HTML attribute names still read off un-migrated
+# corpora. The fixture must use the real field names to exercise dedup.
+Trainforge/chunker/tests/test_within_package_dedup.py	dart
