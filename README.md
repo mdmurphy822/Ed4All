@@ -1,9 +1,39 @@
-# Ed4All
+<div align="center">
 
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+<pre align="center">
+╭────────────────────────────────────────────────────────────╮
+│      ███████╗██████╗ ██╗  ██╗ █████╗ ██╗     ██╗           │
+│      ██╔════╝██╔══██╗██║  ██║██╔══██╗██║     ██║           │
+│      █████╗  ██║  ██║███████║███████║██║     ██║           │
+│      ██╔══╝  ██║  ██║╚════██║██╔══██║██║     ██║           │
+│      ███████╗██████╔╝     ██║██║  ██║███████╗███████╗      │
+│      ╚══════╝╚═════╝      ╚═╝╚═╝  ╚═╝╚══════╝╚══════╝      │
+╰────────────────────────────────────────────────────────────╯
+</pre>
 
-**Turn a textbook PDF into an accessible, course-ready package — semantic HTML, weekly modules, learning objectives, assessments, and a knowledge graph — in a single command.**
+### Textbook PDF → accessible course package → LoRA-tuned model with RRF retrieval, in a single command
+
+[![WCAG 2.2 AA](https://img.shields.io/badge/Accessibility-WCAG%202.2%20AA-22C55E)](#what-you-get)
+[![IMSCC](https://img.shields.io/badge/Export-IMS%20Common%20Cartridge-2563EB)](#what-you-get)
+[![Retrieval](https://img.shields.io/badge/Retrieval-BM25%20%2B%20Vector%20RRF-7C3AED)](#whats-inside)
+[![LoRA](https://img.shields.io/badge/Fine--tune-LoRA%20SFT%20%2B%20DPO-F97316)](#the-training-path)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/License-Apache--2.0-22C55E)](LICENSE)
+[![CI](https://github.com/mdmurphy822/Ed4All/actions/workflows/ci.yml/badge.svg)](https://github.com/mdmurphy822/Ed4All/actions/workflows/ci.yml)
+
+[Quick start](#quick-start) · [How it works](#how-it-works) · [Training path](#the-training-path) · [What's inside](#whats-inside) · [Developer guide](CLAUDE.md)
+
+**Semantic HTML, weekly modules, learning objectives, assessments, and a
+knowledge graph — then, on the same corpus, SFT instruction pairs, DPO
+preference pairs, and a LoRA fine-tune that answers *through* the course's own
+hybrid BM25 + vector RRF index rather than from weights alone. Every artifact
+is validated, cited back to its source, and WCAG 2.2 AA compliant by default.**
+
+</div>
+
+---
+
+## Why Ed4All
 
 Building a usable knowledge package from raw source material is weeks of manual work: extracting content, tagging it with learning science metadata, structuring it into pedagogically sound modules, writing aligned assessments, and validating accessibility. Ed4All runs that pipeline end-to-end, and everything it produces is WCAG 2.2 AA compliant by default.
 
@@ -61,22 +91,62 @@ stopped automatically so only the models a phase needs are ever resident.
 | 23 | `evaluation` | 5-layer × 3-tier eval matrix vs the base model, adapter audit, promote / hold / reject decision *(opt-in)* | Local eval models |
 | 24 | `finalization` | Final validation and training-data export | — |
 
-Phases 18 and 21–23 are the **training path**. Phase 18 synthesizes the corpus —
-SFT instruction pairs and DPO preference pairs, grounded in the course's own
-chunks and assessments — and phases 21–23 fine-tune a small language model on it
-with LoRA, then gate and evaluate the result. The fine-tune is off by default (a
-training run takes hours and needs the whole GPU), so phases 21–23 run only when
-you pass `--with-training`; `--skip-training` wins if you pass both. A default
-build skips them and still finishes at `finalization`.
-
-Training an already-archived course *without* rebuilding it stays a separate
-follow-on workflow: `ed4all run trainforge_train --course-name <slug>`.
-
 **GPU workload** legend: *OCR + vision models* — the lightweight extraction and
 alt-text seats; *Large model* — the main authoring/judging model seat; *Local
 validators / embeddings* — in-process models (no serving seat); *—* —
 deterministic CPU work. Seats in different groups are swapped at phase
 boundaries automatically, with health and coherence checks at every start.
+
+### The training path
+
+Phases 18, 20 and 21–23 turn the finished course into a **retrieval-grounded,
+course-tuned model**. Two things make it more than a fine-tune:
+
+- The training corpus is not scraped or hand-written — it is synthesized from
+  the same chunks and assessments the course was built from, so every pair is
+  already grounded in cited source material.
+- The adapter is **not** shipped alone. It is paired with the per-course vector
+  index built in phase 20, so at answer time it retrieves over the course
+  corpus with **hybrid RRF** — BM25 and dense vector search fused by reciprocal
+  rank fusion — and answers from cited chunks instead of from weights alone.
+
+| Phase | Produces |
+|---|---|
+| 18 `training_synthesis` | **SFT instruction pairs** + **DPO preference pairs**, grounded in the course's own chunks and assessments |
+| 20 `vector_indexing` | The **per-course vector index** the adapter answers through — on-device embeddings + exact cosine search, fail-closed (a stale or missing index raises, never a silent BM25 fallback) |
+| 21 `training` | A **LoRA adapter** (bf16 PEFT, SFT then DPO) over a small base model, with a licensing preflight and a full provenance model card |
+| 22 `post_training_validation` | Promotion gates — eval thresholds, faithfulness/yes-bias/no-bias regressions, CURIE-family completeness |
+| 23 `evaluation` | A 5-layer × 3-tier eval matrix against the **base** model, plus **grounded-answer** arms that score it through the retrieval path, then promote / hold / reject |
+
+```bash
+# Build the course AND train an adapter on it, one command
+ed4all run textbook-to-course --corpus my_textbook.pdf --course-name MY_COURSE_101 \
+  --with-training
+
+# Train an ALREADY-archived course without rebuilding it
+ed4all run trainforge_train --course-name my_course_101 --base-model <name>
+
+# Then ask the course — hybrid RRF over its own corpus, answers cite chunks
+libv2 retrieve "<question>" --course my_course_101 --engine hybrid-rrf
+```
+
+Retrieval is a first-class deliverable here, not an afterthought. The archive
+ships three engines — `lexical` (BM25), `semantic`, and `hybrid-rrf` — and
+`--engine auto` selects hybrid-RRF whenever a vector index exists, falling back
+to lexical only when one doesn't. Phase 20 runs on a **default** build too, so
+a course is askable whether or not you ever train an adapter.
+
+The fine-tune is **off by default** — a training run takes hours and wants the
+whole GPU, so it never attaches to a build implicitly. Phases 21–23 run only
+with `--with-training`, and `--skip-training` wins if you pass both. A default
+build skips them and still finishes at `finalization`.
+
+Two things worth knowing before the first run. Training needs the `[training]`
+extra and a GPU, and retrieval needs `[embedding]` (see the extras table
+below) — without it there is no vector index and retrieval degrades to BM25
+alone. The trained adapter is also a derivative of whatever model generated its
+pairs, so pair synthesis routes to license-clean providers by default;
+`docs/LICENSING.md` is the reference.
 
 ## Quick start
 
