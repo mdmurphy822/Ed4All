@@ -34,6 +34,13 @@ Contract per ``plans/qwen7b-courseforge-fixes-2026-05-followup.md``
   ``None``, emit warning ``EMBEDDING_DEPS_MISSING`` with
   ``passed=True, action=None``. Strict mode via the existing
   ``TRAINFORGE_REQUIRE_EMBEDDINGS=true`` flag.
+- Device unavailable is NOT that contract and is never degraded: with the
+  extras installed, the embedder is ``preload()``-ed before the block loop
+  so :class:`~lib.embedding.sentence_embedder.EmbeddingModelUnavailable`
+  (the requested ``ED4ALL_EMBEDDING_DEVICE`` is absent) propagates FATALLY,
+  regardless of ``TRAINFORGE_REQUIRE_EMBEDDINGS``. The batched-embed guard
+  re-raises it too, so it can never become a passing
+  ``EMBEDDING_ENCODE_ERROR``.
 
 Decision-capture: emits one ``rewrite_source_grounding_check``
 decision per block evaluated. Rationale interpolates block_id,
@@ -63,6 +70,7 @@ from lib.embedding._math import cosine_similarity
 from lib.validators.feature_cache import _sha as _fc_sha
 from lib.embedding.sentence_embedder import (
     EmbeddingDepsMissing,
+    EmbeddingModelUnavailable,
     SentenceEmbedder,
     is_strict_mode,
     try_load_embedder,
@@ -398,6 +406,19 @@ class RewriteSourceGroundingValidator:
                 action=None,
             )
 
+        # Force the model load NOW so a device failure lands HERE, fatal.
+        # EmbeddingModelUnavailable (extras present, the requested
+        # ED4ALL_EMBEDDING_DEVICE absent) must never reach the batched-embed
+        # `except Exception` below, which would degrade it to a
+        # warning-severity EMBEDDING_ENCODE_ERROR with passed=True and pass
+        # this gate vacuously. Distinct from the missing-extras contract
+        # above, which still degrades to a warning by default. ``getattr``
+        # because the ``_embedder_override`` test seam injects encode-only
+        # stubs; the per-encode re-raise below is the backstop.
+        _preload = getattr(embedder, "preload", None)
+        if callable(_preload):
+            _preload()
+
         source_chunks_raw = inputs.get("source_chunks", {}) or {}
         if not isinstance(source_chunks_raw, dict):
             source_chunks_raw = {}
@@ -524,6 +545,9 @@ class RewriteSourceGroundingValidator:
                         "no grounding-surface vectors produced (embedder "
                         "unavailable to the feature cache?)"
                     )
+            except EmbeddingModelUnavailable:
+                # Typed device unavailability is FATAL — never a passing gate.
+                raise
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "batched embed failed on grounding surfaces for %s: %s",

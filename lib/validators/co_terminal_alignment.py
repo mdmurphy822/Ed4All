@@ -27,6 +27,15 @@ Mirror (embedding-validator template):
 ``terminal_objective_coverage.py`` (``_load_json`` / ``_coerce_dict``) +
 ``lib/ontology/terminal_coverage.py::flatten_chapter_objectives``.
 
+Two failure surfaces that stay VISIBLY DISTINCT: missing ``[embedding]``
+extras degrades to the warning ``EMBEDDING_DEPS_MISSING`` with
+``passed=True`` (fail-closed only under ``TRAINFORGE_REQUIRE_EMBEDDINGS``),
+whereas extras-present-but-requested-``ED4ALL_EMBEDDING_DEVICE``-absent
+raises :class:`EmbeddingModelUnavailable` FATALLY regardless of that flag.
+The embedder is ``preload()``-ed before the audit loop and the per-encode
+guards re-raise the typed error, so a device failure can never be
+downgraded to a passing ``EMBEDDING_ENCODE_ERROR``.
+
 Inputs (``inputs`` dict, fed by the EXISTING
 ``_build_chapter_objective_coverage_inputs`` builder — no new builder):
 
@@ -70,6 +79,7 @@ from typing import Any, Dict, List, Optional
 from MCP.hardening.validation_gates import GateIssue, GateResult
 from lib.embedding._math import cosine_similarity
 from lib.embedding.sentence_embedder import (
+    EmbeddingModelUnavailable,
     SentenceEmbedder,
     is_strict_mode,
     try_load_embedder,
@@ -304,6 +314,19 @@ class CoTerminalAlignmentValidator:
                 ],
             )
 
+        # Force the model load NOW so a device failure lands HERE, fatal.
+        # EmbeddingModelUnavailable (extras present, the requested
+        # ED4ALL_EMBEDDING_DEVICE absent) must never reach the per-encode
+        # `except Exception` below, which would degrade it to a
+        # warning-severity EMBEDDING_ENCODE_ERROR with passed=True and pass
+        # this gate vacuously. Distinct from the missing-extras contract
+        # above, which still degrades to a warning by default. ``getattr``
+        # because the ``_embedder_override`` test seam injects encode-only
+        # stubs; the per-encode re-raise below is the backstop.
+        _preload = getattr(embedder, "preload", None)
+        if callable(_preload):
+            _preload()
+
         issues: List[GateIssue] = []
         # Memoize encode(to_stmt) by assigned_tid — 62 COs typically share
         # ~3 TOs, so avoid redundant encodes.
@@ -370,6 +393,9 @@ class CoTerminalAlignmentValidator:
                 if to_vec is None:
                     try:
                         to_vec = embedder.encode(to_stmt)
+                    except EmbeddingModelUnavailable:
+                        # Typed device unavailability is FATAL.
+                        raise
                     except Exception as exc:  # noqa: BLE001
                         logger.warning(
                             "embedder.encode raised on terminal %s: %s",
@@ -396,6 +422,9 @@ class CoTerminalAlignmentValidator:
                     continue
                 try:
                     co_vec = embedder.encode(co_stmt)
+                except EmbeddingModelUnavailable:
+                    # Typed device unavailability is FATAL.
+                    raise
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
                         "embedder.encode raised on CO %s: %s", co_id, exc

@@ -13,10 +13,48 @@ default, opt-in fail-closed).
 
 Default model: ``all-MiniLM-L6-v2`` (384-dim, ~80 MB on disk, the same
 model the precedent at ``Trainforge/eval/key_term_precision.py:66-71``
-uses for stdlib-fallback embedding similarity).
+uses for stdlib-fallback embedding similarity). This default is LIVE, not
+vestigial: every ``try_load_embedder()`` call that passes no model name —
+which is most of the embedding-tier validators — loads it.
+
+**This stack and the index/query stack run DIFFERENT models on purpose.**
+The product embedding pin is ``BAAI/bge-large-en-v1.5``
+(``lib/embedding/providers.py::_EMBEDDING_PROVIDERS``); the validator tier
+here stays on ``all-MiniLM-L6-v2``. Whatever the reason for the split, the
+two are NOT interchangeable: a vector from one must never be compared
+against a vector from the other (different dimensionality, different
+space). The only axis the two stacks genuinely share is the DEVICE (see
+below) — sharing that resolver does not make them one stack.
+
+Do not "unify" them by pointing this tier at the product pin without a
+deliberate decision: every similarity threshold the statistical-tier
+validators are calibrated against was measured on this model's vectors, so
+swapping it silently re-scales every one of those gates.
+
+Two failure surfaces that must stay VISIBLY DISTINCT:
+
+- **Missing ``[embedding]`` extras** — a dependency-availability escape
+  hatch. :func:`try_load_embedder` returns ``None`` and downstream
+  validators emit a warning-severity ``EMBEDDING_DEPS_MISSING`` with
+  ``passed=True``, unless ``TRAINFORGE_REQUIRE_EMBEDDINGS=true`` flips it
+  to a :class:`EmbeddingDepsMissing` raise. **Unchanged.**
+- **A requested device that is not there** — a hard failure.
+  :class:`EmbeddingModelUnavailable` is raised at model construction and is
+  never downgraded. The device flip does NOT leak into the extras path:
+  extras-missing stays a warning, device-unavailable stays fatal.
+
+Device (the one shared axis): resolved through
+``lib.embedding.providers.resolve_embedding_device`` — the same
+``ED4ALL_EMBEDDING_DEVICE`` knob (and the same ``cuda`` default) the index /
+query stack uses — and passed EXPLICITLY into ``SentenceTransformer``. Before
+this, no ``device=`` was passed at all, so sentence-transformers auto-selected
+``cuda:0`` whenever CUDA was present and the ``ED4ALL_EMBEDDING_DEVICE=cpu``
+recipe printed in this repo's test docstrings was inert on this stack.
 
 Public surface:
 - :class:`EmbeddingDepsMissing` — raised by strict-mode callers.
+- :class:`EmbeddingModelUnavailable` — model could not be constructed on the
+  resolved device (no fallback).
 - :class:`SentenceEmbedder` — model wrapper with ``encode(text)``.
 - :class:`EmbeddingCache` — content-addressed LRU on disk (Subtask 6).
 - :func:`try_load_embedder` — returns a ``SentenceEmbedder`` or ``None``.
@@ -32,7 +70,9 @@ import re
 import threading
 from collections import OrderedDict
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+
+from lib.embedding.providers import ENV_DEVICE, resolve_embedding_device
 
 if TYPE_CHECKING:
     import numpy as np  # noqa: F401
@@ -102,7 +142,12 @@ _TRUTHY_VALUES = frozenset({"true", "1", "yes", "on"})
 # ``SentenceTransformer.encode`` is thread-safe for these callers). The actual
 # heavy ``SentenceTransformer`` load is still deferred to the first
 # ``encode()`` inside the wrapper, so the cache adds no eager cost.
-_EMBEDDER_CACHE: Dict[str, "SentenceEmbedder"] = {}
+#
+# Keyed on ``(model_name, device)``, NOT on ``model_name`` alone: the device is
+# resolved from the environment at wrapper construction, so a slug-only key
+# would hand a caller that asked for one device the wrapper already pinned to
+# another.
+_EMBEDDER_CACHE: Dict[Tuple[str, str], "SentenceEmbedder"] = {}
 _EMBEDDER_CACHE_LOCK = threading.Lock()
 
 
@@ -151,12 +196,28 @@ class EmbeddingDepsMissing(RuntimeError):
     """
 
 
+class EmbeddingModelUnavailable(RuntimeError):
+    """The wrapped model could not be constructed on the resolved device.
+
+    Deliberately DISTINCT from :class:`EmbeddingDepsMissing`, which is the
+    optional-extras contract (warning-severity degrade by default). This one
+    is never a degrade: the extras are installed, the operator named a device
+    or took the documented default, and the model did not come up on it. No
+    CUDA→CPU downgrade is applied — the message names
+    ``ED4ALL_EMBEDDING_DEVICE=cpu`` so the operator makes that choice
+    explicitly.
+    """
+
+
 class SentenceEmbedder:
     """Wrapper around a SentenceTransformer model.
 
     Lazy-instantiates the underlying model on first call to
     :meth:`encode`. Constructor never imports the heavy ML stack —
-    that's what makes ``try_load_embedder()`` cheap on a slim install.
+    that's what makes ``try_load_embedder()`` cheap on a slim install — but it
+    DOES resolve and validate the device token, so a bad
+    ``ED4ALL_EMBEDDING_DEVICE`` value surfaces as a ``ValueError`` out of
+    :func:`try_load_embedder` rather than as an opaque load error later.
     """
 
     def __init__(
@@ -164,21 +225,56 @@ class SentenceEmbedder:
         model_name: str = _DEFAULT_MODEL_NAME,
         cache: Optional["EmbeddingCache"] = None,
         batch_cache: Optional["EmbeddingCache"] = None,
+        device: Optional[str] = None,
     ) -> None:
         self.model_name = model_name
+        # Explicit arg → ED4ALL_EMBEDDING_DEVICE → the registry default (cuda).
+        # Raises on an unrecognized token; never silently substitutes.
+        self.device = resolve_embedding_device(device)
         self._model: Optional[Any] = None
         self._cache = cache
         # Disk-persisted, model-folded batch cache for :meth:`encode_batch_cached`
         # (constructed lazily on first use; injectable for tests).
         self._batch_cache = batch_cache
 
+    @property
+    def precision(self) -> str:
+        """Effective encoder precision token, folded into the batch cache key.
+
+        ``ED4ALL_EMBED_FP16`` only ever fires on a CUDA-resident model (see
+        :meth:`_maybe_half`), so the effective precision is a pure function of
+        the resolved device and that flag.
+        """
+        if resolve_embed_fp16() and self.device.startswith("cuda"):
+            return "fp16"
+        return "fp32"
+
     def _ensure_model(self) -> Any:
         if self._model is None:
             from sentence_transformers import SentenceTransformer  # type: ignore
 
-            self._model = SentenceTransformer(self.model_name)
+            try:
+                self._model = SentenceTransformer(self.model_name, device=self.device)
+            except Exception as exc:  # noqa: BLE001 — device absent, weights absent, ...
+                raise EmbeddingModelUnavailable(
+                    f"failed to construct SentenceTransformer "
+                    f"{self.model_name!r} on device {self.device!r}: {exc}. No "
+                    f"automatic CUDA→CPU downgrade is performed — set "
+                    f"{ENV_DEVICE}=cpu to run this on CPU, or provision the "
+                    f"requested device."
+                ) from exc
             self._maybe_half(self._model)
         return self._model
+
+    def preload(self) -> None:
+        """Force the model load now, so a device failure surfaces HERE.
+
+        Callers that hold the load-time boundary (rather than the per-text
+        encode call sites, several of which wrap ``encode`` in a
+        warning-severity ``except Exception``) use this to make
+        :class:`EmbeddingModelUnavailable` land where it is actionable.
+        """
+        self._ensure_model()
 
     @staticmethod
     def _maybe_half(model: Any) -> None:
@@ -324,13 +420,21 @@ class SentenceEmbedder:
         return self._batch_cache
 
     def _batch_cache_key(self, text: str) -> str:
-        """Model-folded cache key text (``EmbeddingCache`` hashes it to sha256).
+        """Model + device + precision folded cache key text.
 
-        Folding ``model_name`` in means the batch cache file can never serve a
-        vector from a different model even though the on-disk row is just
-        ``{"hash", "vector"}``.
+        (``EmbeddingCache`` hashes this to sha256; the on-disk row is just
+        ``{"hash", "vector"}``, so everything that changes the vector must be
+        in the key text or the file will silently cross-serve.)
+
+        ``model_name`` alone was NOT enough. The device was never pinned on
+        this stack, so sentence-transformers auto-selected CUDA whenever it was
+        present, and ``ED4ALL_EMBED_FP16`` casts a CUDA model to half — meaning
+        vectors computed on different devices at different precisions were
+        already being reused interchangeably under one key. Both axes are now
+        folded in, which correctly invalidates entries written before this
+        change (they are indistinguishable and must not be trusted).
         """
-        return f"{self.model_name}\x00{text}"
+        return f"{self.model_name}\x00{self.device}\x00{self.precision}\x00{text}"
 
 
 class EmbeddingCache:
@@ -459,6 +563,7 @@ class EmbeddingCache:
 
 def try_load_embedder(
     model_name: str = _DEFAULT_MODEL_NAME,
+    device: Optional[str] = None,
 ) -> Optional[SentenceEmbedder]:
     """Return a :class:`SentenceEmbedder` or ``None`` when extras missing.
 
@@ -475,13 +580,21 @@ def try_load_embedder(
     ``lib/validators/shacl_runner.py:557-576``.
 
     Process-singleton (NLI-reload fix rec #1): the returned
-    :class:`SentenceEmbedder` for a given ``model_name`` is cached at module
-    level and reused, so the model loads exactly once per process no matter
-    how many embedding-tier validators call this within a phase. Only a
+    :class:`SentenceEmbedder` for a given ``(model_name, device)`` is cached at
+    module level and reused, so the model loads exactly once per process no
+    matter how many embedding-tier validators call this within a phase. Only a
     successfully-probed wrapper is cached — a strict-mode raise or a ``None``
     degrade is never cached (a later call re-probes).
+
+    ``device`` follows the shared ``ED4ALL_EMBEDDING_DEVICE`` chain (default
+    ``cuda``). Device resolution runs FIRST and is not part of the extras
+    contract: an unrecognized token is a ``ValueError`` here, never a ``None``
+    degrade, because a typo'd device is a config error and not a missing
+    dependency.
     """
-    cached = _EMBEDDER_CACHE.get(model_name)
+    resolved_device = resolve_embedding_device(device)
+    key = (model_name, resolved_device)
+    cached = _EMBEDDER_CACHE.get(key)
     if cached is not None:
         return cached
     try:
@@ -516,9 +629,9 @@ def try_load_embedder(
     with _EMBEDDER_CACHE_LOCK:
         # Re-check inside the lock — another thread may have finished the
         # construction while we probed (mirrors NliClassifier.get_or_load).
-        existing = _EMBEDDER_CACHE.get(model_name)
+        existing = _EMBEDDER_CACHE.get(key)
         if existing is not None:
             return existing
-        embedder = SentenceEmbedder(model_name=model_name)
-        _EMBEDDER_CACHE[model_name] = embedder
+        embedder = SentenceEmbedder(model_name=model_name, device=resolved_device)
+        _EMBEDDER_CACHE[key] = embedder
         return embedder

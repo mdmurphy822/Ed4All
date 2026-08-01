@@ -25,21 +25,58 @@ from lib.embedding.providers import (
     ResolvedEmbeddingProvider,
     allow_fake_enabled,
     build_embedding_client,
+    normalize_device_token,
+    normalize_dtype_token,
+    resolve_embedding_device,
     resolve_embedding_provider,
 )
+
+#: Every env var that participates in ``st`` resolution. The default-assertion
+#: tests clear all of them so they stay hermetic for an operator who has
+#: sourced a run-env template — the old default test cleared only provider +
+#: model and would already fail on a box with the device pinned.
+_ST_RESOLUTION_ENVS = (
+    "ED4ALL_EMBEDDING_PROVIDER",
+    "ED4ALL_EMBEDDING_MODEL",
+    "ED4ALL_EMBEDDING_DEVICE",
+    "ED4ALL_EMBEDDING_DTYPE",
+    "ED4ALL_EMBEDDING_BATCH_SIZE",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_client_cache():
+    """Drop the process-level resident client between tests.
+
+    ``build_embedding_client`` memoizes by resolved provider, so without this
+    a client built under one test's monkeypatched env could be handed to the
+    next test.
+    """
+    from lib.embedding.providers import _reset_embedding_client_cache_for_tests
+
+    _reset_embedding_client_cache_for_tests()
+    yield
+    _reset_embedding_client_cache_for_tests()
+
+
+def _clear_st_envs(monkeypatch):
+    for var in _ST_RESOLUTION_ENVS:
+        monkeypatch.delenv(var, raising=False)
 
 
 # ---------------------------------------------------------------------------
 # Registry resolution + env precedence
 # ---------------------------------------------------------------------------
 def test_default_provider_is_st(monkeypatch):
-    monkeypatch.delenv("ED4ALL_EMBEDDING_PROVIDER", raising=False)
-    monkeypatch.delenv("ED4ALL_EMBEDDING_MODEL", raising=False)
+    _clear_st_envs(monkeypatch)
     resolved = resolve_embedding_provider()
     assert resolved.provider_name == "st"
     assert resolved.kind == "st"
     assert resolved.model_id == "BAAI/bge-large-en-v1.5"
-    assert resolved.device == "cpu"  # determinism default (D4)
+    # CUDA is the product default for index builds AND query encoding; CPU is
+    # an explicit operator selection, never an auto-detected fallback.
+    assert resolved.device == "cuda"
+    assert resolved.dtype == "fp32"
     assert resolved.batch_size == 16
 
 
@@ -85,6 +122,100 @@ def test_device_env(monkeypatch):
     monkeypatch.setenv("ED4ALL_EMBEDDING_PROVIDER", "st")
     monkeypatch.setenv("ED4ALL_EMBEDDING_DEVICE", "cuda")
     assert resolve_embedding_provider().device == "cuda"
+    # CPU stays a fully-supported explicit selection.
+    monkeypatch.setenv("ED4ALL_EMBEDDING_DEVICE", "cpu")
+    assert resolve_embedding_provider().device == "cpu"
+
+
+# ---------------------------------------------------------------------------
+# Device-token discipline (W10 item 2) — the token used to be handed verbatim
+# to SentenceTransformer, so a typo produced an opaque wrapped load error.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("cpu", "cpu"),
+        ("CPU", "cpu"),
+        (" cuda ", "cuda"),
+        ("CUDA", "cuda"),
+        ("cuda:0", "cuda:0"),
+        ("Cuda:1", "cuda:1"),
+        ("cuda:00", "cuda:0"),
+    ],
+)
+def test_device_token_normalized(raw, expected):
+    assert normalize_device_token(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["auto", "gpu", "", "cuda:", "cuda:x", "mps", None])
+def test_device_token_invalid_raises_naming_the_optout(raw):
+    with pytest.raises(ValueError) as exc:
+        normalize_device_token(raw)
+    message = str(exc.value)
+    assert "ED4ALL_EMBEDDING_DEVICE=cpu" in message
+    assert "'cuda:N'" in message
+
+
+def test_auto_is_not_a_recognized_device(monkeypatch):
+    """``auto`` must be a config error — auto-detection is silent degradation."""
+    monkeypatch.setenv("ED4ALL_EMBEDDING_PROVIDER", "st")
+    monkeypatch.setenv("ED4ALL_EMBEDDING_DEVICE", "auto")
+    with pytest.raises(ValueError):
+        resolve_embedding_provider()
+
+
+def test_resolve_embedding_device_chain(monkeypatch):
+    monkeypatch.delenv("ED4ALL_EMBEDDING_DEVICE", raising=False)
+    assert resolve_embedding_device() == "cuda"  # registry default
+    monkeypatch.setenv("ED4ALL_EMBEDDING_DEVICE", "cpu")
+    assert resolve_embedding_device() == "cpu"  # env
+    assert resolve_embedding_device("cuda:1") == "cuda:1"  # explicit arg wins
+
+
+# ---------------------------------------------------------------------------
+# Encoder precision seam (W9) — default fp32, CPU + half is a hard failure.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "raw, expected",
+    [("fp32", "fp32"), ("BF16", "bf16"), (" fp16 ", "fp16")],
+)
+def test_dtype_token_normalized(raw, expected):
+    assert normalize_dtype_token(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["bfloat16", "float32", "half", "", None])
+def test_dtype_token_invalid_raises(raw):
+    with pytest.raises(ValueError) as exc:
+        normalize_dtype_token(raw)
+    assert "ED4ALL_EMBEDDING_DTYPE" in str(exc.value)
+
+
+def test_dtype_default_is_fp32(monkeypatch):
+    _clear_st_envs(monkeypatch)
+    assert resolve_embedding_provider(provider_name="st").dtype == "fp32"
+
+
+def test_dtype_env_resolves(monkeypatch):
+    monkeypatch.setenv("ED4ALL_EMBEDDING_DEVICE", "cuda")
+    monkeypatch.setenv("ED4ALL_EMBEDDING_DTYPE", "bf16")
+    assert resolve_embedding_provider(provider_name="st").dtype == "bf16"
+
+
+def test_half_precision_on_cpu_raises_not_ignored(monkeypatch):
+    """Non-fp32 + cpu must FAIL — silently encoding fp32 would record a
+    precision in the index provenance that the run never used."""
+    monkeypatch.setenv("ED4ALL_EMBEDDING_DEVICE", "cpu")
+    monkeypatch.setenv("ED4ALL_EMBEDDING_DTYPE", "bf16")
+    with pytest.raises(EmbeddingBackendUnavailable) as exc:
+        resolve_embedding_provider(provider_name="st")
+    assert "ED4ALL_EMBEDDING_DTYPE=fp32" in str(exc.value)
+
+
+def test_dtype_is_st_only(monkeypatch):
+    monkeypatch.setenv("ED4ALL_EMBEDDING_DTYPE", "bf16")
+    # The remote/fake kinds run no local encoder, so the knob never applies.
+    assert resolve_embedding_provider(provider_name="fake").dtype == "fp32"
+    assert resolve_embedding_provider(provider_name="local-openai").dtype == "fp32"
 
 
 def test_unknown_provider_raises(monkeypatch):
@@ -193,6 +324,56 @@ def test_fake_fingerprint():
     assert fp["model_id"] == "fake-deterministic-v1"
 
 
+# ---------------------------------------------------------------------------
+# W8 (emit half) — the fingerprint carries the three replay parameters.
+#
+# Before this, ``model_fingerprint`` emitted neither device nor batch_size and
+# the client exposed neither attribute, so every consumer fell through to the
+# literals ``"cpu"`` / ``1`` and every index on disk recorded a device and a
+# batch size the build never used.
+# ---------------------------------------------------------------------------
+def test_fingerprint_carries_device_batch_and_dtype(monkeypatch):
+    monkeypatch.setenv("ED4ALL_EMBEDDING_DEVICE", "cuda:1")
+    monkeypatch.setenv("ED4ALL_EMBEDDING_DTYPE", "bf16")
+    monkeypatch.setenv("ED4ALL_EMBEDDING_BATCH_SIZE", "64")
+    resolved = resolve_embedding_provider(provider_name="st")
+    fp = EmbeddingClient(resolved).model_fingerprint()
+    assert fp["device"] == "cuda:1"
+    assert fp["dtype"] == "bf16"
+    assert fp["batch_size"] == 64
+    # Sourced from ``resolved``, never independently recomputed.
+    assert fp["device"] == resolved.device
+    assert fp["dtype"] == resolved.dtype
+    assert fp["batch_size"] == resolved.batch_size
+
+
+def test_fingerprint_provenance_never_fabricates_a_torch_device():
+    """Kinds with no local encoder report the documented server sentinel
+    rather than a torch device this process never used."""
+    remote = EmbeddingClient(resolve_embedding_provider(provider_name="local-openai"))
+    fp = remote.model_fingerprint()
+    assert fp["device"] == "server"
+    assert fp["dtype"] == "server"
+
+    # ``fake`` genuinely computes in-process in float32 on the CPU.
+    local = build_embedding_client(provider_name="fake")
+    fp2 = local.model_fingerprint()
+    assert fp2["device"] == "cpu"
+    assert fp2["dtype"] == "fp32"
+    assert fp2["batch_size"] == 16
+
+
+def test_fingerprint_batch_size_is_never_the_literal_one(monkeypatch):
+    """Regression for the fabricated ``or 1`` fall-through: the registry
+    default is 16, so an unset batch size must report 16, not 1."""
+    monkeypatch.delenv("ED4ALL_EMBEDDING_BATCH_SIZE", raising=False)
+    monkeypatch.setenv("ED4ALL_EMBEDDING_DEVICE", "cpu")
+    fp = EmbeddingClient(
+        resolve_embedding_provider(provider_name="st")
+    ).model_fingerprint()
+    assert fp["batch_size"] == 16
+
+
 def test_fake_makes_no_network_calls(monkeypatch):
     """Guard: building + encoding with the fake provider touches no socket."""
     import socket
@@ -268,6 +449,91 @@ def test_st_offline_load_failure_raises_unavailable(monkeypatch):
     client = EmbeddingClient(resolved, offline=True)
     with pytest.raises(EmbeddingBackendUnavailable):
         client.encode_batch(["x"])
+
+
+def test_st_cuda_unavailable_raises_and_never_downgrades(monkeypatch):
+    """CUDA selected but unavailable → typed unavailable naming the CPU opt-out.
+
+    Fail-without-fix: this is the regression test that was missing, so a
+    future "for safety" ``torch.cuda.is_available()`` downgrade branch would
+    have passed the whole suite. It asserts BOTH that the raise happens and
+    that no client silently ends up on CPU.
+    """
+    import sys
+    import types
+
+    seen = {}
+    fake_mod = types.ModuleType("sentence_transformers")
+
+    class _NoCudaST:
+        def __init__(self, *args, **kwargs):
+            seen["device"] = kwargs.get("device")
+            raise RuntimeError(
+                "Torch not compiled with CUDA enabled (simulated)"
+            )
+
+    fake_mod.SentenceTransformer = _NoCudaST  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_mod)
+    monkeypatch.setenv("ED4ALL_EMBEDDING_DEVICE", "cuda")
+
+    client = EmbeddingClient(
+        resolve_embedding_provider(provider_name="st"), offline=True
+    )
+    with pytest.raises(EmbeddingBackendUnavailable) as exc:
+        client.encode_batch(["x"])
+    message = str(exc.value)
+    assert "ED4ALL_EMBEDDING_DEVICE=cpu" in message
+    assert "device=cuda" in message
+    # The load was attempted on the REQUESTED device, and no retry on cpu.
+    assert seen["device"] == "cuda"
+    assert client._st_model is None
+
+
+def test_st_dtype_threaded_into_model_kwargs(monkeypatch):
+    """A non-fp32 dtype reaches SentenceTransformer as ``model_kwargs`` and
+    leaves the default fp32 load byte-identical (no ``model_kwargs`` at all)."""
+    import sys
+    import types
+
+    calls = []
+    fake_mod = types.ModuleType("sentence_transformers")
+
+    class _CaptureST:
+        def __init__(self, *args, **kwargs):
+            calls.append(kwargs)
+            raise RuntimeError("stop after the kwargs snapshot")
+
+    fake_mod.SentenceTransformer = _CaptureST  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_mod)
+    monkeypatch.setenv("ED4ALL_EMBEDDING_DEVICE", "cuda")
+
+    # Default (fp32): no model_kwargs on the wire.
+    monkeypatch.delenv("ED4ALL_EMBEDDING_DTYPE", raising=False)
+    with pytest.raises(EmbeddingBackendUnavailable):
+        EmbeddingClient(
+            resolve_embedding_provider(provider_name="st")
+        ).encode_batch(["x"])
+    assert "model_kwargs" not in calls[-1]
+
+    # bf16: torch dtype threaded through. The seam also flips TF32 matmul,
+    # which is PROCESS-GLOBAL — save and restore it so this test cannot move
+    # another test's fp32 numerics.
+    torch = pytest.importorskip("torch")
+    prior_tf32 = (
+        torch.backends.cuda.matmul.allow_tf32,
+        torch.backends.cudnn.allow_tf32,
+    )
+    try:
+        monkeypatch.setenv("ED4ALL_EMBEDDING_DTYPE", "bf16")
+        with pytest.raises(EmbeddingBackendUnavailable):
+            EmbeddingClient(
+                resolve_embedding_provider(provider_name="st")
+            ).encode_batch(["x"])
+        assert calls[-1]["model_kwargs"] == {"torch_dtype": torch.bfloat16}
+        assert torch.backends.cuda.matmul.allow_tf32 is True
+    finally:
+        torch.backends.cuda.matmul.allow_tf32 = prior_tf32[0]
+        torch.backends.cudnn.allow_tf32 = prior_tf32[1]
 
 
 def test_st_offline_sets_hf_hub_offline_and_restores(monkeypatch):

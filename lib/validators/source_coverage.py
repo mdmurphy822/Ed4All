@@ -30,6 +30,15 @@ top-level ``config:``→inputs threshold resolution via
 ``score = covered/audited``, ``passed = (critical count == 0)`` (always
 True day-1; all issues warning-severity).
 
+Two failure surfaces that stay VISIBLY DISTINCT: missing ``[embedding]``
+extras degrades to the warning ``EMBEDDING_DEPS_MISSING`` with
+``passed=True`` (fail-closed only under ``TRAINFORGE_REQUIRE_EMBEDDINGS``),
+whereas extras-present-but-requested-``ED4ALL_EMBEDDING_DEVICE``-absent
+raises :class:`EmbeddingModelUnavailable` FATALLY regardless of that flag.
+The embedder is ``preload()``-ed before the SECTION arm encodes and
+``_encode_batch`` re-raises the typed error, so a device failure can never
+be downgraded to an all-``None`` vector set that passes the gate vacuously.
+
 Inputs (``inputs`` dict, fed by the EXISTING
 ``_build_chapter_objective_coverage_inputs`` builder — no new builder;
 it already surfaces BOTH ``synthesized_objectives`` AND
@@ -80,6 +89,7 @@ from typing import Any, Dict, List, Optional
 from MCP.hardening.validation_gates import GateIssue, GateResult
 from lib.embedding._math import cosine_similarity
 from lib.embedding.sentence_embedder import (
+    EmbeddingModelUnavailable,
     SentenceEmbedder,
     is_strict_mode,
     try_load_embedder,
@@ -603,6 +613,19 @@ class SourceCoverageValidator:
                 issues=degrade_issues,
             )
 
+        # Force the model load NOW so a device failure lands HERE, fatal.
+        # EmbeddingModelUnavailable (extras present, the requested
+        # ED4ALL_EMBEDDING_DEVICE absent) must never reach the per-encode
+        # `except Exception` in :meth:`_encode_batch`, which would turn every
+        # vector into a None skip-with-pass and pass this gate vacuously.
+        # Distinct from the missing-extras contract above, which still
+        # degrades to a warning by default. ``getattr`` because the
+        # ``_embedder_override`` test seam injects encode-only stubs; the
+        # per-encode re-raise in ``_encode_batch`` is the backstop.
+        _preload = getattr(embedder, "preload", None)
+        if callable(_preload):
+            _preload()
+
         # Encode the objective statements once (batched when supported).
         obj_vecs: List[Any] = self._encode_batch(embedder, obj_statements)
         obj_vecs = [v for v in obj_vecs if v is not None]
@@ -727,12 +750,18 @@ class SourceCoverageValidator:
         Prefers a batch ``encode([...])`` call when the embedder returns a
         list of vectors for a list input; falls back to per-text encoding.
         Any per-text failure yields ``None`` for that slot (the caller
-        treats ``None`` as a skip-with-pass).
+        treats ``None`` as a skip-with-pass) — EXCEPT
+        :class:`EmbeddingModelUnavailable`, the typed device-unavailability
+        error, which propagates as fatal rather than becoming a silent
+        gate-wide pass.
         """
         out: List[Optional[Any]] = []
         for text in texts:
             try:
                 out.append(embedder.encode(text))
+            except EmbeddingModelUnavailable:
+                # Typed device unavailability is FATAL — never a None skip.
+                raise
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "embedder.encode raised on source-coverage text: %s", exc

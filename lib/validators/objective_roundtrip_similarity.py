@@ -58,6 +58,13 @@ Behavior contract (Wave N1 fallback policy mirror):
       issues.
     - Embedding extras missing -> warning issue
       (``EMBEDDING_DEPS_MISSING``), ``passed=True``, ``action=None``.
+    - Extras PRESENT but the requested ``ED4ALL_EMBEDDING_DEVICE`` is
+      absent -> :class:`EmbeddingModelUnavailable` propagates FATALLY,
+      regardless of ``TRAINFORGE_REQUIRE_EMBEDDINGS``. A distinct
+      contract from the line above: the embedder is ``preload()``-ed
+      before the audit loop and the per-encode guard re-raises the typed
+      error, so a device failure can never become a passing
+      ``EMBEDDING_ENCODE_ERROR``.
     - paraphrase_fn missing AND no router -> warning issue
       (``PARAPHRASE_NOT_CONFIGURED``), ``passed=True``, ``action=None``.
     - paraphrase dispatch fails per-block -> warning issue
@@ -86,6 +93,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from MCP.hardening.validation_gates import GateIssue, GateResult
 from lib.embedding._math import cosine_similarity
 from lib.embedding.sentence_embedder import (
+    EmbeddingModelUnavailable,
     SentenceEmbedder,
     try_load_embedder,
 )
@@ -388,6 +396,19 @@ class ObjectiveRoundtripSimilarityValidator:
                 ],
             )
 
+        # Force the model load NOW so a device failure lands HERE, fatal.
+        # EmbeddingModelUnavailable (extras present, the requested
+        # ED4ALL_EMBEDDING_DEVICE absent) must never reach the per-encode
+        # `except Exception` below, which would degrade it to a
+        # warning-severity EMBEDDING_ENCODE_ERROR with passed=True and pass
+        # this gate vacuously. Distinct from the missing-extras contract
+        # above, which still degrades to a warning by default. ``getattr``
+        # because the ``_embedder_override`` test seam injects encode-only
+        # stubs; the per-encode re-raise below is the backstop.
+        _preload = getattr(embedder, "preload", None)
+        if callable(_preload):
+            _preload()
+
         # Per-call paraphrase_fn override takes precedence over the
         # constructor-time wiring (mirrors the threshold + embedder
         # input-side overrides).
@@ -516,6 +537,9 @@ class ObjectiveRoundtripSimilarityValidator:
             try:
                 original_vec = embedder.encode(statement)
                 paraphrase_vec = embedder.encode(paraphrase)
+            except EmbeddingModelUnavailable:
+                # Typed device unavailability is FATAL — never a passing gate.
+                raise
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "embedder.encode raised on block %s: %s",

@@ -32,9 +32,31 @@ tools can therefore read the catalog without web deps.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 from lib.llm.endpoints import openai_compatible_legacy_registry
+
+# ---------------------------------------------------------------------------
+# Value grammars for knobs whose accepted set is not a finite enum.
+#
+# A catalog entry may declare EITHER ``enum`` (a closed list the UI renders as
+# a <select>) OR ``pattern`` (a regex the UI renders as a validated text
+# input). ``pattern`` exists because some knobs accept a parameterized token
+# that no finite list can express — today only the torch device token, whose
+# ``cuda:N`` form is accepted by BOTH
+# ``lib/embedding/providers.py::normalize_device_token`` and the LibV2
+# ``--device`` flag. Widening that entry to a free ``string`` would let the UI
+# post ``auto`` (a value the resolver REJECTS by design — auto-detection is
+# silent degradation), so the grammar is pinned here instead.
+# ---------------------------------------------------------------------------
+
+#: Torch device tokens accepted by ``normalize_device_token`` — ``cpu``,
+#: ``cuda``, ``cuda:N``. Deliberately NOT ``auto``. Canonical lower-case form:
+#: the resolver additionally accepts mixed case (it lower-cases first), but the
+#: GUI offers only the canonical spelling, and the regex stays free of inline
+#: flags so it is usable verbatim as an HTML ``pattern`` attribute.
+DEVICE_TOKEN_PATTERN = r"^(?:cpu|cuda(?::\d+)?)$"
 
 # ---------------------------------------------------------------------------
 # Provider registry — DERIVED from the canonical endpoint registry.
@@ -686,13 +708,42 @@ def _build_catalog() -> List[Dict[str, Any]]:
             "key": "ED4ALL_EMBEDDING_DEVICE",
             "label": "Embedding Device",
             "category": "embedding",
-            "type": "enum",
-            "default": "cpu",
-            "enum": ["cpu", "cuda"],
+            # A ``pattern``, not an ``enum``: the resolver
+            # (lib/embedding/providers.py::normalize_device_token) and the
+            # LibV2 ``--device`` flag both accept a ``cuda:N`` token that a
+            # two-value enum cannot express, so the enum silently made a valid
+            # operator value unrepresentable in the GUI. Still CLOSED — the
+            # pattern rejects everything outside cpu / cuda / cuda:N.
+            "type": "string",
+            "default": "cuda",
+            "pattern": DEVICE_TOKEN_PATTERN,
             "help": (
-                "Torch device for the in-process st embedder. Default cpu "
-                "for determinism; cuda for speed (recorded in the index "
-                "manifest)."
+                "Torch device for the in-process st embedder — index builds, "
+                "query encoding, and the validator-tier embedder. Accepted "
+                "tokens: cpu, cuda, cuda:N (e.g. cuda:1 to pin a second "
+                "card); 'auto' is deliberately NOT accepted. Default cuda; "
+                "cpu is a fully-supported EXPLICIT selection. There is no "
+                "automatic CUDA->CPU fallback: on a GPU-less host you must "
+                "select cpu here or the embedding paths raise. Recorded in "
+                "the index manifest."
+            ),
+            "applies_to": "retrieval",
+        },
+        {
+            "key": "ED4ALL_EMBEDDING_DTYPE",
+            "label": "Embedding Precision",
+            "category": "embedding",
+            "type": "enum",
+            "default": "fp32",
+            "enum": ["fp32", "bf16", "fp16"],
+            "help": (
+                "Encoder precision for the in-process st embedder "
+                "(lib/embedding/providers.py::normalize_dtype_token). Default "
+                "fp32 — byte-identical to the pre-seam load. Prefer bf16 over "
+                "fp16 for the 1024-dim mean-pooled encoder (same bandwidth "
+                "win, no overflow risk on the pooling sum). Recorded on the "
+                "client fingerprint, so an index built at one precision is "
+                "distinguishable from another."
             ),
             "applies_to": "retrieval",
         },
@@ -703,6 +754,35 @@ def _build_catalog() -> List[Dict[str, Any]]:
             "type": "number",
             "default": 16,
             "help": "Encode batch size for the embedding client.",
+            "applies_to": "retrieval",
+        },
+        {
+            "key": "ED4ALL_EMBEDDING_CLIENT_CACHE",
+            "label": "Embedding Client Cache",
+            "category": "embedding",
+            "type": "bool",
+            "default": True,
+            "help": (
+                "Process-level resident embedding-client cache (default ON). "
+                "Keeps the loaded encoder resident across calls instead of "
+                "re-allocating ~1.25 GiB per query. An explicit falsey token "
+                "(0/false/no/off) restores the historical "
+                "construct-a-client-per-call behavior exactly."
+            ),
+            "applies_to": "retrieval",
+        },
+        {
+            "key": "ED4ALL_EMBEDDING_CLIENT_CACHE_MAX",
+            "label": "Embedding Client Cache Size",
+            "category": "embedding",
+            "type": "number",
+            "default": 2,
+            "help": (
+                "Maximum resident embedding clients held by the LRU cache "
+                "(entries, not bytes — resident cost is dominated by encoder "
+                "weights). Values below 1 and non-integers fall back to the "
+                "default 2."
+            ),
             "applies_to": "retrieval",
         },
         {
@@ -733,6 +813,129 @@ def _build_catalog() -> List[Dict[str, Any]]:
                 "indexes are refused at query time."
             ),
             "applies_to": "retrieval",
+        },
+        # Query-side search tuning (LibV2/tools/libv2/vector_index.py). Both
+        # are latency/parity knobs: results are byte-identical whichever way
+        # they are set, which is why a bad value degrades to the default
+        # rather than failing retrieval.
+        {
+            "key": "ED4ALL_RETRIEVAL_BLAS_THREADS",
+            "label": "Retrieval BLAS Threads",
+            "category": "embedding",
+            "type": "number",
+            "default": 8,
+            "help": (
+                "BLAS thread-team cap around the search GEMV only (never the "
+                "build-time encode). Default 8 — fanning a small query GEMV "
+                "across every core costs more in thread wakeup than it "
+                "recovers. 0 (or any non-positive value) disables the limiter "
+                "and lets BLAS use its own team. Results are unaffected; only "
+                "latency is. Requires threadpoolctl to take effect."
+            ),
+            "applies_to": "retrieval",
+        },
+        {
+            "key": "ED4ALL_RETRIEVAL_TOPK_LEGACY",
+            "label": "Legacy Top-K Sort",
+            "category": "embedding",
+            "type": "bool",
+            "default": False,
+            "help": (
+                "Restore the pre-argpartition full-Python top-k sort. Parity "
+                "escape hatch only — the two paths are required to be "
+                "output-identical and the test suite pins that; the legacy "
+                "path is ~50x slower at library scale."
+            ),
+            "applies_to": "retrieval",
+        },
+        # --------------------------------------------------------- chunking
+        # Chunkset emit knobs read by the ``chunking`` / ``imscc_chunking``
+        # phases (MCP/tools/pipeline_tools.py) and by the chunker itself
+        # (Trainforge/chunker/cross_course_dedup.py).
+        {
+            "key": "ED4ALL_CHUNK_DEDUP",
+            "label": "Within-Package Chunk Dedup",
+            "category": "chunking",
+            "type": "bool",
+            "default": False,
+            "help": (
+                "Drop exact-normalised repeated units within one chunkset. "
+                "Default OFF — the pass DELETES content, so enabling it is a "
+                "deliberate decision; off means a byte-identical chunkset "
+                "with no hashing and an empty dedup ledger. Only an explicit "
+                "truthy token (1/true/yes/on) enables it."
+            ),
+            "applies_to": "chunking",
+        },
+        {
+            "key": "ED4ALL_CHUNK_DEDUP_MIN_TOKENS",
+            "label": "Chunk Dedup Token Floor",
+            "category": "chunking",
+            "type": "number",
+            "default": 8,
+            "help": (
+                "A repeat carrying fewer exact-normalised tokens than this is "
+                "NEVER dropped (guards a short-but-legitimate recurring "
+                "definition). 0 is honoured as an explicit 'no floor' choice; "
+                "negative and non-integer values fall back to the default 8. "
+                "Only consulted when the dedup pass is on."
+            ),
+            "applies_to": "chunking",
+        },
+        {
+            "key": "ED4ALL_HTML_PARSE_WORKERS",
+            "label": "Staged-HTML Parse Workers",
+            "category": "chunking",
+            "type": "number",
+            "default": 10,
+            "help": (
+                "Process-pool size for the staged-HTML parse. 0 and 1 are "
+                "HONORED as the byte-identical serial path (no pool "
+                "constructed); pooled and serial emit are identical by "
+                "construction. Otherwise clamped to min(value, file count, "
+                "CPU count). Negative / non-integer values fall back to the "
+                "default 10. Note: above 1 a graceful stop drains the "
+                "in-flight files rather than a single unit."
+            ),
+            "applies_to": "chunking",
+        },
+        {
+            "key": "ED4ALL_HTML_PARSE_START_METHOD",
+            "label": "Parse Pool Start Method",
+            "category": "chunking",
+            "type": "enum",
+            "default": "spawn",
+            # ``fork`` is NOT offered: the chunking phases run in a
+            # multi-threaded process that already holds a CUDA primary
+            # context, where fork is undefined behaviour. The resolver warns
+            # loudly and falls back to spawn — the GUI must not be able to
+            # request it in the first place.
+            "enum": ["spawn", "forkserver", "serial"],
+            "help": (
+                "multiprocessing start method for the staged-HTML parse pool. "
+                "fork is deliberately NOT an accepted value: these phases run "
+                "in a multi-threaded process holding a CUDA primary context, "
+                "where fork deadlocks. Every accepted value emits identical "
+                "chunks, so an unrecognized token degrades to spawn."
+            ),
+            "applies_to": "chunking",
+        },
+        {
+            "key": "ED4ALL_HTML_ASSET_REJECT",
+            "label": "Reject Binary Assets",
+            "category": "chunking",
+            "type": "bool",
+            "default": True,
+            "help": (
+                "Byte-signature reject of non-HTML files (PNG/PDF/zip/font/…) "
+                "that match the discovery glob. Default ON; an explicit "
+                "falsey token (0/false/no/off) opts out. Either way the file "
+                "is recorded in the per-file outcome ledger under a named "
+                "drop reason — the flag only changes WHICH reason "
+                "(asset_rejected vs a decode failure), never whether the drop "
+                "is counted."
+            ),
+            "applies_to": "chunking",
         },
         # --------------------------------------------------------- answer
         # Grounded-answer backend (runtime Q&A inference over retrieved
@@ -811,6 +1014,47 @@ def by_category() -> Dict[str, List[Dict[str, Any]]]:
 def catalog_keys() -> List[str]:
     """Return the set of env keys the catalog declares (validation helper)."""
     return [entry["key"] for entry in CATALOG]
+
+
+def catalog_entry(key: str) -> Optional[Dict[str, Any]]:
+    """Return the catalog entry for env ``key`` (or ``None`` when unknown)."""
+    for entry in CATALOG:
+        if entry["key"] == key:
+            return entry
+    return None
+
+
+def value_is_valid(key: str, value: Any) -> bool:
+    """True when ``value`` is an acceptable value for catalog ``key``.
+
+    Enforces the two CLOSED value grammars a catalog entry may declare:
+
+    * ``enum``    — membership in the declared list (this is what keeps
+      ``ED4ALL_HTML_PARSE_START_METHOD=fork`` unrepresentable).
+    * ``pattern`` — a full regex match (this is what makes
+      ``ED4ALL_EMBEDDING_DEVICE=cuda:1`` representable while still rejecting
+      ``auto``).
+
+    An unset value (``None`` / blank) is always acceptable — "unset" means
+    "let the resolver's own default win", never a fabricated selection. An
+    unknown key and an entry declaring neither grammar return ``True``: this
+    helper narrows, it never invents a constraint the code does not have.
+    """
+    if value is None:
+        return True
+    text = str(value).strip()
+    if not text:
+        return True
+    entry = catalog_entry(key)
+    if entry is None:
+        return True
+    choices = entry.get("enum")
+    if isinstance(choices, list) and choices:
+        return text in [str(c) for c in choices]
+    pattern = entry.get("pattern")
+    if isinstance(pattern, str) and pattern:
+        return re.match(pattern, text) is not None
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -944,8 +1188,11 @@ __all__ = [
     "vision_provider_names",
     "BASE_MODELS",
     "CATALOG",
+    "DEVICE_TOKEN_PATTERN",
     "by_category",
     "catalog_keys",
+    "catalog_entry",
+    "value_is_valid",
     "ROUTING_ENV_MAP",
     "routing_to_env",
     "default_settings",

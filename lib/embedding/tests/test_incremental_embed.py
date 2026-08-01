@@ -63,6 +63,9 @@ class _FakeModel:
 
 
 def _embedder(model: _FakeModel, **kw) -> SentenceEmbedder:
+    # Pin the device so the batch-cache key (which now folds it) is
+    # independent of whatever ED4ALL_EMBEDDING_DEVICE the runner exports.
+    kw.setdefault("device", "cpu")
     emb = SentenceEmbedder(**kw)
     emb._model = model  # bypass the heavy _ensure_model load
     return emb
@@ -194,18 +197,160 @@ def test_encode_batch_cached_empty_returns_empty(tmp_path: Path) -> None:
     assert model.calls == []
 
 
-def test_batch_cache_key_folds_model_name() -> None:
-    emb = SentenceEmbedder(model_name="foo/bar-v2")
-    assert emb._batch_cache_key("x") == "foo/bar-v2\x00x"
+def test_batch_cache_key_folds_model_device_and_precision(monkeypatch) -> None:
+    """The key folds every axis that changes the vector.
+
+    ``model_name`` alone was not enough: this stack passed no ``device=`` at
+    all (so sentence-transformers auto-selected CUDA whenever it was present)
+    and ``ED4ALL_EMBED_FP16`` halves a CUDA model — meaning vectors computed on
+    different devices at different precisions were reused under one key.
+    """
+    monkeypatch.delenv("ED4ALL_EMBED_FP16", raising=False)
+    emb = SentenceEmbedder(model_name="foo/bar-v2", device="cpu")
+    assert emb._batch_cache_key("x") == "foo/bar-v2\x00cpu\x00fp32\x00x"
+
+    on_cuda = SentenceEmbedder(model_name="foo/bar-v2", device="cuda:1")
+    assert on_cuda._batch_cache_key("x") == "foo/bar-v2\x00cuda:1\x00fp32\x00x"
+    assert on_cuda._batch_cache_key("x") != emb._batch_cache_key("x")
+
+    monkeypatch.setenv("ED4ALL_EMBED_FP16", "1")
+    assert SentenceEmbedder(
+        model_name="foo/bar-v2", device="cuda:1"
+    )._batch_cache_key("x") == "foo/bar-v2\x00cuda:1\x00fp16\x00x"
+    # fp16 never fires on CPU, so the CPU key is unaffected by the flag.
+    assert SentenceEmbedder(
+        model_name="foo/bar-v2", device="cpu"
+    )._batch_cache_key("x") == "foo/bar-v2\x00cpu\x00fp32\x00x"
+
+
+def test_precision_property_tracks_device_and_flag(monkeypatch) -> None:
+    monkeypatch.delenv("ED4ALL_EMBED_FP16", raising=False)
+    assert SentenceEmbedder(device="cuda").precision == "fp32"
+    monkeypatch.setenv("ED4ALL_EMBED_FP16", "1")
+    assert SentenceEmbedder(device="cuda").precision == "fp16"
+    assert SentenceEmbedder(device="cpu").precision == "fp32"
 
 
 def test_ensure_batch_cache_slugifies_model_name(tmp_path: Path, monkeypatch) -> None:
     import lib.embedding.sentence_embedder as m
 
     monkeypatch.setattr(m, "_DEFAULT_BATCH_CACHE_DIR", tmp_path)
-    emb = SentenceEmbedder(model_name="foo/bar v2")
+    emb = SentenceEmbedder(model_name="foo/bar v2", device="cpu")
     cache = emb._ensure_batch_cache()
     assert cache.cache_path == tmp_path / "embedding_cache.batch.foo_bar_v2.jsonl"
+
+
+# --------------------------------------------------------------------------- #
+# Device pinning (W10 item 4) — the validator-tier stack now honours
+# ED4ALL_EMBEDDING_DEVICE, which it silently ignored before.
+# --------------------------------------------------------------------------- #
+
+
+def test_device_defaults_to_cuda(monkeypatch) -> None:
+    monkeypatch.delenv("ED4ALL_EMBEDDING_DEVICE", raising=False)
+    assert SentenceEmbedder().device == "cuda"
+
+
+def test_device_env_is_honoured(monkeypatch) -> None:
+    monkeypatch.setenv("ED4ALL_EMBEDDING_DEVICE", "cpu")
+    assert SentenceEmbedder().device == "cpu"
+    # Explicit arg beats the env.
+    assert SentenceEmbedder(device="cuda:0").device == "cuda:0"
+
+
+def test_bad_device_token_raises_at_construction(monkeypatch) -> None:
+    monkeypatch.setenv("ED4ALL_EMBEDDING_DEVICE", "auto")
+    with pytest.raises(ValueError) as exc:
+        SentenceEmbedder()
+    assert "ED4ALL_EMBEDDING_DEVICE=cpu" in str(exc.value)
+
+
+def test_device_is_passed_explicitly_to_sentence_transformer(monkeypatch) -> None:
+    """Fail-without-fix: before this the constructor took no ``device=``, so
+    sentence-transformers auto-selected cuda:0 whenever CUDA was present and
+    the documented CPU pin was inert on this stack."""
+    import sys
+    import types
+
+    seen: Dict[str, Any] = {}
+    fake_mod = types.ModuleType("sentence_transformers")
+
+    class _ProbeST:
+        def __init__(self, name, device=None, **kwargs):
+            seen["name"] = name
+            seen["device"] = device
+
+    fake_mod.SentenceTransformer = _ProbeST  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_mod)
+
+    SentenceEmbedder(model_name="m", device="cpu")._ensure_model()
+    assert seen == {"name": "m", "device": "cpu"}
+
+
+def test_device_failure_raises_the_distinct_typed_error(monkeypatch) -> None:
+    """CUDA requested but unavailable is a HARD failure, never a CPU
+    downgrade — and a distinct type from the missing-extras contract."""
+    import sys
+    import types
+
+    from lib.embedding.sentence_embedder import (
+        EmbeddingDepsMissing,
+        EmbeddingModelUnavailable,
+    )
+
+    fake_mod = types.ModuleType("sentence_transformers")
+
+    class _BoomST:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("Torch not compiled with CUDA enabled (simulated)")
+
+    fake_mod.SentenceTransformer = _BoomST  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_mod)
+
+    emb = SentenceEmbedder(model_name="m", device="cuda")
+    with pytest.raises(EmbeddingModelUnavailable) as exc:
+        emb.preload()
+    message = str(exc.value)
+    assert "ED4ALL_EMBEDDING_DEVICE=cpu" in message
+    assert "cuda" in message
+    # Distinct from the optional-extras contract, which must stay a degrade.
+    assert not isinstance(exc.value, EmbeddingDepsMissing)
+    assert emb._model is None
+
+
+def test_embedder_singleton_is_keyed_on_device(monkeypatch) -> None:
+    """A slug-only key would hand a caller that asked for one device the
+    wrapper already pinned to another."""
+    import lib.embedding.sentence_embedder as m
+
+    m._reset_embedder_cache_for_tests()
+    try:
+        monkeypatch.setenv("ED4ALL_EMBEDDING_DEVICE", "cpu")
+        on_cpu = m.try_load_embedder("model-x")
+        if on_cpu is None:
+            pytest.skip("sentence-transformers not installed")
+        assert m.try_load_embedder("model-x") is on_cpu
+
+        monkeypatch.setenv("ED4ALL_EMBEDDING_DEVICE", "cuda")
+        on_cuda = m.try_load_embedder("model-x")
+        assert on_cuda is not on_cpu
+        assert on_cuda.device == "cuda"
+
+        monkeypatch.setenv("ED4ALL_EMBEDDING_DEVICE", "cpu")
+        assert m.try_load_embedder("model-x") is on_cpu
+    finally:
+        m._reset_embedder_cache_for_tests()
+
+
+def test_try_load_embedder_rejects_a_bad_device_token(monkeypatch) -> None:
+    """A typo'd device is a config error, not a missing dependency: it must
+    NOT come back as the ``None`` extras degrade."""
+    import lib.embedding.sentence_embedder as m
+
+    m._reset_embedder_cache_for_tests()
+    monkeypatch.setenv("ED4ALL_EMBEDDING_DEVICE", "gpu")
+    with pytest.raises(ValueError):
+        m.try_load_embedder()
 
 
 # --------------------------------------------------------------------------- #

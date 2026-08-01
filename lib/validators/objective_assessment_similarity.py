@@ -48,6 +48,13 @@ Behavior contract (Wave N1 fallback policy mirror):
     - Embedding extras missing -> single warning issue
       (``EMBEDDING_DEPS_MISSING``), ``passed=True``, ``action=None``.
       Mirrors the SHACL-deps-missing graceful-degrade from Subtask 10.
+    - Extras PRESENT but the requested ``ED4ALL_EMBEDDING_DEVICE`` is
+      absent -> :class:`EmbeddingModelUnavailable` propagates FATALLY,
+      regardless of ``TRAINFORGE_REQUIRE_EMBEDDINGS``. A distinct
+      contract from the line above: the embedder is ``preload()``-ed
+      before the audit loop and the per-encode guards re-raise the typed
+      error, so a device failure can never become a passing
+      ``EMBEDDING_ENCODE_ERROR``.
     - At least one assessment with ``min(per-pair cosine) < threshold``
       -> ``passed=False``, ``action="regenerate"`` with one critical
       issue per low-similarity pair (capped at 50 entries to avoid
@@ -75,6 +82,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from MCP.hardening.validation_gates import GateIssue, GateResult
 from lib.embedding._math import cosine_similarity
 from lib.embedding.sentence_embedder import (
+    EmbeddingModelUnavailable,
     SentenceEmbedder,
     try_load_embedder,
 )
@@ -334,6 +342,19 @@ class ObjectiveAssessmentSimilarityValidator:
                 ],
             )
 
+        # Force the model load NOW so a device failure lands HERE, fatal.
+        # EmbeddingModelUnavailable (extras present, the requested
+        # ED4ALL_EMBEDDING_DEVICE absent) must never reach the per-encode
+        # `except Exception` below, which would degrade it to a
+        # warning-severity EMBEDDING_ENCODE_ERROR with passed=True and pass
+        # this gate vacuously. Distinct from the missing-extras contract
+        # above, which still degrades to a warning by default. ``getattr``
+        # because the ``_embedder_override`` test seam injects encode-only
+        # stubs; the per-encode re-raise below is the backstop.
+        _preload = getattr(embedder, "preload", None)
+        if callable(_preload):
+            _preload()
+
         objective_statements: Dict[str, str] = inputs.get(
             "objective_statements", {}
         ) or {}
@@ -397,6 +418,9 @@ class ObjectiveAssessmentSimilarityValidator:
 
             try:
                 stem_vec = embedder.encode(surface)
+            except EmbeddingModelUnavailable:
+                # Typed device unavailability is FATAL — never a passing gate.
+                raise
             except Exception as exc:  # noqa: BLE001 — log and degrade.
                 logger.warning(
                     "embedder.encode raised on block %s: %s",
@@ -434,6 +458,9 @@ class ObjectiveAssessmentSimilarityValidator:
                     continue
                 try:
                     obj_vec = embedder.encode(statement)
+                except EmbeddingModelUnavailable:
+                    # Typed device unavailability is FATAL — never a skip.
+                    raise
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
                         "embedder.encode raised on objective %s: %s",

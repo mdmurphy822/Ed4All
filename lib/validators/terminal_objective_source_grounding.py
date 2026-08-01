@@ -33,6 +33,22 @@ parse-with-fallback). When ON, ALL issues are **warning-severity** day-1
 after a >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; NOT IB3), since
 on the current collapsed-structure corpus the weak-grounding rate is high.
 
+Embedding-backend contract (mirrors the statistical-tier siblings, e.g.
+``lib/validators/concept_example_similarity.py``):
+
+    - Missing ``[embedding]`` extras -> a single warning-severity
+      ``EMBEDDING_DEPS_MISSING`` issue with ``passed=True``;
+      ``TRAINFORGE_REQUIRE_EMBEDDINGS=true`` still flips that closed by letting
+      ``EmbeddingDepsMissing`` propagate out of ``try_load_embedder``.
+    - Extras PRESENT but the requested ``ED4ALL_EMBEDDING_DEVICE`` is absent ->
+      :class:`EmbeddingModelUnavailable` propagates FATALLY, regardless of
+      ``TRAINFORGE_REQUIRE_EMBEDDINGS``. The embedder is ``preload()``-ed before
+      the audit loop and the per-encode guards re-raise the typed error, so a
+      device failure can never be logged away and scored as an ungrounded TO.
+    - A genuinely transient (non-device) encode failure still degrades: the TO
+      is skipped with a warning-severity ``EMBEDDING_ENCODE_ERROR`` rather than
+      counted ungrounded off a ``None`` cosine.
+
 Inputs (``inputs`` dict; mirrors ``co_terminal_alignment`` IO):
 
     synthesized_objectives_path (str) OR synthesized_objectives (dict)
@@ -73,6 +89,7 @@ from typing import Any, Dict, List, Optional
 from MCP.hardening.validation_gates import GateIssue, GateResult
 from lib.embedding._math import cosine_similarity
 from lib.embedding.sentence_embedder import (
+    EmbeddingModelUnavailable,
     SentenceEmbedder,
     is_strict_mode,
     try_load_embedder,
@@ -309,6 +326,18 @@ class TerminalObjectiveSourceGroundingValidator:
                 ],
             )
 
+        # Force the model load NOW so a device failure lands HERE, fatal.
+        # EmbeddingModelUnavailable (extras present, the requested
+        # ED4ALL_EMBEDDING_DEVICE absent) must never reach the per-encode
+        # `except Exception` below, which would degrade it to a logged warning
+        # and score this TO as ungrounded off a None cosine. Distinct from the
+        # missing-extras contract above, which still degrades to a warning.
+        # ``getattr`` because the ``embedder`` test seam injects encode-only
+        # stubs; the per-encode re-raises below are the backstop.
+        _preload = getattr(embedder, "preload", None)
+        if callable(_preload):
+            _preload()
+
         issues: List[GateIssue] = []
         # Memoize chunk-text encodes across TOs (clusters share few chunks but
         # a chunk may back >1 TO in degenerate assignments).
@@ -336,6 +365,9 @@ class TerminalObjectiveSourceGroundingValidator:
             if texts:
                 try:
                     to_vec = embedder.encode(to_stmt)
+                except EmbeddingModelUnavailable:
+                    # Typed device unavailability is FATAL — never a degrade.
+                    raise
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("embedder.encode raised on TO %s: %s", tid, exc)
                     to_vec = None
@@ -347,6 +379,9 @@ class TerminalObjectiveSourceGroundingValidator:
                         if vec is None:
                             try:
                                 vec = embedder.encode(txt)
+                            except EmbeddingModelUnavailable:
+                                # Typed device unavailability is FATAL.
+                                raise
                             except Exception as exc:  # noqa: BLE001
                                 logger.warning(
                                     "embedder.encode raised on chunk %s: %s",
@@ -369,6 +404,39 @@ class TerminalObjectiveSourceGroundingValidator:
                     passed=True,
                     code=None,
                     cosine=best,
+                    threshold=threshold,
+                    n_chunks=len(texts),
+                    embedder_strict=embedder_strict,
+                )
+                continue
+
+            if texts and best is None:
+                # Every cited chunk resolved but nothing scored: the encodes
+                # failed for a NON-device reason (the typed device error is
+                # re-raised above). That is an infrastructure degrade, not
+                # evidence the TO is ungrounded, so it must not feed the
+                # ungrounded rate — and it must not reach the `{best:.4f}`
+                # format below, which crashed with a TypeError on the None.
+                if len(issues) < _ISSUE_LIST_CAP:
+                    issues.append(
+                        GateIssue(
+                            severity="warning",
+                            code="EMBEDDING_ENCODE_ERROR",
+                            message=(
+                                f"Terminal objective {tid!r} could not be "
+                                f"scored: all {len(texts)} cited source "
+                                f"chunk(s) failed to encode; TO source-"
+                                f"grounding skipped for this TO."
+                            ),
+                            location=f"terminal_objectives[id={tid}]",
+                        )
+                    )
+                self._emit_decision(
+                    capture,
+                    to_id=tid,
+                    passed=True,
+                    code="EMBEDDING_ENCODE_ERROR",
+                    cosine=None,
                     threshold=threshold,
                     n_chunks=len(texts),
                     embedder_strict=embedder_strict,

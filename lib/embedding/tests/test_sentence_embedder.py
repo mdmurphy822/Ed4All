@@ -163,6 +163,54 @@ def test_strict_mode_raises_when_extras_missing(
     assert "embedding" in str(excinfo.value).lower()
 
 
+def test_the_two_failure_contracts_can_never_be_merged() -> None:
+    """Class-level guard on the crux invariant, independent of any call path.
+
+    Missing ``[embedding]`` extras is a dependency-availability degrade
+    (warning + ``passed=True``, flipped fail-closed only by
+    ``TRAINFORGE_REQUIRE_EMBEDDINGS``). A requested-but-absent DEVICE is fatal
+    regardless of that flag. Making :class:`EmbeddingModelUnavailable` a
+    subclass of :class:`EmbeddingDepsMissing` — the tempting refactor — would
+    silently route every device failure into the degrade path and turn a hard
+    failure into a warning-severity pass.
+    """
+    from lib.embedding.sentence_embedder import (
+        EmbeddingDepsMissing,
+        EmbeddingModelUnavailable,
+    )
+
+    assert not issubclass(EmbeddingModelUnavailable, EmbeddingDepsMissing)
+    assert not issubclass(EmbeddingDepsMissing, EmbeddingModelUnavailable)
+    # Both stay RuntimeError so existing broad handlers are unaffected.
+    assert issubclass(EmbeddingModelUnavailable, RuntimeError)
+    assert issubclass(EmbeddingDepsMissing, RuntimeError)
+
+
+def test_validator_tier_model_is_live_and_distinct_from_the_product_pin() -> None:
+    """Backs the module docstring: two stacks, two models, on purpose.
+
+    ``_DEFAULT_MODEL_NAME`` is not vestigial — ``try_load_embedder()`` with no
+    model argument (what most embedding-tier validators call) resolves to it.
+    Any claim that the validator tier and the index/query stack "cannot drift"
+    is therefore only true of the DEVICE, never of the model. Neither model is
+    changed here; this pins the documented separation so the docstring stays
+    honest.
+    """
+    import inspect
+
+    import lib.embedding.sentence_embedder as m
+    from lib.embedding.providers import _EMBEDDING_PROVIDERS
+
+    product_pin = _EMBEDDING_PROVIDERS["st"]["model_default"]
+    assert product_pin == "BAAI/bge-large-en-v1.5"
+    assert m._DEFAULT_MODEL_NAME == "all-MiniLM-L6-v2"
+    assert m._DEFAULT_MODEL_NAME != product_pin
+
+    # Live: it is the actual default of the function the validators call.
+    signature = inspect.signature(m.try_load_embedder)
+    assert signature.parameters["model_name"].default == m._DEFAULT_MODEL_NAME
+
+
 # ---------------------------------------------------------------------------
 # Real-model encode test — skipped without extras.
 # ---------------------------------------------------------------------------
@@ -173,12 +221,20 @@ def test_strict_mode_raises_when_extras_missing(
     reason="sentence-transformers not installed; install via pip install -e .[embedding]",
 )
 def test_encode_returns_unit_vectors() -> None:
-    """SentenceEmbedder.encode(normalize=True) returns ~unit-length vectors."""
+    """SentenceEmbedder.encode(normalize=True) returns ~unit-length vectors.
+
+    Pinned to CPU explicitly: this exercises the normalization math, not the
+    device contract. ``ED4ALL_EMBEDDING_DEVICE`` now defaults to ``cuda`` and
+    is honoured here (it was silently ignored before), so an unpinned run on a
+    GPU-less box would correctly raise ``EmbeddingModelUnavailable`` and tell
+    us nothing about normalization. The device contract has its own tests in
+    ``test_incremental_embed.py``.
+    """
     import math
 
     from lib.embedding.sentence_embedder import SentenceEmbedder
 
-    embedder = SentenceEmbedder()
+    embedder = SentenceEmbedder(device="cpu")
     vector = embedder.encode("hello world", normalize=True)
 
     # Compute L2 norm whether vector is np.ndarray or list[float].

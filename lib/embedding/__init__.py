@@ -8,6 +8,12 @@ back to a warning-severity GateIssue (``EMBEDDING_DEPS_MISSING``)
 instead of failing closed. Strict-mode opt-in via
 ``TRAINFORGE_REQUIRE_EMBEDDINGS=true`` flips the policy to critical.
 
+Distinct from that extras contract: a REQUESTED DEVICE that is unavailable is
+a hard failure (:class:`EmbeddingModelUnavailable` on the validator-tier
+wrapper, :class:`EmbeddingBackendUnavailable` on the index/query client).
+``ED4ALL_EMBEDDING_DEVICE`` defaults to ``cuda`` on both; CPU is an explicit
+operator selection and there is no automatic downgrade between them.
+
 Public surface:
 - :class:`SentenceEmbedder` — wraps a SentenceTransformer model.
 - :class:`EmbeddingCache` — content-addressed LRU on disk (Subtask 6).
@@ -37,6 +43,7 @@ from lib.embedding.providers import (
 from lib.embedding.sentence_embedder import (
     EmbeddingCache,
     EmbeddingDepsMissing,
+    EmbeddingModelUnavailable,
     SentenceEmbedder,
     is_strict_mode,
     try_load_embedder,
@@ -45,6 +52,7 @@ from lib.embedding.sentence_embedder import (
 __all__ = [
     "EmbeddingCache",
     "EmbeddingDepsMissing",
+    "EmbeddingModelUnavailable",
     "SentenceEmbedder",
     "cosine_similarity",
     "is_strict_mode",

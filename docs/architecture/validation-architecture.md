@@ -32,7 +32,7 @@ have different failure semantics:
 
 Layer 2 is what "validation gate" means everywhere else in the docs. Layers 3
 and 4 are covered in [§5](#5-post-loop-aggregators-and-course_status) and
-[§4.4](#44-post-training-eval-gates).
+[§4.6](#46-post-training-eval-gates).
 
 ---
 
@@ -129,12 +129,16 @@ flowchart TD
     M --> RG["ValidationGateManager.run_gate<br/>merges the row's config: block<br/>+ threshold: dials"]
     RG --> V["validator.validate(inputs)"]
     V -- returns --> TH["_apply_thresholds<br/>max_critical_issues / max_issues<br/>min_score / required_score"]
+    V -- "raises EmbeddingModelUnavailable<br/>(checked FIRST)" --> DEV["passed=False<br/>critical EMBEDDING_MODEL_UNAVAILABLE<br/><b>behavior_on_error NOT consulted</b><br/>opt out with ED4ALL_EMBEDDING_DEVICE=cpu"]
+    V -- "raises EmbeddingDepsMissing" --> DEPS["EMBEDDING_DEPS_MISSING issue<br/>strict TRAINFORGE_REQUIRE_EMBEDDINGS → block;<br/>else pass/block per behavior_on_error"]
     V -- "raises CUDA OOM" --> OOM["VALIDATOR_OOM issue<br/>pass/block per behavior_on_error<br/>(ED4ALL_VALIDATOR_FAIL_CLOSED_ON_OOM<br/>forces block)"]
-    V -- "raises anything else" --> ERR{"behavior_on_error"}
+    V -- "raises anything else<br/>(incl. a bad device TOKEN → ValueError)" --> ERR{"behavior_on_error"}
     ERR -- "fail_closed (default)" --> EF["passed=False<br/>critical VALIDATOR_ERROR issue"]
     ERR -- warn --> EW["passed=True<br/>VALIDATOR_ERROR issue retained"]
 
     TH --> W{"registered waiver<br/>for this gate_id?"}
+    DEV --> W
+    DEPS --> W
     OOM --> W
     EF --> W
     EW --> W
@@ -250,6 +254,13 @@ Two refinements sit on top:
   block regardless. The point of the split is that an OOM is an *environment*
   problem with an environment fix (free VRAM, raise the free-VRAM floor, pin the
   scorer to CPU), and it must never look like a passing gate.
+- **The two typed embedding-backend errors are split out ahead of the OOM
+  sniff**, and one of them ignores `behavior_on_error` entirely. An unavailable
+  embedding *device* (`EmbeddingModelUnavailable`) always fails the gate closed;
+  missing `[embedding]` *extras* (`EmbeddingDepsMissing`) keeps honouring
+  `on_error: warn` unless `TRAINFORGE_REQUIRE_EMBEDDINGS` is on. Full contract
+  and the residual gaps: [§4.2](#42-a-requested-device-that-is-not-there--a-different-contract)
+  and [§4.3](#43-what-fatal-does-and-does-not-buy-you).
 - **Validator imports are allowlisted.** `load_validator` refuses any dotted
   path outside `lib.validators.`, `lib.leak_checker`, and `Courseforge.router.`,
   so a YAML edit cannot load arbitrary modules.
@@ -285,20 +296,140 @@ a score.
 
 **Strict mode.** `TRAINFORGE_REQUIRE_EMBEDDINGS=true` flips the policy.
 `is_strict_mode()` becomes true, `try_load_embedder()` raises
-`EmbeddingDepsMissing` instead of returning `None`, the exception propagates out
-of `validate()`, and `run_gate`'s handler converts it to the fail-closed
-`VALIDATOR_ERROR` result. So the same missing dependency is a non-blocking
+`EmbeddingDepsMissing` instead of returning `None`, and the exception propagates
+out of `validate()`. `run_gate` routes it to
+`ValidationGateManager._build_embedding_deps_missing_gate_result`, which emits a
+distinct `EMBEDDING_DEPS_MISSING` result rather than the generic
+`VALIDATOR_ERROR`, and resolves pass/block as: strict mode on → `passed=False`
+with a **critical** issue *regardless of* `behavior_on_error` (honouring
+`on_error: warn` there would silently undo the operator's own opt-in); strict
+mode off → honour `behavior_on_error` exactly as before (`warn` → `passed=True`
+with a **warning** issue). So the same missing dependency is a non-blocking
 warning by default and a hard block for an operator who has declared that
-embedding-tier validation is required.
+embedding-tier validation is required. **The optional-extras contract is
+unchanged by everything below.**
 
-The NLI-backed validators follow the same shape with their own issue code
-(`NLI_DEPS_MISSING`) and the same env flag.
+### 4.2 A requested DEVICE that is not there — a different contract
+
+This is not the extras contract and it is never a degrade.
+`ED4ALL_EMBEDDING_DEVICE` defaults to `cuda` for this tier too
+(`SentenceEmbedder` passes `device=` explicitly instead of letting
+`sentence-transformers` auto-select), and there is no CUDA→CPU fallback. When
+the extras ARE installed but the model cannot be constructed on the resolved
+device, `SentenceEmbedder._ensure_model` raises `EmbeddingModelUnavailable` —
+deliberately **not** a subclass of `EmbeddingDepsMissing` (and not a superclass
+either; the two are unrelated `RuntimeError` subclasses) so it can never be
+mistaken for the optional-extras escape hatch — with a message naming
+`ED4ALL_EMBEDDING_DEVICE=cpu`. Missing extras stays a warning regardless of
+device; a missing device stays fatal regardless of
+`TRAINFORGE_REQUIRE_EMBEDDINGS`.
+
+**The fatality is enforced at both layers, and it survives `on_error: warn`.**
+
+*Validator layer.* Eight validators load the embedder, then call
+`SentenceEmbedder.preload()` **before** their audit loop so the model load lands
+at the boundary where the failure is actionable, and additionally narrow every
+`except Exception` around `encode` / `encode_batch` with an
+`except EmbeddingModelUnavailable: raise` ahead of it. So the typed error can no
+longer be downgraded into a warning-severity `EMBEDDING_ENCODE_ERROR`, a `None`
+vector treated as skip-with-pass, or (in `distractor_misconception_alignment`) a
+silent per-pair downgrade to Jaccard:
+`objective_assessment_similarity`, `concept_example_similarity`,
+`objective_roundtrip_similarity`, `co_terminal_alignment`, `source_coverage`,
+`rewrite_source_grounding`, `terminal_objective_source_grounding`,
+`distractor_misconception_alignment`. A genuinely transient, non-device encode
+failure still degrades to the warning-severity `EMBEDDING_ENCODE_ERROR` as
+before — that path was narrowed, not removed.
+
+*Gate-manager layer.* The validator-level raise would be worthless on its own:
+all **13** wirings of those eight validators in `config/workflows.yaml` carry
+`behavior.on_error: warn`, and the generic handler rewrites any raise into
+`passed=True` under that setting. `ValidationGateManager.run_gate` therefore
+checks the two typed embedding errors **first**, via `_exc_chain_has` (an
+`isinstance` walk over `__cause__` / `__context__`, depth-capped, so a validator
+that re-raises the error wrapped is still recognised) and **before** the
+`is_cuda_oom` message sniff — `_ensure_model` wraps *any* construction failure
+including a CUDA OOM, so the OOM branch would otherwise match and hand it back
+to `on_error: warn`. `_build_embedding_device_gate_result` consults neither
+`behavior_on_error`, nor `TRAINFORGE_REQUIRE_EMBEDDINGS`, nor
+`ED4ALL_VALIDATOR_FAIL_CLOSED_ON_OOM`: it always returns `passed=False` with a
+critical `EMBEDDING_MODEL_UNAVAILABLE` issue, an ERROR log line, and a
+`DecisionCapture` event. The documented opt-out is the explicit, greppable
+`ED4ALL_EMBEDDING_DEVICE=cpu`. Regression coverage over the real gate configs:
+`MCP/hardening/tests/test_validation_gates_embedding_device.py`.
+
+### 4.3 What "fatal" does and does not buy you
+
+`passed=False` is not the same as "blocks the build", and the remaining gaps are
+named here rather than implied away.
+
+**Every one of those 13 wirings is declared `severity: warning`.** Both gate
+loops — `ValidationGateManager.run_phase_gates` and the production one in
+`MCP/core/executor.py` — set `gates_passed = False` only for
+`severity: critical` (see [§3.2](#32-severity-on_fail-and-on_error): `severity`
+is the only dial that stops a phase). So a device-unavailable result is recorded
+as a FAILED gate in the phase checkpoint's `gate_results`, with the critical
+issue, the ERROR log, and the capture — it is never reported as a pass — but on
+the current config it does **not** by itself halt the phase. Promoting any of
+these gates to `severity: critical` is a separate decision, calibration-gated
+where the YAML says so (`# TODO(calibration)`); do not read the typed
+passthrough as having made them blocking. The § 3.4 waiver surface also still
+applies to this branch: a registered `GateWaiver` flips the result to
+`passed=True, waived=True`, which is intended (auditable, operator-owned) but is
+an override.
+
+**A typo'd `ED4ALL_EMBEDDING_DEVICE` token is still a warn-pass.** Device
+resolution runs before any typed embedding error exists:
+`lib/embedding/providers.py::normalize_device_token` raises a plain `ValueError`
+on an unrecognized token (`auto` included — this project never auto-detects a
+device). That `ValueError` is neither `EmbeddingModelUnavailable` nor
+`EmbeddingDepsMissing`, so the typed passthrough does not see it, and the
+generic handler under `on_error: warn` returns `passed=True` with a
+`VALIDATOR_ERROR` issue. A misspelled device is therefore *less* safe than an
+absent one. Pin the token exactly (`cpu` / `cuda` / `cuda:N`).
+
+**The batched feature-cache path still swallows the typed error — latent, not
+live.** `lib/validators/feature_cache.py::BlockFeatureCache.embed` wraps its
+batched encode in a broad `except Exception` and returns a partial (possibly
+empty) `{sha -> vector}` map on failure; `_resolve_embedder_locked` does the same
+around `try_load_embedder`. Neither was narrowed. It is not reachable for the
+device case as currently wired: the only caller is
+`rewrite_source_grounding`, and both it and the cache resolve
+`try_load_embedder()` with no arguments, so they share the *same*
+`(model_name, device)` process-singleton — the validator's `preload()` therefore
+raises first and the cache never gets to swallow anything. The hole becomes live
+the moment either premise breaks: a new `feature_cache.embed()` caller that does
+not preload, or a `BlockFeatureCache` built with a different
+`embedder_model_name` (whose own construction failure — missing weights, not
+just a missing device — is also wrapped in `EmbeddingModelUnavailable`). Narrow
+those two handlers if you add such a caller.
+
+**Known deviation — `distractor_misconception_alignment` does not honour
+`TRAINFORGE_REQUIRE_EMBEDDINGS` on missing extras.** Its `try_load_embedder()`
+call re-raises `EmbeddingModelUnavailable` (device: fatal, as above), but a
+strict-mode `EmbeddingDepsMissing` is still caught by the broad
+`except Exception` that follows and degrades the gate to Jaccard token-overlap
+with a warning-severity `EMBEDDING_DEPS_MISSING`. The tier-wide strict flip does
+not reach this one validator. Pre-existing and **deliberately left unchanged**
+pending an owner decision; do not "fix" it as a drive-by.
+
+**`bloom_classifier_disagreement` is not on this contract at all.** It rides the
+same `[embedding]` extras group (it reuses that group's `transformers` pin) but
+loads a BERT ensemble, not a `SentenceEmbedder`: its typed error is
+`BertEnsembleDepsMissing` and its strict flag is
+`TRAINFORGE_REQUIRE_BERT_ENSEMBLE`. `ED4ALL_EMBEDDING_DEVICE` and the
+passthrough above do not apply to it.
+
+The NLI-backed validators follow the missing-extras shape with their own issue
+code (`NLI_DEPS_MISSING`) and the same `TRAINFORGE_REQUIRE_EMBEDDINGS` flag.
+`ED4ALL_NLI_DEVICE` deliberately does **not** share the embedding device
+contract — it still degrades `cuda`→CPU with a warning.
 
 The equivalent pattern predates the embedding tier: the SHACL validators degrade
 to a single warning issue with `passed=True` when the RDF/SHACL extras are
 missing, on the same "cannot block on an optional dependency" reasoning.
 
-### 4.2 Why degrade rather than skip
+### 4.4 Why degrade rather than skip
 
 The degrade path deliberately produces a `GateResult` rather than omitting the
 gate. Every declared gate that was parsed contributes exactly one entry to the
@@ -307,7 +438,7 @@ entries reflects N configured gates. That invariant is what makes the chain
 auditable after the fact: "this gate is absent" is always a wiring question, and
 never "it probably ran and passed".
 
-### 4.3 Calibration-gated severity flips
+### 4.5 Calibration-gated severity flips
 
 Some gates ship at `warning` with the *intent* of becoming `critical`, but
 promoting a gate on the day it lands risks blocking builds on a validator whose
@@ -333,7 +464,7 @@ deferred flip that has *not* been mechanized are marked in
 `docs/validation/gates.md` with a calibration TODO, and promoting one is a YAML
 severity edit.
 
-### 4.4 Post-training eval gates
+### 4.6 Post-training eval gates
 
 The training runner enforces `EvalGatingValidator` inline (`_enforce_eval_gate`
 in `Trainforge/training/runner.py`) so a direct-CLI training run is gated

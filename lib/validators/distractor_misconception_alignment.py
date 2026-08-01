@@ -39,6 +39,15 @@ GateIssue codes (all ``critical`` unless noted):
   statistical-tier convention but does NOT short-circuit the gate
   (Jaccard is always available).
 
+The Jaccard fallback covers the MISSING-EXTRAS contract only. Extras
+present but the requested ``ED4ALL_EMBEDDING_DEVICE`` absent is a distinct,
+FATAL condition: the embedder is ``preload()``-ed before the audit loop and
+both the loader guard and the per-encode guard re-raise
+:class:`~lib.embedding.sentence_embedder.EmbeddingModelUnavailable`,
+regardless of ``TRAINFORGE_REQUIRE_EMBEDDINGS``. Otherwise a broken device
+would silently downgrade every pair to Jaccard while the gate still
+reported a cosine-tier verdict.
+
 Outline-tier failure ``action="regenerate"`` so the rewrite tier sees
 a valid draft. Rewrite-tier and assessment-tier wirings should pass
 ``action_on_fail="block"`` via input override (per W3a's three-gate
@@ -76,6 +85,7 @@ logger = logging.getLogger(__name__)
 # ``try_load_embedder``.
 from lib.embedding import sentence_embedder as _sentence_embedder_mod
 from lib.embedding._math import cosine_similarity
+from lib.embedding.sentence_embedder import EmbeddingModelUnavailable
 
 # ``blocks.py`` lives at ``Courseforge/scripts/blocks.py``; mirror the
 # import bridge used by the sibling validators so ``Block`` resolves
@@ -426,12 +436,31 @@ class DistractorMisconceptionAlignmentValidator:
         if embedder is None:
             try:
                 embedder = _sentence_embedder_mod.try_load_embedder()
+            except EmbeddingModelUnavailable:
+                # Typed device unavailability is FATAL — the extras ARE
+                # installed and the operator's requested device is absent.
+                # That is a config error, NOT the missing-extras condition
+                # the Jaccard fallback below exists to cover.
+                raise
             except Exception as exc:  # noqa: BLE001
                 logger.debug(
                     "try_load_embedder raised; falling back to Jaccard. %s",
                     exc,
                 )
                 embedder = None
+
+        if embedder is not None:
+            # Force the model load NOW so a device failure lands HERE, fatal.
+            # EmbeddingModelUnavailable must never reach the per-encode
+            # `except Exception` below, which would silently downgrade every
+            # cosine score to Jaccard while the gate still reported a
+            # cosine-tier verdict. Distinct from the missing-extras contract,
+            # which legitimately falls back to Jaccard with a warning.
+            # ``getattr`` because the ``_embedder_override`` test seam injects
+            # encode-only stubs; the per-encode re-raise is the backstop.
+            _preload = getattr(embedder, "preload", None)
+            if callable(_preload):
+                _preload()
 
         embedder_loaded = embedder is not None
         metric = "cosine" if embedder_loaded else "jaccard"
@@ -526,6 +555,10 @@ class DistractorMisconceptionAlignmentValidator:
                         similarity = cosine_similarity(
                             distractor_vec_cache[d_idx], misc_vec,
                         )
+                    except EmbeddingModelUnavailable:
+                        # Typed device unavailability is FATAL — never a
+                        # silent per-pair downgrade to Jaccard.
+                        raise
                     except Exception as exc:  # noqa: BLE001
                         logger.warning(
                             "embedder.encode raised on block %s "

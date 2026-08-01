@@ -56,6 +56,80 @@ def _validator_fail_closed_on_oom() -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
+# Typed embedding-backend errors, same bug class as the CUDA-OOM above: a
+# validator that raised one landed in the broad ``except`` below and, under
+# ``behavior_on_error=warn``, was rewritten to ``passed=True`` — the exact
+# silent auto-pass ``lib/llm/oom.py`` records for the OOM path. The two
+# embedding errors are DISTINCT types with DIFFERENT contracts and must stay
+# that way (neither subclasses the other — asserted in
+# ``lib/embedding/tests/test_sentence_embedder.py``):
+#
+# * ``EmbeddingModelUnavailable`` — the ``[embedding]`` extras ARE installed
+#   and the requested ``ED4ALL_EMBEDDING_DEVICE`` (default ``cuda``) did not
+#   come up. FATAL, always: no env escape hatch, no ``behavior_on_error``
+#   honouring. The owner rule is that a CUDA-unavailable embedding backend
+#   never degrades silently; the operator opts out explicitly by pinning
+#   ``ED4ALL_EMBEDDING_DEVICE=cpu``, which is the knob the failure message
+#   names. (Contrast the OOM escalation, which IS env-gated: an OOM is a
+#   transient resource condition, a missing device is a configuration fact.)
+# * ``EmbeddingDepsMissing`` — the optional-extras contract. Only ever raised
+#   when ``TRAINFORGE_REQUIRE_EMBEDDINGS`` is on (default mode returns ``None``
+#   from ``try_load_embedder`` and the validator degrades to a warning-severity
+#   ``EMBEDDING_DEPS_MISSING`` with ``passed=True``, never reaching this
+#   module's ``except``). So it fails closed under strict mode regardless of
+#   ``behavior_on_error``, and otherwise keeps honouring ``on_error: warn`` —
+#   the extras contract is UNCHANGED by the device passthrough.
+#
+# Guarded import so a stripped ``lib`` never breaks gate import; a failed
+# import degrades typed detection to off (pre-fix behaviour), never a crash.
+try:
+    from lib.embedding.sentence_embedder import (
+        EmbeddingDepsMissing as _EmbeddingDepsMissing,
+        EmbeddingModelUnavailable as _EmbeddingModelUnavailable,
+        is_strict_mode as _embedding_strict_mode,
+    )
+except Exception:  # pragma: no cover - lib.embedding always present in this repo
+    _EmbeddingDepsMissing = None  # type: ignore[assignment]
+    _EmbeddingModelUnavailable = None  # type: ignore[assignment]
+
+    def _embedding_strict_mode() -> bool:  # type: ignore[misc]
+        return False
+
+
+#: Operator knob named in every device-unavailability message/suggestion.
+_EMBEDDING_DEVICE_ENV = "ED4ALL_EMBEDDING_DEVICE"
+
+#: Depth cap for the ``__cause__`` / ``__context__`` walk below.
+_EXC_CHAIN_MAX_DEPTH = 10
+
+
+def _exc_chain_has(exc: Optional[BaseException], exc_type: Any) -> bool:
+    """True iff ``exc`` — or anything it was raised ``from`` — is ``exc_type``.
+
+    Walks ``__cause__`` then ``__context__`` so a validator that re-raises the
+    typed error wrapped (``raise RuntimeError(...) from exc``) is still
+    recognised; a plain ``isinstance`` would miss it and the gate would fall
+    back to the silent-auto-pass path this passthrough exists to close.
+    Bounded depth + a seen-set so a self-referential chain cannot spin. Never
+    raises; ``exc_type is None`` (guarded import failed) is always False.
+    """
+    if exc is None or exc_type is None:
+        return False
+    seen: set = set()
+    cur: Optional[BaseException] = exc
+    for _ in range(_EXC_CHAIN_MAX_DEPTH):
+        if cur is None or id(cur) in seen:
+            return False
+        seen.add(id(cur))
+        try:
+            if isinstance(cur, exc_type):
+                return True
+        except TypeError:  # pragma: no cover - defensive
+            return False
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 class GateSeverity(Enum):
     """Gate severity levels."""
     CRITICAL = "critical"    # Blocks progression
@@ -359,7 +433,21 @@ class ValidationGateManager:
             # the OOM and emit a DISTINCT, greppable ``VALIDATOR_OOM`` issue
             # (plus a DecisionCapture) so the OOM is never invisible; honour
             # the opt-in ``ED4ALL_VALIDATOR_FAIL_CLOSED_ON_OOM`` to block.
-            if is_cuda_oom(e):
+            #
+            # Same bug class, different typed errors: the two embedding
+            # backend errors are checked FIRST. Order matters against the OOM
+            # branch — ``SentenceEmbedder._ensure_model`` wraps ANY construction
+            # failure (a CUDA OOM included) in ``EmbeddingModelUnavailable``, so
+            # a message-sniffing ``is_cuda_oom`` would also match it and, with
+            # the OOM escalation flag off, hand it back to
+            # ``behavior_on_error=warn`` — i.e. the silent pass again. The
+            # device branch is unconditionally fatal, so checking it first is
+            # the strictly safer resolution of that overlap.
+            if _exc_chain_has(e, _EmbeddingModelUnavailable):
+                result = self._build_embedding_device_gate_result(gate_config, e)
+            elif _exc_chain_has(e, _EmbeddingDepsMissing):
+                result = self._build_embedding_deps_missing_gate_result(gate_config, e)
+            elif is_cuda_oom(e):
                 result = self._build_oom_gate_result(gate_config, e)
             else:
                 logger.error(f"Validator error for gate {gate_config.gate_id}: {e}")
@@ -507,6 +595,181 @@ class ValidationGateManager:
                         f"silent auto-pass. "
                         f"ED4ALL_VALIDATOR_FAIL_CLOSED_ON_OOM="
                         f"{'on' if fail_closed else 'off'}, "
+                        f"behavior_on_error={gate_config.behavior_on_error.value}, "
+                        f"resolved passed={passed}"
+                    ),
+                )
+            except Exception:  # noqa: BLE001 - capture must never break a gate
+                pass
+
+        return result
+
+    def _build_embedding_device_gate_result(
+        self,
+        gate_config: GateConfig,
+        exc: BaseException,
+    ) -> GateResult:
+        """Build the ``EMBEDDING_MODEL_UNAVAILABLE`` result — ALWAYS fail closed.
+
+        ``EmbeddingModelUnavailable`` means the ``[embedding]`` extras are
+        installed and the requested embedding DEVICE (``ED4ALL_EMBEDDING_DEVICE``,
+        default ``cuda``) did not come up. The statistical-tier validators
+        deliberately let that type propagate instead of swallowing it into a
+        vacuous pass; this method is the other half of that fix — without it the
+        generic handler below rewrites the raise back to ``passed=True`` for the
+        twelve gate wirings configured ``on_error: warn``, and the
+        validator-level fail-closed never reaches the pipeline.
+
+        Unlike the OOM branch there is NO env escape hatch and
+        ``behavior_on_error`` is NOT consulted: a CUDA-unavailable embedding
+        backend is fatal by owner rule, and the documented opt-out is the
+        explicit, greppable ``ED4ALL_EMBEDDING_DEVICE=cpu`` — not a permissive
+        default. This does NOT touch the missing-extras contract, which lives on
+        a distinct type (see ``_build_embedding_deps_missing_gate_result``).
+        """
+        logger.error(
+            f"EMBEDDING BACKEND UNAVAILABLE during validation gate "
+            f"{gate_config.gate_id} ({gate_config.validator_path}): the "
+            f"[embedding] extras are installed but the requested "
+            f"{_EMBEDDING_DEVICE_ENV} device did not come up, so the gate never "
+            f"ran. Failing the gate closed regardless of behavior_on_error="
+            f"{gate_config.behavior_on_error.value} (a device-unavailable "
+            f"embedding backend is never a degrade). Set "
+            f"{_EMBEDDING_DEVICE_ENV}=cpu to run this tier on CPU, or provision "
+            f"the requested device. Exception: {exc}"
+        )
+
+        result = GateResult(
+            gate_id=gate_config.gate_id,
+            validator_name=gate_config.validator_path,
+            validator_version="embedding_device_unavailable",
+            passed=False,
+            error=str(exc),
+            issues=[GateIssue(
+                severity="critical",
+                code="EMBEDDING_MODEL_UNAVAILABLE",
+                message=(
+                    f"Embedding model could not be constructed on the requested "
+                    f"{_EMBEDDING_DEVICE_ENV} device: {exc}. The gate did NOT "
+                    f"run to completion — this is an unavailable embedding "
+                    f"backend, not a pass, and it is NOT the missing-extras "
+                    f"degrade (those extras are installed)."
+                ),
+                suggestion=(
+                    f"Provision the requested device, or opt out explicitly "
+                    f"with {_EMBEDDING_DEVICE_ENV}=cpu (there is no automatic "
+                    f"CUDA→CPU downgrade and no behavior_on_error override — "
+                    f"the CPU choice must be made by the operator)."
+                ),
+            )],
+        )
+
+        # DecisionCapture on the device branch (dynamic, replayable rationale).
+        if self._capture is not None:
+            try:
+                self._capture.log_decision(
+                    decision_type="validation_result",
+                    decision=(
+                        f"Gate {gate_config.gate_id} failed closed on an "
+                        f"unavailable embedding device (EMBEDDING_MODEL_UNAVAILABLE)"
+                    ),
+                    rationale=(
+                        f"Validator {gate_config.validator_path} raised "
+                        f"EmbeddingModelUnavailable — the [embedding] extras are "
+                        f"present but the requested {_EMBEDDING_DEVICE_ENV} device "
+                        f"did not come up, so the gate never adjudicated anything. "
+                        f"Failing closed despite behavior_on_error="
+                        f"{gate_config.behavior_on_error.value}; the documented "
+                        f"opt-out is {_EMBEDDING_DEVICE_ENV}=cpu. Exception: {exc}"
+                    ),
+                )
+            except Exception:  # noqa: BLE001 - capture must never break a gate
+                pass
+
+        return result
+
+    def _build_embedding_deps_missing_gate_result(
+        self,
+        gate_config: GateConfig,
+        exc: BaseException,
+    ) -> GateResult:
+        """Build the ``EMBEDDING_DEPS_MISSING`` result for a RAISED deps error.
+
+        This is the optional-extras contract, and it is deliberately NOT changed
+        by the device passthrough above:
+
+        * ``TRAINFORGE_REQUIRE_EMBEDDINGS`` off — honour ``behavior_on_error``
+          exactly as before (``warn`` → ``passed=True``), but with a distinct
+          warning-severity ``EMBEDDING_DEPS_MISSING`` code instead of the generic
+          ``VALIDATOR_ERROR``, so a degrade stays distinguishable from a real
+          validator bug in downstream rollups. (In practice the default path
+          never even raises: ``try_load_embedder`` returns ``None`` and the
+          validator emits this same code itself with ``passed=True``.)
+        * strict mode on — ``try_load_embedder`` RAISES, and strict mode means
+          fail closed. Honouring ``on_error: warn`` there would silently undo
+          the operator's own opt-in, so strict mode blocks regardless of
+          ``behavior_on_error``.
+        """
+        strict = False
+        try:
+            strict = bool(_embedding_strict_mode())
+        except Exception:  # noqa: BLE001 - resolution must never break a gate
+            strict = False
+
+        passed = (not strict) and gate_config.behavior_on_error == GateBehavior.WARN
+        severity = "warning" if passed else "critical"
+
+        log = logger.error if not passed else logger.warning
+        log(
+            f"Embedding extras unavailable during validation gate "
+            f"{gate_config.gate_id} ({gate_config.validator_path}): "
+            + (
+                "TRAINFORGE_REQUIRE_EMBEDDINGS is on, so the gate fails closed "
+                "regardless of behavior_on_error"
+                if strict
+                else f"honouring behavior_on_error="
+                f"{gate_config.behavior_on_error.value} (install the "
+                f"[embedding] extras to enable this tier)"
+            )
+            + f". Exception: {exc}"
+        )
+
+        result = GateResult(
+            gate_id=gate_config.gate_id,
+            validator_name=gate_config.validator_path,
+            validator_version="embedding_deps_missing",
+            passed=passed,
+            error=str(exc),
+            issues=[GateIssue(
+                severity=severity,
+                code="EMBEDDING_DEPS_MISSING",
+                message=(
+                    f"Embedding extras are not installed, so this gate could not "
+                    f"run: {exc}. This is the optional-extras degrade, NOT an "
+                    f"unavailable embedding device."
+                ),
+                suggestion=(
+                    "Install the extras via `pip install -e .[embedding]`. "
+                    "TRAINFORGE_REQUIRE_EMBEDDINGS=true makes a missing-extras "
+                    "degrade fail the gate closed."
+                ),
+            )],
+        )
+
+        if self._capture is not None:
+            try:
+                self._capture.log_decision(
+                    decision_type="validation_result",
+                    decision=(
+                        f"Gate {gate_config.gate_id} hit missing [embedding] "
+                        f"extras; emitted EMBEDDING_DEPS_MISSING "
+                        + ("(fail-closed/block)" if not passed else "(warning/non-blocking)")
+                    ),
+                    rationale=(
+                        f"Validator {gate_config.validator_path} raised "
+                        f"EmbeddingDepsMissing — the optional-extras contract, "
+                        f"distinct from an unavailable embedding device. "
+                        f"TRAINFORGE_REQUIRE_EMBEDDINGS={'on' if strict else 'off'}, "
                         f"behavior_on_error={gate_config.behavior_on_error.value}, "
                         f"resolved passed={passed}"
                     ),
