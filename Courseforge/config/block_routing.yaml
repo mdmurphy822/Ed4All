@@ -33,36 +33,42 @@
 
 version: 1
 
+# 2026-08-01 deployment swap: ALL tiers route to the Super-120B TRT-LLM seat.
+# The previous table pinned small/medium to the Ollama qwen-7B topology at
+# :11434 — and because this YAML BEATS the COURSEFORGE_OUTLINE_/REWRITE_
+# PROVIDER env vars in the resolution chain, the outline tier silently
+# dispatched to Ollama while the run env believed it had routed to
+# spark-super (every block 404'd model-not-found once the model env overrode
+# to the Super served name). `large` pointed at anthropic, unreachable on an
+# air-gapped host with no API key — an escalation to it could only fail; it
+# now escalates to the same seat with a bigger budget.
 capability_tiers:
-  # Small tier — fast, cheap, structurally-shaped first-draft work.
-  # A 7B-class local model is the typical fit for outline tiers.
+  # Small tier — fast, structurally-shaped first-draft (outline) work.
   small:
-    provider: local
-    model: qwen2.5:7b-instruct-q4_K_M
-    base_url: http://localhost:11434/v1
+    provider: spark-super
+    model: nemotron-3-super-120b
+    base_url: http://localhost:8123/v1
     temperature: 0.0
     max_tokens: 1200
 
   # Medium tier — pedagogically-rich rewrite of structurally-shaped
-  # outlines. A 7B local model handles most rewrite-tier blocks
-  # acceptably; pedagogy-critical blocks (assessment_item) prefer the
-  # large tier below.
+  # outlines.
   medium:
-    provider: local
-    model: qwen2.5:7b-instruct-q4_K_M
-    base_url: http://localhost:11434/v1
+    provider: spark-super
+    model: nemotron-3-super-120b
+    base_url: http://localhost:8123/v1
     temperature: 0.4
     max_tokens: 2400
 
   # Large tier — multi-step-reasoning workloads (assessment-item
-  # distractors, prereq-chain reasoning). Operators who want a
-  # license-clean alternative swap this entry to a 32B local model or a
-  # Together OSS model — no code change needed.
+  # distractors, prereq-chain reasoning); escalation target for
+  # pedagogy-critical blocks.
   large:
-    provider: anthropic
-    model: claude-sonnet-4-6
+    provider: spark-super
+    model: nemotron-3-super-120b
+    base_url: http://localhost:8123/v1
     temperature: 0.4
-    max_tokens: 2400
+    max_tokens: 4096
 
 defaults:
   outline:
