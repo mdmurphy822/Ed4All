@@ -242,6 +242,20 @@ export ED4ALL_CHUNK_SUBSECTION_MIN_WORDS=250
 # Pre-synthesis health gate: audits the chunkset + textbook structure for
 # synthesis-poisoning defects BEFORE course_planning spends hours on them.
 export ED4ALL_CHUNK_HEALTH_GATE=1
+# Thin-chunkset floor on the chunkset_manifest gate. Off by default, which
+# means a corpus that silently collapses to a handful of chunks still passes.
+# Set it to a per-corpus floor you would be alarmed to fall below — it is the
+# only signal that makes a THINNED chunkset visible, and it is what you want in
+# place before ever enabling ED4ALL_CHUNK_DEDUP (which deletes content).
+# export ED4ALL_MIN_CHUNKS=250
+
+# Within-package exact-normalized dedup. DEFAULT OFF and left off here: it
+# deletes duplicate content before chunk IDs are minted, so enabling it is an
+# owner decision gated on a measured drop rate plus a held-out retrieval A/B
+# (plans/cuda-html-libv2-retrieval-spark-optimization-2026-07.md § B5). Drops
+# are recorded in source_coverage.drop_reasons + a dedup_ledger.jsonl sidecar.
+# export ED4ALL_CHUNK_DEDUP=1
+# export ED4ALL_CHUNK_DEDUP_MIN_TOKENS=8
 
 # ---- Course structure ------------------------------------------------------
 export ED4ALL_TO_CHAPTER_ANCHOR=1            # one source module -> one terminal objective
@@ -314,8 +328,39 @@ export ED4ALL_PLANNING_GATE_RETRIES=10
 # Any GPU-capable inference belongs on the GPU; CPU here is a misconfiguration,
 # not a conservative choice. Set both to `cpu` ONLY on a box with no CUDA
 # device — expect the validation phases to take multiples of the GPU timing.
+#
+# ED4ALL_EMBEDDING_DEVICE now defaults to `cuda` in CODE as well (index builds,
+# query encoding, AND the validator-tier embedder); it is kept explicit here so
+# the recorded provenance names the operator's choice. There is NO automatic
+# CUDA->CPU fallback: on a GPU-less box you MUST set `cpu` yourself or the
+# embedding paths raise. ED4ALL_NLI_DEVICE still degrades gracefully; the
+# embedding knob does not.
 export ED4ALL_NLI_DEVICE=cuda
 export ED4ALL_EMBEDDING_DEVICE=cuda
+
+# ---- Encoder precision (default fp32) --------------------------------------
+# ED4ALL_EMBEDDING_DTYPE selects the ENCODER compute precision (fp32|bf16|fp16);
+# the persisted matrix stays float32 either way. Non-fp32 also enables TF32
+# matmul PROCESS-GLOBALLY, so it affects every torch consumer in the
+# interpreter. Left at the fp32 default until the staged bf16-vs-fp32 drift
+# benchmark runs (plans/cuda-html-libv2-retrieval-spark-optimization-2026-07.md
+# § B2). Uncomment only after that measurement:
+# export ED4ALL_EMBEDDING_DTYPE=bf16
+
+# ---- Staged-HTML parse pool ------------------------------------------------
+# Parse-pool size for the chunking phases. Pure-stdlib html.parser work — no
+# torch, no GPU — so it scales with cores, not VRAM. The code default is 10 so
+# two concurrent `ed4all run` invocations cannot put 40 processes on 20 cores;
+# a single quiescent build on this 20-core profile measured its optimum at 20.
+#
+# SCALING: set this to the box's core count for a single build; drop it to
+# `os.cpu_count() / 2` when two builds share the host, and to 1 (or 0) for the
+# byte-identical serial path.
+#
+# STOP-LOSS: with a pool active, `ed4all stop` during a parse phase drains
+# roughly 3 x this many in-flight files instead of one unit. Nothing is lost
+# but re-parse time.
+export ED4ALL_HTML_PARSE_WORKERS=20
 
 # ---- GPU lifecycle ---------------------------------------------------------
 # BOTH of these default to ON in code, and ON is the correct setting on a small

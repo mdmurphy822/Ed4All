@@ -49,6 +49,15 @@ services:
       # line and pulling the model into the sidecar.
       ED4ALL_ANSWER_MODEL: qwen2.5:7b-instruct-q4_K_M
       ED4ALL_EMBEDDING_PROVIDER: st
+      # REQUIRED for this image. ED4ALL_EMBEDDING_DEVICE defaults to `cuda` in
+      # code (index builds, query encoding, and the validator-tier embedder)
+      # and there is NO automatic CUDA->CPU fallback — auto-detection is
+      # silent degradation, which this project forbids. This image ships
+      # `[gui,server,embedding]` on CPU torch, so it must SELECT cpu or the
+      # first index build / semantic query raises EmbeddingBackendUnavailable.
+      # CPU is a fully-supported explicit selection, not a degraded mode.
+      # See docs/operations/docker.md "Required: pin the embedding device to CPU".
+      ED4ALL_EMBEDDING_DEVICE: cpu
       # Claim-attribution citation prune+add at answer-composition time. The
       # code default is `shadow` (compute + capture, mutate nothing); this
       # deployment wants it LIVE — drop model-cited citations that back no

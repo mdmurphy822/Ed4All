@@ -442,7 +442,9 @@ Before a long synthesis, confirm the two real Stage inputs are clean:
 Every long-running stage polls a filesystem **stop sentinel** at its unit
 boundaries (the same points where the fingerprinted resume sidecars append). On
 a stop the running unit finishes, checkpoints, and the phase pauses — it is
-never marked `failed`, and **worst-case loss is one in-flight LLM call**.
+never marked `failed`, and **worst-case loss is one in-flight LLM call**. One
+documented exception: the pooled staged-HTML parse drains a poolful of files
+rather than one unit — see the per-phase table below.
 
 ### Requesting a stop
 
@@ -531,6 +533,7 @@ Loss is bounded by the size of the *unit* each loop checkpoints:
 | Training-pair synthesis | one pair | one in-flight pair |
 | SLM training | trainer-native step/epoch checkpoint | since the last saved step |
 | SemantiK conversion (`semantik_conversion`) | one **chapter** (paused resume auto-reuses finished `{stem}_accessible.html` + `.quality.json`) | one chapter — cascade seams land the mid-chapter stop at post-Stage-5e/pre-Stage-6, pre-Stage-13, and Stage-6 adapter-batch boundaries |
+| Chunking / IMSCC chunking — staged-HTML parse (`ED4ALL_HTML_PARSE_WORKERS` > 1) | one **file**, but dispatched across a process pool | ~`3 × worker_count` in-flight files — the pool drains its outstanding work before the phase pauses. No LLM call is lost (the parse is deterministic stdlib work) and every drained file is simply re-parsed on resume. Set `ED4ALL_HTML_PARSE_WORKERS=1` for single-unit granularity on the byte-identical serial path. |
 | Vector indexing | aborts pre-write | none — never a partial index |
 
 ### Known follow-up (out of scope)
@@ -665,7 +668,7 @@ export ED4ALL_CHUNK_MERGE_FRAGMENT_FLOOR=20
 # --- GPU-for-all-inference (every GPU-capable stage on the card) ---
 export ED4ALL_NLI_DEVICE=cuda
 export SEMANTIK_THETA_DEVICE=cuda
-export ED4ALL_EMBEDDING_DEVICE=cuda
+export ED4ALL_EMBEDDING_DEVICE=cuda   # now the CODE default too; kept explicit for provenance
 # ED4ALL_GPU_LIFECYCLE default ON (load -> work -> unload at seams)
 
 # --- observability + checkpoints ---

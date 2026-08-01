@@ -29,6 +29,43 @@ first time you build a retrieval index. That cache lives at `HF_HOME=/data/hf-ca
 which is on the `/data` volume, so it survives container restarts and is only
 downloaded once.
 
+## Required: pin the embedding device to CPU in this image
+
+`ED4ALL_EMBEDDING_DEVICE` defaults to **`cuda`** in code — for index builds,
+query encoding, and the statistical-tier validator embedder alike — and there is
+**no automatic CUDA→CPU fallback** (auto-detection is silent degradation, which
+this project forbids). The `gui` image ships `[gui,server,embedding]` on **CPU
+torch**, so it must select CPU explicitly or every embedding path raises
+`EmbeddingBackendUnavailable` / `EmbeddingModelUnavailable` the first time an
+index is built or a semantic query runs:
+
+```yaml
+services:
+  gui:
+    environment:
+      # CPU-torch image: the code default is cuda and never falls back.
+      ED4ALL_EMBEDDING_DEVICE: cpu
+```
+
+Notes:
+
+- This is the **supported** portable configuration, not a degraded one. CPU
+  remains a first-class explicit operator selection.
+- Do **not** set `ED4ALL_EMBEDDING_DTYPE` to `bf16`/`fp16` here — half precision
+  is CUDA-only for these encoders and is refused (rather than silently
+  downgraded) when the device is `cpu`.
+- `ED4ALL_NLI_DEVICE` behaves differently: it still degrades `cuda`→CPU with a
+  warning. Only the embedding knob is fail-loud.
+- A **missing** `[embedding]` extra is a separate, unchanged contract: the
+  statistical-tier validators emit a warning-severity `EMBEDDING_DEPS_MISSING`
+  and pass, unless `TRAINFORGE_REQUIRE_EMBEDDINGS=true`. The device pin above
+  does not affect that path.
+- The same pin is required on any GPU-less CI runner or release job that
+  exercises an embedding path.
+- If you later run the GUI image on a CUDA host with a GPU-enabled torch build,
+  delete the pin rather than switching it to `auto` — `auto` is not a
+  recognized token. Accepted values are `cpu`, `cuda`, `cuda:N`.
+
 ## Loopback constraint (read this before changing the network)
 
 The grounded-answer backend (`lib/retrieval/answer_backend.py`) **refuses any
@@ -125,6 +162,11 @@ CPU inference works without any of this (just slower).
 - **Embedding model re-downloads every restart** — confirm `HF_HOME` resolves
   under `/data` and the `ed4all-data` volume is mounted (not an anonymous
   volume).
+- **`EmbeddingBackendUnavailable` / `EmbeddingModelUnavailable` on the first
+  index build or semantic query** — the container is on CPU torch but the code
+  default device is `cuda`, and nothing falls back. Set
+  `ED4ALL_EMBEDDING_DEVICE: cpu` on the `gui` service (see the section above)
+  and recreate it.
 
 ## Related
 
