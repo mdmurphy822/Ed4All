@@ -3820,6 +3820,554 @@ def _project_synthesized_objectives_to_course_json(
     return course_json
 
 
+# ===========================================================================
+# W5 — parallel staged-HTML parse for the chunking phases.
+#
+# The chunking phase used to walk the staged corpus one file at a time on a
+# single interpreter. Parsing is pure-stdlib ``html.parser`` work with no
+# torch, no BLAS and no GPU, so it is interpreter-bound and scales close to
+# linearly across processes; a 20-worker pool measured 15.1x the serial
+# aggregate throughput on the target host.
+#
+# Three properties are load-bearing and are asserted by
+# ``MCP/tests/test_parallel_parse_wiring.py``:
+#
+# 1. **Serial and pooled emit are structurally identical**, not
+#    coincidentally identical. Both modes call the SAME worker
+#    (``Trainforge.parsers.parallel_html.parse_html_path``) and reconstruct
+#    the page item the same way; only the dispatch differs. The serial path
+#    therefore also pays the worker's read plus the parent's ``raw_html``
+#    re-read — two reads of a page-cached file — which is the price of the
+#    identity guarantee and is not worth optimizing away.
+# 2. **``fork`` is never used.** The runner process reaches this code with a
+#    CUDA primary context already initialized (the VRAM doctor probes
+#    ``torch.cuda`` at every phase start) and with live threads, and the
+#    ``imscc_chunking`` phase additionally runs downstream of an in-process
+#    DeBERTa NLI gate. ``fork`` under either condition is undefined
+#    behaviour, so the accepted start methods are ``spawn`` / ``forkserver``
+#    / ``serial`` and nothing else.
+# 3. **Every discovered file lands in the outcome ledger.** A file that is
+#    rejected or fails to parse contributes to the source digest and to
+#    ``source_html_count`` but zero blocks to the chunker, so without an
+#    explicit ledger + named drop reason the coverage block silently
+#    under-reports and a ``chunks.jsonl`` SHA comparison cannot see it.
+# ===========================================================================
+
+#: Parse-pool size. The measured optimum for a single quiescent build on the
+#: 20-core target host is 20, but the code default stays 10 because two
+#: concurrent ``ed4all run`` invocations would otherwise put 40 processes on
+#: 20 cores; the run-env template raises it per-host.
+ENV_HTML_PARSE_WORKERS = "ED4ALL_HTML_PARSE_WORKERS"
+#: ``spawn`` | ``forkserver`` | ``serial``. ``fork`` is deliberately NOT an
+#: accepted value (see note 2 above).
+ENV_HTML_PARSE_START_METHOD = "ED4ALL_HTML_PARSE_START_METHOD"
+#: Byte-signature reject of non-HTML files matching the discovery glob.
+ENV_HTML_ASSET_REJECT = "ED4ALL_HTML_ASSET_REJECT"
+
+_DEFAULT_HTML_PARSE_WORKERS = 10
+_DEFAULT_HTML_PARSE_START_METHOD = "spawn"
+_HTML_PARSE_START_METHODS = ("spawn", "forkserver", "serial")
+
+#: Head-of-file byte signatures that name a binary asset rather than markup.
+#: Keyed signature -> the drop-reason detail recorded on the ledger row. The
+#: list is deliberately explicit rather than a "does it contain a NUL" probe:
+#: a file that carries no listed signature still reaches the worker, which
+#: returns a typed decode/parse failure envelope, so nothing is ever dropped
+#: without a recorded reason either way.
+_HTML_ASSET_SIGNATURES: Tuple[Tuple[bytes, str], ...] = (
+    (b"\x89PNG\r\n\x1a\n", "png"),
+    (b"\xff\xd8\xff", "jpeg"),
+    (b"GIF87a", "gif"),
+    (b"GIF89a", "gif"),
+    (b"BM", "bmp"),
+    (b"II*\x00", "tiff"),
+    (b"MM\x00*", "tiff"),
+    (b"%PDF-", "pdf"),
+    (b"PK\x03\x04", "zip"),
+    (b"\x1f\x8b", "gzip"),
+    (b"\x7fELF", "elf"),
+    (b"OTTO", "font-otf"),
+    (b"wOFF", "font-woff"),
+    (b"wOF2", "font-woff2"),
+    (b"ttcf", "font-ttc"),
+    (b"true", "font-ttf"),
+    (b"\x00\x01\x00\x00", "font-ttf"),
+    (b"\x00\x00\x01\x00", "icon"),
+    (b"OggS", "ogg"),
+    (b"RIFF", "riff"),
+)
+
+#: Longest signature above — how many head bytes the sniff needs.
+_HTML_ASSET_SNIFF_BYTES = 16
+
+#: Per-file ledger outcomes. ``parsed`` is the only non-drop outcome; the
+#: other three are the named ``source_coverage.drop_reasons`` keys the
+#: file-level drops are registered under.
+_HTML_OUTCOME_PARSED = "parsed"
+_HTML_DROP_ASSET_REJECTED = "asset_rejected"
+_HTML_DROP_READ_ERROR = "html_read_error"
+_HTML_DROP_PARSE_ERROR = "html_parse_error"
+
+#: Named ``source_coverage.drop_reasons`` key for a within-package
+#: exact-normalized duplicate skipped by the chunker (W7). Deliberately NOT
+#: folded into ``merged_small_sections``, whose own comment says those
+#: artifacts were MERGED into an adjacent section rather than de-duplicated.
+_CHUNK_DROP_WITHIN_PACKAGE_DUPLICATE = "within_package_duplicate"
+
+#: Sidecar carrying the reversible dedup record. A sibling FILE, not a
+#: manifest key: ``schemas/library/chunkset_manifest.schema.json`` is
+#: ``additionalProperties: false`` at the top level, so a new manifest key
+#: would fail the chunkset gate closed, and ``drop_reasons`` is a
+#: ``{reason: integer}`` histogram with no room for ids.
+DEDUP_LEDGER_FILENAME = "dedup_ledger.jsonl"
+
+
+def _resolve_html_parse_workers(file_count: int) -> int:
+    """Resolve the parse-pool worker count, clamped to the real work available.
+
+    Parse-with-fallback: garbage, a non-integer, or a NEGATIVE value falls
+    back to :data:`_DEFAULT_HTML_PARSE_WORKERS` with a warning. ``0`` and
+    ``1`` are HONORED rather than treated as "non-positive garbage" — both
+    are the documented request for the byte-identical serial path with no
+    pool constructed, and silently promoting them to the default would take
+    the opt-out away from an operator who deliberately asked for it.
+
+    The clamp is ``min(knob, file_count, os.cpu_count())``: more workers than
+    files strands processes on an empty queue, and more workers than cores
+    only adds context switching on a host whose two CPU clusters already
+    differ in per-core throughput.
+    """
+    workers = _DEFAULT_HTML_PARSE_WORKERS
+    raw = os.environ.get(ENV_HTML_PARSE_WORKERS)
+    if raw is not None and str(raw).strip():
+        try:
+            parsed = int(str(raw).strip())
+        except (TypeError, ValueError):
+            logger.warning(
+                "%s=%r is not an int; using default %d.",
+                ENV_HTML_PARSE_WORKERS, raw, _DEFAULT_HTML_PARSE_WORKERS,
+            )
+        else:
+            if parsed < 0:
+                logger.warning(
+                    "%s=%r is negative; using default %d.",
+                    ENV_HTML_PARSE_WORKERS, raw, _DEFAULT_HTML_PARSE_WORKERS,
+                )
+            else:
+                workers = parsed
+    if workers <= 1:
+        return workers
+    cpu_count = os.cpu_count() or 1
+    return max(1, min(workers, max(1, int(file_count)), cpu_count))
+
+
+def _resolve_html_parse_start_method() -> str:
+    """Resolve the parse-pool start method → ``spawn`` / ``forkserver`` / ``serial``.
+
+    Parse-with-fallback with a LOUD warning on an unrecognized token. ``fork``
+    is called out by name because it is the value an implementer reaches for
+    and the one value that is unsafe here: the runner process is
+    multi-threaded and holds a CUDA primary context by the time either
+    chunking phase runs.
+
+    This is a dispatch knob, not a quality signal — every accepted value emits
+    byte-identical chunks — so an unusable token degrades to the default
+    rather than failing the phase, exactly as the sibling tuning resolvers do.
+    """
+    raw = (os.environ.get(ENV_HTML_PARSE_START_METHOD) or "").strip().lower()
+    if not raw:
+        return _DEFAULT_HTML_PARSE_START_METHOD
+    if raw in _HTML_PARSE_START_METHODS:
+        return raw
+    if raw == "fork":
+        logger.warning(
+            "%s=fork is not an accepted value: the chunking phases run in a "
+            "multi-threaded process that has already initialized a CUDA "
+            "primary context, and fork under either condition deadlocks. "
+            "Using %r; accepted values are %s.",
+            ENV_HTML_PARSE_START_METHOD,
+            _DEFAULT_HTML_PARSE_START_METHOD,
+            list(_HTML_PARSE_START_METHODS),
+        )
+        return _DEFAULT_HTML_PARSE_START_METHOD
+    logger.warning(
+        "%s=%r is not a recognized start method; using %r. Accepted values "
+        "are %s.",
+        ENV_HTML_PARSE_START_METHOD, raw,
+        _DEFAULT_HTML_PARSE_START_METHOD, list(_HTML_PARSE_START_METHODS),
+    )
+    return _DEFAULT_HTML_PARSE_START_METHOD
+
+
+def _resolve_html_asset_reject() -> bool:
+    """Truthy check for ``ED4ALL_HTML_ASSET_REJECT`` — default ON.
+
+    Explicit falsey token (``0``/``false``/``no``/``off``) opts out; unset or
+    anything else keeps the reject on. When off, an asset matching the
+    discovery glob still reaches the worker and comes back as a typed decode
+    failure, so it is recorded either way — the flag only changes WHICH named
+    drop reason the file lands under.
+    """
+    raw = os.environ.get(ENV_HTML_ASSET_REJECT)
+    if raw is None or not str(raw).strip():
+        return True
+    return str(raw).strip().lower() not in ("0", "false", "no", "off")
+
+
+def _html_asset_signature(path: Path) -> Optional[str]:
+    """Return the binary-asset signature name at the head of ``path``, or None.
+
+    Returns ``None`` for an unreadable file: a read failure is the worker's
+    typed ``read`` error to report, not a reject reason, and classifying it
+    here would put the same file under two different drop reasons depending
+    on whether the flag is on.
+    """
+    try:
+        with path.open("rb") as fh:
+            head = fh.read(_HTML_ASSET_SNIFF_BYTES)
+    except OSError:
+        return None
+    for signature, name in _HTML_ASSET_SIGNATURES:
+        if head.startswith(signature):
+            return name
+    return None
+
+
+def _staging_relative_path(path: Path, staging_dir: Optional[Path]) -> str:
+    """Ledger/locator form of ``path`` — staging-relative, else the bare name.
+
+    Mirrors the worker's ``item_path`` derivation exactly, including the
+    refusal to ``.resolve()``: staging is symlink-mode by default, so a
+    resolved path is never under the staging root and every locator would
+    collapse to the filename.
+    """
+    if staging_dir is not None and path.is_relative_to(staging_dir):
+        return str(path.relative_to(staging_dir))
+    return path.name
+
+
+def _make_html_parse_pool(workers: int, start_method: str) -> Any:
+    """Build the parse ``ProcessPoolExecutor`` (isolated as a test seam).
+
+    No ``initializer=`` by design. The worker-side knobs this pool needs —
+    single-threaded BLAS/OMP, a bounded malloc arena, and a pinned
+    ``PYTHONHASHSEED`` — are all read by the child at interpreter/library
+    STARTUP, before any initializer could run, so they are inherited from the
+    parent environment by :func:`_html_parse_worker_env` instead. Skipping the
+    initializer also keeps each ``spawn`` child from importing this module.
+    """
+    import multiprocessing as _mp
+    from concurrent.futures import ProcessPoolExecutor
+
+    return ProcessPoolExecutor(
+        max_workers=max(1, workers),
+        mp_context=_mp.get_context(start_method),
+    )
+
+
+def _html_parse_worker_env() -> Any:
+    """Context manager scoping the environment every parse child inherits.
+
+    Sets, for the duration of pool construction:
+
+    * ``OMP_NUM_THREADS`` / ``OPENBLAS_NUM_THREADS`` / ``MKL_NUM_THREADS`` /
+      ``NUMEXPR_NUM_THREADS`` = 1. The parser is stdlib-only today so
+      oversubscription is not yet live; this is insurance against a future
+      C-extension in the worker import chain fanning a thread team per worker
+      across the one shared L3.
+    * ``MALLOC_ARENA_MAX=2``, mirroring the sibling batch-worker recipe at
+      ``SemantiK/data/build_structure_data.py``.
+    * ``PYTHONHASHSEED`` — propagated verbatim when the parent has one, else
+      pinned to ``"0"``. A parent whose own seed was randomized cannot report
+      it (the value is not recoverable from the interpreter), so the honest
+      guarantee is "all workers agree with each other and across runs", which
+      is what the chunkset SHA depends on. Every audited output-affecting set
+      iteration is ``sorted()`` today, so this is a guard against a future
+      regression rather than a live fix.
+
+    Every variable is restored to its exact prior state (including "was
+    unset") on exit.
+    """
+    import contextlib
+
+    @contextlib.contextmanager
+    def _scope():
+        overrides = {
+            "OMP_NUM_THREADS": "1",
+            "OPENBLAS_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1",
+            "NUMEXPR_NUM_THREADS": "1",
+            "MALLOC_ARENA_MAX": "2",
+            "PYTHONHASHSEED": os.environ.get("PYTHONHASHSEED") or "0",
+        }
+        prior = {k: os.environ.get(k) for k in overrides}
+        os.environ.update(overrides)
+        try:
+            yield
+        finally:
+            for key, value in prior.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    return _scope()
+
+
+def _parse_staged_html_files(
+    html_files: Sequence[Path],
+    staging_dir: Optional[Path],
+    *,
+    stop_site_id: str,
+    log_prefix: str,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, str]]]:
+    """Parse staged HTML into page items + a per-file outcome ledger.
+
+    Returns ``(parsed_items, ledger)``. The ledger carries one
+    ``{"path", "outcome", "reason"}`` row for EVERY file in ``html_files``, in
+    discovery order, so the caller can register file-level drops under named
+    reasons instead of letting them vanish between ``source_html_count`` and
+    ``blocks_seen``.
+
+    Dispatch is serial when the resolved worker count is ``<= 1`` and pooled
+    otherwise; both paths call the same worker and reconstruct the item the
+    same way, so the emit is identical by construction. ``check_stop`` runs
+    once per RESULT in both paths, at the same position and outside every
+    ``except`` clause, so a stop pauses cleanly rather than being swallowed.
+
+    Fails LOUDLY (propagates) on a broken pool or a stop request. A dead pool
+    must not become an empty chunkset: both chunkset gates are
+    warning-severity and ``ED4ALL_MIN_CHUNKS`` defaults to 0, so a fail-soft
+    empty result would ship as phase SUCCESS.
+    """
+    ledger: List[Dict[str, str]] = []
+    parsed_items: List[Dict[str, Any]] = []
+    if not html_files:
+        return parsed_items, ledger
+
+    try:
+        from Trainforge.parsers.parallel_html import is_error, parse_html_path
+    except Exception as exc:  # noqa: BLE001 — import failures shouldn't crash phase
+        logger.warning(
+            "%s: parallel_html worker import failed (%s); emitting empty "
+            "chunks shell.",
+            log_prefix, exc,
+        )
+        for path in html_files:
+            ledger.append({
+                "path": _staging_relative_path(path, staging_dir),
+                "outcome": _HTML_DROP_PARSE_ERROR,
+                "reason": f"worker_import_failed:{type(exc).__name__}",
+            })
+        return parsed_items, ledger
+
+    # Byte-signature reject BEFORE decode. Recorded as its own named drop
+    # reason so an asset in the staged corpus is visible as a corpus-hygiene
+    # problem rather than as a decode failure.
+    reject_assets = _resolve_html_asset_reject()
+    to_parse: List[Path] = []
+    rejected_by_path: Dict[str, str] = {}
+    for path in html_files:
+        signature = _html_asset_signature(path) if reject_assets else None
+        if signature is not None:
+            rejected_by_path[str(path)] = signature
+        else:
+            to_parse.append(path)
+    if rejected_by_path:
+        logger.warning(
+            "%s: rejected %d non-HTML asset(s) matching the discovery glob "
+            "(%s=1); each is recorded under the %r drop reason.",
+            log_prefix, len(rejected_by_path), ENV_HTML_ASSET_REJECT,
+            _HTML_DROP_ASSET_REJECTED,
+        )
+
+    staging_root = str(staging_dir) if staging_dir is not None else None
+    payloads = [(str(path), staging_root) for path in to_parse]
+
+    workers = _resolve_html_parse_workers(len(payloads))
+    start_method = _resolve_html_parse_start_method()
+    if start_method == "serial":
+        workers = 1
+    logger.info(
+        "%s: parsing %d staged HTML file(s) with parse_workers=%d "
+        "start_method=%s asset_reject=%s (rejected=%d).",
+        log_prefix, len(payloads), workers,
+        start_method if workers > 1 else "serial",
+        "on" if reject_assets else "off", len(rejected_by_path),
+    )
+
+    envelopes: List[Dict[str, Any]] = []
+
+    if workers <= 1:
+        for _idx, payload in enumerate(payloads):
+            check_stop(stop_site_id, _idx)
+            envelopes.append(parse_html_path(payload))
+    else:
+        # The env scope has to stay open across the WHOLE map, not just the
+        # constructor: ``ProcessPoolExecutor`` starts no worker until the first
+        # ``submit``, so a scope closed right after construction would restore
+        # the parent environment before a single child inherited it and the
+        # thread caps / ``PYTHONHASHSEED`` pin would be silently inert.
+        with _html_parse_worker_env():
+            with _make_html_parse_pool(workers, start_method) as executor:
+                try:
+                    # Consume the map INLINE in the ``for`` statement. Binding
+                    # the iterator to a local first keeps it alive in the frame
+                    # the propagating traceback retains, so the map generator's
+                    # per-future ``cancel()`` never runs before ``__exit__``'s
+                    # ``shutdown(wait=True)`` — measured as a 16x difference in
+                    # stop latency between two stylistically identical
+                    # spellings.
+                    _result_index = 0
+                    for envelope in executor.map(
+                        parse_html_path, payloads, chunksize=1
+                    ):
+                        check_stop(stop_site_id, _result_index)
+                        envelopes.append(envelope)
+                        _result_index += 1
+                except BaseException:
+                    # Cancel everything still queued before ``__exit__`` blocks
+                    # on ``shutdown(wait=True)``. Re-raised unchanged: a stop
+                    # request and a broken pool are both loud outcomes here.
+                    executor.shutdown(wait=True, cancel_futures=True)
+                    raise
+
+    for envelope in envelopes:
+        html_path = Path(envelope["html_path"])
+        locator = _staging_relative_path(html_path, staging_dir)
+        if is_error(envelope):
+            error = envelope["error"] or {}
+            stage = str(error.get("stage") or "parse")
+            outcome = (
+                _HTML_DROP_READ_ERROR if stage == "read"
+                else _HTML_DROP_PARSE_ERROR
+            )
+            logger.warning(
+                "%s: %s failed at the %s stage (%s: %s); skipping.",
+                log_prefix, locator, stage,
+                error.get("type"), error.get("message"),
+            )
+            ledger.append({
+                "path": locator,
+                "outcome": outcome,
+                "reason": str(error.get("type") or "Unknown"),
+            })
+            continue
+        item = dict(envelope["item"])
+        # The worker deliberately withholds ``raw_html`` — it roughly triples
+        # the pickled envelope, and a whole staged corpus round-tripping
+        # through a pool would draw that traffic twice from the same memory
+        # bandwidth pool the GPU uses. Strict utf-8 with no ``errors=``: the
+        # worker already proved this file decodes, so a failure here is a real
+        # race or IO fault and must be loud, and an ``errors="ignore"`` re-read
+        # would silently disagree with the text that was parsed.
+        item["raw_html"] = html_path.read_text(encoding="utf-8")
+        parsed_items.append(item)
+        ledger.append({
+            "path": locator,
+            "outcome": _HTML_OUTCOME_PARSED,
+            "reason": "",
+        })
+
+    for path in html_files:
+        signature = rejected_by_path.get(str(path))
+        if signature is None:
+            continue
+        ledger.append({
+            "path": _staging_relative_path(path, staging_dir),
+            "outcome": _HTML_DROP_ASSET_REJECTED,
+            "reason": signature,
+        })
+
+    return parsed_items, ledger
+
+
+def _html_parse_drop_reasons(
+    ledger: Sequence[Dict[str, str]],
+) -> Dict[str, int]:
+    """Histogram the file-level drops in ``ledger`` by named reason key.
+
+    Excludes ``parsed`` rows. The result feeds ``source_coverage.drop_reasons``
+    together with an equally widened ``consumed_count`` / ``dropped_count``: a
+    dropped FILE contributed zero ContentSections to ``blocks_seen``, so
+    registering it without widening both counts would trip
+    ``build_source_coverage``'s ``internal_drop_reason_missing`` balance check.
+    """
+    histogram: Dict[str, int] = {}
+    for row in ledger:
+        outcome = str(row.get("outcome") or "")
+        if not outcome or outcome == _HTML_OUTCOME_PARSED:
+            continue
+        histogram[outcome] = histogram.get(outcome, 0) + 1
+    return histogram
+
+
+def _write_dedup_ledger(
+    chunks_dir: Path, dedup_drops: Sequence[Dict[str, Any]]
+) -> Optional[Path]:
+    """Persist the within-package dedup ledger as a JSONL sidecar.
+
+    Returns the written path, or ``None`` when there is nothing to record
+    (``ED4ALL_CHUNK_DEDUP`` off ⇒ the chunker always returns an empty ledger
+    ⇒ no file is created and the emit is byte-identical to today).
+    """
+    if not dedup_drops:
+        return None
+    path = chunks_dir / DEDUP_LEDGER_FILENAME
+    _atomic_write_text(
+        path,
+        "".join(
+            json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n"
+            for row in dedup_drops
+        ),
+    )
+    return path
+
+
+def _atomic_write_chunks_jsonl(
+    chunks_path: Path, chunks: Sequence[Dict[str, Any]]
+) -> str:
+    """Stream ``chunks`` to ``chunks_path`` atomically; return the SHA-256.
+
+    Same temp-then-``os.replace`` shape as :func:`_atomic_write_text`, applied
+    to the chunkset itself. The manifest was already written atomically while
+    ``chunks.jsonl`` streamed straight into its final path, so a kill mid-write
+    left a TRUNCATED chunkset on disk — and the Wave1-I2 resume guard would
+    then preserve it as a valid prior artifact rather than rebuilding it.
+
+    The digest is accumulated over the bytes actually written to the temp file,
+    so it describes exactly what ``os.replace`` publishes (no second read, no
+    chance of hashing a different serialization).
+    """
+    import hashlib as _hashlib
+
+    chunks_path = Path(chunks_path)
+    chunks_path.parent.mkdir(parents=True, exist_ok=True)
+    digest = _hashlib.sha256()
+    tmp = chunks_path.with_name(f"{chunks_path.name}.{os.getpid()}.tmp")
+    try:
+        with open(tmp, "wb") as fh:
+            for chunk in chunks:
+                line = (json.dumps(chunk, ensure_ascii=False) + "\n").encode(
+                    "utf-8"
+                )
+                fh.write(line)
+                digest.update(line)
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except OSError:
+                pass
+        os.replace(tmp, chunks_path)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+    return digest.hexdigest()
+
+
 def _resolve_chunker_version() -> str:
     """Resolve the chunker-schema-contract version stamped on chunkset
     sidecar manifests + ``course_manifest.json``.
@@ -30776,12 +31324,24 @@ def _build_tool_registry() -> dict:
             if cand.exists():
                 staging_dir = cand
 
-        # Walk staging_dir for DART HTML files. Filter out
+        # Walk staging_dir for staged HTML files. Filter out
         # ``*_synthesized.json`` neighbours (those are sidecars, not the
         # canonical HTML the chunker consumes).
+        #
+        # W5 item 7: the suffix match is CASE-INSENSITIVE. ``rglob("*.html")``
+        # is case-sensitive on Linux, while ``_detect_conversion_input_type``
+        # and ``_iter_vendor_html_inputs`` both compare ``p.suffix.lower()`` —
+        # so a ``PAGE.HTML`` in the corpus was accepted as vendor input,
+        # converted, staged, and then INVISIBLE to the chunker. Only ``.html``
+        # is widened here (not ``.htm``): staging emits ``{stem}_accessible.html``,
+        # and admitting a second suffix would change which files the source
+        # digest covers rather than closing a case-only gap.
         html_files: List[Path] = []
         if staging_dir is not None and staging_dir.exists():
-            html_files = sorted(staging_dir.rglob("*.html"))
+            html_files = sorted(
+                p for p in staging_dir.rglob("*")
+                if p.is_file() and p.suffix.lower() == ".html"
+            )
 
         # Wave1-I2: resume-safety guard. If we have no real input to
         # chunk (no staging_dir resolved, OR staging_dir exists but
@@ -30935,76 +31495,35 @@ def _build_tool_registry() -> dict:
             ):
                 break
 
-        # Parse DART HTML into ContentSection-bearing parsed_items.
-        # Trainforge's HTMLContentParser produces the duck-typed
-        # ContentSection objects ``Trainforge.chunker.chunk_content`` walks
-        # via the ``merge_small_sections`` path. Lazy import keeps this
-        # helper's import-time cost low.
-        parsed_items: List[Dict[str, Any]] = []
-        try:
-            from Trainforge.parsers.html_content_parser import HTMLContentParser
-        except Exception as exc:  # noqa: BLE001 — import failures shouldn't crash phase
+        # Parse staged HTML into ContentSection-bearing parsed_items.
+        # ``HTMLContentParser`` produces the duck-typed ContentSection objects
+        # ``Trainforge.chunker.chunk_content`` walks via the
+        # ``merge_small_sections`` path.
+        #
+        # W5: dispatched through ``_parse_staged_html_files``, which runs the
+        # SAME per-file worker serially or across a spawn pool depending on
+        # ``ED4ALL_HTML_PARSE_WORKERS`` and returns a per-file outcome ledger
+        # alongside the items. It owns the ``check_stop("dart_chunking", idx)``
+        # boundary (unchanged position: once per file/result, outside every
+        # ``except``) and propagates a stop request or a broken pool instead of
+        # degrading to an empty parse.
+        parsed_items, html_parse_ledger = _parse_staged_html_files(
+            html_files,
+            staging_dir,
+            stop_site_id="dart_chunking",
+            log_prefix="Phase 7b ST 11",
+        )
+        html_parse_drop_reasons = _html_parse_drop_reasons(html_parse_ledger)
+        html_parse_dropped = sum(html_parse_drop_reasons.values())
+        if html_parse_dropped:
             logger.warning(
-                "Phase 7b ST 11: HTMLContentParser import failed (%s); "
-                "emitting empty chunks shell.",
-                exc,
+                "Phase 7b ST 11: %d of %d discovered HTML file(s) produced no "
+                "content: %s. Each is registered as a named source_coverage "
+                "drop reason (they contribute to source_semantik_html_sha256 "
+                "and source_html_count but zero blocks to the chunker).",
+                html_parse_dropped, len(html_files),
+                dict(sorted(html_parse_drop_reasons.items())),
             )
-            html_parser = None
-        else:
-            html_parser = HTMLContentParser()
-
-        if html_parser is not None:
-            for idx, html_path in enumerate(html_files):
-                # Graceful stop (checkpoint on command): deterministic non-LLM
-                # per-file parse loop — a stop just pauses cleanly between
-                # files (the chunker re-parses from scratch on resume).
-                check_stop("dart_chunking", idx)
-                try:
-                    html_text = html_path.read_text(encoding="utf-8")
-                except OSError as exc:
-                    logger.warning(
-                        "Phase 7b ST 11: failed to read %s (%s); skipping.",
-                        html_path, exc,
-                    )
-                    continue
-                try:
-                    parsed = html_parser.parse(html_text)
-                except Exception as exc:  # noqa: BLE001 — parser errors fail soft
-                    logger.warning(
-                        "Phase 7b ST 11: HTML parse failed for %s (%s); "
-                        "skipping.",
-                        html_path, exc,
-                    )
-                    continue
-                slug = html_path.stem.lower().replace(" ", "-")
-                # The chunker reads ``module_id``, ``item_id``,
-                # ``raw_html``, ``resource_type``, ``sections``,
-                # ``title``, ``misconceptions`` off each item. Other
-                # keys are read defensively via ``.get(...)`` so a
-                # minimal payload works.
-                parsed_items.append({
-                    "item_id": slug,
-                    "item_path": str(html_path.relative_to(staging_dir))
-                    if staging_dir and html_path.is_relative_to(staging_dir)
-                    else html_path.name,
-                    "title": parsed.title or slug,
-                    "resource_type": "page",
-                    "module_id": slug,
-                    "module_title": parsed.title or slug,
-                    "week_num": 0,
-                    "word_count": parsed.word_count,
-                    "sections": parsed.sections,
-                    "learning_objectives": parsed.learning_objectives,
-                    "key_concepts": parsed.key_concepts,
-                    "interactive_components": parsed.interactive_components,
-                    "raw_html": html_text,
-                    "page_id": parsed.page_id,
-                    "misconceptions": parsed.misconceptions,
-                    "suggested_assessment_types": parsed.suggested_assessment_types,
-                    "courseforge_metadata": parsed.metadata.get("courseforge"),
-                    "objective_refs": parsed.objective_refs,
-                    "source_references": parsed.source_references,
-                })
 
         # TRAINFORGE_PAGE_CONCEPT_FALLBACK (default OFF): the GLM-OCR
         # accessible-HTML lane emits NO <strong>/<b>/<dt> markup, so
@@ -31553,6 +32072,7 @@ def _build_tool_registry() -> dict:
         # required); for non-empty input it requires ``ctx`` per the
         # ChunkerContextRequired contract.
         chunks: List[Dict[str, Any]] = []
+        dedup_drops: List[Dict[str, Any]] = []
         chunker_version = _resolve_chunker_version()
         try:
             from Trainforge.chunker import ChunkerContext, chunk_content
@@ -31572,6 +32092,18 @@ def _build_tool_registry() -> dict:
                     ctx=ctx,
                 )
                 chunks = list(result.chunks)
+                # W7: within-package dedup ledger (always empty unless
+                # ED4ALL_CHUNK_DEDUP is on). Read by attribute — the result's
+                # ``__iter__`` still yields exactly two values.
+                dedup_drops = list(getattr(result, "dedup_drops", None) or [])
+            except GracefulStopRequested:
+                # W5 item 9: a stop request is NOT a chunker error. It
+                # subclasses RuntimeError, so the broad handler below would
+                # swallow it into an empty chunkset that ships as phase
+                # SUCCESS (both chunkset gates are warning-severity and
+                # ED4ALL_MIN_CHUNKS defaults to 0). Re-raise so the phase
+                # pauses and checkpoints.
+                raise
             except Exception as exc:  # noqa: BLE001 — fail-soft on chunker error
                 logger.warning(
                     "Phase 7b ST 11: chunk_content raised (%s); emitting "
@@ -31579,6 +32111,7 @@ def _build_tool_registry() -> dict:
                     exc,
                 )
                 chunks = []
+                dedup_drops = []
 
         # M1: front-matter / donor / marketing contamination filter. A
         # full-textbook PDF's head carries the cover/title page, the
@@ -31822,18 +32355,30 @@ def _build_tool_registry() -> dict:
         chunks_dir.mkdir(parents=True, exist_ok=True)
         chunks_path = chunks_dir / "chunks.jsonl"
 
-        # Stream chunks as JSONL (one chunk per line). Use a hashing
-        # writer pattern so the SHA-256 reflects exactly the bytes on
-        # disk (no double-read).
-        chunks_sha = _hashlib.sha256()
-        with chunks_path.open("wb") as fh:
-            for chunk in chunks:
-                line = (json.dumps(chunk, ensure_ascii=False) + "\n").encode(
-                    "utf-8"
-                )
-                fh.write(line)
-                chunks_sha.update(line)
-        chunks_sha256 = chunks_sha.hexdigest()
+        # W5 item 8: stream chunks as JSONL through a temp file in the same
+        # directory and ``os.replace`` it into place. The manifest was already
+        # written atomically while the chunkset streamed straight into its final
+        # path, so a kill mid-write left a TRUNCATED chunks.jsonl that the
+        # Wave1-I2 resume guard above would preserve as a valid prior artifact.
+        # The returned SHA-256 is accumulated over the bytes actually written,
+        # so it still reflects exactly what is on disk (no double-read).
+        chunks_sha256 = _atomic_write_chunks_jsonl(chunks_path, chunks)
+
+        # W7: persist the within-package dedup ledger as a SIBLING FILE.
+        # ``schemas/library/chunkset_manifest.schema.json`` is
+        # ``additionalProperties: false`` at the top level, so a new manifest
+        # key would fail the chunkset gate closed; and ``drop_reasons`` is a
+        # ``{reason: integer}`` histogram with no room for ids. The reversible
+        # record therefore rides in a sidecar and only the COUNT rides in the
+        # coverage histogram. No file is written when the ledger is empty
+        # (ED4ALL_CHUNK_DEDUP off ⇒ byte-identical to today).
+        dedup_ledger_path = _write_dedup_ledger(chunks_dir, dedup_drops)
+        if dedup_ledger_path is not None:
+            logger.info(
+                "Phase 7b ST 11: within-package dedup skipped %d repeat "
+                "unit(s); ledger at %s.",
+                len(dedup_drops), dedup_ledger_path,
+            )
 
         # W3.H sub-task H1: build the canonical source_coverage block.
         # consumed_count = blocks_seen, emitted_count = len(chunks).
@@ -31859,11 +32404,37 @@ def _build_tool_registry() -> dict:
         _dedup_delta = max(0, _dropped_total - _attributable_drops)
         if _dedup_delta:
             _drop_reasons["merged_small_sections"] = _dedup_delta
+        # W5 item 6 + W7: file-level and dedup drops are registered with an
+        # EXPLICITLY WIDENED consumed/dropped pair rather than being folded
+        # into the block-denominated delta above.
+        #
+        #  * A rejected / unreadable / unparseable FILE contributed zero
+        #    ContentSections to ``blocks_seen``, so adding it to drop_reasons
+        #    without widening both counts trips the balance check. Widening is
+        #    exact here — there is no double count.
+        #  * A dedup drop is UNIT-denominated (one ``chunk_text_block`` call
+        #    site) while the histogram is block-denominated, and the number of
+        #    blocks a skipped unit would have consumed is not recoverable
+        #    without re-running the splitter. Widening by the unit count keeps
+        #    both documented invariants exact (ledger lines == registered
+        #    count, and dropped_count == sum(drop_reasons.values())); the cost
+        #    is that those units' sections are also still inside
+        #    ``merged_small_sections``. The sidecar is the exact record.
+        _extra_consumed = 0
+        for _reason, _count in sorted(html_parse_drop_reasons.items()):
+            _drop_reasons[_reason] = _drop_reasons.get(_reason, 0) + _count
+            _extra_consumed += _count
+        if dedup_drops:
+            _drop_reasons[_CHUNK_DROP_WITHIN_PACKAGE_DUPLICATE] = (
+                _drop_reasons.get(_CHUNK_DROP_WITHIN_PACKAGE_DUPLICATE, 0)
+                + len(dedup_drops)
+            )
+            _extra_consumed += len(dedup_drops)
         source_coverage_block = build_source_coverage(
-            consumed_count=blocks_seen,
+            consumed_count=blocks_seen + _extra_consumed,
             emitted_count=len(chunks),
             drop_reasons=_drop_reasons,
-            dropped_count=_dropped_total,
+            dropped_count=_dropped_total + _extra_consumed,
             label="dart_chunking",
         )
 
@@ -31942,7 +32513,18 @@ def _build_tool_registry() -> dict:
         # ``param:`` name is unchanged); only DIRECT phase_outputs readers that
         # name the key dual-read (``semantik_chunks_path`` then legacy
         # ``dart_chunks_path``) for resume-checkpoint compatibility.
-        return json.dumps({
+        # W5/W7 observability: the per-file outcome histogram and the dedup
+        # drop count ride on the phase envelope so an operator (and the
+        # serial-vs-parallel parity test) can see WHAT the parse consumed
+        # without re-deriving it from the coverage block. ``parsed`` +
+        # every drop bucket sums to ``source_html_count`` by construction.
+        _parse_outcomes: Dict[str, int] = {}
+        for _row in html_parse_ledger:
+            _outcome = str(_row.get("outcome") or "")
+            if _outcome:
+                _parse_outcomes[_outcome] = _parse_outcomes.get(_outcome, 0) + 1
+
+        envelope: Dict[str, Any] = {
             "success": True,
             "semantik_chunks_path": str(chunks_path),
             "semantik_chunks_sha256": chunks_sha256,
@@ -31950,8 +32532,13 @@ def _build_tool_registry() -> dict:
             "course_slug": course_slug,
             "chunks_count": len(chunks),
             "source_html_count": len(html_files),
+            "source_html_parse_outcomes": dict(sorted(_parse_outcomes.items())),
             "chunker_version": chunker_version,
-        })
+        }
+        if dedup_ledger_path is not None:
+            envelope["dedup_ledger_path"] = str(dedup_ledger_path)
+            envelope["dedup_dropped_count"] = len(dedup_drops)
+        return json.dumps(envelope)
 
     registry["run_dart_chunking"] = _run_dart_chunking
 
@@ -33185,6 +33772,11 @@ def _build_tool_registry() -> dict:
         # assignments; non-QTI roots are filtered later by the harvest
         # helper) so per-item ``assessment_item`` chunks can be minted.
         qti_entries: List[Dict[str, str]] = []
+        # W5 item 10: per-entry outcome ledger for the packaged HTML, mirroring
+        # the staged-HTML ledger on the SemantiK side. Every zip entry that
+        # SHOULD have become a page item but did not is recorded under a named
+        # reason and registered in source_coverage below.
+        imscc_parse_ledger: List[Dict[str, str]] = []
         if imscc_path is not None:
             try:
                 with _zipfile.ZipFile(imscc_path, "r") as zf:
@@ -33199,30 +33791,38 @@ def _build_tool_registry() -> dict:
                             if "06_assessments/" in name:
                                 continue
                             try:
-                                content = zf.read(name).decode(
-                                    "utf-8", errors="ignore"
-                                )
+                                # W5 item 10: STRICT utf-8. The prior
+                                # ``errors="ignore"`` silently produced degraded
+                                # text — mojibake with characters simply gone —
+                                # and recorded no drop, so a mis-encoded page
+                                # shipped as if it had converted cleanly. A
+                                # decode failure now routes to the same
+                                # warn-and-record path as a read failure.
+                                content = zf.read(name).decode("utf-8")
                             except Exception as exc:  # noqa: BLE001
                                 logger.warning(
                                     "Phase 7c ST 16: failed to read %s "
-                                    "from imscc (%s); skipping.",
-                                    name, exc,
+                                    "from imscc (%s: %s); skipping.",
+                                    name, type(exc).__name__, exc,
                                 )
+                                imscc_parse_ledger.append({
+                                    "path": name,
+                                    "outcome": _HTML_DROP_READ_ERROR,
+                                    "reason": type(exc).__name__,
+                                })
                                 continue
                             html_entries.append({"path": name, "content": content})
                         elif name.endswith(".xml") and (
                             "06_assessments/" in name
                         ):
                             try:
-                                content = zf.read(name).decode(
-                                    "utf-8", errors="ignore"
-                                )
+                                content = zf.read(name).decode("utf-8")
                             except Exception as exc:  # noqa: BLE001
                                 logger.warning(
                                     "W10 per-CO coverage: failed to read "
-                                    "assessment XML %s from imscc (%s); "
+                                    "assessment XML %s from imscc (%s: %s); "
                                     "skipping.",
-                                    name, exc,
+                                    name, type(exc).__name__, exc,
                                 )
                                 continue
                             qti_entries.append({"path": name, "content": content})
@@ -33256,7 +33856,15 @@ def _build_tool_registry() -> dict:
             html_parser = HTMLContentParser()
 
         if html_parser is not None and html_entries:
-            for entry in html_entries:
+            for _entry_idx, entry in enumerate(html_entries):
+                # W5 item 10: graceful stop. This loop had NO stop poll at all
+                # — the sibling staged-HTML loop has had one since the
+                # checkpoint-on-command contract landed, so a stop requested
+                # during a large IMSCC parse was not observed until the phase
+                # finished. Deterministic non-LLM work, so a pause between
+                # entries costs a re-parse from scratch on resume and nothing
+                # else. Deliberately OUTSIDE the per-entry ``except``.
+                check_stop("imscc_chunking", _entry_idx)
                 html_text = entry["content"]
                 inner_path = entry["path"]
                 try:
@@ -33267,6 +33875,11 @@ def _build_tool_registry() -> dict:
                         "skipping.",
                         inner_path, exc,
                     )
+                    imscc_parse_ledger.append({
+                        "path": inner_path,
+                        "outcome": _HTML_DROP_PARSE_ERROR,
+                        "reason": type(exc).__name__,
+                    })
                     continue
                 slug = Path(inner_path).stem.lower().replace(" ", "-")
                 parsed_items.append({
@@ -33290,6 +33903,21 @@ def _build_tool_registry() -> dict:
                     "objective_refs": parsed.objective_refs,
                     "source_references": parsed.source_references,
                 })
+                imscc_parse_ledger.append({
+                    "path": inner_path,
+                    "outcome": _HTML_OUTCOME_PARSED,
+                    "reason": "",
+                })
+
+        imscc_parse_drop_reasons = _html_parse_drop_reasons(imscc_parse_ledger)
+        if imscc_parse_drop_reasons:
+            logger.warning(
+                "Phase 7c ST 16: %d packaged HTML entr(ies) produced no "
+                "content: %s. Each is registered as a named source_coverage "
+                "drop reason.",
+                sum(imscc_parse_drop_reasons.values()),
+                dict(sorted(imscc_parse_drop_reasons.items())),
+            )
 
         # ``concept_tags`` IS populated here (previously hardcoded ``[]``):
         # the empty-tag substrate starved every downstream concept-graph +
@@ -33622,6 +34250,7 @@ def _build_tool_registry() -> dict:
         # Dispatch to the canonical chunker. ``chunk_content`` is
         # fail-soft on empty input.
         chunks: List[Dict[str, Any]] = []
+        dedup_drops: List[Dict[str, Any]] = []
         chunker_version = _resolve_chunker_version()
         try:
             from Trainforge.chunker import ChunkerContext, chunk_content
@@ -33661,6 +34290,14 @@ def _build_tool_registry() -> dict:
                     **_imscc_chunk_kwargs,
                 )
                 chunks = list(result.chunks)
+                # W7 (mirrored): within-package dedup ledger. Always empty
+                # unless ED4ALL_CHUNK_DEDUP is on.
+                dedup_drops = list(getattr(result, "dedup_drops", None) or [])
+            except GracefulStopRequested:
+                # W5 item 9 (mirrored): a stop request subclasses RuntimeError
+                # and would otherwise be swallowed into an empty chunkset that
+                # ships as phase SUCCESS.
+                raise
             except Exception as exc:  # noqa: BLE001 — fail-soft on chunker error
                 logger.warning(
                     "Phase 7c ST 16: chunk_content raised (%s); emitting "
@@ -33668,6 +34305,7 @@ def _build_tool_registry() -> dict:
                     exc,
                 )
                 chunks = []
+                dedup_drops = []
 
         # Track K: optional verbatim chunk overlap (mirrors the DART
         # path). When ``TRAINFORGE_CHUNK_OVERLAP_WORDS`` > 0, prepend the
@@ -33744,17 +34382,21 @@ def _build_tool_registry() -> dict:
         chunks_dir.mkdir(parents=True, exist_ok=True)
         chunks_path = chunks_dir / "chunks.jsonl"
 
-        # Stream chunks as JSONL with hashing writer pattern so the
-        # SHA-256 reflects exactly the bytes on disk.
-        chunks_sha = _hashlib.sha256()
-        with chunks_path.open("wb") as fh:
-            for chunk in chunks:
-                line = (json.dumps(chunk, ensure_ascii=False) + "\n").encode(
-                    "utf-8"
-                )
-                fh.write(line)
-                chunks_sha.update(line)
-        chunks_sha256 = chunks_sha.hexdigest()
+        # W5 item 8 (mirrored from the SemantiK twin): temp-then-``os.replace``
+        # so a kill mid-write can never leave a truncated chunkset that the
+        # Wave1-I2 resume guard would preserve as a valid prior artifact.
+        chunks_sha256 = _atomic_write_chunks_jsonl(chunks_path, chunks)
+
+        # W7 (mirrored): the reversible within-package dedup record rides in a
+        # sibling JSONL, never in the manifest (top-level
+        # ``additionalProperties: false``). No file when the ledger is empty.
+        dedup_ledger_path = _write_dedup_ledger(chunks_dir, dedup_drops)
+        if dedup_ledger_path is not None:
+            logger.info(
+                "Phase 7c ST 16: within-package dedup skipped %d repeat "
+                "unit(s); ledger at %s.",
+                len(dedup_drops), dedup_ledger_path,
+            )
 
         # W3.H sub-task H1 (mirrored to IMSCC chunkset for symmetry):
         # build the canonical source_coverage block. Same heuristics
@@ -33812,11 +34454,32 @@ def _build_tool_registry() -> dict:
         _imscc_dedup_delta = max(0, _imscc_dropped_total - _imscc_attributable)
         if _imscc_dedup_delta:
             _imscc_drop_reasons["merged_small_sections"] = _imscc_dedup_delta
+        # W5 item 6 + W7 (mirrored): entry-level and dedup drops registered
+        # with an explicitly widened consumed/dropped pair. See the SemantiK
+        # twin for the denominator note — an entry that never became a page
+        # item contributed zero blocks to ``_imscc_blocks_seen``, so widening
+        # is exact there; the dedup term is unit-denominated and keeps both
+        # documented invariants exact at the cost of also being inside
+        # ``merged_small_sections``.
+        _imscc_extra_consumed = 0
+        for _reason, _count in sorted(imscc_parse_drop_reasons.items()):
+            _imscc_drop_reasons[_reason] = (
+                _imscc_drop_reasons.get(_reason, 0) + _count
+            )
+            _imscc_extra_consumed += _count
+        if dedup_drops:
+            _imscc_drop_reasons[_CHUNK_DROP_WITHIN_PACKAGE_DUPLICATE] = (
+                _imscc_drop_reasons.get(
+                    _CHUNK_DROP_WITHIN_PACKAGE_DUPLICATE, 0
+                )
+                + len(dedup_drops)
+            )
+            _imscc_extra_consumed += len(dedup_drops)
         _imscc_source_coverage = _build_source_coverage_imscc(
-            consumed_count=_imscc_blocks_seen,
+            consumed_count=_imscc_blocks_seen + _imscc_extra_consumed,
             emitted_count=_imscc_html_emitted,
             drop_reasons=_imscc_drop_reasons,
-            dropped_count=_imscc_dropped_total,
+            dropped_count=_imscc_dropped_total + _imscc_extra_consumed,
             label="imscc_chunking",
         )
 
@@ -33866,7 +34529,16 @@ def _build_tool_registry() -> dict:
             json.dumps(manifest, indent=2, ensure_ascii=False),
         )
 
-        return json.dumps({
+        # W5/W7 observability (mirrors the SemantiK twin).
+        _imscc_parse_outcomes: Dict[str, int] = {}
+        for _row in imscc_parse_ledger:
+            _outcome = str(_row.get("outcome") or "")
+            if _outcome:
+                _imscc_parse_outcomes[_outcome] = (
+                    _imscc_parse_outcomes.get(_outcome, 0) + 1
+                )
+
+        envelope: Dict[str, Any] = {
             "success": True,
             "imscc_chunks_path": str(chunks_path),
             "imscc_chunks_sha256": chunks_sha256,
@@ -33874,10 +34546,17 @@ def _build_tool_registry() -> dict:
             "course_slug": course_slug,
             "chunks_count": len(chunks),
             "source_html_count": len(html_entries),
+            "source_html_parse_outcomes": dict(
+                sorted(_imscc_parse_outcomes.items())
+            ),
             "qti_assessment_chunks_count": len(_qti_assessment_chunks),
             "source_imscc_sha256": source_imscc_sha256,
             "chunker_version": chunker_version,
-        })
+        }
+        if dedup_ledger_path is not None:
+            envelope["dedup_ledger_path"] = str(dedup_ledger_path)
+            envelope["dedup_dropped_count"] = len(dedup_drops)
+        return json.dumps(envelope)
 
     registry["run_imscc_chunking"] = _run_imscc_chunking
 
