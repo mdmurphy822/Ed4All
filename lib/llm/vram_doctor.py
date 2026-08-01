@@ -4,7 +4,11 @@ Shared foundation for the "VRAM doctor" feature: a passive, NEVER-raising
 observability layer that snapshots the GPU's true free/total VRAM, lists
 the local ollama models actually resident on the card, and predicts
 whether each in-process GPU consumer (the NLI classifier and the
-embedding provider) will FIT, EVICT-then-fit, fall back to CPU, or OOM.
+embedding provider) will FIT, EVICT-then-fit, fall back to CPU, FAIL
+CLOSED, or OOM. Which of the last three a consumer can report is a
+property of that consumer: only NLI has a blessed CPU fallback, so only
+NLI can report ``would_fallback_cpu``; the embedding stack raises on an
+unavailable device and reports ``would_fail_closed`` instead.
 
 This module owns ZERO new device policy — it reuses the existing
 primitives and only *reports* what they would decide:
@@ -44,6 +48,8 @@ from lib.classifiers.nli_classifier import (
     resolve_min_free_vram_mib,
     resolve_nli_device,
 )
+from lib.embedding.providers import ENV_DEVICE as _PROVIDER_ENV_DEVICE
+from lib.embedding.providers import resolve_embedding_device
 from lib.llm.vram_reclaim import _fetch_resident_models, resolve_ollama_root
 
 logger = logging.getLogger(__name__)
@@ -54,11 +60,19 @@ logger = logging.getLogger(__name__)
 #: ``yes`` / ``on`` (case-insensitive). Documented in root CLAUDE.md.
 ENV_VRAM_DOCTOR = "ED4ALL_VRAM_DOCTOR"
 
-#: Env var selecting the embedding provider's torch device. Read directly
-#: here (rather than importing ``lib.embedding.providers``) to avoid
-#: pulling the heavy sentence-transformers import chain into the doctor.
-#: Mirrors ``lib.embedding.providers.ENV_DEVICE``.
-ENV_EMBEDDING_DEVICE = "ED4ALL_EMBEDDING_DEVICE"
+#: Env var selecting the embedding provider's torch device — re-exported
+#: from ``lib.embedding.providers`` (the owner) rather than restated, so the
+#: doctor can never name one variable while the provider reads another. That
+#: module is stdlib-light: ``sentence_transformers`` / ``torch`` / ``numpy``
+#: are all imported lazily inside the client, so importing it here costs the
+#: doctor nothing.
+#:
+#: The DEVICE VALUE is resolved through the same module's
+#: :func:`resolve_embedding_device` (see :func:`_fit_check_embedding`) — the
+#: doctor owns no device default of its own. It previously hardcoded ``cpu``
+#: as the fallback, which survived the product flip to a ``cuda`` default and
+#: made the preflight report the embedder as needing ZERO VRAM.
+ENV_EMBEDDING_DEVICE = _PROVIDER_ENV_DEVICE
 
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
@@ -249,12 +263,18 @@ def snapshot_vram(base_url: Optional[str] = None) -> VramSnapshot:
     )
 
 
+def _opt_out_env(consumer: str) -> str:
+    """The env var an operator sets to move ``consumer`` onto CPU explicitly."""
+    return ENV_EMBEDDING_DEVICE if consumer == "embedding" else "ED4ALL_NLI_DEVICE"
+
+
 def _build_verdict(
     consumer: str,
     device_requested: str,
     need_mib: int,
     snapshot: VramSnapshot,
     allow_evict: bool,
+    allow_cpu_fallback: bool = True,
 ) -> FitVerdict:
     """Shared placement-outcome logic for both in-process GPU consumers.
 
@@ -264,14 +284,20 @@ def _build_verdict(
 
     * the consumer-specific detail strings (NLI cites ``ED4ALL_NLI_DEVICE``
       and loads ``(fp16)``; embedding cites ``ED4ALL_EMBEDDING_DEVICE``);
-    * ``need_mib`` (resolved by the caller); and
+    * ``need_mib`` (resolved by the caller);
+    * the CUDA-unavailable branch: ``allow_cpu_fallback=True`` (NLI, which
+      really does degrade to a CPU forward pass) reports
+      ``would_fallback_cpu``; ``allow_cpu_fallback=False`` (embedding, which
+      RAISES — there is no automatic CUDA→CPU downgrade on that path)
+      reports ``would_fail_closed``; and
     * the near-full tail: NLI (``allow_evict=True``) consults
       :func:`resolve_evict_for_cuda` + the resident models for the
       evict-then-fit / fallback / OOM split; embedding (``allow_evict=False``)
       has no eviction seam → straight to ``would_oom``.
 
-    The outcomes + detail text are byte-identical to the prior pair of
-    hand-written functions (the existing fit-check tests are the guard).
+    Every NLI branch is byte-identical to the prior pair of hand-written
+    functions (the existing fit-check tests are the guard); only the
+    no-fallback consumer's CUDA-unavailable branch is new.
     """
     device = device_requested
     free_mib = snapshot.free_mib
@@ -291,13 +317,32 @@ def _build_verdict(
             detail=detail,
         )
     if not snapshot.cuda_available:
+        if allow_cpu_fallback:
+            return FitVerdict(
+                consumer=consumer,
+                device_requested=device,
+                need_mib=need_mib,
+                free_mib=free_mib,
+                outcome="would_fallback_cpu",
+                detail=f"cuda requested ({device}) but CUDA unavailable → CPU fallback.",
+            )
+        # No blessed fallback on this consumer's path: the embedding stack
+        # raises (EmbeddingModelUnavailable on the validator-tier wrapper,
+        # EmbeddingBackendUnavailable on the index/query client) rather than
+        # silently downgrading to CPU. Reporting "will fall back (safe but
+        # slower)" here would be a promise the code does not keep.
         return FitVerdict(
             consumer=consumer,
             device_requested=device,
             need_mib=need_mib,
             free_mib=free_mib,
-            outcome="would_fallback_cpu",
-            detail=f"cuda requested ({device}) but CUDA unavailable → CPU fallback.",
+            outcome="would_fail_closed",
+            detail=(
+                f"cuda requested ({device}) but CUDA unavailable → the {consumer} "
+                f"backend RAISES; there is NO automatic CUDA→CPU downgrade on this "
+                f"path. Set {_opt_out_env(consumer)}=cpu to run on CPU explicitly, "
+                f"or provision the requested device."
+            ),
         )
     if free_mib is None:
         return FitVerdict(
@@ -385,13 +430,51 @@ def _fit_check_nli(snapshot: VramSnapshot) -> FitVerdict:
 def _fit_check_embedding(snapshot: VramSnapshot) -> FitVerdict:
     """Predict the embedding provider's placement outcome from a snapshot.
 
-    Same shape as the NLI check minus the eviction path — the embedding
-    provider has no evict-then-retry seam, so a near-full card is reported
-    as ``would_oom`` rather than ``would_evict_then_fit``.
+    The device is resolved through the SAME canonical resolver the provider
+    registry and the validator-tier ``SentenceEmbedder`` use
+    (:func:`lib.embedding.providers.resolve_embedding_device`: explicit arg →
+    ``ED4ALL_EMBEDDING_DEVICE`` → the registry ``device_default``), so the
+    preflight can never predict a different device than the run will use. The
+    doctor keeps NO default of its own — a second hardcoded default is exactly
+    what made this report claim the embedder needed zero VRAM after the
+    product default flipped to ``cuda``.
+
+    Differs from the NLI check on two axes: no eviction path (the embedding
+    provider has no evict-then-retry seam, so a near-full card is
+    ``would_oom``, not ``would_evict_then_fit``) and no CPU fallback (a
+    requested-but-absent device RAISES, so CUDA-unavailable is
+    ``would_fail_closed``, not ``would_fallback_cpu``).
     """
-    device = (os.environ.get(ENV_EMBEDDING_DEVICE) or "cpu").strip() or "cpu"
     need_mib = _EMBEDDING_NEED_MIB
-    return _build_verdict("embedding", device, need_mib, snapshot, allow_evict=False)
+    try:
+        device = resolve_embedding_device()
+    except ValueError as exc:
+        # An unrecognized ED4ALL_EMBEDDING_DEVICE token is not a placement
+        # question — the resolver raises inside SentenceEmbedder.__init__ /
+        # resolve_embedding_provider, so the run fails closed before a single
+        # vector is encoded. Report that, rather than dropping the consumer's
+        # line from the report (fit_check would otherwise swallow the raise).
+        raw = os.environ.get(ENV_EMBEDDING_DEVICE, "")
+        return FitVerdict(
+            consumer="embedding",
+            device_requested=str(raw),
+            need_mib=need_mib,
+            free_mib=snapshot.free_mib,
+            outcome="would_fail_closed",
+            detail=(
+                f"{ENV_EMBEDDING_DEVICE}={raw!r} is not a recognized device token "
+                f"→ the embedding backend RAISES at construction (no silent "
+                f"substitution). {exc}"
+            ),
+        )
+    return _build_verdict(
+        "embedding",
+        device,
+        need_mib,
+        snapshot,
+        allow_evict=False,
+        allow_cpu_fallback=False,
+    )
 
 
 def fit_check(snapshot: VramSnapshot) -> List[FitVerdict]:
@@ -404,8 +487,14 @@ def fit_check(snapshot: VramSnapshot) -> List[FitVerdict]:
     * ``fits`` — free VRAM ≥ the consumer's need; loads on GPU.
     * ``would_evict_then_fit`` — (NLI only) free < need but evicting the
       resident ollama model(s) frees enough; eviction is enabled.
-    * ``would_fallback_cpu`` — CUDA unavailable, or (NLI) eviction enabled
-      but can't free enough → the consumer degrades to CPU.
+    * ``would_fallback_cpu`` — (NLI only) CUDA unavailable, or eviction
+      enabled but can't free enough → the consumer degrades to CPU. NLI is
+      the only consumer with a blessed CPU fallback, so no other consumer
+      may report this.
+    * ``would_fail_closed`` — (embedding only) the requested device is
+      unavailable, or its token is unrecognized, on a consumer that RAISES
+      instead of degrading. Distinct from ``would_fallback_cpu`` precisely
+      because the run stops rather than getting slower.
     * ``would_oom`` — free < need with no remedy (NLI: floor/eviction off;
       embedding: no evict path) → forward-pass CUDA OOM risk.
     * ``unknown`` — the free-VRAM probe failed; placement can't be predicted.
@@ -478,6 +567,8 @@ _OUTCOME_MARKERS = {
     "would_fallback_cpu": "⚠",
     "unknown": "⚠",
     "would_oom": "✗",
+    # Fail-closed is as hard as an OOM: the run stops, it does not get slower.
+    "would_fail_closed": "✗",
 }
 
 

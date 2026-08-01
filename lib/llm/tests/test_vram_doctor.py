@@ -435,10 +435,50 @@ def test_fit_nli_would_oom_when_evict_off(monkeypatch: pytest.MonkeyPatch) -> No
     assert v.outcome == "would_oom"
 
 
-def test_fit_embedding_cpu_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Embedding device defaults to cpu → cpu_requested."""
+def test_fit_embedding_cuda_default_costs_vram(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UNSET ED4ALL_EMBEDDING_DEVICE resolves to the product default (cuda).
+
+    Supersedes the old ``test_fit_embedding_cpu_default``: the doctor used to
+    carry its own ``cpu`` fallback, which survived the product flip and made
+    the preflight report the embedder as needing ZERO VRAM on the default
+    path. A cuda-default embedder is a real ~500 MiB claim on the card and
+    must be reported as one.
+    """
+    v = _emb_verdict(fit_check(_snap(free=100)))
+    assert v.device_requested == "cuda"
+    assert v.outcome != "cpu_requested"
+    assert v.need_mib == 500
+
+
+def test_fit_embedding_device_comes_from_canonical_resolver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The doctor owns NO device default — it defers to the provider registry.
+
+    Asserted against :func:`lib.embedding.providers.resolve_embedding_device`
+    itself (the resolver the index/query client and the validator-tier
+    ``SentenceEmbedder`` both use), so a future registry re-pin can never
+    leave the preflight predicting a device the run will not use.
+    """
+    from lib.embedding.providers import resolve_embedding_device
+
+    for token in (None, "cpu", "cuda", "cuda:1", "CUDA"):
+        if token is None:
+            monkeypatch.delenv(ENV_EMBEDDING_DEVICE, raising=False)
+        else:
+            monkeypatch.setenv(ENV_EMBEDDING_DEVICE, token)
+        v = _emb_verdict(fit_check(_snap(free=4000)))
+        assert v.device_requested == resolve_embedding_device()
+
+
+def test_fit_embedding_explicit_cpu_opt_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CPU stays a fully-supported EXPLICIT operator selection → no VRAM."""
+    monkeypatch.setenv(ENV_EMBEDDING_DEVICE, "cpu")
     v = _emb_verdict(fit_check(_snap(free=100)))
     assert v.outcome == "cpu_requested"
+    assert v.device_requested == "cpu"
 
 
 def test_fit_embedding_fits(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -453,10 +493,54 @@ def test_fit_embedding_would_oom(monkeypatch: pytest.MonkeyPatch) -> None:
     assert v.outcome == "would_oom"  # no eviction path for embeddings
 
 
-def test_fit_embedding_cuda_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fit_embedding_cuda_unavailable_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cuda requested + no CUDA → would_fail_closed, NOT would_fallback_cpu.
+
+    The embedding stack raises (``EmbeddingModelUnavailable`` on the
+    validator-tier wrapper, ``EmbeddingBackendUnavailable`` on the
+    index/query client) — there is no automatic CUDA→CPU downgrade — so
+    promising a fallback here would be a lie about what the run does.
+    """
     monkeypatch.setenv(ENV_EMBEDDING_DEVICE, "cuda")
     v = _emb_verdict(fit_check(_snap(cuda=False, free=None)))
+    assert v.outcome == "would_fail_closed"
+    assert "RAISES" in v.detail
+    # The operator's explicit opt-out is named in the detail.
+    assert f"{ENV_EMBEDDING_DEVICE}=cpu" in v.detail
+
+
+def test_fit_nli_cuda_unavailable_still_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The new fail-closed outcome must NOT leak onto NLI.
+
+    NLI has a blessed CPU fallback (fp32 forward pass), so the same trigger
+    keeps the pre-existing ``would_fallback_cpu`` outcome + detail verbatim.
+    """
+    monkeypatch.setenv("ED4ALL_NLI_DEVICE", "cuda")
+    v = _nli_verdict(fit_check(_snap(cuda=False, free=None)))
     assert v.outcome == "would_fallback_cpu"
+    assert v.detail == "cuda requested (cuda) but CUDA unavailable → CPU fallback."
+
+
+def test_fit_embedding_unrecognized_token_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A garbage device token raises in the resolver → report it, don't drop it.
+
+    ``resolve_embedding_device`` raises ``ValueError`` on an unrecognized
+    token, and ``fit_check`` swallows builder exceptions — so without an
+    explicit branch the embedding line would silently vanish from the report.
+    """
+    monkeypatch.setenv(ENV_EMBEDDING_DEVICE, "auto")
+    verdicts = fit_check(_snap(free=4000))
+    assert {v.consumer for v in verdicts} == {"nli", "embedding"}
+    v = _emb_verdict(verdicts)
+    assert v.outcome == "would_fail_closed"
+    assert v.device_requested == "auto"
+    assert "not a recognized device token" in v.detail
 
 
 def test_fit_embedding_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -592,6 +676,24 @@ def test_format_report_contains_free_number_and_consumers() -> None:
     assert "qwen2.5:7b" in report
     # markers rendered
     assert "✓" in report
+
+
+def test_format_report_marks_fail_closed_as_hard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``would_fail_closed`` renders with the hard ✗ marker, never the ⚠ one.
+
+    A stopped run is not a "safe but slower" outcome, so it may not share the
+    fallback marker.
+    """
+    monkeypatch.setenv(ENV_EMBEDDING_DEVICE, "cuda")
+    snap = _snap(free=None, cuda=False)
+    report = format_doctor_report(snap, fit_check(snap))
+    fail_line = next(
+        line for line in report.splitlines() if "would_fail_closed" in line
+    )
+    assert "✗" in fail_line
+    assert "⚠" not in fail_line
 
 
 def test_format_report_handles_unknown_free() -> None:

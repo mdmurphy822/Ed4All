@@ -103,6 +103,7 @@ def test_emits_snapshot_summary_result(monkeypatch) -> None:
     "outcome,expected",
     [
         ("would_oom", Severity.FAIL),
+        ("would_fail_closed", Severity.FAIL),
         ("would_fallback_cpu", Severity.WARN),
         ("unknown", Severity.INFO),
         ("fits", Severity.OK),
@@ -168,6 +169,39 @@ def test_remediation_populated_for_warn_and_fail(monkeypatch) -> None:
     fallback = next(r for r in results if r.name == "gpu_fit_embedding")
     assert oom.remediation
     assert fallback.remediation
+
+
+def test_fail_closed_and_fallback_render_differently(monkeypatch) -> None:
+    """The two cuda-unavailable outcomes must stay distinguishable in the UI.
+
+    ``would_fallback_cpu`` (NLI — a blessed CPU fallback) is a WARN whose
+    remediation offers to accept a slowdown. ``would_fail_closed``
+    (embedding — the backend RAISES, no automatic CUDA→CPU downgrade) is a
+    FAIL whose remediation names the operator's explicit CPU opt-out. Sharing
+    the fallback's text told the operator the run was safe when it was not.
+    """
+    _patch(
+        monkeypatch,
+        _snapshot(cuda_available=False, free_mib=None),
+        [
+            _verdict("nli", "would_fallback_cpu", free_mib=None),
+            _verdict("embedding", "would_fail_closed", free_mib=None),
+        ],
+    )
+    results = vram_adapter.gpu_checks(CheckContext())
+    fallback = next(r for r in results if r.name == "gpu_fit_nli")
+    fail_closed = next(r for r in results if r.name == "gpu_fit_embedding")
+
+    assert fallback.severity is Severity.WARN
+    assert "fall back to CPU" in fallback.remediation
+
+    assert fail_closed.severity is Severity.FAIL
+    assert "NO CPU fallback" in fail_closed.remediation
+    assert "ED4ALL_EMBEDDING_DEVICE=cpu" in fail_closed.remediation
+    assert fail_closed.remediation != fallback.remediation
+    # A fail-closed prediction must push the doctor's exit code to the hard
+    # failure code, not the warning one.
+    assert resolve_exit_code(results) == 2
 
 
 def test_remediation_empty_for_ok(monkeypatch) -> None:

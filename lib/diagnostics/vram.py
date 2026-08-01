@@ -21,17 +21,27 @@ from lib.diagnostics.core import CheckContext, CheckResult, Severity, register
 
 logger = logging.getLogger(__name__)
 
-#: ``FitVerdict.outcome`` → :class:`Severity`. ``would_oom`` is the only
-#: hard fail (the build would likely crash mid-run); a cuda→CPU fallback is
-#: a warning; ``unknown`` (the free-VRAM probe could not determine a value —
-#: NVML + torch.cuda.mem_get_info both unavailable, the documented WSL2
-#: quirk) is purely INFO — it is NOT evidence of a problem and must NOT push
-#: the exit code above 0 (matching the prior committed VRAM doctor's exit-0
+#: ``FitVerdict.outcome`` → :class:`Severity`. ``would_oom`` and
+#: ``would_fail_closed`` are the hard fails (the build would crash /
+#: stop mid-run); a cuda→CPU fallback is a warning; ``unknown`` (the
+#: free-VRAM probe could not determine a value — NVML +
+#: torch.cuda.mem_get_info both unavailable, the documented WSL2 quirk) is
+#: purely INFO — it is NOT evidence of a problem and must NOT push the exit
+#: code above 0 (matching the prior committed VRAM doctor's exit-0
 #: treatment); everything else fits / is fine. An unrecognized/garbage
 #: outcome falls through to WARN (a genuinely unexpected value is worth
 #: flagging, unlike the well-defined ``unknown``).
+#:
+#: ``would_fallback_cpu`` and ``would_fail_closed`` are deliberately SEPARATE
+#: outcomes with separate severities. They describe the same trigger (cuda
+#: requested, cuda absent) on consumers with opposite contracts: NLI has a
+#: blessed CPU fallback and merely gets slower (WARN); the embedding stack
+#: raises (``EmbeddingModelUnavailable`` / ``EmbeddingBackendUnavailable``)
+#: and stops the run (FAIL). Rendering the second as the first told the
+#: operator the run was safe when it was not.
 _OUTCOME_SEVERITY = {
     "would_oom": Severity.FAIL,
+    "would_fail_closed": Severity.FAIL,
     "would_fallback_cpu": Severity.WARN,
     "unknown": Severity.INFO,
     "fits": Severity.OK,
@@ -49,6 +59,12 @@ _OUTCOME_REMEDIATION = {
     "would_fallback_cpu": (
         "cuda requested but the consumer will fall back to CPU (safe but ~20-50x "
         "slower) — free VRAM or accept the slowdown"
+    ),
+    "would_fail_closed": (
+        "cuda requested but unavailable, and this consumer has NO CPU fallback — "
+        "it raises and stops the run. Provision the requested device, or set "
+        "ED4ALL_EMBEDDING_DEVICE=cpu to run the embedder on CPU as an explicit "
+        "operator choice (there is no automatic CUDA→CPU downgrade)"
     ),
 }
 
