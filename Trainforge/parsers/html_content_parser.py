@@ -247,7 +247,7 @@ _MATH_LAYOUT_ONLY_RE = re.compile(
 
 #: SemantiK's not-recoverable-figure carrier. The expression it stands in for
 #: lives in the element's ``aria-label``; its own text is the literal
-#: ``[figure]``. See ``lib/semantik/math_fold.py::_figure_placeholder``.
+#: ``[figure]``. See ``lib/semantik/math_fold.py::figure_placeholder``.
 _NOTATION_CLASS = "semantik-figure-notation"
 
 #: The placeholder's trailing annotation, which describes the CONVERSION rather
@@ -660,7 +660,7 @@ class HTMLTextExtractor(HTMLParser):
         """Emit a SemantiK notation placeholder's ``aria-label`` as inline text.
 
         SemantiK does not pass a rendered-maths ``<img>`` through to its
-        accessible HTML. ``lib/semantik/math_fold.py::_figure_placeholder``
+        accessible HTML. ``lib/semantik/math_fold.py::figure_placeholder``
         replaces it with
 
             <span class="semantik-figure-notation" role="img"
@@ -674,7 +674,7 @@ class HTMLTextExtractor(HTMLParser):
         i.e. essentially every equation destroyed at extraction, after
         conversion had preserved 90% of them.
 
-        NOTE (2026-08-01): ``_figure_placeholder`` now emits the ``alt`` as the
+        NOTE (2026-08-01): ``figure_placeholder`` now emits the ``alt`` as the
         VISIBLE body too — ``\\(TeX\\)`` when it is TeX-shaped, plain text when
         it is a figure description — instead of the literal token ``[figure]``.
         That fixed the LEARNER page, which this substitution never touched. The

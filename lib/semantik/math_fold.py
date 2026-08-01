@@ -71,6 +71,7 @@ __all__ = [
     "escape_math_angle_brackets",
     "sanitize_math_spans",
     "strip_tikz_figures",
+    "figure_placeholder",
     "strip_markdown_images",
     "strip_literal_img_tags",
     "separate_adjacent_math_spans",
@@ -556,6 +557,90 @@ def is_prose_fragment_span(content: str, prose_vocab: "frozenset | None") -> boo
     return any(tok.lower() in prose_vocab for tok in multi)
 
 
+# ---------------------------------------------------------------------------
+# Currency / markup OPENER guards (2026-08-01 vendor-lane text-corruption fix).
+# ---------------------------------------------------------------------------
+# The ``$`` pairing scans below decide, for every unescaped ``$``, whether it
+# OPENS a math region. Two shapes must never open one:
+#
+#  (1) CURRENCY — a ``$`` immediately followed by a complete CURRENCY AMOUNT
+#      (``$5``, ``$131.19``, ``$19,400``) whose candidate span carries NO math
+#      evidence after that amount. Measured on a publisher algebra corpus
+#      (BCcampus intro algebra, 9 chapter files): every ``$`` in the corpus is
+#      currency, and letting one open a region ate 601 amounts (``$5 and $10``
+#      → ``5 and \$10``: the opener was dropped as a prose refusal) and opened
+#      31 cascade regions. The evidence test is what keeps GENUINE math that
+#      merely starts with a digit — ``$5x + 3$``, ``$3 + 4 = 7$`` — opening
+#      exactly as before: an operator / backslash after the leading amount is
+#      positive math evidence, while ``$5 and ``, ``$5, `` and ``$131.19</td>``
+#      carry none. A currency ``$`` is emitted VERBATIM (never dropped to a
+#      space) and falls through to the orphan-dollar rules, which already
+#      PRESERVE a ``$`` before a digit.
+#
+#  (2) MARKUP-CROSSING — a candidate span whose CONTENT carries an HTML tag.
+#      These passes run over rendered block bodies (``<td>25. $131.19</td> <td>
+#      27. <span …>``), so a span that swallows a tag is BY CONSTRUCTION not one
+#      math run: no math expression contains ``</td>``. Without this guard the
+#      region between two currency amounts was classified as math (the mere
+#      presence of a backslash — e.g. ``\frac`` inside a figure ``aria-label`` —
+#      satisfied ``_is_math_content``), and the downstream angle-bracket escape
+#      then rewrote every ``<``/``>`` in it to ``&lt;``/``&gt;``, shipping the
+#      raw markup to the learner as literal text.
+#
+# Both guards are pure REFUSALS to open — they never rewrite content — so they
+# are a strict no-op on text that has no currency ``$`` and no tags.
+_MARKUP_IN_SPAN_RE = re.compile(r"<\s*/?[A-Za-z][^>]*>")
+#: A complete currency amount at the START of a candidate span's content:
+#: ``5`` / ``5.99`` / ``19,400`` / ``131.19``. Anchored, so ``5x`` matches only
+#: its leading ``5`` and the ``x`` lands in the remainder (math evidence).
+_CURRENCY_AMOUNT_RE = re.compile(r"^\d+(?:,\d{3})*(?:\.\d+)?")
+#: Math evidence in the REMAINDER after the leading amount — a LaTeX backslash
+#: or any math operator. Prose separators (``,`` ``;`` ``.`` words, whitespace)
+#: are deliberately NOT evidence: ``$5, `` / ``$5 and `` are currency lists.
+_MATH_EVIDENCE_RE = re.compile(r"[\\+*/=^_<>-]")
+
+
+def _is_currency_span(content: str) -> bool:
+    r"""Whether a candidate ``$…$`` span's CONTENT is a currency amount + prose.
+
+    True when the content OPENS with a complete currency amount and everything
+    after it carries no math evidence (no LaTeX backslash, no operator). This
+    is the one shape a ``$`` must never open a math region on — ``$5 and $10``,
+    ``$5, $10, $15``, ``$131.19</td> <td>47. $32``. Genuine math that happens to
+    start with a digit (``$5x + 3$``, ``$3 + 4 = 7$``, ``$1139 \text{…}$``)
+    carries evidence in the remainder and is NOT currency.
+    """
+    if not content:
+        return False
+    m = _CURRENCY_AMOUNT_RE.match(content)
+    if m is None:
+        return False
+    return not _MATH_EVIDENCE_RE.search(content[m.end():])
+
+
+def _opens_currency(text: str, i: int) -> bool:
+    r"""Whether the single ``$`` at ``i`` opens a CURRENCY amount, not a span.
+
+    Scans forward to the candidate closing ``$`` and applies
+    :func:`_is_currency_span` to the content between them. A ``$`` with no
+    closing partner is left to the orphan rules (already currency-aware).
+    """
+    n = len(text)
+    if i + 1 >= n or not text[i + 1].isdigit():
+        return False
+    j = i + 1
+    while j < n and text[j] != "$":
+        j += 1
+    if j >= n or j == i + 1 or text[j - 1] == "\\":
+        return True  # no closing partner → a bare currency sigil
+    return _is_currency_span(text[i + 1 : j])
+
+
+def _span_crosses_markup(content: str) -> bool:
+    """Whether a candidate math span's content swallows an HTML tag."""
+    return "<" in content and bool(_MARKUP_IN_SPAN_RE.search(content))
+
+
 def _find_display_close(text: str, start: int) -> int:
     r"""Index of the next unescaped ``$$`` at/after ``start``, or -1."""
     n = len(text)
@@ -582,6 +667,9 @@ def _pair_dollars(text: str, stash: list[str]) -> str:
       is free to start the next span. This is the orphan-``$$`` phantom-math
       prose-swallow fix, now covering the case where the orphan ``$$`` opener
       GLUES onto a later well-formed ``$$…$$`` display pair.
+    * A span whose content is CURRENCY (:func:`_is_currency_span`) or swallows
+      HTML markup (:func:`_span_crosses_markup`) never opens at all — the ``$``
+      is emitted VERBATIM (not dropped), so ``$5 and $10`` keeps both amounts.
     * An UNMATCHED display opener (a ``$$…$$`` span the cascade SPLIT across a
       block boundary) is dropped to spaces in-pass. An unmatched inline ``$`` is
       left for the currency-aware orphan-dollar drop.
@@ -594,10 +682,25 @@ def _pair_dollars(text: str, stash: list[str]) -> str:
     while i < n:
         ch = text[i]
         if ch == "$" and (i == 0 or text[i - 1] != "\\"):
+            if _opens_currency(text, i):
+                # CURRENCY (``$5``) — never opens a region. Emitted verbatim so
+                # the orphan-dollar rules (which PRESERVE a ``$`` before a digit)
+                # see it unchanged.
+                out.append(ch)
+                i += 1
+                continue
             if i + 1 < n and text[i + 1] == "$":  # display ``$$`` delimiter
                 close = _find_display_close(text, i + 2)
                 if close != -1:
                     content = text[i + 2 : close]
+                    if _span_crosses_markup(content):
+                        # Swallows an HTML tag → these two ``$$`` are not a pair
+                        # at all. Emit VERBATIM and let the orphan-dollar rules
+                        # decide (they preserve a currency ``$``, drop the rest);
+                        # dropping here would delete a real currency sigil.
+                        out.append(ch)
+                        i += 1
+                        continue
                     if "\x01" in content or _is_prose_math_span(content):
                         # A ``\x01`` placeholder inside the content means this
                         # ``$$…$$`` is spuriously gluing across an ALREADY-paired
@@ -623,6 +726,14 @@ def _pair_dollars(text: str, stash: list[str]) -> str:
                 j += 1
             if j < n and j > i + 1 and text[j - 1] != "\\":
                 content = text[i + 1 : j]
+                if _span_crosses_markup(content):
+                    # Swallows an HTML tag → not one math run. Emit the ``$``
+                    # VERBATIM (an unmatched inline ``$``) so the currency-aware
+                    # orphan rules decide its fate; the prose refusal below
+                    # DROPS the opener, which would delete a currency sigil.
+                    out.append(ch)
+                    i += 1
+                    continue
                 if "\x01" in content or _is_prose_math_span(content):
                     # Orphan-derived opener, prose, OR a span swallowing an
                     # already-paired nested ``\(..\)`` / ``\[..\]`` placeholder
@@ -734,6 +845,11 @@ def _is_math_content(content: str) -> bool:
     is not prose per :func:`_is_prose_math_span`. It is currency-prose (leave the
     dollars exposed for escape) only when it has NO backslash AND reads as prose.
     """
+    if _span_crosses_markup(content):
+        # A candidate that swallows an HTML tag is markup, not math — the
+        # backslash arm below would otherwise call it math on the strength of a
+        # ``\frac`` sitting in some element's attribute.
+        return False
     return ("\\" in content) or (not _is_prose_math_span(content))
 
 
@@ -754,6 +870,10 @@ def _stash_genuine_math(text: str, stash: list[str]) -> str:
     while i < n:
         ch = text[i]
         if ch == "$" and (i == 0 or text[i - 1] != "\\"):
+            if _opens_currency(text, i):
+                out.append(ch)  # currency never opens a span
+                i += 1
+                continue
             if i + 1 < n and text[i + 1] == "$":  # display ``$$`` delimiter
                 close = _find_display_close(text, i + 2)
                 if close != -1 and _is_math_content(text[i + 2 : close]):
@@ -862,7 +982,17 @@ def escape_math_angle_brackets(text: str) -> str:
         return text or ""
 
     def _esc(m: "re.Match[str]") -> str:
-        return m.group(0).replace("<", "&lt;").replace(">", "&gt;")
+        span = m.group(0)
+        # REFUSE the two non-math shapes the ``$`` arms of the regex can match
+        # (the ``\(…\)`` / ``\[…\]`` arms are unambiguous and always escape):
+        # a span opened by a CURRENCY ``$`` (``$131.19``), and a span whose body
+        # swallows an HTML tag. Escaping either rewrites real markup into
+        # learner-visible ``&lt;td&gt;`` literal text.
+        if span.startswith("$") and not span.startswith("$$"):
+            body = span[1:-1]
+            if _is_currency_span(body) or _span_crosses_markup(body):
+                return span
+        return span.replace("<", "&lt;").replace(">", "&gt;")
 
     return _MATH_SPAN_ANGLE_RE.sub(_esc, text)
 
@@ -1239,11 +1369,11 @@ _MARKDOWN_IMAGE_RE = re.compile(r"!\[(?P<alt>[^\]]*)\]\(\s*(?P<target>[^)]*)\)")
 #: An ``alt`` that looks like TeX rather than prose. Publisher corpora that
 #: render math as images (QuickLaTeX/MathJax exporters) put the TeX SOURCE in
 #: ``alt``, so the expression is fully recoverable without ever fetching the
-#: image — see :func:`_figure_placeholder`.
+#: image — see :func:`figure_placeholder`.
 _TEX_ALT_RE = re.compile(r"\\[A-Za-z]+|[\\{}^_]|\$")
 
 
-def _figure_placeholder(alt: str, *, html: bool) -> str:
+def figure_placeholder(alt: str, *, html: bool) -> str:
     r"""The shared accessible not-recoverable-figure placeholder.
 
     HTML mode → the ``.semantik-figure-notation`` span (``alt`` HTML-escaped
@@ -1306,7 +1436,7 @@ def strip_markdown_images(text: str, *, html: bool = True) -> str:
         return text or ""
 
     def _fix(m: "re.Match[str]") -> str:
-        return _figure_placeholder(m.group("alt") or "", html=html)
+        return figure_placeholder(m.group("alt") or "", html=html)
 
     return _MARKDOWN_IMAGE_RE.sub(_fix, text)
 
@@ -1393,7 +1523,7 @@ def strip_literal_img_tags(text: str, *, html: bool = True) -> str:
     ESCAPED ``&lt;img src=&quot;https://…&quot; /&gt;``, unescaped literal
     ``<img src=https://… >`` in ``raw_text``, self-closing and not, single /
     double / no quotes. The ``src`` is external (http/https/protocol-relative) or
-    a bare fabricated filename → the tag is replaced by :func:`_figure_placeholder`
+    a bare fabricated filename → the tag is replaced by :func:`figure_placeholder`
     (preserving any ``alt``); otherwise (a real local ``{stem}_figures/…`` src,
     or no/empty src) the tag TEXT is left byte-identical. A fast guard returns
     text with no ``img`` token unchanged; idempotent (the placeholder carries no
@@ -1412,7 +1542,7 @@ def strip_literal_img_tags(text: str, *, html: bool = True) -> str:
             return m.group(0)  # real/legit DOM img (or no src) → untouched
         alt_raw = _img_attr_value(_IMG_ATTR_ALT_RE, attrs)
         alt = _html_unescape(alt_raw).strip() if alt_raw else ""
-        return _figure_placeholder(alt, html=html)
+        return figure_placeholder(alt, html=html)
 
     return _LITERAL_IMG_TAG_RE.sub(_fix, text)
 
@@ -1459,6 +1589,10 @@ def separate_adjacent_math_spans(text: str) -> str:
     while i < n:
         ch = text[i]
         if ch == "$" and (i == 0 or text[i - 1] != "\\"):
+            if _opens_currency(text, i):
+                out.append(ch)  # currency never opens a span
+                i += 1
+                continue
             if i + 1 < n and text[i + 1] == "$":  # potential display ``$$``
                 close = _find_display_close(text, i + 2)
                 if close != -1:  # genuine display span — pass through verbatim

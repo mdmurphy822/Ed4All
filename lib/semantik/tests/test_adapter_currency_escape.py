@@ -1,13 +1,22 @@
-r"""Currency-``$`` escape at the adapter seam (round-7b — MathJax false-pairing).
+r"""Currency-``$`` handling: converted artifact vs. MathJax-rendered page.
 
 Textbook money word-problems carry lone currency ``$`` before digits ("costs
-$5 … and $3"). The assembled end-user page enables MathJax v3 with
-``inlineMath [['$','$']]``, so two such amounts in one paragraph FALSE-PAIR into
-an italic inline-math span at render. ``math_fold.escape_currency_dollars`` + the
-adapter ``_escape_currency_dollars`` pass rewrite each preserved currency ``$``
-to ``\$`` (a literal dollar under the assembler's ``processEscapes: true``) in the
-block HTML ONLY — ``raw_text`` / the sidecar keep plain ``$5`` for the chunker +
-retrieval. Genuine ``$…$`` / ``$$…$$`` / ``\(…\)`` / ``\[…\]`` math is untouched.
+$5 … and $3"). Two contracts, and they are DIFFERENT (2026-08-01 vendor-lane
+text-corruption fix):
+
+* **The converted accessible HTML keeps plain ``$5``.** It is the artifact the
+  chunker, retrieval, Courseforge, and every non-MathJax consumer read, and the
+  adapter used to escape currency there — shipping 601 literal ``\$`` tokens
+  into a 9-chapter publisher algebra corpus ("Jeannette has \$5 and \$10").
+* **The assembled end-user page escapes to ``\$``** — that page, and only that
+  page, enables MathJax v3 with ``inlineMath [['$','$']]``, where two amounts in
+  one paragraph would FALSE-PAIR into an italic span. ``processEscapes: true``
+  renders the ``\$`` as a literal dollar.
+
+Also covers the OPENER guards in ``math_fold``: a ``$`` that opens a currency
+amount, and a candidate span that swallows HTML markup, never open a math
+region — the cascade that turned ``<td>25. $131.19</td> <td>27. <img …>`` into
+learner-visible ``25. $131.19&lt;/td&gt; &lt;td&gt;27. …`` literal text.
 
 All synthetic IR — no course-data path, no model, no cascade run.
 """
@@ -16,10 +25,12 @@ from __future__ import annotations
 from lib.semantik.adapter import (
     _AdapterBlock,
     _AdapterChapter,
-    _escape_currency_dollars,
     normalize_cascade_to_ed4all,
 )
-from lib.semantik.math_fold import escape_currency_dollars
+from lib.semantik.math_fold import (
+    escape_currency_dollars,
+    escape_math_angle_brackets,
+)
 
 
 # --- unit: escape_currency_dollars --------------------------------------------
@@ -33,9 +44,18 @@ def test_two_currency_amounts_both_escaped():
 
 def test_paired_inline_math_untouched():
     # (b) — genuine inline math ``$5x + 3$`` is a paired span → never escaped.
+    # The currency guard does NOT fire: the remainder after the leading ``5``
+    # carries math evidence (``x``'s neighbouring ``+``).
     out = escape_currency_dollars("<p>Compute $5x + 3$ carefully.</p>")
     assert out == "<p>Compute $5x + 3$ carefully.</p>"
     assert r"\$" not in out
+
+
+def test_digit_leading_arithmetic_span_untouched():
+    # Companion to (b) — a span with NO letters at all (``$3 + 4 = 7$``) still
+    # reads as math because the operators are evidence.
+    out = escape_currency_dollars("<p>Then $3 + 4 = 7$ holds.</p>")
+    assert out == "<p>Then $3 + 4 = 7$ holds.</p>"
 
 
 def test_display_math_untouched():
@@ -82,7 +102,44 @@ def test_noop_without_currency():
     assert escape_currency_dollars("<p>Var $x here.</p>") == "<p>Var $x here.</p>"
 
 
-# --- adapter pass: html-only, sidecar preserved -------------------------------
+# --- DEFECT 1: currency never opens a math region -----------------------------
+def test_currency_region_never_escapes_intervening_markup():
+    """The exemplar cascade: two currency table cells with markup between.
+
+    Source ``<td>25. $131.19</td> <td>27. <span …>a=-5</span></td> … <td>47.
+    $32</td>``. Before the fix the ``$131.19`` opened a math region that closed
+    at ``$32``, and the angle-bracket escape then rewrote every ``<``/``>`` in
+    between — shipping ``25. $131.19&lt;/td&gt; &lt;td&gt;27. &lt;span …`` as
+    literal learner-visible text.
+    """
+    src = (
+        "<table><tbody><tr><td>25. $131.19</td> "
+        '<td>27. <span class="semantik-figure-notation" role="img" '
+        'aria-label="a=\\frac{1}{2} (image not recoverable)">a</span></td> '
+        "</tr><tr><td>47. $32</td></tr></tbody></table>"
+    )
+    out = escape_math_angle_brackets(src)
+    assert out == src  # byte-identical: no markup rewritten to entities
+    assert "&lt;td&gt;" not in out
+    assert "&lt;span" not in out
+
+
+def test_currency_list_not_paired_into_math():
+    # ``$5, $10, $15`` — a naive pairer glues ``$5, $`` into a math span. The
+    # currency guard refuses, so every amount survives verbatim in the artifact.
+    src = "<p>Prices are $5, $10, and $15 today.</p>"
+    out = escape_math_angle_brackets(src)
+    assert out == src
+
+
+def test_markup_crossing_span_refused_even_without_currency():
+    # The markup guard stands on its own: a ``$x$`` candidate whose body carries
+    # an HTML tag is never one math run, whatever it opens on.
+    src = "<p>$x</p><p>y$ and more</p>"
+    assert escape_math_angle_brackets(src) == src
+
+
+# --- adapter: the converted artifact keeps plain currency ---------------------
 def _block(html: str, text: str) -> _AdapterBlock:
     return _AdapterBlock(
         html=html,
@@ -94,32 +151,6 @@ def _block(html: str, text: str) -> _AdapterBlock:
     )
 
 
-def test_pass_escapes_html_only_sidecar_plain():
-    # (a) end-to-end contract: the adapter pass escapes ``block.html`` and leaves
-    # ``raw_text`` / ``repaired_text`` (sidecar + chunk text) with plain ``$5``.
-    plain = "It costs $5 to enter and $3 to ride."
-    block = _block(f"<p>{plain}</p>", plain)
-    block.repaired_text = plain
-    ch = _AdapterChapter(title="Chapter 1 Money", blocks=[block])
-    _escape_currency_dollars([ch])
-    assert r"\$5" in block.html and r"\$3" in block.html
-    # Sidecar / chunk text keeps the bare currency — never the ``\$`` escape.
-    assert block.raw_text == plain
-    assert block.repaired_text == plain
-    assert r"\$" not in block.raw_text
-
-
-def test_pass_leaves_math_block_untouched():
-    # (b) a block whose body is genuine paired math is byte-identical after.
-    html, text = "<p>Compute $5x + 3$ now.</p>", "Compute $5x + 3$ now."
-    block = _block(html, text)
-    ch = _AdapterChapter(title="Chapter 2 Algebra", blocks=[block])
-    _escape_currency_dollars([ch])
-    assert block.html == html
-    assert block.raw_text == text
-
-
-# --- adapter integration: full normalize --------------------------------------
 class _Result:
     def __init__(self, chapters):
         self.chapters = chapters
@@ -131,14 +162,18 @@ class _Result:
         self.lang = "en"
 
 
-def test_normalize_escapes_currency_in_html_not_sidecar():
-    # Full adapter run: a single-currency block survives sanitize; its HTML
-    # carries ``\$5`` while the sidecar text keeps plain ``$5``.
-    body = "The ride costs $5 total."
+def test_normalize_keeps_plain_currency_in_html_and_sidecar():
+    """The converted artifact carries ``$5`` — never a literal ``\\$``.
+
+    Regression for the 601 ``\\$`` tokens the adapter-side escape shipped into
+    the accessible HTML the chunker reads.
+    """
+    body = "Jeannette has $5 and $10 bills in her wallet."
     block = _block(f"<p>{body}</p>", body)
     ch = _AdapterChapter(title="Chapter 3 Fees", blocks=[block])
     out = normalize_cascade_to_ed4all(_Result([ch]), pdf_stem="doc-ch03")
     html = out["html"]
-    assert r"\$5" in html
+    assert "$5 and $10" in html
+    assert r"\$" not in html
     sec_text = out["synthesized_sidecar"]["sections"][0]["data"]["text"]
     assert "$5" in sec_text and r"\$" not in sec_text

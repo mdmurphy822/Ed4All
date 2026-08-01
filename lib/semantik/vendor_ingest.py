@@ -31,6 +31,17 @@ at ``h1``/``h2`` (the publisher's section-level headings); deeper headings
 order (the §3.3a determinism anchor). ``figure_alt`` is recovered from
 ``<figcaption>`` text or an ``<img alt>``.
 
+Two normalizations exist because publisher markup is not always well-formed or
+self-describing (both documented in full at their definitions):
+
+* §3.4b — a "block" tag that turns out to WRAP document structure (an unclosed
+  ``<dl>`` that swallowed the rest of the file) is unwrapped rather than emitted
+  whole, so nothing ships raw markup inside a section body
+  (:func:`_is_misnested_block`).
+* §3.4c — a figure description that exists ONLY as a ``data-alt`` attribute,
+  with no image to carry it, is promoted to the shared accessible
+  ``.semantik-figure-notation`` placeholder (:func:`_promote_media_alts`).
+
 NO models / NO GPU: pure BeautifulSoup parsing + the model-free adapter.
 """
 
@@ -73,6 +84,17 @@ _TAG_TO_REGION_KIND: Dict[str, str] = {
 _CONTAINER_TAGS = frozenset(
     {"div", "section", "article", "main", "body", "header", "aside"}
 )
+
+_HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
+
+# §3.4b — block tags that stay ATOMIC even when they contain a heading. A
+# ``<table>`` cell or a ``<pre>`` listing may legitimately carry a heading, and
+# descending would destroy the structure we exist to preserve. Everything else
+# in ``_BLOCK_TAGS`` is a LEAF content element in valid HTML: a ``<p>`` /
+# ``<ul>`` / ``<dl>`` / ``<blockquote>`` that contains an ``<h1>`` is proof the
+# publisher left a tag unclosed and the parser nested the rest of the document
+# inside it. See :func:`_is_misnested_block`.
+_ATOMIC_BLOCK_TAGS = frozenset({"table", "pre"}) | _HEADING_TAGS
 
 # Content tags we emit as ONE block (no descent). ``figure`` is here so the
 # whole figure + figcaption is one block.
@@ -159,6 +181,78 @@ def _figure_alt_from(node: Any) -> Optional[str]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# §3.4c — publisher ``data-alt`` figure descriptions with no recoverable image.
+# ---------------------------------------------------------------------------
+# This publisher family carries a figure's long description on a WRAPPER element
+# (``<span data-type="media" data-alt="The graph shows the x y-coordinate plane
+# …">``) and the image inside it. Normally the ``<img alt>`` is the description
+# too, and the adapter's literal-``<img>`` sanitizer surfaces it through the
+# ``.semantik-figure-notation`` placeholder (the visible-alt contract: visible
+# body carries the alt, ``aria-label`` preserved).
+#
+# Some wrappers have NO image at all — or an image whose ``alt`` is a bare ``.``
+# — so the ONLY copy of the description is the ``data-alt`` attribute. An
+# attribute is invisible to a sighted reader, carries no ``role="img"`` /
+# ``aria-label`` for a screen reader, and is stripped by every text extractor,
+# so the description reached neither the learner page nor the chunks: 99 of 240
+# substantive descriptions in one chapter of a 9-chapter publisher algebra
+# corpus (2026-08-01), including every "An arrow starts at the origin …" graph.
+#
+# :func:`_promote_media_alts` rewrites such an element to the SAME
+# ``figure_placeholder`` markup the image path emits, and hoists its children
+# out — which also un-nests the publisher's occasional two-figures-in-one-span
+# mis-nesting into two siblings. A wrapper whose image already carries a real
+# ``alt`` is left untouched (promoting would duplicate the description).
+_MEDIA_ALT_ATTR = "data-alt"
+#: An ``alt`` shorter than this is a placeholder (``.``, ``""``), not a
+#: description — it is not worth surfacing and does not count as recoverable.
+_MIN_DESCRIPTIVE_ALT = 3
+
+
+def _descriptive(value: Optional[str]) -> bool:
+    """Whether an alt/description string carries real content."""
+    return len((value or "").strip(" \t\r\n.·-–—")) >= _MIN_DESCRIPTIVE_ALT
+
+
+def _has_recoverable_image(node: Any) -> bool:
+    """Whether a ``data-alt`` wrapper already surfaces its description."""
+    finder = getattr(node, "find", None)
+    if finder is None:
+        return False
+    img = finder("img")
+    return img is not None and _descriptive(img.get("alt"))
+
+
+def _promote_media_alts(root: Any) -> int:
+    """Surface orphaned ``data-alt`` descriptions as figure notation (§3.4c).
+
+    In-place, document order (outermost first), single pass: replacing an outer
+    wrapper hoists its children — including any nested wrapper — back into the
+    tree, so the nested one is still reachable later in the same snapshot.
+    Returns the number of descriptions promoted.
+    """
+    from bs4 import BeautifulSoup
+
+    from lib.semantik.math_fold import figure_placeholder
+
+    promoted = 0
+    for el in root.find_all(attrs={_MEDIA_ALT_ATTR: True}):
+        alt = (el.get(_MEDIA_ALT_ATTR) or "").strip()
+        if not _descriptive(alt) or _has_recoverable_image(el):
+            continue
+        holder = BeautifulSoup(figure_placeholder(alt, html=True), "html.parser")
+        placeholder = holder.find("span")
+        if placeholder is None:  # pragma: no cover - defensive
+            continue
+        kids = [k.extract() for k in list(el.children)]
+        el.replace_with(placeholder)
+        for kid in reversed(kids):
+            placeholder.insert_after(kid)
+        promoted += 1
+    return promoted
+
+
 def _block_html(node: Any) -> str:
     """Serialize a block node's OUTER HTML (the wrapped accessible markup).
 
@@ -175,13 +269,62 @@ def _normalize_text(value: str) -> str:
     return " ".join((value or "").split())
 
 
+def _is_misnested_block(node: Any) -> bool:
+    """Whether a would-be atomic block actually WRAPS document structure (§3.4b).
+
+    Publisher HTML in the wild leaves tags unclosed. ``html.parser`` (like every
+    HTML tree builder) then nests everything that follows INSIDE the unclosed
+    element, so a glossary ``<dl>`` missing its ``</dd></dl>`` swallowed the
+    whole "Practice Makes Perfect" apparatus — 13.4 KB of headings, paragraphs
+    and tables — into ONE block. Emitted whole, that block shipped a raw
+    ``<h1>`` inside a ``<section>`` body, giving the document a SECOND ``<h1>``
+    (43rd of 43 apparatus headings; the other 42 reached the heading path and
+    were correctly stripped) and hiding every heading it swallowed from the
+    structure extractor.
+
+    The signal is a descendant HEADING: no valid ``<p>`` / ``<ul>`` / ``<dl>`` /
+    ``<blockquote>`` / ``<figure>`` contains one. ``<table>`` / ``<pre>`` are
+    exempt (:data:`_ATOMIC_BLOCK_TAGS`) — a heading in a table cell is legal and
+    descending would destroy the table.
+    """
+    if getattr(node, "name", None) in _ATOMIC_BLOCK_TAGS:
+        return False
+    finder = getattr(node, "find", None)
+    return finder is not None and finder(list(_HEADING_TAGS)) is not None
+
+
+def _iter_misnested_children(node: Any):
+    """Yield the real content of a mis-nested block, in document order (§3.4b).
+
+    Treats ``node`` exactly as a layout container: Tag children recurse (through
+    :func:`_iter_content_nodes`, or through this function again while they are
+    themselves mis-nested), and a loose NavigableString becomes a synthetic
+    paragraph — so unwrapping never silently drops the ``<dt>``/``<dd>`` text
+    the broken element legitimately owned.
+    """
+    from bs4 import NavigableString, Tag
+
+    for child in node.children:
+        if isinstance(child, Tag):
+            if child.name in _BLOCK_TAGS and _is_misnested_block(child):
+                yield from _iter_misnested_children(child)
+            else:
+                yield from _iter_content_nodes(child)
+        elif isinstance(child, NavigableString):
+            txt = _normalize_text(str(child))
+            if txt:
+                yield ("__text__", txt)
+
+
 def _iter_content_nodes(node: Any):
     """Yield content/heading nodes in document order.
 
     Descends through layout containers (div/section/...) but emits block
     tags (p/ul/table/figure/...) whole. A heading is always emitted (it is
     both a potential chapter boundary and the sid source). Bare text and
-    script/style/nav noise are skipped.
+    script/style/nav noise are skipped. A block tag that turns out to WRAP
+    document structure (:func:`_is_misnested_block`) is unwrapped instead of
+    emitted whole.
     """
     from bs4 import NavigableString, Tag
 
@@ -192,6 +335,9 @@ def _iter_content_nodes(node: Any):
         return
 
     if name in _BLOCK_TAGS:
+        if _is_misnested_block(node):
+            yield from _iter_misnested_children(node)
+            return
         yield node
         return
 
@@ -260,6 +406,11 @@ def build_chapters_ir_from_html(
             root = soup.body or soup
             page_title = page.get("title") or page.get("page")
             page_specs.append((page_title, root))
+
+    # §3.4c — surface orphaned publisher ``data-alt`` figure descriptions BEFORE
+    # any block is cut, so the promoted notation rides its own block's markup.
+    for _, _root in page_specs:
+        _promote_media_alts(_root)
 
     # §3.4a — decide the chapter-boundary rule ONCE for the document.
     #

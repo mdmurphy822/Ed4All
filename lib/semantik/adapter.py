@@ -79,7 +79,6 @@ from lib.semantic_structure_extractor.semantic_structure_extractor import (
 # heading text minted for HTML emit is prose, not raw markup (see
 # ``_sanitize_heading_text``); the SAME normalized IR re-renders identically.
 from lib.semantik.math_fold import (
-    escape_currency_dollars,
     escape_math_angle_brackets,
     linkify_urls,
     sanitize_body_latex,
@@ -172,7 +171,8 @@ _DATA_SEMANTIK_SOURCE_VALUE = "synthesized"
 # an unknown value still passes the markers gate so long as it is non-empty,
 # but we pin
 # the two we emit so a typo (e.g. "vender") is caught at the adapter boundary.
-_KNOWN_DATA_SEMANTIK_SOURCE_VALUES = frozenset({"synthesized", "vendor"})
+_VENDOR_SOURCE_VALUE = "vendor"
+_KNOWN_DATA_SEMANTIK_SOURCE_VALUES = frozenset({"synthesized", _VENDOR_SOURCE_VALUE})
 
 
 def _resolve_source_value(source: Optional[str]) -> str:
@@ -1849,13 +1849,27 @@ _MARKER_COLON_MARKER_NUM_RE = re.compile(
 )
 
 
-def _scrub_marker_artifacts(text: Optional[str], *, html: bool) -> Optional[str]:
+def _scrub_marker_artifacts(
+    text: Optional[str], *, html: bool, fold_gutter: bool = True
+) -> Optional[str]:
     r"""Fold ``:: `` / ``: : `` colon-runs + stray ``>``/``|`` gutter glyphs.
 
     ``None``-safe pass-through; a fast substring guard keeps the common
     no-artifact path allocation-free. Math runs (``$…$`` / ``\(…\)`` / display)
     are masked before the fold; for ``html`` bodies the tags are masked too so a
     ``<td>`` / attribute ``>`` is never touched.
+
+    ``fold_gutter=False`` disables ONLY the stray-glyph arm (the ``>`` / ``|`` /
+    ``&gt;`` run fold). That arm repairs OCR GUTTER debris — a scan artifact
+    that cannot exist in publisher-authored accessible HTML — and it deletes a
+    whitespace-bounded ``&gt;`` whatever it means. On a vendor corpus that is
+    pure data loss: ``a) &gt; b) &lt; c) &gt; d) &gt;`` (an inequality answer
+    key) became ``a) b) &lt; c) d)``, and "The symbols &lt; and &gt; each have a
+    smaller side" lost its ``&gt;`` — 13 of 20 entity-bearing paragraphs in the
+    first two chapters of a 9-chapter publisher algebra corpus (2026-08-01). The
+    ``_MARKER_COMPARISON_RE`` guard only protects a LONE-single-character
+    operand on each side (``x &gt; y``), so ``) &gt; b`` is not covered. The
+    colon-run arms stay on: they are notation folds, not deletions.
     """
     if not text or (
         "::" not in text
@@ -1900,12 +1914,13 @@ def _scrub_marker_artifacts(text: Optional[str], *, html: bool) -> Optional[str]
     # see (else pipes survive on a block that then falls to ``parse_list`` and
     # ships ``<p>|</p>`` / trailing-pipe ``<li>`` debris).
     # ``parse_table`` masks math itself, so an inline ``$a|b$`` never trips it.
-    keep_pipes = (
-        "|" in text
-        and parse_table(sanitize_body_latex(text, html=html)) is not None
-    )
-    gutter_re = _MARKER_GUTTER_NOPIPE_RE if keep_pipes else _MARKER_GUTTER_RE
-    masked = gutter_re.sub(" ", masked)
+    if fold_gutter:
+        keep_pipes = (
+            "|" in text
+            and parse_table(sanitize_body_latex(text, html=html)) is not None
+        )
+        gutter_re = _MARKER_GUTTER_NOPIPE_RE if keep_pipes else _MARKER_GUTTER_RE
+        masked = gutter_re.sub(" ", masked)
     masked = _MULTI_SPACE_RE.sub(" ", masked)
     masked = _MARKER_SPACE_BEFORE_PUNCT_RE.sub(r"\1", masked)
     restored = re.sub(
@@ -2048,24 +2063,36 @@ def _collapse_marker_debris_blocks(chapters: Sequence[_AdapterChapter]) -> None:
                 block.block_role = "metadata_drop"
 
 
-def _scrub_block_marker_artifacts(chapters: Sequence[_AdapterChapter]) -> None:
+def _scrub_block_marker_artifacts(
+    chapters: Sequence[_AdapterChapter], *, fold_gutter: bool = True
+) -> None:
     """Scrub pedagogical-marker label residue from every block's text fields.
 
     Runs BEFORE the opener split (so a de-doubled "TRY IT 2.1" promotes) and in
     the same in-place seam as ``_scrub_block_entity_artifacts`` so the rendered
     ``html`` and sidecar ``text`` stay in parity.
+
+    ``fold_gutter`` is the OCR-lane switch — see :func:`_scrub_marker_artifacts`.
     """
     for ch in chapters:
         for block in ch.blocks:
-            block.html = _scrub_marker_artifacts(block.html, html=True) or ""
+            block.html = (
+                _scrub_marker_artifacts(
+                    block.html, html=True, fold_gutter=fold_gutter
+                )
+                or ""
+            )
             block.raw_text = (
-                _scrub_marker_artifacts(block.raw_text, html=False) or ""
+                _scrub_marker_artifacts(
+                    block.raw_text, html=False, fold_gutter=fold_gutter
+                )
+                or ""
             )
             block.repaired_text = _scrub_marker_artifacts(
-                block.repaired_text, html=False
+                block.repaired_text, html=False, fold_gutter=fold_gutter
             )
             block.heading_text = _scrub_marker_artifacts(
-                block.heading_text, html=False
+                block.heading_text, html=False, fold_gutter=fold_gutter
             )
 
 
@@ -2864,29 +2891,6 @@ def _linkify_block_urls(chapters: Sequence[_AdapterChapter]) -> None:
                 )
 
 
-def _escape_currency_dollars(chapters: Sequence[_AdapterChapter]) -> None:
-    r"""Escape preserved currency ``$`` → ``\$`` in block HTML ONLY (round-7b).
-
-    The assembled end-user page enables MathJax v3 with ``inlineMath [['$','$']]``,
-    so two currency amounts in one paragraph ("costs $5 … and $3") FALSE-PAIR
-    into an italic math span at render. This HTML-only pass rewrites each
-    preserved lone currency ``$`` (a ``$`` immediately before a digit, currency
-    by construction after the ``_pair_dollars`` sweep) to ``\$`` — a literal
-    dollar under the assembler's ``processEscapes: true`` config — masking genuine
-    ``$…$`` / ``$$…$$`` / ``\(…\)`` / ``\[…\]`` math so real inline math is never
-    touched.
-
-    HTML-ONLY: ``raw_text`` / ``repaired_text`` (the sidecar + chunker/retrieval
-    text) keep plain ``$5`` untouched, so the escape never reaches the index.
-    Runs LAST (after ``_linkify_block_urls``) so no later pass re-mangles the
-    ``\$``; idempotent, so re-rendering an emitted page is a fixed point.
-    """
-    for ch in chapters:
-        for block in ch.blocks:
-            if block.html:
-                block.html = escape_currency_dollars(block.html)
-
-
 def _escape_math_angle_brackets(chapters: Sequence[_AdapterChapter]) -> None:
     r"""Escape raw ``<`` / ``>`` INSIDE math spans in block HTML ONLY (round-8).
 
@@ -2900,8 +2904,11 @@ def _escape_math_angle_brackets(chapters: Sequence[_AdapterChapter]) -> None:
 
     HTML-ONLY: ``raw_text`` / ``repaired_text`` (sidecar + chunker/retrieval
     text) keep plain ``x < 5`` untouched. Runs LAST (after
-    ``_escape_currency_dollars``) so the ``\$`` currency escape is already
-    settled and never mistaken for a span delimiter; idempotent.
+    ``_linkify_block_urls``) so every other HTML transform is settled;
+    idempotent. A currency ``$`` and a span that swallows HTML markup are
+    REFUSED by ``escape_math_angle_brackets`` itself, so a publisher table's
+    ``<td>25. $131.19</td> … <td>47. $32</td>`` can never be read as one math
+    span and have its real markup rewritten to visible ``&lt;td&gt;`` text.
     """
     for ch in chapters:
         for block in ch.blocks:
@@ -3109,7 +3116,9 @@ def _latex_to_mathml(chapters: Sequence[_AdapterChapter]) -> Dict[str, int]:
     return stats
 
 
-def _strip_body_folios(chapters: Sequence[_AdapterChapter]) -> None:
+def _strip_body_folios(
+    chapters: Sequence[_AdapterChapter], *, drop_standalone: bool = True
+) -> None:
     """Drop / strip leaked printed folios (page numbers) from BODY blocks (Defect 2).
 
     Two arms, both mutate the IR in place (HTML + sidecar parity by
@@ -3128,12 +3137,22 @@ def _strip_body_folios(chapters: Sequence[_AdapterChapter]) -> None:
     alone (the physical ``pages`` metadata cannot be mapped to the printed folio,
     and a naive strip corrupts real answers) — see the heading_classifier
     module banner (j).
+
+    ``drop_standalone=False`` disables ARM A. A leaked printed folio is a SCAN
+    artifact: publisher-authored accessible HTML has no page furniture in its
+    body, so on that lane ARM A only ever fires on a legitimately short numeric
+    body — and a solved-exercise answer IS one. Measured on a 9-chapter
+    publisher algebra corpus (2026-08-01): every "Show answer / 96" TRY-IT
+    solution whose answer was a bare 2-4 digit number was silently deleted, so
+    the rendered page showed the reveal control with nothing behind it. ARM B
+    (the fused running-header TAIL strip) is anchored to a Title-Case
+    "Chapter N …" prefix and cannot misfire this way, so it stays on.
     """
     for ch in chapters:
         for block in ch.blocks:
             if _is_heading_block(block) or _is_furniture_block(block):
                 continue
-            if is_standalone_folio(block.raw_text or ""):
+            if drop_standalone and is_standalone_folio(block.raw_text or ""):
                 block.region_kind = "metadata_drop"
                 block.block_role = "metadata_drop"
                 continue
@@ -3155,6 +3174,7 @@ def _normalize_ocr_headings(
     chapters: Sequence[_AdapterChapter],
     doc_title: Optional[str] = None,
     emitter_report: Optional[Dict[str, int]] = None,
+    source_value: Optional[str] = None,
 ) -> int:
     """Demote OCR heading furniture / garbage across the adapter IR in place.
 
@@ -3180,7 +3200,17 @@ def _normalize_ocr_headings(
     bare "Chapter N <title>" demotion and the "Chapter N <title> <label>"
     prefix strip fire only when the tail matches this known title, so a
     legitimate "Chapter N …" heading is never demoted by shape alone.
+
+    ``source_value`` is the document's provenance discriminator (§3.2 — the
+    value stamped as ``data-semantik-source``). Two arms of this pass are
+    DESTRUCTIVE repairs of OCR-only artifacts — the stray ``>``/``|`` gutter-glyph
+    fold and the standalone printed-folio drop — and both misfire on
+    publisher-authored accessible HTML, where the shapes they key on are real
+    content (an inequality answer key; a numeric exercise answer). They are
+    therefore skipped when ``source_value == "vendor"``. Every other arm is
+    shape-driven and lane-agnostic, so the ``synthesized`` path is byte-identical.
     """
+    ocr_lane = source_value != _VENDOR_SOURCE_VALUE
     # ITEM 3 (round-5 audit) — normalize the ``trvit`` OCR-confusable → ``TRY IT``
     # FIRST (before every scrub / split), so the de-garbled marker flows through
     # the marker scrub + heading/opener machinery instead of shipping as garble.
@@ -3200,7 +3230,7 @@ def _normalize_ocr_headings(
     # ch02 audit — fold pedagogical-marker label residue (":: " / ": : " colon
     # runs + stray ">"/"|" gutter glyphs) so "TRY IT :: 2.1" reads "TRY IT 2.1"
     # BEFORE the opener split below — a de-doubled numbered marker now promotes.
-    _scrub_block_marker_artifacts(chapters)
+    _scrub_block_marker_artifacts(chapters, fold_gutter=ocr_lane)
 
     # B3 (end-user-HTML audit) — fold visible text-mode LaTeX/markdown garbage
     # (\textbf / \textit / \begin{tabular} / | --- | / \checkmark) out of body
@@ -3213,7 +3243,7 @@ def _normalize_ocr_headings(
     # "Chapter N <Title> <folio>" running header fused into a body block. Runs
     # AFTER the body-latex sanitize (clean text) and BEFORE the opener / apparatus
     # splits (so a de-fused block is folio-free when the split predicates see it).
-    _strip_body_folios(chapters)
+    _strip_body_folios(chapters, drop_standalone=ocr_lane)
 
     # Chapter-title furniture: page-numbered running headers, watermark garbage,
     # and repeats of a bare "Chapter N Title" (all but the first).
@@ -3408,16 +3438,11 @@ def _normalize_ocr_headings(
     # sweep and never re-mangled. Kills the MathJax-italic URL soup.
     _linkify_block_urls(chapters)
 
-    # Round-7b — escape PRESERVED currency ``$`` (``$5``) → ``\$`` in block HTML
-    # ONLY, so two currency amounts in one paragraph never FALSE-PAIR into a
-    # MathJax italic span at render. HTML-only (raw_text/sidecar keep plain
-    # ``$5``); runs LAST so the ``\$`` is past every other html transform.
-    _escape_currency_dollars(chapters)
-
     # Round-8 — escape raw ``<`` / ``>`` INSIDE math spans (``\( a<b \)``) → HTML
     # entities in block HTML ONLY, so an OCR inequality glued to a letter can
     # never open a phantom browser tag that slices the span and leaks the ``\(``
-    # / reds the ``\)``. HTML-only; runs LAST so the currency ``\$`` is settled.
+    # / reds the ``\)``. HTML-only; runs LAST so every other transform is
+    # settled. Currency ``$`` / markup-crossing candidates are refused inside.
     _escape_math_angle_brackets(chapters)
 
     # Round-9 — fold misplaced tabular ``&`` (non-alignment math) + dangling
@@ -3652,7 +3677,10 @@ def normalize_cascade_to_ed4all(
     # so the default render (HTML + both sidecars) stays byte-identical.
     emitter_report: Dict[str, int] = {}
     heading_releveling_count = _normalize_ocr_headings(
-        chapters, doc_title=override or None, emitter_report=emitter_report
+        chapters,
+        doc_title=override or None,
+        emitter_report=emitter_report,
+        source_value=source_value,
     )
     title = override or _select_document_title(chapters, pdf_stem)
     lang = getattr(cascade_result, "lang", None) or "en"

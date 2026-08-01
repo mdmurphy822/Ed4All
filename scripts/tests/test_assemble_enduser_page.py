@@ -113,11 +113,35 @@ def test_no_mathjax_when_disabled():
 
 
 def test_mathjax_config_processes_escapes():
-    # Round-7b — the tex config MUST enable processEscapes so the adapter's
-    # HTML-only currency escape (``\$5``) renders as a literal dollar instead of
+    # Round-7b — the tex config MUST enable processEscapes so this page's
+    # currency escape (``\$5``) renders as a literal dollar instead of
     # opening a false inline-math span.
     page = _assemble(mathjax=True)
     assert "processEscapes: true" in page
+
+
+_CURRENCY_CONTENT = _CONTENT.replace(
+    "<p>A number whose square is $m$ is a square root of $m$.</p>",
+    "<p>Jeannette has $5 and $10 bills; compute $m + 2$.</p>",
+)
+
+
+def test_currency_escaped_at_assembly_not_in_the_artifact():
+    """The ``\\$`` escape is THIS page's render concern, moved here 2026-08-01.
+
+    The converted accessible HTML keeps plain ``$5`` (the chunker + every
+    non-MathJax consumer read it); only the MathJax-enabled end-user page needs
+    the escape, because only it configures ``inlineMath [['$','$']]``.
+    """
+    page = _assemble(content_html=_CURRENCY_CONTENT, mathjax=True)
+    assert r"\$5 and \$10" in page
+    assert "$m + 2$" in page  # genuine inline math untouched
+
+
+def test_currency_untouched_without_mathjax():
+    page = _assemble(content_html=_CURRENCY_CONTENT, mathjax=False)
+    assert "$5 and $10" in page
+    assert r"\$" not in page
 
 
 def test_css_hooks_inlines_semantik_content_css():
