@@ -205,6 +205,13 @@ def _verify_client_matches_index(client: "EmbeddingClient", index: Any) -> None:
     serve foreign-model ranks. Best-effort: a client that doesn't expose a
     ``model_fingerprint()`` is left un-verified (the fake/duck-typed test
     clients without one still work).
+
+    The same check covers the encoder's compute precision (``dtype``): the
+    index manifest records the precision its passages were embedded at, and a
+    client encoding queries at a different precision compares vectors the
+    index was never built to be compared against. Only checked when BOTH
+    sides report a dtype — an index or a client predating the precision seam
+    reports none, and an absent value means "unknown", never "assume fp32".
     """
     from .vector_index import SemanticModelMismatch
 
@@ -212,19 +219,36 @@ def _verify_client_matches_index(client: "EmbeddingClient", index: Any) -> None:
     if not callable(fingerprint_fn):
         return
     try:
-        client_model_id = dict(fingerprint_fn()).get("model_id")
+        fingerprint = dict(fingerprint_fn())
     except Exception:  # noqa: BLE001 — a broken fingerprint must not crash retrieval
         return
-    if client_model_id is None:
+
+    client_model_id = fingerprint.get("model_id")
+    if client_model_id is not None:
+        index_model_id = str(
+            getattr(index.manifest, "embedding_model_id", "") or ""
+        )
+        if str(client_model_id) != index_model_id:
+            raise SemanticModelMismatch(
+                f"explicit embedding client model_id {client_model_id!r} does "
+                f"not match the vector index's embedding_model_id "
+                f"{index_model_id!r}; querying a foreign-model index produces "
+                f"meaningless cosine scores. Pass a client built for "
+                f"{index_model_id!r} or omit `client` to auto-match the index."
+            )
+
+    client_dtype = fingerprint.get("dtype")
+    index_dtype = getattr(index.manifest, "dtype", None)
+    if client_dtype is None or index_dtype is None:
         return
-    index_model_id = str(getattr(index.manifest, "embedding_model_id", "") or "")
-    if str(client_model_id) != index_model_id:
+    if str(client_dtype) != str(index_dtype):
         raise SemanticModelMismatch(
-            f"explicit embedding client model_id {client_model_id!r} does "
-            f"not match the vector index's embedding_model_id "
-            f"{index_model_id!r}; querying a foreign-model index produces "
-            f"meaningless cosine scores. Pass a client built for "
-            f"{index_model_id!r} or omit `client` to auto-match the index."
+            f"explicit embedding client dtype {str(client_dtype)!r} does not "
+            f"match the vector index's build dtype {str(index_dtype)!r}; the "
+            f"index's passages were encoded at a different precision than "
+            f"this client encodes queries at. Pass a client built at "
+            f"{str(index_dtype)!r} (ED4ALL_EMBEDDING_DTYPE) or omit `client` "
+            f"to auto-match the index."
         )
 
 

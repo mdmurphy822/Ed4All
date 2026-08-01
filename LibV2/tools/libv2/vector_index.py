@@ -15,15 +15,26 @@ Artifact layout (``LibV2/courses/<slug>/vector_index/``)::
     manifest.json    provenance + integrity manifest
                      (schemas/library/vector_index_manifest.schema.json).
 
-Determinism contract (D4): same machine + venv + provider + model +
-device=cpu + batch_size => ``embeddings.npy`` and ``id_map.json`` are
+Determinism contract (D4): same machine + venv + provider + model + device +
+dtype + batch_size => ``embeddings.npy`` and ``id_map.json`` are
 byte-identical across rebuilds; ``manifest.json`` is identical modulo the
 optional ``generated_at`` field, which is the ONLY non-deterministic
 section and is excluded from every content hash. Knobs that make this
 hold: sorted/stable chunk iteration (we preserve chunks.jsonl line order,
-which the chunker emits deterministically), pinned float32 dtype, C-order
-arrays, ``np.save`` with ``allow_pickle=False``, and a canonical
+which the chunker emits deterministically), pinned float32 storage dtype,
+C-order arrays, ``np.save`` with ``allow_pickle=False``, and a canonical
 ``json.dumps(..., sort_keys=True)`` for id_map / manifest.
+
+Byte-identity holds WITHIN a fixed (device, dtype, batch_size) triple, not
+across them: GPU reductions are not associative, so a cuda-built matrix is
+not bit-reproducible against a cpu-built one even at the same precision.
+That is why all three are recorded in the manifest as replay provenance and
+why the build path refuses to fabricate any of them.
+
+Search-side determinism is independent of all of that: the query ranking is
+ordered by ``(-score, chunk_id)``, a total order over finite scores, so the
+result sequence is fully reproducible for a given matrix — including which
+member of a score tie survives the top-k cut.
 
 Anti-silent-degradation (D7): the read path raises typed, honest errors
 and NEVER falls back to lexical/BM25 results:
@@ -45,11 +56,13 @@ protocol (``encode_batch`` / ``dim`` / ``model_fingerprint``).
 
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -67,6 +80,14 @@ try:  # Trainforge is a sibling package; resolved at runtime in-repo.
 except Exception:  # noqa: BLE001 — keep the index buildable in slim installs.
     _CHUNKER_VERSION = "v4"
 
+try:  # transitive dependency (scikit-learn / numpy toolchain), not declared.
+    from threadpoolctl import threadpool_limits as _threadpool_limits
+except ImportError:  # pragma: no cover — exercised via monkeypatch instead.
+    _threadpool_limits = None  # type: ignore[assignment]
+
+
+logger = logging.getLogger(__name__)
+
 
 __all__ = [
     "VECTOR_INDEX_DIRNAME",
@@ -83,6 +104,8 @@ __all__ = [
     "build_vector_index",
     "load_vector_index",
     "resolve_chunks_for_index",
+    "resolve_retrieval_blas_threads",
+    "resolve_topk_legacy",
 ]
 
 
@@ -106,6 +129,166 @@ _FAKE_PROVIDER = "fake"
 # row (degenerate, but possible from a misbehaving provider) does not
 # divide-by-zero — it stays the zero vector and simply never ranks.
 _NORM_EPS = 1e-12
+
+_TRUTHY_VALUES = {"1", "true", "yes", "on"}
+
+# --- search-path tuning knobs (query side only; never the build encode) ----
+#
+# ED4ALL_RETRIEVAL_BLAS_THREADS caps the BLAS thread team around the search
+# GEMV. Measured on the 20-core heterogeneous target host at the production
+# query cadence (one GEMV per ~50 ms, i.e. a COLD OpenBLAS team): the p50 is
+# ~5,947 us at the numpy default of one thread per core and ~998 us at 8
+# threads for a 29,582 x 1024 matrix — and the default p50 is IDENTICAL at
+# 1,378 rows, which proves the cost is a fixed thread-team wakeup stall, not
+# arithmetic. Fanning a small GEMV across every core (two CPU clusters of very
+# different per-core throughput sharing one L3) costs far more in wakeup than
+# it recovers in FLOPs. 8 threads keeps the stream close to the measured
+# aggregate CPU memory-bandwidth ceiling.
+#
+# This is a tuning knob, NOT a quality signal: results are byte-identical with
+# and without it, so an absent ``threadpoolctl`` degrades only the latency, and
+# `0` disables the limiter outright.
+_ENV_BLAS_THREADS = "ED4ALL_RETRIEVAL_BLAS_THREADS"
+_DEFAULT_BLAS_THREADS = 8
+
+# ED4ALL_RETRIEVAL_TOPK_LEGACY=1 restores the pre-argpartition full-Python
+# top-k sort verbatim. Parity escape hatch only — the two paths are required
+# to be output-identical (see ``_topk_ordered``), and the test suite pins that.
+_ENV_TOPK_LEGACY = "ED4ALL_RETRIEVAL_TOPK_LEGACY"
+
+# One-shot flag so a missing ``threadpoolctl`` logs once per process rather
+# than once per query.
+_THREADPOOLCTL_WARNED = False
+
+
+def resolve_retrieval_blas_threads(
+    env: Optional[Dict[str, str]] = None,
+) -> int:
+    """Resolve the search-GEMV BLAS thread cap (parse-with-fallback → 8).
+
+    ``0`` (or any explicit non-positive value) disables the limiter and lets
+    BLAS use its own default team. Garbage / non-integer values fall back to
+    :data:`_DEFAULT_BLAS_THREADS` rather than raising — this is a latency
+    knob, and a typo in an operator's environment must not take retrieval
+    down.
+    """
+    src = env if env is not None else os.environ
+    raw = src.get(_ENV_BLAS_THREADS)
+    if raw is None or not str(raw).strip():
+        return _DEFAULT_BLAS_THREADS
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        logger.warning(
+            "%s=%r is not an int; using default %d",
+            _ENV_BLAS_THREADS, raw, _DEFAULT_BLAS_THREADS,
+        )
+        return _DEFAULT_BLAS_THREADS
+
+
+def resolve_topk_legacy(env: Optional[Dict[str, str]] = None) -> bool:
+    """Return True when ``ED4ALL_RETRIEVAL_TOPK_LEGACY`` is truthy (default OFF)."""
+    src = env if env is not None else os.environ
+    return src.get(_ENV_TOPK_LEGACY, "").strip().lower() in _TRUTHY_VALUES
+
+
+@contextlib.contextmanager
+def _blas_thread_cap(limit: int) -> Iterator[None]:
+    """Scope a BLAS thread-team cap around a single numpy call.
+
+    Deliberately narrow: the caller wraps ONLY the search GEMV, never the
+    build-time encode (that path wants every core it can get). A non-positive
+    ``limit`` or an unavailable ``threadpoolctl`` yields unchanged — the
+    limiter cannot alter results, so skipping it is a latency outcome and not
+    a degraded answer.
+    """
+    global _THREADPOOLCTL_WARNED
+    if limit <= 0:
+        yield
+        return
+    if _threadpool_limits is None:
+        if not _THREADPOOLCTL_WARNED:
+            _THREADPOOLCTL_WARNED = True
+            logger.debug(
+                "threadpoolctl is unavailable; %s=%d not applied to the "
+                "search GEMV (results are unaffected, latency is not)",
+                _ENV_BLAS_THREADS, limit,
+            )
+        yield
+        return
+    with _threadpool_limits(limits=limit, user_api="blas"):
+        yield
+
+
+def _topk_ordered_legacy(
+    scores: np.ndarray, chunk_ids: Sequence[str], k: int
+) -> List[int]:
+    """The original full-Python top-k sort, kept verbatim as the parity
+    reference behind ``ED4ALL_RETRIEVAL_TOPK_LEGACY``.
+
+    Sorts every row by ``(-score, chunk_id)`` in the interpreter — O(N log N)
+    Python calls, each coercing a numpy scalar and building a tuple. Correct,
+    and ~50x slower than :func:`_topk_ordered` at library scale.
+    """
+    order = sorted(
+        range(scores.shape[0]),
+        key=lambda i: (-float(scores[i]), chunk_ids[i]),
+    )
+    return order[:k]
+
+
+def _topk_ordered(
+    scores: np.ndarray, chunk_ids: Sequence[str], k: int
+) -> List[int]:
+    """Top-k row indices ordered by ``(-score, chunk_id)``, in numpy.
+
+    Output-identical to :func:`_topk_ordered_legacy` by construction, and the
+    test suite pins that equality including on deliberately-constructed tie
+    groups. Three steps:
+
+    1. ``np.argpartition`` isolates the k largest scores in O(N) without
+       ordering them.
+    2. **The candidate set is then WIDENED to every row whose score equals
+       the k-th largest.** This is mandatory, not an optimization detail: the
+       partition picks an ARBITRARY subset of a tie group straddling the k
+       boundary, so tie-breaking only within what it happened to select would
+       silently change which member survives the cut. Real indexes carry
+       exact float32 ties in the ~10%-of-rows range, and the failure is
+       invisible to any test that asserts only "the top-k SET is stable".
+    3. ``np.lexsort`` orders the (small) widened candidate set by the primary
+       key ``-score`` and the secondary key ``chunk_id``, then slices k.
+       lexsort is stable, so rows identical in BOTH keys keep ascending row
+       order — matching the stable Python ``sorted`` it replaces.
+
+    Parity is contracted over finite scores; a non-finite score makes the
+    legacy comparison key a non-total order, so neither path is defined there.
+    """
+    n = int(scores.shape[0])
+    if k <= 0 or n == 0:
+        return []
+    if k >= n:
+        candidates = np.arange(n)
+    else:
+        # argpartition(-scores, k-1)[:k] == the k largest scores, unordered.
+        boundary_row = int(np.argpartition(-scores, k - 1)[k - 1])
+        threshold = scores[boundary_row]
+        candidates = np.flatnonzero(scores >= threshold)
+        if candidates.size < k:
+            # The widened set is a SUPERSET of the k largest by construction,
+            # so this can only happen when the comparison is not a total order
+            # — i.e. the matrix carries non-finite values. Fail loudly rather
+            # than return a short result set that reads as "only n hits".
+            raise ValueError(
+                f"top-k widening yielded {candidates.size} candidates for "
+                f"k={k}; the index matrix is not totally ordered (non-finite "
+                f"scores). Rebuild the index."
+            )
+
+    cand_scores = np.negative(scores[candidates])
+    cand_ids = np.asarray([chunk_ids[i] for i in candidates], dtype=object)
+    # lexsort's LAST key is primary: score descending, then chunk_id ascending.
+    ranked = candidates[np.lexsort((cand_ids, cand_scores))]
+    return [int(i) for i in ranked[:k]]
 
 
 # --------------------------------------------------------------------------
@@ -169,6 +352,16 @@ class VectorIndexManifest:
     # Default "" keeps pre-prefix manifests loadable (back-compat).
     document_prefix: str = ""
     query_prefix: str = ""
+    # Encoder compute precision at build time ("fp32" | "bf16" | "fp16", or
+    # the "server" sentinel when the encode happens on a remote endpoint whose
+    # precision this process cannot observe), sourced from the client's own
+    # reported provenance — never a literal. A
+    # half-precision encoder produces vectors that are NOT bit-comparable to
+    # an fp32-built index, so the query path refuses a dtype mismatch the same
+    # way it refuses a model mismatch. Omitted (None) when the client predates
+    # the precision seam and exposes no dtype, which keeps every pre-existing
+    # manifest loadable and every pre-seam build byte-identical.
+    dtype: Optional[str] = None
     # W1b.2 (opt-in ED4ALL_EMBED_OVERFLOW_GUARD): over-window accounting block
     # (count_overflow_records output — max_seq_tokens / overflow_count /
     # overflow_rate / max_observed_tokens / overflow_chunk_ids). Omitted when
@@ -179,8 +372,9 @@ class VectorIndexManifest:
 
     # Field order used for the on-disk dict + the determinism contract.
     # ``generated_at`` is appended last and is the ONLY field excluded from
-    # the content hash. ``embed_overflow`` is omitted when None (like
-    # generated_at) so a guard-off build is byte-identical.
+    # the content hash. ``embed_overflow`` and ``dtype`` are omitted when None
+    # (like generated_at) so a guard-off / pre-precision-seam build is
+    # byte-identical.
     _ORDER: Tuple[str, ...] = (
         "schema_version",
         "embedding_provider",
@@ -201,6 +395,7 @@ class VectorIndexManifest:
         "device",
         "document_prefix",
         "query_prefix",
+        "dtype",
         "embed_overflow",
         "generated_at",
     )
@@ -231,6 +426,8 @@ class VectorIndexManifest:
             if key == "generated_at" and self.generated_at is None:
                 continue
             if key == "embed_overflow" and self.embed_overflow is None:
+                continue
+            if key == "dtype" and self.dtype is None:
                 continue
             out[key] = getattr(self, key)
         return out
@@ -286,16 +483,19 @@ class VectorIndex:
         if qn > _NORM_EPS:
             q = q / qn
 
-        scores = self.matrix @ q  # [N], float32
+        # Cap the BLAS thread team around the GEMV ONLY. At the production
+        # query cadence the default team is cold, and its wakeup latency
+        # dominates the arithmetic by ~6x at library scale. Byte-identical
+        # results either way — see ``_blas_thread_cap``.
+        with _blas_thread_cap(resolve_retrieval_blas_threads()):
+            scores = self.matrix @ q  # [N], float32
 
         k = min(top_k, scores.shape[0])
-        # argsort is ascending + stable; negate for descending, then apply
-        # the chunk_id tiebreak explicitly so equal scores order by id asc.
-        order = sorted(
-            range(scores.shape[0]),
-            key=lambda i: (-float(scores[i]), self.chunk_ids[i]),
-        )
-        return [(self.chunk_ids[i], float(scores[i])) for i in order[:k]]
+        if resolve_topk_legacy():
+            order = _topk_ordered_legacy(scores, self.chunk_ids, k)
+        else:
+            order = _topk_ordered(scores, self.chunk_ids, k)
+        return [(self.chunk_ids[i], float(scores[i])) for i in order]
 
 
 # --------------------------------------------------------------------------
@@ -446,6 +646,117 @@ def _l2_normalize_rows(matrix: np.ndarray) -> np.ndarray:
 
 
 # --------------------------------------------------------------------------
+# Build-time provenance resolution — real values only, never a literal
+# --------------------------------------------------------------------------
+#
+# The manifest's whole purpose is to make a build reproducible and a mixed-
+# provenance comparison refusable. A default substituted for a value the
+# client did not report is worse than no value at all: it reads as a
+# measurement. Every resolver below therefore walks REAL sources in
+# precedence order and raises when none of them answers.
+
+# ``ResolvedEmbeddingProvider.device`` is an ``st``-kind concept only; the
+# other registered kinds leave it None because they have no local device to
+# select. They still compute SOMEWHERE, and the manifest records where:
+# ``openai-embeddings`` dispatches to a remote server, and ``fake`` is
+# in-process numpy on the CPU. A kind absent from this map has to declare
+# where it computes rather than inherit a fabricated "cpu".
+_KIND_DEVICE_SENTINEL = {
+    "openai-embeddings": "server",
+    "fake": "cpu",
+}
+
+
+def _client_provenance(
+    fingerprint: Dict[str, Any],
+    client: Any,
+    resolved: Any,
+    key: str,
+) -> Any:
+    """First real value for ``key`` across the client's provenance surfaces.
+
+    Precedence: ``model_fingerprint()`` (the canonical provenance contract),
+    then the duck-typed attribute on the client itself (what the frozen
+    protocol's test doubles expose), then the client's resolved provider
+    record. ``None`` when the client reports the value nowhere — the caller
+    decides whether that is fatal.
+    """
+    value = fingerprint.get(key)
+    if value is not None:
+        return value
+    value = getattr(client, key, None)
+    if value is not None:
+        return value
+    return getattr(resolved, key, None)
+
+
+def _resolve_build_device(
+    fingerprint: Dict[str, Any], client: Any, resolved: Any
+) -> str:
+    """Device the embedding compute actually ran on, for the manifest."""
+    device = _client_provenance(fingerprint, client, resolved, "device")
+    if device is not None and str(device).strip():
+        return str(device).strip()
+    kind = str(fingerprint.get("kind") or getattr(resolved, "kind", "") or "")
+    sentinel = _KIND_DEVICE_SENTINEL.get(kind)
+    if sentinel is not None:
+        return sentinel
+    raise ValueError(
+        f"embedding client (kind={kind!r}) reports no build device: "
+        f"model_fingerprint() has no 'device' key, the client exposes no "
+        f"`.device`, and its resolved provider has none either. The vector "
+        f"index manifest records the device as replay provenance and will "
+        f"not substitute a default — a fabricated 'cpu' makes a cuda-built "
+        f"index indistinguishable from a cpu-built one."
+    )
+
+
+def _resolve_build_batch_size(
+    fingerprint: Dict[str, Any], client: Any, resolved: Any
+) -> int:
+    """Encode batch size actually used, for the manifest."""
+    raw = _client_provenance(fingerprint, client, resolved, "batch_size")
+    if raw is not None:
+        try:
+            batch_size = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"embedding client reported a non-integer batch_size "
+                f"{raw!r}; the manifest records it as replay provenance."
+            ) from exc
+        if batch_size > 0:
+            return batch_size
+        raise ValueError(
+            f"embedding client reported a non-positive batch_size "
+            f"{batch_size!r}; the manifest schema requires >= 1."
+        )
+    raise ValueError(
+        "embedding client reports no encode batch_size: model_fingerprint() "
+        "has no 'batch_size' key, the client exposes no `.batch_size`, and "
+        "its resolved provider has none either. The vector index manifest "
+        "records it as replay provenance and will not substitute a default "
+        "— a fabricated 1 makes every batch-size measurement unverifiable."
+    )
+
+
+def _resolve_build_dtype(
+    fingerprint: Dict[str, Any], client: Any, resolved: Any
+) -> Optional[str]:
+    """Encoder compute precision, or None when the client has no dtype seam.
+
+    Optional by design: a client predating the precision seam reports
+    nothing, and omitting the field keeps its manifest byte-identical. Once
+    the seam is present the value is always recorded, because an fp32-built
+    and a bf16-built index are not comparable.
+    """
+    dtype = _client_provenance(fingerprint, client, resolved, "dtype")
+    if dtype is None:
+        return None
+    text = str(dtype).strip()
+    return text or None
+
+
+# --------------------------------------------------------------------------
 # Build API (frozen signature, § 3)
 # --------------------------------------------------------------------------
 
@@ -464,6 +775,15 @@ def build_vector_index(
     ``client`` is duck-typed against the frozen ``EmbeddingClient``
     protocol: ``encode_batch(list[str]) -> np.ndarray [n, dim] float32
     L2-normalized``, ``dim`` property, ``model_fingerprint() -> dict``.
+
+    The client must additionally be able to report the replay provenance the
+    manifest records — ``device`` and ``batch_size`` (and optionally
+    ``dtype``) — via ``model_fingerprint()``, a same-named attribute, or its
+    ``resolved`` provider record. A client that reports none of those raises
+    ``ValueError``: the manifest never substitutes a default, because a
+    fabricated ``device="cpu"`` / ``batch_size=1`` makes a cuda- or
+    half-precision-built index indistinguishable from a cpu/fp32 one and
+    silently invalidates every provenance-keyed comparison downstream.
 
     ``force`` is required to overwrite an existing fresh index (one whose
     ``source_chunks_sha256`` still matches the live chunkset) — protects
@@ -579,13 +899,20 @@ def build_vector_index(
     model_id = str(fingerprint.get("model_id") or "")
     revision = fingerprint.get("revision")
 
-    # W1b.2 (opt-in ED4ALL_EMBED_OVERFLOW_GUARD, default OFF) — count-and-stamp
-    # arm. When the guard is on, record which embedded passages exceed the
-    # serving-window token ceiling (ED4ALL_EMBED_MAX_SEQ_TOKENS) so a post-hoc
-    # audit can see silent truncation. Pure accounting over the SAME ``texts``
-    # that were encoded (document_prefix already prepended); never mutates them.
-    # The split arm (ED4ALL_EMBED_OVERFLOW_SPLIT) is deferred — count/stamp only
-    # here. Guard off ⇒ embed_overflow stays None ⇒ manifest byte-identical.
+    # W1b.2 (ED4ALL_EMBED_OVERFLOW_GUARD) — count-and-stamp arm. When the guard
+    # is on, record which embedded passages exceed the serving-window token
+    # ceiling (ED4ALL_EMBED_MAX_SEQ_TOKENS) so a post-hoc audit can see silent
+    # truncation. Pure accounting over the SAME ``texts`` that were encoded
+    # (document_prefix already prepended); never mutates them. The split arm
+    # (ED4ALL_EMBED_OVERFLOW_SPLIT) is deferred — count/stamp only here. Guard
+    # off ⇒ embed_overflow stays None ⇒ manifest byte-identical.
+    #
+    # Only the IMPORT is tolerated failing (a slim install without the
+    # [embedding] extra cannot resolve the guard at all, and an index built by
+    # a duck-typed client in that install is a legitimate shape). An accounting
+    # failure with the module present is NOT swallowed: the guard is a reported
+    # signal, and a silently-absent overflow block reads as "no chunk
+    # overflowed" — the exact silent degradation this repo forbids.
     embed_overflow: Optional[Dict[str, Any]] = None
     try:
         from lib.embedding.providers import (
@@ -593,18 +920,17 @@ def build_vector_index(
             resolve_embed_max_seq_tokens,
             resolve_embed_overflow_guard,
         )
+    except ImportError:  # [embedding] extra absent — nothing to account.
+        count_overflow_records = None  # type: ignore[assignment]
 
-        if resolve_embed_overflow_guard():
-            max_seq_tokens = resolve_embed_max_seq_tokens()
-            overflow_records = [
-                {"id": cid, "text": txt}
-                for cid, txt in zip(chunk_ids, texts)
-            ]
-            embed_overflow = count_overflow_records(
-                overflow_records, max_seq_tokens
-            )
-    except Exception:  # noqa: BLE001 — accounting is best-effort, never blocks
-        embed_overflow = None
+    if count_overflow_records is not None and resolve_embed_overflow_guard():
+        max_seq_tokens = resolve_embed_max_seq_tokens()
+        overflow_records = [
+            {"id": cid, "text": txt} for cid, txt in zip(chunk_ids, texts)
+        ]
+        embed_overflow = count_overflow_records(
+            overflow_records, max_seq_tokens
+        )
 
     manifest = VectorIndexManifest(
         schema_version=_MANIFEST_SCHEMA_VERSION,
@@ -622,10 +948,11 @@ def build_vector_index(
         id_map_sha256=id_map_sha,
         chunks_count=len(chunk_ids),
         text_field_policy=text_field_policy,
-        batch_size=int(fingerprint.get("batch_size") or getattr(client, "batch_size", 0) or 0) or 1,
-        device=str(fingerprint.get("device") or getattr(client, "device", "") or "cpu"),
+        batch_size=_resolve_build_batch_size(fingerprint, client, _resolved),
+        device=_resolve_build_device(fingerprint, client, _resolved),
         document_prefix=document_prefix,
         query_prefix=query_prefix,
+        dtype=_resolve_build_dtype(fingerprint, client, _resolved),
         embed_overflow=embed_overflow,
         generated_at=generated_at,
     )

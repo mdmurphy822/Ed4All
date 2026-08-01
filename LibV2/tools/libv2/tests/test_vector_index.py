@@ -424,10 +424,12 @@ def test_no_resolved_attr_defaults_to_empty_prefixes(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def test_embed_overflow_off_byte_identical(tmp_path, monkeypatch):
-    """Guard OFF (default): manifest carries no embed_overflow block, and the
-    serialized manifest bytes never mention it (byte-identical off-path)."""
-    monkeypatch.delenv("ED4ALL_EMBED_OVERFLOW_GUARD", raising=False)
+def test_embed_overflow_explicitly_off_byte_identical(tmp_path, monkeypatch):
+    """Guard explicitly opted OUT: manifest carries no embed_overflow block,
+    and the serialized manifest bytes never mention it (byte-identical
+    off-path). The guard now DEFAULTS ON (report-only), so 'off' is an
+    explicit falsey token rather than an unset env."""
+    monkeypatch.setenv("ED4ALL_EMBED_OVERFLOW_GUARD", "0")
     course_dir = _write_course(tmp_path, n=5)
     m = build_vector_index(course_dir, client=_FakeEmbeddingClient())
     assert m.embed_overflow is None

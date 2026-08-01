@@ -90,6 +90,11 @@ _KNOWN_FIELDS = frozenset(_REQUIRED_FIELDS) | {
     "embedding_model_revision",
     "document_prefix",
     "query_prefix",
+    # Encoder compute precision; optional (absent on manifests built before
+    # the precision seam existed). Kept in step with the schema's optional
+    # `dtype` property so the jsonschema-absent structural fallback does not
+    # report a legitimate field as an additionalProperties violation.
+    "dtype",
     "embed_overflow",
     "generated_at",
 }

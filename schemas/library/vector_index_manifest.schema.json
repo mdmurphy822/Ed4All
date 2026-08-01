@@ -100,12 +100,17 @@
     "batch_size": {
       "type": "integer",
       "minimum": 1,
-      "description": "Encode batch size used at build time. A replay parameter (determinism contract)."
+      "description": "Encode batch size used at build time. A replay parameter (determinism contract). Sourced from the embedding client's own reported provenance — the build path raises rather than substituting a default, so this value is a measurement and never a placeholder."
     },
     "device": {
       "type": "string",
       "minLength": 1,
-      "description": "Compute device used at build time ('cpu' | 'cuda' | server-side sentinel). cpu is the determinism default; a cuda build is allowed for speed but recorded so a mixed-device eval comparison can be refused."
+      "description": "Where the embedding compute actually ran at build time. 'cpu' or 'cuda' / 'cuda:N' for the in-process sentence-transformers kind (cuda is the product default), and 'server' for a remote OpenAI-compatible embeddings endpoint, whose device is not observable from here. Recorded so a mixed-device comparison can be refused: byte-identity of embeddings.npy holds only within a fixed device+dtype+batch_size, because GPU reductions are not associative. Sourced from the client's reported provenance — the build path raises rather than substituting a default."
+    },
+    "dtype": {
+      "type": "string",
+      "enum": ["fp32", "bf16", "fp16", "server"],
+      "description": "Encoder compute precision at build time: 'fp32' | 'bf16' | 'fp16' for the in-process sentence-transformers kind, or the 'server' sentinel for a remote OpenAI-compatible embeddings endpoint whose precision this process cannot observe (mirroring the same sentinel on device). Optional: omitted by clients that predate the precision seam (absent == unknown, NOT 'assume fp32'), which keeps every pre-seam manifest byte-identical. When present it is part of the replay identity alongside device and batch_size — a bf16-built index is not bit-comparable to an fp32-built one, and the query path refuses a client whose dtype disagrees. Note this is the ENCODER precision; the stored matrix is always float32 (see index_type / normalized)."
     },
     "document_prefix": {
       "type": "string",

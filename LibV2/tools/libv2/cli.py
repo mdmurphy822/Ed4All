@@ -2681,6 +2681,78 @@ def import_model_cmd(ctx, run_dir: str, course: str, promote: bool,
         print("  Run with --promote to set as current.")
 
 
+def _embedding_device_option(ctx, param, value):
+    """Click callback validating a ``--device`` token against the one resolver.
+
+    Delegates to ``lib.embedding.providers.normalize_device_token`` rather than
+    re-declaring the accepted set as a ``click.Choice``: the resolver accepts
+    ``cuda:N`` (which the manifest records verbatim), is case-insensitive after
+    strip, and owns the "``auto`` is deliberately not a token" message. A
+    ``click.Choice`` here would reject a device the build path accepts.
+    """
+    if value is None:
+        return None
+    from lib.embedding.providers import normalize_device_token
+
+    try:
+        return normalize_device_token(value, env_name="--device")
+    except ValueError as exc:
+        raise click.BadParameter(str(exc)) from exc
+
+
+def _scoped_embedding_env(device, batch_size):
+    """Context manager pinning device/batch for ONE build, then restoring.
+
+    ``resolve_embedding_provider`` reads the device and batch size off the
+    environment, so a per-call override has to travel through it. Doing that
+    with a bare ``os.environ[...] = ...`` leaks: in a single-process
+    multi-course loop (the model sweep, or any future batch build) a per-course
+    ``--device cpu`` would silently pin every SUBSEQUENT course to CPU, and the
+    manifest would record it as though the operator had asked for it.
+
+    Resolution happens inside the scope (``build_embedding_client`` resolves
+    eagerly and stores the resolved values on the client), so restoring on exit
+    cannot change what the build used.
+    """
+    import contextlib
+    import os
+
+    @contextlib.contextmanager
+    def _scope():
+        overrides = {}
+        if device:
+            overrides["ED4ALL_EMBEDDING_DEVICE"] = str(device)
+        if batch_size:
+            overrides["ED4ALL_EMBEDDING_BATCH_SIZE"] = str(batch_size)
+        prior = {k: os.environ.get(k) for k in overrides}
+        os.environ.update(overrides)
+        try:
+            yield
+        finally:
+            for key, value in prior.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    return _scope()
+
+
+def _print_build_provenance(manifest) -> None:
+    """Echo the resolved build provenance the manifest actually recorded.
+
+    Device, batch size and precision are what make one index reproducible
+    against another; printing them here means an operator reading the terminal
+    sees the same triple a later `vector-index status` will report, without
+    having to trust that the ambient environment was what they thought.
+    """
+    print(f"  chunkset: {manifest.chunkset_kind}")
+    print(
+        f"  device: {manifest.device} | batch_size: {manifest.batch_size}"
+        f" | dtype: {manifest.dtype or 'unrecorded'}"
+    )
+
+
 # ==========================================================================
 # WS2 — retrieval-benchmark command (BM25 vs semantic vs hybrid-rrf).
 # Wraps eval_harness.benchmark_retrieval_engines: the harness runs whatever
@@ -2733,6 +2805,19 @@ def import_model_cmd(ctx, run_dir: str, course: str, promote: bool,
 @click.option("--provider", help="Embedding provider for --build-index (default env/'st').")
 @click.option("--model", "model_id", help="Embedding model id for --build-index.")
 @click.option(
+    "--device",
+    callback=_embedding_device_option,
+    help="Encoder device for --build-index: cpu | cuda | cuda:N. Without it "
+    "the inline build silently used ambient env, unlike `vector-index "
+    "build` — so a benchmark could not record which device produced the "
+    "index it measured.",
+)
+@click.option(
+    "--batch-size",
+    type=int,
+    help="Embedding batch size for --build-index (default: env / registry).",
+)
+@click.option(
     "--models",
     "models_csv",
     help="Comma-separated embedding model ids to sweep (e.g. "
@@ -2761,6 +2846,8 @@ def retrieval_benchmark(
     build_index,
     provider,
     model_id,
+    device,
+    batch_size,
     models_csv,
     keep,
 ):
@@ -2821,6 +2908,8 @@ def retrieval_benchmark(
             provider=provider,
             model_list=model_list,
             keep=keep,
+            device=device,
+            batch_size=batch_size,
         )
         return
 
@@ -2835,10 +2924,16 @@ def retrieval_benchmark(
         from .vector_index import build_vector_index
 
         try:
-            client = build_embedding_client(
-                provider_name=provider, model_id=model_id, offline=False,
-            )
-            manifest = build_vector_index(course_dir, client=client, force=True)
+            # Same scoped override as `vector-index build` — the benchmark
+            # keeps running in this process after the build, and a leaked
+            # ED4ALL_EMBEDDING_DEVICE would then also pin the QUERY encoder.
+            with _scoped_embedding_env(device, batch_size):
+                client = build_embedding_client(
+                    provider_name=provider, model_id=model_id, offline=False,
+                )
+                manifest = build_vector_index(
+                    course_dir, client=client, force=True
+                )
         except EmbeddingBackendUnavailable as exc:
             print_error(f"EmbeddingBackendUnavailable: {exc}")
             sys.exit(1)
@@ -2849,6 +2944,7 @@ def retrieval_benchmark(
             f"Built vector index for {course}: {manifest.chunks_count} chunks, "
             f"dim={manifest.embedding_dim}, model={manifest.embedding_model_id}"
         )
+        _print_build_provenance(manifest)
 
     try:
         report = benchmark_retrieval_engines(
@@ -2904,6 +3000,8 @@ def _run_model_sweep(
     provider,
     model_list,
     keep,
+    device=None,
+    batch_size=None,
 ):
     """Orchestrate a per-model benchmark sweep (the wave-C CLI scope the
     harness docstring punts on).
@@ -2955,12 +3053,16 @@ def _run_model_sweep(
             canonical_dir.rename(stashed)
         try:
             try:
-                client = build_embedding_client(
-                    provider_name=provider, model_id=model, offline=False,
-                )
-                manifest = build_vector_index(
-                    course_dir, client=client, force=True
-                )
+                # Scoped, not assigned: this loop builds several indexes in ONE
+                # process, so a leaked device/batch pin from model N would
+                # silently become model N+1's recorded provenance.
+                with _scoped_embedding_env(device, batch_size):
+                    client = build_embedding_client(
+                        provider_name=provider, model_id=model, offline=False,
+                    )
+                    manifest = build_vector_index(
+                        course_dir, client=client, force=True
+                    )
             except EmbeddingBackendUnavailable as exc:
                 print_error(f"EmbeddingBackendUnavailable ({model}): {exc}")
                 _restore_canonical(canonical_dir, stashed)
@@ -2974,6 +3076,7 @@ def _run_model_sweep(
                 f"[{tag}] built index: {manifest.chunks_count} chunks, "
                 f"dim={manifest.embedding_dim}, model={manifest.embedding_model_id}"
             )
+            _print_build_provenance(manifest)
 
             # The freshly built canonical dir IS this model's index; benchmark
             # it in place, then move it to its bench-<tag> home.
@@ -3095,10 +3198,12 @@ def vector_index():
     """Manage the per-course on-device semantic vector index.
 
     The index backs `libv2 retrieve --engine semantic` (and hybrid-rrf).
-    Builds are deterministic (same machine + venv + provider + model +
-    device=cpu + batch_size => byte-identical embeddings.npy / id_map.json);
-    the query path is fail-closed (a missing / stale index errors rather
-    than silently degrading to BM25).
+    Builds are deterministic WITHIN a fixed (device, dtype, batch_size) triple
+    (same machine + venv + provider + model + that triple => byte-identical
+    embeddings.npy / id_map.json). A cuda-built index is NOT bit-reproducible
+    against a cpu-built one — GPU reductions are not associative — which is why
+    all three are recorded in the index manifest. The query path is fail-closed
+    (a missing / stale index errors rather than silently degrading to BM25).
     """
 
 
@@ -3110,7 +3215,11 @@ def vector_index():
               # 'dart'/'corpus-legacy' are legacy read-only pins for old on-disk archives.
               help="Pin a chunkset (default precedence: imscc_chunks -> semantik_chunks -> "
                    "dart_chunks -> legacy corpus)")
-@click.option("--device", type=click.Choice(["cpu", "cuda"]), help="ST device override (default cpu)")
+@click.option("--device", callback=_embedding_device_option,
+              help="Encoder device override: cpu | cuda | cuda:N "
+                   "(default: ED4ALL_EMBEDDING_DEVICE, else the registry "
+                   "default). 'auto' is not a token — this project never "
+                   "auto-detects a device.")
 @click.option("--batch-size", type=int, help="Embedding batch size override")
 @click.option("--offline", is_flag=True, help="Refuse network downloads (default for build is online)")
 @click.option("--force", is_flag=True, help="Rebuild over a fresh index (source sha unchanged)")
@@ -3127,8 +3236,6 @@ def vector_index_build(ctx, course, provider, model_id, chunkset, device,
 
         libv2 vector-index build --course demo-course-1 --provider st
     """
-    import os
-
     from lib.embedding.providers import (
         EmbeddingBackendUnavailable,
         build_embedding_client,
@@ -3142,19 +3249,16 @@ def vector_index_build(ctx, course, provider, model_id, chunkset, device,
         print_error(f"course not found: {course_dir}")
         sys.exit(1)
 
-    # Per-call device/batch overrides flow through the provider env chain.
-    if device:
-        os.environ["ED4ALL_EMBEDDING_DEVICE"] = device
-    if batch_size:
-        os.environ["ED4ALL_EMBEDDING_BATCH_SIZE"] = str(batch_size)
-
     try:
-        client = build_embedding_client(
-            provider_name=provider, model_id=model_id, offline=offline,
-        )
-        manifest = build_vector_index(
-            course_dir, client=client, chunkset=chunkset, force=force,
-        )
+        # Per-call device/batch overrides flow through the provider env chain,
+        # SCOPED so they cannot pin a later build in the same process.
+        with _scoped_embedding_env(device, batch_size):
+            client = build_embedding_client(
+                provider_name=provider, model_id=model_id, offline=offline,
+            )
+            manifest = build_vector_index(
+                course_dir, client=client, chunkset=chunkset, force=force,
+            )
     except FileExistsError as exc:
         print_error(str(exc))
         sys.exit(1)
@@ -3170,7 +3274,7 @@ def vector_index_build(ctx, course, provider, model_id, chunkset, device,
         f"dim={manifest.embedding_dim}, provider={manifest.embedding_provider}, "
         f"model={manifest.embedding_model_id}"
     )
-    print(f"  chunkset: {manifest.chunkset_kind}")
+    _print_build_provenance(manifest)
     print(f"  index dir: {course_dir / 'vector_index'}")
 
 
@@ -3226,6 +3330,13 @@ def vector_index_status(ctx, course, output):
     print(f"dim: {manifest.embedding_dim} | chunks: {manifest.chunks_count}")
     print(f"chunkset: {manifest.chunkset_kind} | index_type: {manifest.index_type}")
     print(f"text policy: {manifest.text_field_policy} | device: {manifest.device}")
+    # The reproducibility triple, printed together: byte-identity holds only
+    # WITHIN a fixed (device, dtype, batch_size). ``dtype`` is optional on the
+    # manifest — absent means "unrecorded", never "assume fp32".
+    print(
+        f"batch_size: {manifest.batch_size} | "
+        f"dtype: {manifest.dtype or 'unrecorded'}"
+    )
     print(f"chunker_version: {manifest.chunker_version}")
     if fresh:
         print_success("fresh: index matches the live chunkset.")
