@@ -91,6 +91,12 @@ from functools import lru_cache
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from Trainforge.chunker.boilerplate import strip_boilerplate
+from Trainforge.chunker.cross_course_dedup import (
+    exact_content_hash,
+    exact_token_count,
+    resolve_chunk_dedup_enabled,
+    resolve_chunk_dedup_min_tokens,
+)
 from Trainforge.chunker.helpers import (
     _block_element_spans,
     build_semantik_block_offset_index,
@@ -148,6 +154,7 @@ __all__ = [
     "aggregate_unit_subclass",
     "section_unit_signals",
     "section_subclass_signal",
+    "DEDUP_UNIT_KEY_SEPARATOR",
 ]
 
 
@@ -2116,6 +2123,81 @@ def _generate_chunk_id(
 
 
 # ---------------------------------------------------------------------------
+# Within-package exact-normalised dedup (ED4ALL_CHUNK_DEDUP, default off)
+# ---------------------------------------------------------------------------
+
+#: Separator joining a unit's heading to its text before hashing. Chosen
+#: because ``normalize_exact`` collapses only ``\s`` runs and NUL is not
+#: whitespace, so the boundary survives normalisation — ``("A", "B C")`` and
+#: ``("A B", "C")`` therefore hash differently instead of colliding.
+DEDUP_UNIT_KEY_SEPARATOR: str = "\x00"
+
+
+def _dedup_unit_key(heading: str, text: str, min_tokens: int) -> Optional[str]:
+    """Exact-normalised dedup key for one emit unit, or ``None`` if ineligible.
+
+    A "unit" is one ``chunk_text_block`` call site — an unsectioned item's whole
+    text, or one merged section group. Hashing the unit rather than the emitted
+    chunk is what lets the dedup run BEFORE ``_generate_chunk_id`` mints
+    anything, which is a hard correctness constraint: chunk IDs are the join key
+    for the coverage map, the KG-quality coverage floor, assessment
+    ``source_chunk_ids``, training pairs, and the concept graph, and a post-mint
+    drop would leave a non-contiguous positional sequence and orphan
+    ``follows_chunk`` (silently disabling :func:`apply_chunk_overlap`, which only
+    bleeds when ``cur["follows_chunk"] == prev["id"]``).
+
+    The key covers the HEADING as well as the text — deliberately MORE
+    conservative than text alone. Two sections whose bodies happen to match
+    verbatim but whose headings differ carry different section provenance, and
+    collapsing them would silently discard one heading. The target of this pass
+    is verbatim repeated material (shared chrome, a licence banner, a
+    prerequisites block reproduced on every page), which repeats heading and
+    body together.
+
+    ``None`` (never a duplicate) is returned when the unit falls under
+    ``min_tokens`` exact-normalised tokens — counted on the TEXT alone, so a
+    long heading can never push a two-word body over the floor — or when the
+    unit normalises to nothing at all.
+    """
+    if exact_token_count(text) < min_tokens:
+        return None
+    digest = exact_content_hash(
+        DEDUP_UNIT_KEY_SEPARATOR.join((heading or "", text or ""))
+    )
+    return digest or None
+
+
+def _dedup_drop_record(
+    *,
+    dropped_index: int,
+    kept: Tuple[int, str],
+    normalized_hash: str,
+    item: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Build one reversible ledger row for a skipped duplicate unit.
+
+    ``dropped_index`` is the 0-based ordinal of the DROPPED unit within
+    ``chunk_content``'s source-ordered unit sequence (unique per ledger).
+    ``kept_chunk_index`` is the 0-based index into the emitted chunk list of the
+    FIRST chunk of the surviving first occurrence, and ``kept_chunk_id`` is that
+    chunk's id — so a consumer can resolve every drop back to a row that is
+    genuinely present in ``chunks.jsonl``. ``source_item_path`` is the dropped
+    unit's source locator, minted by the same expression ``chunk_text_block``
+    uses for ``source_locator``.
+    """
+    kept_index, kept_id = kept
+    return {
+        "dropped_index": dropped_index,
+        "kept_chunk_index": kept_index,
+        "kept_chunk_id": kept_id,
+        "normalized_hash": normalized_hash,
+        "source_item_path": (
+            item.get("item_path") or f"{item['module_id']}/{item['item_id']}"
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
 # chunk_content — top-level loop over parsed IMSCC items
 # ---------------------------------------------------------------------------
 
@@ -2130,14 +2212,24 @@ class ChunkContentResult:
     back to ``self._pages_with_misconceptions`` so downstream
     quality-report metrics (``misconceptions_present_rate``) keep their
     correct denominator.
+
+    ``dedup_drops`` is the within-package dedup ledger (see
+    :func:`_dedup_drop_record`) — one row per unit skipped as an
+    exact-normalised repeat. It is ALWAYS empty unless ``ED4ALL_CHUNK_DEDUP``
+    is on. The chunker never writes files; persisting the ledger (and
+    registering its count as a named ``source_coverage`` drop reason) is the
+    caller's job.
     """
 
     chunks: List[Dict[str, Any]] = field(default_factory=list)
     pages_with_misconceptions: set = field(default_factory=set)
+    dedup_drops: List[Dict[str, Any]] = field(default_factory=list)
 
     def __iter__(self):
         # Permit tuple-unpacking ergonomics:
         # ``chunks, pages_with_misconceptions = chunk_content(...)``
+        # DELIBERATELY still two yields — ``dedup_drops`` is read by attribute
+        # so every existing two-name unpack keeps working unchanged.
         yield self.chunks
         yield self.pages_with_misconceptions
 
@@ -2182,6 +2274,16 @@ def chunk_content(
     empty result without requiring ``ctx`` (the loop never reaches the
     ``create_chunk`` call site). Non-empty input requires
     ``ctx is not None`` — mismatch raises ``ChunkerContextRequired``.
+
+    Within-package dedup (``ED4ALL_CHUNK_DEDUP``, default OFF): when on, an
+    emit unit whose heading-scoped text exact-normalises to one already emitted
+    is SKIPPED, and a reversible row lands on
+    ``ChunkContentResult.dedup_drops``. The first source-ordered occurrence is
+    always kept. Because the skip happens before ``chunk_text_block`` is called,
+    ``chunk_counter`` / ``prev_chunk_id`` / ``position_in_module`` never advance
+    for a dropped unit, so chunk IDs stay a dense 1-based sequence and every
+    surviving chunk's ``follows_chunk`` still resolves. OFF is byte-identical to
+    the pre-dedup emit.
     """
 
     if parsed_items and ctx is None:
@@ -2204,6 +2306,17 @@ def chunk_content(
     # (default) → byte-identical legacy merge.
     _subsection_break = resolve_chunk_subsection_break()
     _subsection_min_words = resolve_chunk_subsection_min_words()
+    # W6: resolve the within-package exact-normalised dedup gate + its token
+    # floor once. Off (default) → no hashing, empty ledger, byte-identical emit.
+    _dedup_enabled = resolve_chunk_dedup_enabled()
+    _dedup_min_tokens = resolve_chunk_dedup_min_tokens() if _dedup_enabled else 0
+    # Exact-normalised unit key → (index of the kept unit's first chunk in
+    # ``chunks``, that chunk's id). Registered only AFTER a unit actually
+    # emitted at least one chunk, so a ledger row can never point at a first
+    # occurrence that produced nothing.
+    _dedup_seen: Dict[str, Tuple[int, str]] = {}
+    _dedup_unit_ordinal = 0
+    dedup_drops: List[Dict[str, Any]] = []
 
     chunks: List[Dict[str, Any]] = []
     chunk_counter = 1
@@ -2250,6 +2363,25 @@ def chunk_content(
             if item["resource_type"] == "quiz":
                 text = strip_feedback_from_text(text)
             if text.strip():
+                _unit_ordinal = _dedup_unit_ordinal
+                _dedup_unit_ordinal += 1
+                _unit_key = (
+                    _dedup_unit_key(item["title"], text, _dedup_min_tokens)
+                    if _dedup_enabled
+                    else None
+                )
+                _prior = _dedup_seen.get(_unit_key) if _unit_key else None
+                if _prior is not None:
+                    dedup_drops.append(
+                        _dedup_drop_record(
+                            dropped_index=_unit_ordinal,
+                            kept=_prior,
+                            normalized_hash=_unit_key,
+                            item=item,
+                        )
+                    )
+                    continue
+                _unit_first_index = len(chunks)
                 item_chunks = chunk_text_block(
                     text=text,
                     html=raw_html,
@@ -2273,6 +2405,11 @@ def chunk_content(
                 if item_chunks:
                     prev_chunk_id = item_chunks[-1]["id"]
                     position_in_module += len(item_chunks)
+                    if _unit_key:
+                        _dedup_seen[_unit_key] = (
+                            _unit_first_index,
+                            str(item_chunks[0].get("id") or ""),
+                        )
             continue
 
         merged = merge_small_sections(
@@ -2317,6 +2454,27 @@ def chunk_content(
             if boilerplate:
                 text, _ = strip_boilerplate(text, boilerplate)
             if not text.strip():
+                continue
+            # W6: dedup BEFORE the per-section provenance harvest below — the
+            # text is final at this point, and a skipped unit should not pay
+            # for CURIE / source-ref extraction it will never emit.
+            _unit_ordinal = _dedup_unit_ordinal
+            _dedup_unit_ordinal += 1
+            _unit_key = (
+                _dedup_unit_key(heading, text, _dedup_min_tokens)
+                if _dedup_enabled
+                else None
+            )
+            _prior = _dedup_seen.get(_unit_key) if _unit_key else None
+            if _prior is not None:
+                dedup_drops.append(
+                    _dedup_drop_record(
+                        dropped_index=_unit_ordinal,
+                        kept=_prior,
+                        normalized_hash=_unit_key,
+                        item=item,
+                    )
+                )
                 continue
             html_block = extract_section_html(raw_html, heading)
             # Harvest data-cf-curie tokens from this section's HTML.
@@ -2387,6 +2545,7 @@ def chunk_content(
             _section_scope_html = _section_block_scope_html(
                 raw_html, heading, _next_head_pos
             )
+            _unit_first_index = len(chunks)
             item_chunks = chunk_text_block(
                 text=text,
                 html=html_block,
@@ -2418,8 +2577,14 @@ def chunk_content(
             if item_chunks:
                 prev_chunk_id = item_chunks[-1]["id"]
                 position_in_module += len(item_chunks)
+                if _unit_key:
+                    _dedup_seen[_unit_key] = (
+                        _unit_first_index,
+                        str(item_chunks[0].get("id") or ""),
+                    )
 
     return ChunkContentResult(
         chunks=chunks,
         pages_with_misconceptions=pages_with_misconceptions,
+        dedup_drops=dedup_drops,
     )
