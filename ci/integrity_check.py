@@ -937,6 +937,57 @@ def check_course_slug_leak(verbose: bool = False) -> CheckResult:
     return result
 
 
+def check_foreign_repo_leak(verbose: bool = False) -> CheckResult:
+    """Fail when a tracked file references a different checkout on disk.
+
+    This tree must be describable on its own terms; a link into a sibling
+    project (an absolute ``Projects/<Other>`` path, or another repo's
+    Claude-Code project-slug directory) is a dangling reference for every
+    reader who does not share that filesystem. Detection and the allowlist
+    live in ``ci/foreign_repo_guard.py`` (path SHAPES, not a list of
+    sibling names, so nothing about the neighbours is written down).
+    Scans ``git ls-files`` only. An unscannable tree (no git) is a warning
+    + pass, not a silent skip; any violation fails with file:line:token.
+    """
+    start_time = time.time()
+    result = CheckResult(name="foreign_repo_leak", passed=False, message="")
+
+    try:
+        from ci import foreign_repo_guard
+    except ImportError as e:
+        result.errors.append(f"foreign_repo_guard import failed: {e}")
+        result.message = "Foreign-repo guard unavailable"
+        result.duration_seconds = time.time() - start_time
+        return result
+
+    try:
+        violations = foreign_repo_guard.scan_repository(PROJECT_ROOT)
+    except RuntimeError as e:
+        result.message = f"Foreign-repo scan skipped: {e}"
+        result.warnings.append(result.message)
+        result.passed = True
+        result.duration_seconds = time.time() - start_time
+        return result
+
+    result.details["violation_count"] = len(violations)
+    if violations:
+        for v in violations:
+            result.errors.append(v.format())
+        result.passed = False
+        result.message = f"{len(violations)} foreign-repository reference(s) in tracked files"
+    else:
+        result.passed = True
+        result.message = "No foreign-repository references in tracked files"
+
+    if verbose:
+        logger.info(f"  {result.message}")
+        for v in violations:
+            logger.warning(f"    {v.format()}")
+
+    result.duration_seconds = time.time() - start_time
+    return result
+
+
 def check_legacy_token_leak(verbose: bool = False) -> CheckResult:
     """Fail when the retired legacy 'dart' engine name is in a tracked file.
 
@@ -1142,6 +1193,7 @@ def run_integrity_checks(
         ("LibV2 Vendor Sync", lambda: check_libv2_vendor_sync(verbose)),
         ("Course Slug Leak", lambda: check_course_slug_leak(verbose)),
         ("Legacy Token Leak", lambda: check_legacy_token_leak(verbose)),
+        ("Foreign Repo Leak", lambda: check_foreign_repo_leak(verbose)),
         ("Repo Layout", lambda: check_layout(verbose)),
         ("Provenance Enum Sync", lambda: check_provenance_enum_sync(verbose)),
         (
