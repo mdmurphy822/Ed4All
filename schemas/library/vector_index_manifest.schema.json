@@ -92,6 +92,11 @@
       "minimum": 0,
       "description": "Number of embedded chunks. Invariant: chunks_count == len(id_map.chunk_ids) == embeddings.shape[0]."
     },
+    "parent_chunks_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "W1b.2 SPLIT arm (ED4ALL_EMBED_OVERFLOW_SPLIT) only: number of SOURCE chunks behind the embedded rows, when over-window chunks were sliced into sub-window pieces at build time. chunks_count stays the ROW count (the load-path invariant chunks_count == len(id_map.chunk_ids) == embeddings.shape[0] is unchanged), so parent_chunks_count < chunks_count whenever it is present. Omitted entirely when no row was split, which keeps every split-off manifest byte-identical."
+    },
     "text_field_policy": {
       "type": "string",
       "enum": ["text+heading", "text", "retrieval_text"],
@@ -127,14 +132,19 @@
     },
     "embed_overflow": {
       "type": "object",
-      "description": "W1b.2 (opt-in ED4ALL_EMBED_OVERFLOW_GUARD) over-window accounting block, stamped at build time when the guard is on. Records which embedded passages exceed the serving-window token ceiling (ED4ALL_EMBED_MAX_SEQ_TOKENS) so a post-hoc audit can see silent truncation. Omitted entirely when the guard is off (byte-identical off-path); part of the determinism content hash when present (real build provenance).",
+      "description": "W1b.2 (opt-in ED4ALL_EMBED_OVERFLOW_GUARD) over-window accounting block, stamped at build time when the guard is on. Records which embedded passages exceed the serving-window token ceiling (ED4ALL_EMBED_MAX_SEQ_TOKENS) so a post-hoc audit can see silent truncation. The count fields always describe the ROWS THAT WERE EMBEDDED — with the split arm on that makes overflow_count the RESIDUAL after slicing (a single word wider than the window cannot be split without corrupting it), and the parent-level view lives in the split-only fields. Counts are exact wordpiece when the build client exposed a tokenizer (EmbeddingClient.token_counter()) and the documented words x 1.3 estimate otherwise. Omitted entirely when the guard is off (byte-identical off-path); part of the determinism content hash when present (real build provenance).",
       "properties": {
         "max_seq_tokens": {"type": "integer", "minimum": 1},
         "records_scanned": {"type": "integer", "minimum": 0},
         "overflow_count": {"type": "integer", "minimum": 0},
         "overflow_rate": {"type": "number", "minimum": 0, "maximum": 1},
         "max_observed_tokens": {"type": "integer", "minimum": 0},
-        "overflow_chunk_ids": {"type": "array", "items": {"type": "string"}}
+        "overflow_chunk_ids": {"type": "array", "items": {"type": "string"}},
+        "split_enabled": {"type": "boolean", "description": "SPLIT arm only (ED4ALL_EMBED_OVERFLOW_SPLIT). Present and true only when over-window passages were sliced before encoding; absent entirely on the count-only path."},
+        "split_window_tokens": {"type": "integer", "minimum": 1, "description": "SPLIT arm only. Per-piece token budget the slicer packed against: max_seq_tokens minus the document_prefix cost, since the prefix is encoded with every row and would otherwise re-introduce truncation."},
+        "parent_records_scanned": {"type": "integer", "minimum": 0, "description": "SPLIT arm only. Number of SOURCE chunks scored before slicing (records_scanned counts the post-split rows)."},
+        "pre_split_overflow_count": {"type": "integer", "minimum": 0, "description": "SPLIT arm only. Source chunks that exceeded the window and were therefore sliced — the measured motivation for the arm."},
+        "sub_pieces_created": {"type": "integer", "minimum": 0, "description": "SPLIT arm only. Total sub-window pieces emitted in place of the sliced parents (each carries its own vector and an id of the form '<parent_id>#p<n>', collapsed back to the parent at query time)."}
       },
       "required": ["max_seq_tokens", "records_scanned", "overflow_count", "overflow_rate", "max_observed_tokens", "overflow_chunk_ids"],
       "additionalProperties": false

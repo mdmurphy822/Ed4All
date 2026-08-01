@@ -62,7 +62,16 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterator,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 import numpy as np
 
@@ -103,6 +112,8 @@ __all__ = [
     "VectorIndex",
     "build_vector_index",
     "load_vector_index",
+    "parent_chunk_id",
+    "collapse_sub_piece_hits",
     "resolve_chunks_for_index",
     "resolve_retrieval_blas_threads",
     "resolve_topk_legacy",
@@ -368,13 +379,21 @@ class VectorIndexManifest:
     # None (guard off) so the off-path manifest is byte-identical; it IS part of
     # the content hash when present (real build provenance).
     embed_overflow: Optional[Dict[str, Any]] = None
+    # W1b.2 SPLIT arm (ED4ALL_EMBED_OVERFLOW_SPLIT) only: the number of SOURCE
+    # chunks behind the embedded rows. ``chunks_count`` stays the row count —
+    # the load path and the manifest validator both enforce
+    # ``chunks_count == len(id_map.chunk_ids) == embeddings.shape[0]``, so it
+    # cannot be redefined as a parent count without breaking every existing
+    # index. Omitted (None) whenever no row was split, which keeps every
+    # split-off manifest byte-identical.
+    parent_chunks_count: Optional[int] = None
     generated_at: Optional[str] = None
 
     # Field order used for the on-disk dict + the determinism contract.
     # ``generated_at`` is appended last and is the ONLY field excluded from
-    # the content hash. ``embed_overflow`` and ``dtype`` are omitted when None
-    # (like generated_at) so a guard-off / pre-precision-seam build is
-    # byte-identical.
+    # the content hash. ``embed_overflow``, ``parent_chunks_count`` and
+    # ``dtype`` are omitted when None (like generated_at) so a guard-off /
+    # split-off / pre-precision-seam build is byte-identical.
     _ORDER: Tuple[str, ...] = (
         "schema_version",
         "embedding_provider",
@@ -390,6 +409,7 @@ class VectorIndexManifest:
         "embeddings_sha256",
         "id_map_sha256",
         "chunks_count",
+        "parent_chunks_count",
         "text_field_policy",
         "batch_size",
         "device",
@@ -427,6 +447,8 @@ class VectorIndexManifest:
                 continue
             if key == "embed_overflow" and self.embed_overflow is None:
                 continue
+            if key == "parent_chunks_count" and self.parent_chunks_count is None:
+                continue
             if key == "dtype" and self.dtype is None:
                 continue
             out[key] = getattr(self, key)
@@ -444,6 +466,58 @@ class VectorIndexManifest:
 # --------------------------------------------------------------------------
 # Read-side index object (frozen signature, § 3)
 # --------------------------------------------------------------------------
+
+
+# --------------------------------------------------------------------------
+# W1b.2 SPLIT arm — sub-piece id resolution (read side)
+# --------------------------------------------------------------------------
+#
+# ``lib.embedding.providers.split_overflow_records`` mints an over-window
+# chunk's sub-window pieces as ``f"{parent_id}#p{n}"``. Those ids exist ONLY
+# inside the index (id_map + embeddings rows): the chunkset on disk still holds
+# the parent chunk, and no caller-visible retrieval surface may ever emit a
+# ``#pN`` id, because nothing downstream could hydrate it.
+
+_SUB_PIECE_SEP = "#p"
+
+
+def parent_chunk_id(chunk_id: str) -> str:
+    """Resolve an index row id to the chunkset id it came from.
+
+    Only the exact minted shape resolves: a trailing ``#p`` + all-digits
+    suffix. A chunk id that merely contains ``#`` (or ``#p`` followed by
+    non-digits) is a legitimate id and is returned untouched — guessing here
+    would silently merge two distinct chunks into one hit.
+    """
+    head, sep, tail = str(chunk_id).rpartition(_SUB_PIECE_SEP)
+    if sep and head and tail.isdigit():
+        return head
+    return str(chunk_id)
+
+
+def collapse_sub_piece_hits(
+    hits: Sequence[Tuple[str, float]]
+) -> List[Tuple[str, float]]:
+    """Collapse split sub-piece hits onto their parent, keeping the best score.
+
+    A parent that was split competes with N vectors instead of one; without
+    this collapse it would occupy N result slots and skew any rank-domain
+    fusion downstream. The surviving score is the MAX cosine over the parent's
+    matched pieces — the best evidence the parent's own text produced, never a
+    synthesized aggregate.
+
+    Returns the input list unchanged (same object) when no id carries the
+    sub-piece shape, so an index built without the split arm is untouched.
+    """
+    if not any(parent_chunk_id(cid) != cid for cid, _ in hits):
+        return list(hits) if not isinstance(hits, list) else hits
+    best: Dict[str, float] = {}
+    for cid, score in hits:
+        parent = parent_chunk_id(cid)
+        if parent not in best or score > best[parent]:
+            best[parent] = float(score)
+    # Same total order the un-collapsed path emits: score desc, id asc.
+    return sorted(best.items(), key=lambda kv: (-kv[1], kv[0]))
 
 
 class VectorIndex:
@@ -468,6 +542,13 @@ class VectorIndex:
         Ties are broken by ``chunk_id`` ascending so the ordering is
         fully deterministic (D2/D4). ``score`` is the cosine similarity in
         ``[-1, 1]`` — NOT comparable to BM25 scores.
+
+        Rows minted by the W1b.2 split arm are collapsed onto their parent
+        chunk here — the narrowest choke point every semantic consumer passes
+        through — so a ``#pN`` sub-piece id can never escape this method. The
+        collapse happens AFTER the top-k cut, so an index with split rows can
+        return fewer than ``top_k`` parents; callers that need a floor
+        over-fetch against the manifest's row/parent ratio.
         """
         if top_k <= 0 or self.matrix.shape[0] == 0:
             return []
@@ -495,7 +576,9 @@ class VectorIndex:
             order = _topk_ordered_legacy(scores, self.chunk_ids, k)
         else:
             order = _topk_ordered(scores, self.chunk_ids, k)
-        return [(self.chunk_ids[i], float(scores[i])) for i in order]
+        return collapse_sub_piece_hits(
+            [(self.chunk_ids[i], float(scores[i])) for i in order]
+        )
 
 
 # --------------------------------------------------------------------------
@@ -761,6 +844,28 @@ def _resolve_build_dtype(
 # --------------------------------------------------------------------------
 
 
+def _exact_token_counter(client: Any) -> Optional[Callable[[str], int]]:
+    """The encoder's own wordpiece counter, or None to keep the estimate.
+
+    ``EmbeddingClient.token_counter()`` returns the loaded model's tokenizer
+    when there is one to ask and None otherwise (remote endpoints, the fake
+    provider, an unloaded model). Duck-typed clients need not expose the seam
+    at all. Exactness is accounting precision, never vector correctness, so a
+    client that cannot answer degrades to the documented words x 1.3 estimate
+    rather than failing the build — but a client that CAN answer is always
+    preferred, because words x 1.3 badly undercounts symbol-dense text.
+    """
+    getter = getattr(client, "token_counter", None)
+    if not callable(getter):
+        return None
+    try:
+        counter = getter()
+    except Exception as exc:  # noqa: BLE001 — client APIs vary; estimate is safe
+        logger.debug("client token_counter() unavailable: %s", exc)
+        return None
+    return counter if callable(counter) else None
+
+
 def build_vector_index(
     course_dir: Path,
     *,
@@ -837,11 +942,85 @@ def build_vector_index(
 
     chunks = _iter_chunks(chunks_path)
     chunk_ids = [_chunk_id(c) for c in chunks]
-    texts = [
-        _embed_text(c, text_field_policy, document_prefix) for c in chunks
-    ]
+    # Passage strings WITHOUT the asymmetric-retrieval prefix. The prefix is a
+    # per-row encoding instruction, not corpus text, so it is applied below —
+    # after the split arm has had a chance to slice the raw passage. With the
+    # split arm off this reconstructs exactly the string the unsplit path built.
+    passages = [_embed_text(c, text_field_policy) for c in chunks]
 
     fingerprint = dict(client.model_fingerprint())
+
+    # W1b.2 overflow arms (ED4ALL_EMBED_OVERFLOW_GUARD master +
+    # ED4ALL_EMBED_OVERFLOW_SPLIT satellite). Resolved HERE, before the encode,
+    # because the split arm changes WHAT is encoded: an over-window passage is
+    # cut into contiguous sub-window pieces so every piece earns its own vector
+    # instead of having its tail silently dropped by the encoder.
+    #
+    # Only the IMPORT is tolerated failing (a slim install without the
+    # [embedding] extra cannot resolve the guard at all, and an index built by
+    # a duck-typed client in that install is a legitimate shape). An accounting
+    # failure with the module present is NOT swallowed: the guard is a reported
+    # signal, and a silently-absent overflow block reads as "no chunk
+    # overflowed" — the exact silent degradation this repo forbids.
+    try:
+        from lib.embedding.providers import (
+            count_overflow_records,
+            estimate_token_count,
+            resolve_embed_max_seq_tokens,
+            resolve_embed_overflow_guard,
+            resolve_embed_overflow_split,
+            split_overflow_records,
+        )
+    except ImportError:  # [embedding] extra absent — nothing to account.
+        count_overflow_records = None  # type: ignore[assignment]
+
+    overflow_guard_on = (
+        count_overflow_records is not None and resolve_embed_overflow_guard()
+    )
+    max_seq_tokens = resolve_embed_max_seq_tokens() if overflow_guard_on else 0
+    # Exact wordpiece counts when this client can tokenize; the documented
+    # words x 1.3 estimate otherwise. ONE counter scores the report and drives
+    # the split, so the two can never disagree about which row is over-window.
+    token_counter = _exact_token_counter(client) if overflow_guard_on else None
+    split_stats: Optional[Dict[str, Any]] = None
+    parent_chunks_count: Optional[int] = None
+
+    if overflow_guard_on and resolve_embed_overflow_split():
+        # The document_prefix rides along on every encoded row, so it eats
+        # window budget the sub-pieces cannot have. Splitting against the full
+        # ceiling would re-introduce the truncation this arm exists to remove.
+        split_window = max_seq_tokens
+        if document_prefix:
+            prefix_cost = (token_counter or estimate_token_count)(document_prefix)
+            split_window = max(1, max_seq_tokens - prefix_cost)
+        parent_records = [
+            {"id": cid, "text": passage}
+            for cid, passage in zip(chunk_ids, passages)
+        ]
+        split_records, raw_split_stats = split_overflow_records(
+            parent_records, split_window, count_tokens=token_counter
+        )
+        split_stats = {
+            "split_enabled": True,
+            "split_window_tokens": int(split_window),
+            "parent_records_scanned": len(parent_records),
+            "pre_split_overflow_count": int(raw_split_stats["overflow_count"]),
+            "sub_pieces_created": int(raw_split_stats["sub_pieces_created"]),
+        }
+        if len(split_records) != len(parent_records):
+            # Rows are now sub-pieces; ``chunks_count`` follows the rows (the
+            # load-path invariant) and the source count moves to
+            # ``parent_chunks_count``. Left None when nothing split, so a
+            # split-on build over an in-window corpus stays byte-identical.
+            parent_chunks_count = len(parent_records)
+            chunk_ids = [str(rec["id"]) for rec in split_records]
+            passages = [str(rec["text"]) for rec in split_records]
+
+    texts = (
+        [f"{document_prefix}{passage}" for passage in passages]
+        if document_prefix
+        else list(passages)
+    )
 
     # Graceful-stop (plan D1) — abort-to-paused, first window. An operator
     # ``ed4all stop`` (or a batch-timeout escalation) arms a filesystem
@@ -899,38 +1078,29 @@ def build_vector_index(
     model_id = str(fingerprint.get("model_id") or "")
     revision = fingerprint.get("revision")
 
-    # W1b.2 (ED4ALL_EMBED_OVERFLOW_GUARD) — count-and-stamp arm. When the guard
-    # is on, record which embedded passages exceed the serving-window token
-    # ceiling (ED4ALL_EMBED_MAX_SEQ_TOKENS) so a post-hoc audit can see silent
+    # W1b.2 (ED4ALL_EMBED_OVERFLOW_GUARD) — count-and-stamp arm. Records which
+    # embedded passages exceed the serving-window token ceiling
+    # (ED4ALL_EMBED_MAX_SEQ_TOKENS) so a post-hoc audit can see silent
     # truncation. Pure accounting over the SAME ``texts`` that were encoded
-    # (document_prefix already prepended); never mutates them. The split arm
-    # (ED4ALL_EMBED_OVERFLOW_SPLIT) is deferred — count/stamp only here. Guard
-    # off ⇒ embed_overflow stays None ⇒ manifest byte-identical.
+    # (document_prefix already prepended); never mutates them. Guard off ⇒
+    # embed_overflow stays None ⇒ manifest byte-identical.
     #
-    # Only the IMPORT is tolerated failing (a slim install without the
-    # [embedding] extra cannot resolve the guard at all, and an index built by
-    # a duck-typed client in that install is a legitimate shape). An accounting
-    # failure with the module present is NOT swallowed: the guard is a reported
-    # signal, and a silently-absent overflow block reads as "no chunk
-    # overflowed" — the exact silent degradation this repo forbids.
+    # These counts always describe the ROWS THAT WERE EMBEDDED, split arm or
+    # not — that is the only number that answers "what got truncated at embed
+    # time". With the split arm on, ``overflow_count`` is therefore the
+    # RESIDUAL (a single word wider than the window cannot be split without
+    # corrupting it), and the parent-level view lives in the merged
+    # ``pre_split_overflow_count`` / ``sub_pieces_created`` split stats.
     embed_overflow: Optional[Dict[str, Any]] = None
-    try:
-        from lib.embedding.providers import (
-            count_overflow_records,
-            resolve_embed_max_seq_tokens,
-            resolve_embed_overflow_guard,
-        )
-    except ImportError:  # [embedding] extra absent — nothing to account.
-        count_overflow_records = None  # type: ignore[assignment]
-
-    if count_overflow_records is not None and resolve_embed_overflow_guard():
-        max_seq_tokens = resolve_embed_max_seq_tokens()
+    if overflow_guard_on:
         overflow_records = [
             {"id": cid, "text": txt} for cid, txt in zip(chunk_ids, texts)
         ]
         embed_overflow = count_overflow_records(
-            overflow_records, max_seq_tokens
+            overflow_records, max_seq_tokens, count_tokens=token_counter
         )
+        if split_stats is not None:
+            embed_overflow.update(split_stats)
 
     manifest = VectorIndexManifest(
         schema_version=_MANIFEST_SCHEMA_VERSION,
@@ -947,6 +1117,7 @@ def build_vector_index(
         embeddings_sha256=embeddings_sha,
         id_map_sha256=id_map_sha,
         chunks_count=len(chunk_ids),
+        parent_chunks_count=parent_chunks_count,
         text_field_policy=text_field_policy,
         batch_size=_resolve_build_batch_size(fingerprint, client, _resolved),
         device=_resolve_build_device(fingerprint, client, _resolved),

@@ -252,6 +252,28 @@ def _verify_client_matches_index(client: "EmbeddingClient", index: Any) -> None:
         )
 
 
+def _split_adjusted_over_fetch(index: Any, over_fetch: int) -> int:
+    """Scale the top-k over-fetch by the index's row:parent ratio.
+
+    An index built with the W1b.2 split arm holds several rows per source
+    chunk, and ``VectorIndex.search`` collapses them back to one hit per
+    parent AFTER the top-k cut — so a fixed top-k would return fewer distinct
+    parents than the caller asked for. ``parent_chunks_count`` is stamped only
+    when rows were actually split, so an unsplit index keeps its exact
+    historical over-fetch (ratio 1.0, same integer).
+    """
+    manifest = getattr(index, "manifest", None)
+    parents = getattr(manifest, "parent_chunks_count", None)
+    rows = int(getattr(manifest, "chunks_count", 0) or 0)
+    try:
+        parents = int(parents) if parents is not None else 0
+    except (TypeError, ValueError):
+        return over_fetch
+    if parents <= 0 or rows <= parents:
+        return over_fetch
+    return -(-over_fetch * rows // parents)  # ceil division
+
+
 def semantic_retrieve_chunks(
     repo_root: Path,
     query: str,
@@ -313,7 +335,9 @@ def semantic_retrieve_chunks(
     query_vec = _embed_query(query, client)
 
     # Over-fetch so post-search filtering doesn't starve the result set.
-    over_fetch = max(limit * 5, 50)
+    over_fetch = _split_adjusted_over_fetch(index, max(limit * 5, 50))
+    # ``index.search`` already collapsed any W1b.2 split sub-piece row onto its
+    # parent chunk (best cosine wins), so every id below is a real chunkset id.
     hits = index.search(query_vec, top_k=over_fetch)
     if not hits:
         return []

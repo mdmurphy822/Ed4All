@@ -3327,7 +3327,16 @@ def vector_index_status(ctx, course, output):
     print(f"\n=== Vector index: {course} ===")
     print(f"provider: {manifest.embedding_provider} ({manifest.embedding_kind})")
     print(f"model: {manifest.embedding_model_id} (rev {manifest.embedding_model_revision})")
-    print(f"dim: {manifest.embedding_dim} | chunks: {manifest.chunks_count}")
+    # ``chunks`` is the ROW count. With the W1b.2 split arm on, several rows can
+    # descend from one source chunk, so say so rather than letting the number
+    # read as a corpus size.
+    chunks_line = f"dim: {manifest.embedding_dim} | chunks: {manifest.chunks_count}"
+    if manifest.parent_chunks_count is not None:
+        chunks_line += (
+            f" rows from {manifest.parent_chunks_count} source chunks "
+            f"(overflow-split)"
+        )
+    print(chunks_line)
     print(f"chunkset: {manifest.chunkset_kind} | index_type: {manifest.index_type}")
     print(f"text policy: {manifest.text_field_policy} | device: {manifest.device}")
     # The reproducibility triple, printed together: byte-identity holds only

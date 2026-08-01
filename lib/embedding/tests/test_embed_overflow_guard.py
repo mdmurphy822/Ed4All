@@ -44,10 +44,18 @@ def test_report_arm_defaults_on_and_parses_with_fallback():
 
 def test_split_arm_stays_default_off():
     """Splitting changes chunk identity and the chunkset hash — a separate
-    decision from reporting, and still opt-in."""
+    decision from reporting, and still opt-in.
+
+    Note the fallback INVERTS the guard's: garbage keeps the guard ON (its
+    documented default) but keeps the split OFF, because an unreadable token
+    must never arm an output-changing arm.
+    """
     assert resolve_embed_overflow_split({}) is False
     assert resolve_embed_overflow_split({"ED4ALL_EMBED_OVERFLOW_SPLIT": "garbage"}) is False
-    assert resolve_embed_overflow_split({"ED4ALL_EMBED_OVERFLOW_SPLIT": "on"}) is True
+    for off in ("0", "false", "no", "off", "OFF", " Off "):
+        assert resolve_embed_overflow_split({"ED4ALL_EMBED_OVERFLOW_SPLIT": off}) is False
+    for on in ("1", "true", "yes", "on", "ON", " On "):
+        assert resolve_embed_overflow_split({"ED4ALL_EMBED_OVERFLOW_SPLIT": on}) is True
 
 
 def test_max_seq_tokens_parse_with_fallback():

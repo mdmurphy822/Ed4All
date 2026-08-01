@@ -96,6 +96,11 @@ _KNOWN_FIELDS = frozenset(_REQUIRED_FIELDS) | {
     # report a legitimate field as an additionalProperties violation.
     "dtype",
     "embed_overflow",
+    # W1b.2 split arm: source-chunk count behind the embedded rows. Optional
+    # (stamped only when rows were actually split), kept in step with the
+    # schema so the jsonschema-absent structural fallback does not report a
+    # legitimate field as an additionalProperties violation.
+    "parent_chunks_count",
     "generated_at",
 }
 
