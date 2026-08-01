@@ -1,10 +1,11 @@
 # ci/layout_allowlist.txt
 #
-# Backing data for ci/layout_guard.py. Five entry kinds, one per line,
+# Backing data for ci/layout_guard.py. Six entry kinds, one per line,
 # `#`-comments allowed (inline or full-line). RATCHET: this file may only
-# shrink. Adding a line requires justification in the SAME PR (say why the
-# new top-level dir / root file / flat lib module / docs single-file dir /
-# loose scripts file earns an exception to docs/architecture/repo-organization.md).
+# shrink (and `flatcap:` numbers may only decrease). Adding a line or raising
+# a cap requires justification in the SAME PR (say why the new top-level dir /
+# root file / flat lib module / docs single-file dir / loose scripts file /
+# larger flat dir earns an exception to docs/architecture/repo-organization.md).
 #
 #   dir:<name>       tracked top-level directory (first path segment)
 #   file:<name>      tracked root-level file
@@ -17,6 +18,11 @@
 #                    (depth exactly 1) — Phase 2 retaxonomies these into
 #                    scripts/{ops,harness}/; subdirs are unrestricted
 #                    containers and are not checked here
+#   flatcap:<dir>=<n>  frozen count of loose CODE files at <dir>'s own level,
+#                    for dirs inside the interior roots (SemantiK Courseforge
+#                    Trainforge LibV2 MCP lib gui cli ci). Excludes test dirs,
+#                    __init__.py and *.md. Exceeding the cap means the dir
+#                    needs a taxonomy — see repo-organization.md § 7
 
 # --- top-level directories (seeded from the tracked tree, 2026-07-29) ------
 dir:.claude
@@ -120,3 +126,46 @@ script:shoot_pages.py
 script:stratified_synthesis_pilot.py
 script:structure_scorecard.py
 script:subclass_pilot.py
+
+# --- interior flat-file caps (check 5; seeded 2026-08-01) -----------------
+# Frozen loose-code-file count per interior directory. Growing past the cap
+# means the directory needs a taxonomy, not a bigger number. Caps only ever
+# shrink — raising one is an exception to be justified in the same PR.
+# Seeded at dirs holding >=8 loose files; see repo-organization.md § 7.
+
+flatcap:Courseforge/generators=8
+flatcap:Courseforge/schemas/imscc=9
+flatcap:LibV2/tools/libv2=28
+flatcap:MCP/tools=11
+flatcap:SemantiK/data=25
+flatcap:SemantiK/scripts=70
+flatcap:SemantiK/semantik_structure=52
+flatcap:SemantiK/semantik_structure/assembler=15
+flatcap:SemantiK/semantik_structure/council=16
+flatcap:SemantiK/semantik_structure/gates=9
+flatcap:SemantiK/semantik_structure/glmocr=13
+flatcap:SemantiK/semantik_structure/qwen_specialists=22
+flatcap:Trainforge=19
+flatcap:Trainforge/eval=39
+flatcap:Trainforge/generators=32
+flatcap:Trainforge/rag=8
+flatcap:Trainforge/rag/inference_rules=12
+flatcap:Trainforge/scripts=17
+flatcap:Trainforge/training=11
+flatcap:ci=8
+flatcap:cli/commands=20
+flatcap:gui=8
+flatcap:gui/routers=11
+flatcap:gui/services=20
+flatcap:gui/static/learn=9
+flatcap:gui/static/shared/components=13
+flatcap:gui/static/studio=13
+flatcap:lib=31
+flatcap:lib/aggregators=11
+flatcap:lib/diagnostics=9
+flatcap:lib/generation=18
+flatcap:lib/objectives=19
+flatcap:lib/ontology=37
+flatcap:lib/retrieval=37
+flatcap:lib/semantik=15
+flatcap:lib/validators=115

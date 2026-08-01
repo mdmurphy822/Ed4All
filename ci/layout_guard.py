@@ -8,7 +8,7 @@ and ``scripts/`` gets no new loose top-level files. Without a guard the
 schema is prose — the next PR lands a 25th top-level dir "just this once"
 and the diagnosis in § 1 repeats itself.
 
-Four checks, all against ``git ls-files`` (tracked files only, so
+Five checks, all against ``git ls-files`` (tracked files only, so
 gitignored VAR-zone content — ``runtime/ plans/ inputs/`` etc. —
 can never trip this guard; only ``.gitkeep`` sentinels are tracked there):
 
@@ -32,6 +32,15 @@ can never trip this guard; only ``.gitkeep`` sentinels are tracked there):
    Subdirs (``archive/ codegen/ integration/ tests/`` today; ``ops/`` /
    ``harness/`` land in Phase 2 per § 3) are unrestricted containers —
    their contents are never checked here.
+5. **Interior flat-file cap** — checks 2 and 4 police depth 1 of two
+   specific dirs; this one generalizes them INWARD, to every level of the
+   CODE-PLATFORM and CODE-SUBSYSTEM trees (``INTERIOR_ROOTS``), which
+   together hold ~600 loose files that nothing previously governed. Each
+   capped directory carries a frozen ``flatcap:<dir>=<count>`` of its loose
+   *code* files; exceeding it means the directory needs a taxonomy, not a
+   bigger number. It caps a COUNT, not a NAME set — see
+   ``check_interior_flat_cap`` for why. Test dirs, ``__init__.py`` and
+   ``*.md`` never count (§ 7 of the spec doc).
 
 Ratchet doctrine
 -----------------
@@ -72,7 +81,34 @@ ALLOWED_DOCS_SUBDIRS: frozenset = frozenset(
     {"architecture", "operations", "validation", "reference"}
 )
 
-_KNOWN_PREFIXES = ("dir:", "file:", "libflat:", "docsingle:", "script:")
+_KNOWN_PREFIXES = ("dir:", "file:", "libflat:", "docsingle:", "script:", "flatcap:")
+
+# Interior roots policed by the flat-file cap (check 5). Anything outside
+# this set is unpoliced at depth >=1 by design — the cap is for CODE-PLATFORM
+# and CODE-SUBSYSTEM trees, not for contracts (`schemas/`, `config/`) whose
+# flat shape is their contract, nor for VAR zones the guard cannot see.
+INTERIOR_ROOTS: frozenset = frozenset(
+    {
+        "SemantiK",
+        "Courseforge",
+        "Trainforge",
+        "LibV2",
+        "MCP",
+        "lib",
+        "gui",
+        "cli",
+        "ci",
+    }
+)
+
+# The cap counts *code* at a directory's own level. Three exclusions, each
+# for a different reason:
+#   - a `tests` path segment  -> a flat test dir mirroring a flat module set
+#     is correct, not debt; capping it would punish adding a test.
+#   - `__init__.py`           -> mandatory package marker, never a choice.
+#   - `*.md`                  -> subsystem `CLAUDE.md` / `README.md` /
+#     `architecture.md` are mandated AT the dir root by the doc taxonomy.
+CAP_EXEMPT_NAMES: frozenset = frozenset({"__init__.py"})
 
 
 @dataclass(frozen=True)
@@ -92,6 +128,7 @@ class Allowlist:
     libflat: Set[str] = field(default_factory=set)
     docsingle: Set[str] = field(default_factory=set)
     scripts: Set[str] = field(default_factory=set)
+    flatcaps: Dict[str, int] = field(default_factory=dict)
 
 
 def parse_allowlist(text: str, source_name: str = ALLOWLIST_FILE) -> Allowlist:
@@ -107,6 +144,7 @@ def parse_allowlist(text: str, source_name: str = ALLOWLIST_FILE) -> Allowlist:
     libflat: Set[str] = set()
     docsingle: Set[str] = set()
     scripts: Set[str] = set()
+    flatcaps: Dict[str, int] = {}
     by_prefix = {
         "dir:": dirs,
         "file:": files,
@@ -118,6 +156,35 @@ def parse_allowlist(text: str, source_name: str = ALLOWLIST_FILE) -> Allowlist:
     for lineno, raw in enumerate(text.splitlines(), start=1):
         line = raw.split("#", 1)[0].strip()
         if not line:
+            continue
+        if line.startswith("flatcap:"):
+            value = line[len("flatcap:"):].strip()
+            directory, sep, raw_cap = value.partition("=")
+            directory, raw_cap = directory.strip(), raw_cap.strip()
+            if not sep or not directory or not raw_cap:
+                raise ValueError(
+                    f"{source_name}:{lineno}: 'flatcap:' needs the form "
+                    f"'flatcap:<dir>=<count>': {raw!r}"
+                )
+            try:
+                cap = int(raw_cap)
+            except ValueError:
+                raise ValueError(
+                    f"{source_name}:{lineno}: flatcap for {directory!r} is not "
+                    f"an integer: {raw_cap!r}"
+                ) from None
+            if cap < 0:
+                raise ValueError(
+                    f"{source_name}:{lineno}: flatcap for {directory!r} is "
+                    f"negative: {cap}"
+                )
+            if directory in flatcaps:
+                raise ValueError(
+                    f"{source_name}:{lineno}: duplicate flatcap for "
+                    f"{directory!r} (was {flatcaps[directory]}, now {cap}) — "
+                    f"two caps for one dir means one of them is a silent no-op"
+                )
+            flatcaps[directory] = cap
             continue
         for prefix, target in by_prefix.items():
             if line.startswith(prefix):
@@ -135,7 +202,12 @@ def parse_allowlist(text: str, source_name: str = ALLOWLIST_FILE) -> Allowlist:
             )
 
     return Allowlist(
-        dirs=dirs, files=files, libflat=libflat, docsingle=docsingle, scripts=scripts
+        dirs=dirs,
+        files=files,
+        libflat=libflat,
+        docsingle=docsingle,
+        scripts=scripts,
+        flatcaps=flatcaps,
     )
 
 
@@ -299,8 +371,86 @@ def check_scripts_snapshot(
     return violations
 
 
+def count_flat_code_files(tracked: List[str]) -> Dict[str, int]:
+    """Loose *code* files per directory inside ``INTERIOR_ROOTS``.
+
+    "Loose" means at the directory's own level (not in a subdir). See
+    ``CAP_EXEMPT_NAMES`` / the module constants for why tests, ``__init__.py``
+    and ``*.md`` don't count. Returned as a plain dict so the check below and
+    the reseed tooling share one definition of the number.
+    """
+    counts: Dict[str, int] = {}
+    for rel in tracked:
+        parts = rel.split("/")
+        if len(parts) < 2 or parts[0] not in INTERIOR_ROOTS:
+            continue
+        if "tests" in parts[:-1]:
+            continue
+        name = parts[-1]
+        if name in CAP_EXEMPT_NAMES or name.endswith(".md"):
+            continue
+        directory = "/".join(parts[:-1])
+        counts[directory] = counts.get(directory, 0) + 1
+    return counts
+
+
+def check_interior_flat_cap(
+    tracked: List[str], flatcaps: Dict[str, int]
+) -> List[Violation]:
+    """No capped interior directory may grow past its frozen loose-file count.
+
+    This is the depth->=1 counterpart to ``check_lib_flat_ratchet``. It caps a
+    COUNT rather than freezing a NAME set: the interior trees hold ~600 loose
+    files, and name-freezing them would make every legitimate rename a
+    120-line allowlist diff while adding nothing — the failure mode being
+    guarded is a directory *growing* a 71st loose script, not a file changing
+    its name.
+
+    A dir at or under its cap is silent. A dir with no cap is unpoliced (the
+    seed only capped dirs at >=8; small dirs are not a taxonomy problem yet).
+    A cap naming a directory that no longer exists is itself reported, so the
+    ratchet can be tightened when a reorg lands instead of quietly rotting.
+    """
+    violations: List[Violation] = []
+    counts = count_flat_code_files(tracked)
+
+    for directory in sorted(flatcaps):
+        cap = flatcaps[directory]
+        actual = counts.get(directory)
+        if actual is None:
+            violations.append(
+                Violation(
+                    check="interior_flat_cap",
+                    path=directory,
+                    message=(
+                        f"flatcap names '{directory}', which holds no tracked "
+                        f"loose code files (moved or deleted?) — drop the "
+                        f"'flatcap:{directory}={cap}' line; a cap on a "
+                        f"nonexistent dir enforces nothing"
+                    ),
+                )
+            )
+            continue
+        if actual > cap:
+            violations.append(
+                Violation(
+                    check="interior_flat_cap",
+                    path=directory,
+                    message=(
+                        f"{actual} loose code files, cap is {cap} — give this "
+                        f"directory a taxonomy (move the new file into a "
+                        f"subdir) per docs/architecture/repo-organization.md "
+                        f"§ 7. Raising 'flatcap:{directory}={cap}' is an "
+                        f"exception that needs justifying in the same PR; "
+                        f"caps only ever shrink"
+                    ),
+                )
+            )
+    return violations
+
+
 def check_layout(tracked: List[str], allowlist: Allowlist) -> List[Violation]:
-    """Run all four checks and return the combined violation list."""
+    """Run all five checks and return the combined violation list."""
     violations: List[Violation] = []
     violations.extend(
         check_top_level_closed(tracked, allowlist.dirs, allowlist.files)
@@ -308,6 +458,7 @@ def check_layout(tracked: List[str], allowlist: Allowlist) -> List[Violation]:
     violations.extend(check_lib_flat_ratchet(tracked, allowlist.libflat))
     violations.extend(check_docs_taxonomy(tracked, allowlist.docsingle))
     violations.extend(check_scripts_snapshot(tracked, allowlist.scripts))
+    violations.extend(check_interior_flat_cap(tracked, allowlist.flatcaps))
     return violations
 
 

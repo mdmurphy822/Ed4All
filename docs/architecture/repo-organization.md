@@ -7,9 +7,11 @@ same day (owner decision): `state/`, `training-captures/`, `seats/`, `demo/`,
 single gitignored `runtime/` root, with compat symlinks at `state`,
 `training-captures`, and `seats` until the paused run finishes and operator
 env files are updated. Phase 2 (`scripts/` re-taxonomy) is pending; the
-import-root moves stay **rejected** (§5). This document is the placement authority: when a new file or
-directory doesn't obviously fit a rule below, that is a design question, not a
-formatting one.
+import-root moves stay **rejected** (§5). Phase 4 extended the schema
+*inward* on 2026-08-01 — the subsystem interiors now carry a declared shape
+and a flat-file cap (§7); its reorgs are pending. This document is the
+placement authority at every level: when a new file or directory doesn't
+obviously fit a rule below, that is a design question, not a formatting one.
 
 ## 1. Diagnosis (surveyed 2026-07-29, dev-v0.4.0, ~3,000 tracked files)
 
@@ -172,3 +174,95 @@ Revisit any of these only on a repo split or a 2.0 packaging change.
      the §3 taxonomy in Phase 2).
 3. **Ratchet semantics**: allowlists may only shrink; adding a line requires
    the same PR to justify it.
+
+## 7. Subsystem interior schema (Phase 4)
+
+**Status: ratchet ADOPTED 2026-08-01; reorgs pending.** §§ 2–4 govern the top
+level and stop at depth 1. Below that, ~600 loose files across the
+CODE-PLATFORM and CODE-SUBSYSTEM trees were governed by nothing. This section
+extends the same doctrine inward. The subsystem roots keep their names and
+positions — `SemantiK/ Courseforge/ Trainforge/ LibV2/ MCP/` are unchanged;
+what changes is that their *interiors* now have a declared shape.
+
+### 7.1 The interior rule
+
+Every non-test code directory is one of two things, and must be able to say
+which:
+
+- **A cohesive package** — a flat set of modules that genuinely belong at one
+  level because they are peers implementing one contract (`lib/validators/`,
+  `lib/ontology/`, `lib/retrieval/`). Flatness here is correct; the module
+  list *is* the registry.
+- **A container** — holds material of mixed lifetime or purpose
+  (`SemantiK/scripts/`, `Trainforge/eval/`). A container must carry a
+  taxonomy of subdirs. Flatness here is debt.
+
+The failure mode is a container pretending to be a package: nobody declares
+it, so it accretes until nothing can be found. Both shapes are legitimate;
+the schema only demands that growth be a decision.
+
+### 7.2 Enforcement: the flat-file cap (check 5)
+
+Each interior directory holding ≥8 loose code files carries a frozen
+`flatcap:<dir>=<count>` in `ci/layout_allowlist.txt`, seeded 2026-08-01 at
+36 directories. Adding a loose file past the cap fails the guard.
+
+It caps a **count**, not a **name set** — deliberately different from the
+`libflat:` / `script:` ratchets in § 6. Those cover ~57 files, where freezing
+names is cheap; the interior covers ~600, where name-freezing would make
+every legitimate rename a 120-line allowlist diff while adding nothing. The
+guarded failure mode is a directory *growing* a 71st loose script, not a file
+changing its name.
+
+Three exclusions, each for its own reason:
+
+| Not counted | Why |
+|---|---|
+| any path with a `tests` segment | a flat test dir mirroring a flat module set is correct; capping it would punish adding a test |
+| `__init__.py` | mandatory package marker, never a choice |
+| `*.md` | `CLAUDE.md` / `README.md` / `architecture.md` are mandated *at* the dir root by § 4 |
+
+Interior roots are `SemantiK Courseforge Trainforge LibV2 MCP lib gui cli ci`.
+`config/` and `schemas/` are deliberately **out of scope**: they are
+CONTRACTS, where the flat shape *is* the contract. VAR zones stay invisible to
+the guard (tracked-files-only, § 6).
+
+A cap naming a vanished directory is itself a violation — otherwise a reorg
+leaves a dead cap behind and the ratchet silently stops enforcing that path.
+`ci/tests/test_layout_guard.py::test_every_seeded_flatcap_matches_the_real_tree_exactly`
+additionally pins each cap to the *exact* live count, so a cap seeded above
+reality (slack the ratchet could never recover) fails the suite.
+
+**Ratchet doctrine, restated for caps: numbers only ever go down.** Raising a
+cap is a real exception and must be justified in the same PR. The intended
+motion is downward — every reorg below tightens the number it frees.
+
+### 7.3 Reorg backlog (not yet executed)
+
+The cap freezes the problem; it does not fix it. Ordered by ratio of pain to
+risk. None of these are started.
+
+1. **`SemantiK/scripts/` — 70 loose, zero subdirs.** The worst container in
+   the tree, and 30 of the 70 are referenced by nothing else in the tracked
+   tree at all. Proposed taxonomy: `training/` (the three trainers
+   `SemantiK/CLAUDE.md` already documents as intentional exceptions, plus
+   `register_qwen_adapter.py`, `qwen_lora_to_gguf.py`), `eval/`, `smoke/`,
+   `calibration/`, `datasets/`, `analysis/`. `run_cascade_json.py` stays flat
+   — it is the cascade subprocess entry point, named at `SemantiK/CLAUDE.md`
+   §§ 174 and 195. **Sweep every tracked `SemantiK/scripts/` reference before
+   any `git mv`.**
+2. **`Trainforge/` root — 19 loose modules** with one obvious cluster: nine
+   `synthesis_*.py` plus `synthesize_training.py` want to be
+   `Trainforge/synthesis/`. Costs a shim per moved module (the D19 pattern,
+   TECH_DEBT) because `MCP/` dispatches into several by dotted path.
+3. **`Trainforge/eval/` — 39 loose**, three subdirs already exist; the flat
+   remainder should join them.
+4. **`SemantiK/data/` — 25 loose** dataset builders, several unreferenced.
+5. **`lib/validators/` — 115 loose.** Largest number in the tree but the
+   *weakest* case: it is a genuine package whose flat module list is the
+   registry `docs/validation/gates.md` maps onto. Listed for completeness;
+   the recommendation is to leave it flat and let the cap hold the line.
+
+Per § 5, mass consolidation stays rejected — these land as-touched, each with
+its reference sweep, never as one big move.
+

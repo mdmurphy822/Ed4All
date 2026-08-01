@@ -1,12 +1,12 @@
 """Tests for the repository layout guard (ci/layout_guard.py).
 
 Proves the guard (a) passes the current tracked tree, (b) catches a
-synthetic violation of each of the four checks, (c) parses the allowlist
-correctly — comments, all five prefixes, and loud rejection of an
-unrecognized entry — and (d) skips loudly (exit 0) when git is
-unavailable. The four check functions are pure (injected ``tracked``
-list + parsed ``Allowlist``), so (a)-(c) need no git fixtures; only (d)
-and the real-repo smoke test touch git.
+synthetic violation of each of the five checks, (c) parses the allowlist
+correctly — comments, all six prefixes, and loud rejection of an
+unrecognized or malformed entry — and (d) skips loudly (exit 0) when git
+is unavailable. The five check functions are pure (injected ``tracked``
+list + parsed ``Allowlist``), so (a)-(c) need no git fixtures; only (d),
+the real-repo smoke test, and the flatcap-seed-exactness test touch git.
 
 Runnable standalone: ``python ci/tests/test_layout_guard.py``.
 """
@@ -164,21 +164,90 @@ def test_scripts_snapshot_ignores_subdir_contents():
     assert violations == []
 
 
+# --- check 5: interior flat-file cap --------------------------------------
+
+def test_flatcap_parses_and_rejects_malformed_entries():
+    allow = guard.parse_allowlist("flatcap:lib/retrieval=37\nflatcap:gui=8")
+    assert allow.flatcaps == {"lib/retrieval": 37, "gui": 8}
+
+    for bad in ("flatcap:lib", "flatcap:lib=", "flatcap:=3", "flatcap:lib=x"):
+        with pytest.raises(ValueError):
+            guard.parse_allowlist(bad)
+
+
+def test_flatcap_rejects_negative_and_duplicate_caps():
+    # A negative cap can never be satisfied; a duplicate means one of the two
+    # lines is a silent no-op. Both are repo-config bugs, not passes.
+    with pytest.raises(ValueError):
+        guard.parse_allowlist("flatcap:lib=-1")
+    with pytest.raises(ValueError):
+        guard.parse_allowlist("flatcap:lib=1\nflatcap:lib=2")
+
+
+def test_interior_flat_cap_catches_growth_past_the_cap():
+    tracked = [f"SemantiK/scripts/s{i}.py" for i in range(3)]
+    violations = guard.check_interior_flat_cap(tracked, {"SemantiK/scripts": 2})
+    assert len(violations) == 1
+    assert violations[0].check == "interior_flat_cap"
+    assert violations[0].path == "SemantiK/scripts"
+    assert "cap is 2" in violations[0].message
+
+
+def test_interior_flat_cap_silent_at_or_under_the_cap():
+    tracked = ["lib/retrieval/a.py", "lib/retrieval/b.py"]
+    assert guard.check_interior_flat_cap(tracked, {"lib/retrieval": 2}) == []
+    assert guard.check_interior_flat_cap(tracked, {"lib/retrieval": 5}) == []
+
+
+def test_interior_flat_cap_excludes_tests_init_and_markdown():
+    # Adding a test, a package marker, or a doc must never trip the cap —
+    # those are mandated or encouraged AT the directory root.
+    tracked = [
+        "lib/retrieval/real_module.py",
+        "lib/retrieval/__init__.py",
+        "lib/retrieval/CLAUDE.md",
+        "lib/retrieval/tests/test_a.py",
+        "lib/retrieval/tests/test_b.py",
+    ]
+    assert guard.count_flat_code_files(tracked)["lib/retrieval"] == 1
+    assert guard.check_interior_flat_cap(tracked, {"lib/retrieval": 1}) == []
+
+
+def test_interior_flat_cap_ignores_dirs_outside_the_interior_roots():
+    # schemas/ and config/ are CONTRACTS — their flat shape IS the contract,
+    # so the cap must not reach them even if they hold many loose files.
+    tracked = [f"schemas/knowledge/s{i}.json" for i in range(50)]
+    assert guard.count_flat_code_files(tracked) == {}
+
+
+def test_interior_flat_cap_reports_a_cap_on_a_vanished_dir():
+    # Otherwise a reorg leaves a dead cap behind and the ratchet silently
+    # stops enforcing anything for that path.
+    violations = guard.check_interior_flat_cap(
+        ["lib/retrieval/a.py"], {"Trainforge/gone": 5}
+    )
+    assert len(violations) == 1
+    assert "enforces nothing" in violations[0].message
+
+
 # --- check_layout composition ---------------------------------------------
 
-def test_check_layout_combines_all_four_checks():
+def test_check_layout_combines_all_five_checks():
     tracked = [
         "newdir/x.py",
         "lib/new_flat.py",
         "docs/badbucket/y.md",
         "scripts/loose.py",
+        "gui/services/a.py",
+        "gui/services/b.py",
     ]
     allowlist = guard.Allowlist(
-        dirs={"lib", "docs", "scripts"},
+        dirs={"lib", "docs", "scripts", "gui"},
         files=set(),
         libflat=set(),
         docsingle=set(),
         scripts=set(),
+        flatcaps={"gui/services": 1},
     )
     violations = guard.check_layout(tracked, allowlist)
     fired = {v.check for v in violations}
@@ -187,7 +256,28 @@ def test_check_layout_combines_all_four_checks():
         "lib_flat_ratchet",
         "docs_taxonomy",
         "scripts_snapshot",
+        "interior_flat_cap",
     }
+
+
+def test_every_seeded_flatcap_matches_the_real_tree_exactly():
+    """The seed must be exact, not merely satisfied.
+
+    A cap seeded ABOVE the real count is slack the ratchet never recovers —
+    it silently permits growth up to the inflated number. This pins the
+    seed to reality so drift shows up as a test failure.
+    """
+    tracked = guard.iter_tracked_files(_CI_DIR.parent)
+    if tracked is None:
+        pytest.skip("not a git work tree")
+    counts = guard.count_flat_code_files(tracked)
+    allow = guard.load_allowlist(_CI_DIR.parent)
+    slack = {
+        d: (cap, counts.get(d))
+        for d, cap in allow.flatcaps.items()
+        if counts.get(d) != cap
+    }
+    assert not slack, f"flatcap drift (dir: (cap, actual)): {slack}"
 
 
 # --- git glue: skip-on-no-git + real repo -----------------------------
