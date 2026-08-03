@@ -3,7 +3,7 @@
   "$id": "https://ed4all.dev/ns/taxonomies/v1/genre_profiles/statistical.schema.json",
   "title": "Statistical genre profile (Layer 2 — functional roles)",
   "description": "Functional-role vocabulary for STATISTICAL/data-report documents (NCES digests, statistical abstracts, indicator reports). A role is an OPTIONAL second label on a layer-1 block; each role declares the layer-1 kind(s) it may attach to.",
-  "$comment": "Grounds the nces_digest gold source (docs/architecture/block-ontology.md § B 8), which previously degraded to Layer-1-only; pairs with the NEW L1 \"chart\" kind (data visualizations distinct from figure). Consistency: every role.attaches_to is non-empty.",
+  "$comment": "Statistical-content profile. The Layer-1 `chart` kind distinguishes data visualizations from figures. Every role.attaches_to is non-empty. See docs/architecture/block-ontology.md#adoption-status.",
   "version": "0.1.0-draft",
   "layer": 2,
   "closed": false,

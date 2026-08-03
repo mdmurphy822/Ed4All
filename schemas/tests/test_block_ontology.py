@@ -1,7 +1,6 @@
-"""Consistency tests for the universal block-label ontology.
+"""Consistency tests for the universal block-label ontology data contract.
 
-The ontology (promoted 2026-07-13 from the BERT-v2 workspace) is three layers of
-DATA under ``schemas/taxonomies/``:
+The ontology is three layers of data under ``schemas/taxonomies/``:
 
 * L1 ``block_kinds.json``       — closed structural kinds (DocLayNet-mapped).
 * L2 ``genre_profile_*.json``   — functional roles that attach to L1 kinds.
@@ -9,9 +8,9 @@ DATA under ``schemas/taxonomies/``:
 
 plus ``block_relations.json`` (structural + profile block relations).
 
-These tests enforce the mechanically-checkable invariants documented in
-``docs/architecture/block-ontology.md`` § A ("Invariants any change must
-preserve"):
+These tests enforce the mechanically checkable parts of
+``docs/architecture/block-ontology.md`` under "Governance" and
+"Invariants any change must preserve":
 
 1. Every ontology file loads via ``lib/ontology/taxonomy.py::load_taxonomy``.
 2. Every L2 role ``attaches_to`` >=1 L1 kind (and only valid L1 kinds).
@@ -47,9 +46,9 @@ LEXICON_FILES = [
     "ansi_z535_lexicon",
 ]
 
-# --- L1 snapshot guard: the closed 16-kind vocabulary (owner-gated) ---------
+# --- L1 snapshot guard: changes to the closed vocabulary require review -----
 # Any accidental addition/removal of an L1 kind must fail loudly — L1 is a
-# closed, owner-sign-off vocabulary (block_kinds.json $comment governance).
+# closed, schema-review-gated vocabulary (block_kinds.json governance).
 EXPECTED_L1_KINDS = frozenset({
     "heading",
     "paragraph",
@@ -107,7 +106,7 @@ def test_block_kinds_declare_doclaynet_key():
         assert "doclaynet" in entry, f"{entry['kind']} missing doclaynet key"
 
 
-# --- L1 snapshot guard: the closed 16-kind vocabulary is owner-gated --------
+# --- L1 snapshot guard: pin the schema-review-gated closed vocabulary -------
 
 
 def test_l1_kind_enum_matches_expected_snapshot():
