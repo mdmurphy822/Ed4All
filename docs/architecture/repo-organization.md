@@ -28,10 +28,11 @@ obviously fit a rule below, that is a design question, not a formatting one.
   gitignored data roots (`state/ runtime/ inputs/ training-captures/
   extracted/ testruns/ scratchpad/ plan/ demo/`). The roles exist; nothing
   declared them, so new dirs landed by vibes.
-- **`scripts/` is a junk drawer**: ~23 loose top-level entries spanning three
-  lifetimes — durable operator entry points, reusable measurement harnesses,
-  and one-shot pilots — while the good precedent (`archive/`, `codegen/`,
-  `integration/`, `tests/`) already exists underneath.
+- **`scripts/` was a junk drawer**: its loose top-level entries mixed durable
+  operator entry points, reusable measurement harnesses, and one-shot pilots.
+  The current taxonomy separates `ops/`, `harness/`, `integration/`,
+  `codegen/`, and `tests/`, with obsolete scripts kept only in ignored
+  `regression/` shelves.
 - **`lib/` mixes ~30 flat modules with 20+ subpackages.** The sanctioned
   migration pattern is a subpackage plus a
   `PendingDeprecationWarning` shim); the rule below stops *new* flat modules.
@@ -108,9 +109,9 @@ Per-dir placement rules (purpose / belongs / **never**):
 **Naming conventions.** Dirs: lowercase (kebab or snake, match siblings);
 TitleCase only for subsystem products. Docs: kebab-case `.md`. Env flags: the
 one-owner-per-prefix contract (root `CLAUDE.md` § Opt-In Behavior Flags)
-unchanged. One-off scripts: date- or wave-stamped and born in
-`scripts/archive/` or `runtime/` — a script whose name contains `pilot`/`ab`/
-`wave` does not belong at `scripts/` root.
+unchanged. One-off scripts: born under `runtime/`; scripts proven obsolete move
+to the nearest ignored `scripts/regression/` shelf. A script whose name contains
+`pilot`/`ab`/`wave` does not belong at `scripts/` root.
 
 ## 3. `scripts/` taxonomy (Phase 2 — DONE)
 
@@ -124,14 +125,13 @@ scripts/
               #  code_index.py, ocr_recall_ab.py, ...)
   integration/  # cross-subsystem integration tools
   codegen/      # generated-contract maintenance
-  archive/      # one-shots after their campaign ends; pilots retire here
   regression/   # gitignored local shelf for proven obsolete scripts
   tests/        # tests move only when their subject moves
 ```
 
 Placement question for any new script: *documented operator procedure* →
 `ops/`; *produces a measurement you'll want again* → `harness/`; *one
-campaign* → `archive/` (or `runtime/` if truly scratch). The Phase 2 move
+campaign* → `runtime/`. The Phase 2 move
 updated imports, tests, documented commands, code comments, fixed argument
 vectors, and repo-root derivations together. No tracked loose files or
 `script:` allowlist exceptions remain at the directory root; private campaign

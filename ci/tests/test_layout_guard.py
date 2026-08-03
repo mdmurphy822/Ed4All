@@ -1,10 +1,10 @@
 """Tests for the repository layout guard (ci/layout_guard.py).
 
 Proves the guard (a) passes the current tracked tree, (b) catches a
-synthetic violation of each of the five checks, (c) parses the allowlist
+synthetic violation of each of the six checks, (c) parses the allowlist
 correctly — comments, all six prefixes, and loud rejection of an
 unrecognized or malformed entry — and (d) skips loudly (exit 0) when git
-is unavailable. The five check functions are pure (injected ``tracked``
+is unavailable. The six check functions are pure (injected ``tracked``
 list + parsed ``Allowlist``), so (a)-(c) need no git fixtures; only (d),
 the real-repo smoke test, and the flatcap-seed-exactness test touch git.
 
@@ -26,7 +26,6 @@ if str(_CI_DIR) not in sys.path:
     sys.path.insert(0, str(_CI_DIR))
 
 import layout_guard as guard  # noqa: E402
-
 
 # --- allowlist parsing ----------------------------------------------------
 
@@ -155,7 +154,7 @@ def test_scripts_snapshot_catches_new_loose_file():
 def test_scripts_snapshot_ignores_subdir_contents():
     tracked = [
         "scripts/harness/gold_compare.py",
-        "scripts/archive/anything_goes_here.py",
+        "scripts/codegen/generate_contracts.py",
         "scripts/tests/test_whatever.py",
     ]
     violations = guard.check_scripts_snapshot(
@@ -164,7 +163,21 @@ def test_scripts_snapshot_ignores_subdir_contents():
     assert violations == []
 
 
-# --- check 5: interior flat-file cap --------------------------------------
+def test_tracked_script_archive_is_rejected_at_every_scripts_level():
+    tracked = [
+        "scripts/archive/retired_root_tool.py",
+        "Trainforge/scripts/archive/retired_training_tool.py",
+        "Courseforge/tools/scripts/archive/retired_course_tool.py",
+        "scripts/regression/local_only.py",
+    ]
+    violations = guard.check_no_tracked_script_archives(tracked)
+    assert [violation.path for violation in violations] == tracked[:3]
+    assert all(
+        violation.check == "tracked_script_archive" for violation in violations
+    )
+
+
+# --- check 6: interior flat-file cap --------------------------------------
 
 def test_flatcap_parses_and_rejects_malformed_entries():
     allow = guard.parse_allowlist("flatcap:lib/retrieval=37\nflatcap:gui=8")

@@ -1,10 +1,7 @@
-"""Wave 81: template-aware instruction-pair extractors.
+"""Template-aware instruction-pair extraction contracts.
 
-Wave 79 C added four Courseforge content-generator templates (procedure,
-real_world_scenario, common_pitfall, problem_solution) which Wave 81
-propagates through the chunker via ``data-cf-template-type``. This module
-tests that the four new extractors fire on chunks of those types and emit
-the expected pair shapes.
+Chunks with supported template-derived ``chunk_type`` metadata dispatch to the
+corresponding extraction methods and emit the expected pair shapes.
 """
 
 from __future__ import annotations
@@ -13,8 +10,6 @@ import json
 import sys
 from collections import Counter
 from pathlib import Path
-
-import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -33,7 +28,6 @@ from Trainforge.instruction_pair_extractor import (  # noqa: E402
     extract_from_real_world_scenario,
     run_extraction,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -355,10 +349,9 @@ def test_run_extraction_dispatches_template_aware_methods(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-# Wave-79-C template chunk_types the extractor's template-aware methods
-# fire on. The real-corpus test requires a corpus whose chunks carry these
-# (i.e. one that has run scripts/archive/wave81_reclassify_chunks.py); newer
-# general-textbook corpora are all-explanation and don't qualify.
+# Template-aware extraction requires these supported chunk types. The neutral
+# synthetic test supplies the metadata directly so it exercises dispatch
+# without depending on corpus state.
 _TEMPLATE_CHUNK_TYPES = {
     "procedure",
     "real_world_scenario",
@@ -392,8 +385,7 @@ def test_neutral_archive_yields_template_aware_methods(tmp_path):
         METHOD_PROBLEM_SOLUTION_DPO,
     }
     fired = set(stats.pairs_by_method.keys()) & template_methods
-    # The corpus must reclassify chunks; if reclassification hasn't run yet
-    # we expect zero firings — the Wave 81 retroactive script populates this.
+    # Supported template metadata must dispatch to multiple specialized methods.
     assert len(fired) >= 4, (
         f"expected ≥4 unique template-aware extraction methods; got {fired}"
     )

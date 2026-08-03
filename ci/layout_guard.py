@@ -4,11 +4,11 @@
 Enforces the schema in ``docs/architecture/repo-organization.md`` § 2/§ 6:
 the top level is a closed set, ``lib/`` stops growing new flat modules,
 ``docs/`` sits inside its four-bucket taxonomy with no single-file dirs,
-and ``scripts/`` gets no new loose top-level files. Without a guard the
-schema is prose — the next PR lands a 25th top-level dir "just this once"
-and the diagnosis in § 1 repeats itself.
+and ``scripts/`` gets no new loose top-level files or tracked archive shelves.
+Without a guard the schema is prose — the next PR lands a 25th top-level dir
+"just this once" and the diagnosis in § 1 repeats itself.
 
-Five checks, all against ``git ls-files`` (tracked files only, so
+Six checks, all against ``git ls-files`` (tracked files only, so
 gitignored VAR-zone content — ``runtime/ plans/ inputs/`` etc. —
 can never trip this guard; only ``.gitkeep`` sentinels are tracked there):
 
@@ -29,10 +29,12 @@ can never trip this guard; only ``.gitkeep`` sentinels are tracked there):
    is an explicit ``docsingle:<name>`` allowlist line, not a silent pass.
 4. **scripts/ snapshot** — no new loose file directly in ``scripts/``
    (depth exactly 1) beyond the frozen ``script:<name>`` snapshot.
-   Subdirs (``archive/ codegen/ integration/ tests/`` today; ``ops/`` /
-   ``harness/`` land in Phase 2 per § 3) are unrestricted containers —
-   their contents are never checked here.
-5. **Interior flat-file cap** — checks 2 and 4 police depth 1 of two
+   Categorized subdirs are unrestricted containers; their contents are not
+   otherwise checked here.
+5. **No tracked script archives** — ``archive/`` directly below any directory
+   named ``scripts/`` is prohibited. Obsolete scripts belong in the recursively
+   ignored ``regression/`` shelf.
+6. **Interior flat-file cap** — checks 2 and 4 police depth 1 of two
    specific dirs; this one generalizes them INWARD, to every level of the
    CODE-PLATFORM and CODE-SUBSYSTEM trees (``INTERIOR_ROOTS``), which
    together hold ~600 loose files that nothing previously governed. Each
@@ -113,7 +115,7 @@ CAP_EXEMPT_NAMES: frozenset = frozenset({"__init__.py"})
 
 @dataclass(frozen=True)
 class Violation:
-    check: str   # which of the four checks fired
+    check: str   # which layout rule fired
     path: str    # repo-relative path (or bare top-level name) implicated
     message: str
 
@@ -371,6 +373,29 @@ def check_scripts_snapshot(
     return violations
 
 
+def check_no_tracked_script_archives(tracked: List[str]) -> List[Violation]:
+    """Reject tracked ``archive/`` shelves immediately below ``scripts/``."""
+    violations: List[Violation] = []
+    for rel in tracked:
+        parts = rel.split("/")
+        if any(
+            parts[index : index + 2] == ["scripts", "archive"]
+            for index in range(len(parts) - 1)
+        ):
+            violations.append(
+                Violation(
+                    check="tracked_script_archive",
+                    path=rel,
+                    message=(
+                        "tracked scripts/archive content is prohibited — move "
+                        "obsolete scripts to the recursively ignored regression/ "
+                        "shelf per docs/architecture/repo-organization.md § 3"
+                    ),
+                )
+            )
+    return violations
+
+
 def count_flat_code_files(tracked: List[str]) -> Dict[str, int]:
     """Loose *code* files per directory inside ``INTERIOR_ROOTS``.
 
@@ -450,7 +475,7 @@ def check_interior_flat_cap(
 
 
 def check_layout(tracked: List[str], allowlist: Allowlist) -> List[Violation]:
-    """Run all five checks and return the combined violation list."""
+    """Run all six checks and return the combined violation list."""
     violations: List[Violation] = []
     violations.extend(
         check_top_level_closed(tracked, allowlist.dirs, allowlist.files)
@@ -458,6 +483,7 @@ def check_layout(tracked: List[str], allowlist: Allowlist) -> List[Violation]:
     violations.extend(check_lib_flat_ratchet(tracked, allowlist.libflat))
     violations.extend(check_docs_taxonomy(tracked, allowlist.docsingle))
     violations.extend(check_scripts_snapshot(tracked, allowlist.scripts))
+    violations.extend(check_no_tracked_script_archives(tracked))
     violations.extend(check_interior_flat_cap(tracked, allowlist.flatcaps))
     return violations
 
