@@ -1458,23 +1458,20 @@ class CourseforgeRouter:
         is routed through:
 
         1. **Outline tier** — every block dispatches via
-           :meth:`route_with_self_consistency` by default (C1 fix
-           2026-05). The canonical :meth:`_resolve_n_candidates` chain
-           terminates at layer 5's
+           :meth:`route_with_self_consistency` by default. The canonical
+           :meth:`_resolve_n_candidates` chain terminates at layer 5's
            ``_DEFAULT_OUTLINE_N_CANDIDATES = 3``, so the per-block
            sampling loop + validator-driven regen budget runs without
            operator opt-in. Per-block-type opt-out via
            ``block_routing.yaml::blocks.{type}.n_candidates: 1``
            short-circuits to the single-candidate :meth:`route` path
-           with ``tier="outline"``. On dispatch failure the block is
-           marked ``content="failed"``-style by capturing the exception
-           and setting ``escalation_marker="outline_budget_exhausted"``;
-           the failed block is included in the returned list but is
-           NOT dispatched to the rewrite tier.
+           with ``tier="outline"``. A provider or dispatch exception
+           sets ``escalation_marker="outline_dispatch_error"``; the
+           failed block remains in the returned list and skips the
+           rewrite tier. Regen-budget exhaustion remains distinct and
+           uses ``outline_budget_exhausted``.
         2. **Inter-tier validation** — currently inline at the
-           ``route_with_self_consistency`` layer (Phase-3.5 Subtask 17
-           wires validator-tier Touch emission into
-           :meth:`_run_validator_chain`). The standalone
+           ``route_with_self_consistency`` layer. The standalone
            ``inter_tier_validation`` workflow phase runs the
            Block-input validator chain across the full set of outlined
            blocks; ``route_all`` here returns the post-outline /
@@ -1498,7 +1495,7 @@ class CourseforgeRouter:
         list (the providers will note the absence in their prompts via
         ``_format_source_chunks(...)``).
 
-        Phase 3.5 Subtask 33 contract (C1 fix 2026-05):
+        Two-pass routing contract:
         - Outline pass dispatches via
           :meth:`route_with_self_consistency` whenever the canonical
           :meth:`_resolve_n_candidates` chain returns ``> 1``. Layer 5
@@ -1510,11 +1507,12 @@ class CourseforgeRouter:
         - Rewrite pass stays on the direct :meth:`route` call regardless
           of n_candidates resolution (asymmetric default — see contract
           note in the rewrite-tier section above).
-        - Failed-outline blocks return early with an
-          ``outline_budget_exhausted`` marker and skip the rewrite
-          stage; the caller sees them in the returned list at their
-          original position so downstream packaging can persist them
-          for re-execution.
+        - Outline dispatch exceptions return with an
+          ``outline_dispatch_error`` marker and skip the rewrite stage.
+          Budget-exhausted outline results retain their distinct
+          ``outline_budget_exhausted`` marker. The caller sees failed
+          blocks in their original positions so downstream packaging
+          can reject or persist them for re-execution.
         """
         chunks_lookup: Dict[str, List[Any]] = source_chunks_by_block_id or {}
         objectives_list: List[Any] = list(objectives or [])
@@ -1523,16 +1521,9 @@ class CourseforgeRouter:
         outline_results: List[Tuple[int, Block, bool]] = []
         for idx, block in enumerate(blocks):
             block_chunks = chunks_lookup.get(block.block_id, [])
-            # C1 fix (2026-05): consult the canonical
-            # ``_resolve_n_candidates`` chain, which terminates at layer
-            # 5's hardcoded ``_DEFAULT_OUTLINE_N_CANDIDATES = 3``. Every
-            # block now routes through ``route_with_self_consistency``
-            # by default; per-block-type opt-out via
-            # ``block_routing.yaml::blocks.{type}.n_candidates: 1``
-            # short-circuits to direct dispatch (resolves at layer 2).
-            # The previous ``_resolve_explicit_n_candidates`` gate has
-            # been removed — its asymmetry made the doc-claimed default
-            # of 3 inert in production.
+            # Resolve the configured sampling count so multi-candidate
+            # outline generation and explicit single-candidate routing
+            # share one dispatch path.
             resolved_n = self._resolve_n_candidates(block, None)
             try:
                 if resolved_n > 1:
@@ -1561,27 +1552,17 @@ class CourseforgeRouter:
                     "route_all: outline tier failed for block_id=%s: %s",
                     block.block_id, exc,
                 )
-                # C2 silent-degradation fix: stamp a dedicated
-                # ``outline_dispatch_error`` marker (NOT
-                # ``outline_budget_exhausted``, which is reserved for
-                # the regen-budget exhaustion / ``escalate_immediately``
-                # short-circuit paths). Distinguishing the two markers
-                # keeps the IMSCC W5 filter catching dispatch failures
-                # while letting postmortems tell network/provider
-                # raises apart from genuine budget exhaustion. The
-                # block is persisted (with marker) for re-execution
-                # and skipped by the rewrite pass; the marker lives in
-                # the canonical _ESCALATION_MARKERS set so
-                # Block.__post_init__ doesn't raise on the replace.
+                # Preserve the failed block for validation and
+                # re-execution while distinguishing dispatch failures
+                # from outline regeneration-budget exhaustion.
                 failed = dataclasses.replace(
                     block,
                     escalation_marker="outline_dispatch_error",
                 )
                 outline_results.append((idx, failed, False))
 
-        # Pass 2 (Wave N stub): inter-tier validation. Every successful
-        # outline emit proceeds to rewrite. Subtasks 36/38 in Wave N+1
-        # plug in the validator chain.
+        # Pass 2 reserves the seam for inter-tier validation; successful
+        # outline results currently proceed directly to rewriting.
 
         # Pass 3: rewrite tier per surviving block.
         rewrite_results: List[Tuple[int, Block]] = []
@@ -4826,16 +4807,20 @@ class CourseforgeRouter:
         inputs_ref = [
             {"source_type": "block", "path_or_id": str(block.block_id)}
         ]
-        alternatives: Optional[List[str]] = None
+        alternatives: Optional[List[Dict[str, str]]] = None
         if failed_candidate_count:
             dist = dict(validator_failure_distribution)
             alternatives = [
-                (
-                    f"{failed_candidate_count} dispatched sibling "
-                    f"candidate(s) of block {block.block_id} rejected by "
-                    f"the validator chain"
-                    + (f" (failure distribution: {dist})" if dist else "")
-                ),
+                {
+                    "option": (
+                        f"Use one of {failed_candidate_count} dispatched "
+                        f"sibling candidate(s) for block {block.block_id}"
+                    ),
+                    "reason_rejected": (
+                        "The validator chain rejected the candidate(s)"
+                        + (f" with failure distribution {dist}" if dist else "")
+                    ),
+                },
             ]
         try:
             self._capture.log_decision(
@@ -5189,11 +5174,15 @@ class CourseforgeRouter:
             "hardcoded_default",
         )
         alternatives = [
-            (
-                f"resolve provider/model from the '{layer}' policy layer "
-                f"(walked in precedence order; not selected — "
-                f"'{policy_source}' won)"
-            )
+            {
+                "option": (
+                    f"Resolve provider/model from the '{layer}' policy layer"
+                ),
+                "reason_rejected": (
+                    f"The '{policy_source}' policy layer won by configured "
+                    "precedence"
+                ),
+            }
             for layer in _POLICY_LAYERS
             if layer != policy_source
         ]

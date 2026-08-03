@@ -3479,21 +3479,22 @@ class OutlineProvider(_BaseLLMProvider):
             for oid in objective_ids
         )
 
-        # The genuine alternative exits the parse-retry loop weighs on
-        # every attempt (see ``generate_outline``): accept the candidate,
-        # re-dispatch with a schema-remediation directive, or raise
-        # ``outline_exhausted`` and escalate the block to the router.
+        # Record the alternate exits that the bounded parse loop weighs.
         if success:
             alternatives = [
-                (
-                    f"re-dispatch with schema-remediation directive "
-                    f"(parse-retry budget {MAX_PARSE_RETRIES}, "
-                    f"{max(attempts - 1, 0)} consumed before acceptance)"
-                ),
-                (
-                    "raise OutlineProviderError(outline_exhausted) and "
-                    f"escalate block {block_id} to the router"
-                ),
+                {
+                    "option": "re-dispatch with schema-remediation directive",
+                    "reason_rejected": (
+                        f"candidate accepted after {max(attempts - 1, 0)} of "
+                        f"{MAX_PARSE_RETRIES} retries"
+                    ),
+                },
+                {
+                    "option": "raise OutlineProviderError(outline_exhausted)",
+                    "reason_rejected": (
+                        f"block {block_id} produced a valid outline"
+                    ),
+                },
             ]
         else:
             reject_reason = (
@@ -3502,16 +3503,17 @@ class OutlineProvider(_BaseLLMProvider):
                 else "failed JSON parse / schema validation"
             )
             alternatives = [
-                (
-                    f"accept the attempt-{attempts} candidate "
-                    f"(rejected: {reject_reason})"
-                ),
-                (
-                    "keep re-dispatching the same prompt "
-                    f"(rejected: parse-retry budget "
-                    f"MAX_PARSE_RETRIES={MAX_PARSE_RETRIES} / hard "
-                    "non-retryable failure bounds the loop)"
-                ),
+                {
+                    "option": f"accept the attempt-{attempts} candidate",
+                    "reason_rejected": reject_reason,
+                },
+                {
+                    "option": "re-dispatch the same prompt",
+                    "reason_rejected": (
+                        f"retry bound reached or failure was non-retryable; "
+                        f"MAX_PARSE_RETRIES={MAX_PARSE_RETRIES}"
+                    ),
+                },
             ]
 
         self._emit_decision(

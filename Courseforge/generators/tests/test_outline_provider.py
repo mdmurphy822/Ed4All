@@ -587,7 +587,12 @@ def test_outline_failure_emits_decision_event(monkeypatch):
     } in inputs_ref
     alternatives = event["alternatives_considered"]
     assert alternatives, "failure event must carry genuine alternatives"
-    assert any("accept the attempt-" in a for a in alternatives)
+    assert all(isinstance(alternative, dict) for alternative in alternatives)
+    assert any(
+        "accept the attempt-" in alternative["option"]
+        for alternative in alternatives
+    )
+    assert all(alternative.get("reason_rejected") for alternative in alternatives)
 
 
 def test_outline_success_emits_decision_event(monkeypatch):
@@ -631,8 +636,16 @@ def test_outline_success_emits_decision_event(monkeypatch):
     } in inputs_ref
     alternatives = event["alternatives_considered"]
     assert alternatives, "success event must carry genuine alternatives"
-    assert any("re-dispatch" in a for a in alternatives)
-    assert any("outline_exhausted" in a for a in alternatives)
+    assert all(isinstance(alternative, dict) for alternative in alternatives)
+    assert any(
+        "re-dispatch" in alternative["option"]
+        for alternative in alternatives
+    )
+    assert any(
+        "outline_exhausted" in alternative["option"]
+        for alternative in alternatives
+    )
+    assert all(alternative.get("reason_rejected") for alternative in alternatives)
 
 
 # ---------------------------------------------------------------------------

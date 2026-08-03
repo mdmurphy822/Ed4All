@@ -654,11 +654,21 @@ def test_route_emits_block_outline_call_decision_event(monkeypatch):
     alternatives = events[0]["alternatives_considered"]
     assert alternatives, "route event must carry the unchosen policy layers"
     assert len(alternatives) == 3  # the 4-layer chain minus the winner
-    joined = " ".join(alternatives)
+    assert all(
+        isinstance(alternative, dict)
+        and isinstance(alternative.get("option"), str)
+        and isinstance(alternative.get("reason_rejected"), str)
+        for alternative in alternatives
+    )
+    joined = " ".join(alternative["option"] for alternative in alternatives)
     # The winning layer never appears as an alternative to itself.
     for layer in ("per_call", "yaml_policy", "env_var", "hardcoded_default"):
         if f"policy_source={layer}" in rationale:
             assert f"'{layer}' policy layer" not in joined
+            assert all(
+                f"'{layer}' policy layer won" in alternative["reason_rejected"]
+                for alternative in alternatives
+            )
 
 
 def test_escalate_immediately_short_circuits_outline_tier(monkeypatch):

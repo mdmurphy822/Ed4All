@@ -762,7 +762,7 @@ class _BaseLLMProvider(ABC):
         decision_type: str,
         decision: str,
         rationale: str,
-        alternatives_considered: Optional[List[str]] = None,
+        alternatives_considered: Optional[List[Dict[str, Any]]] = None,
         inputs_ref: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         """Generic capture-emit helper.
@@ -773,15 +773,9 @@ class _BaseLLMProvider(ABC):
         through here so the swallow-on-error semantics live in one
         place.
 
-        ``alternatives_considered`` / ``inputs_ref`` are optional
-        pass-throughs to ``DecisionCapture.log_decision``. Callers pass
-        them ONLY when genuine values exist in scope (real code-path
-        alternatives that were weighed / real input references the call
-        consumed) — never fabricated or padded. The capture quality
-        gate (``lib/quality.py::assess_decision_quality``) requires at
-        least one of them non-empty for a "proficient" rating, so an
-        emit that omits both is flagged for exclusion from the
-        decision-capture training corpus.
+        ``alternatives_considered`` contains schema-shaped options that
+        the call actually weighed. ``inputs_ref`` identifies the inputs
+        the call consumed. Empty values are omitted from the event.
         """
         if self._capture is None:
             return

@@ -234,7 +234,20 @@ def test_third_candidate_passes_after_two_fail(monkeypatch):
         "self-consistency event with failed candidates must list them "
         "as alternatives"
     )
-    assert any("2 dispatched sibling" in a for a in alternatives)
+    assert all(
+        isinstance(alternative, dict)
+        and isinstance(alternative.get("option"), str)
+        and isinstance(alternative.get("reason_rejected"), str)
+        for alternative in alternatives
+    )
+    assert any(
+        "2 dispatched sibling" in alternative["option"]
+        for alternative in alternatives
+    )
+    assert all(
+        "validator chain rejected" in alternative["reason_rejected"]
+        for alternative in alternatives
+    )
 
 
 def test_all_candidates_fail_returns_last_with_validation_attempts_n(monkeypatch):

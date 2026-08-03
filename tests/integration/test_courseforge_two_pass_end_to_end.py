@@ -596,10 +596,7 @@ def test_two_pass_outline_dispatch_failure_marks_escalation(
     monkeypatch, tmp_path
 ):
     """When the outline provider raises for one block, ``route_all``
-    captures the failure as ``escalation_marker="outline_budget_exhausted"``
-    and skips the rewrite tier for that block. Per Worker J's
-    deviation: failed blocks are detected via ``escalation_marker``,
-    not a ``status`` field."""
+    marks it as ``outline_dispatch_error`` and skips its rewrite tier."""
     monkeypatch.setenv("COURSEFORGE_TWO_PASS", "true")
 
     blocks, outlines, htmls, objectives = _build_mini_course()
@@ -619,8 +616,7 @@ def test_two_pass_outline_dispatch_failure_marks_escalation(
         capture=capture,
     )
 
-    # Use route_all here so the failure-handling path runs (it's the
-    # surface the production runner will drive).
+    # Exercise the batch-routing failure boundary used by the pipeline.
     out = router.route_all(
         blocks,
         source_chunks_by_block_id={},
@@ -628,7 +624,7 @@ def test_two_pass_outline_dispatch_failure_marks_escalation(
     )
     by_id = {b.block_id: b for b in out}
     failed_block = by_id[target_id]
-    assert failed_block.escalation_marker == "outline_budget_exhausted"
+    assert failed_block.escalation_marker == "outline_dispatch_error"
     failed_tiers = {t.tier for t in failed_block.touched_by}
     assert "rewrite" not in failed_tiers, (
         f"Block {target_id} dispatched to rewrite despite outline-tier "
