@@ -314,6 +314,7 @@ def test_synthesis_quota_emits_capture_on_pass(tmp_path: Path) -> None:
     SynthesisQuotaValidator().validate({
         "course_dir": str(course_dir),
         "instruction_variants_per_chunk": 2,
+        "synthesis_provider": "claude_session",
         "decision_capture": capture,
     })
     assert len(capture.calls) == 1
@@ -351,6 +352,7 @@ def test_synthesis_quota_emits_capture_on_over_ceiling(tmp_path: Path) -> None:
     SynthesisQuotaValidator().validate({
         "course_dir": str(course_dir),
         "instruction_variants_per_chunk": 1,
+        "synthesis_provider": "claude_session",
         "decision_capture": capture,
     })
     assert len(capture.calls) == 1
