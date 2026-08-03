@@ -18,15 +18,13 @@ parses via ``pyld`` + ``rdflib``, and asserts:
 * Turtle round-trip is loss-free (graph-isomorphic delta of zero triples)
 
 Phase 1 does not modify ``Trainforge/process_course.py`` or any LO emission
-code; the bridge is exercised out-of-band from whichever LibV2 course (under
-``ED4ALL_LIBV2_ROOT`` / ``LibV2/courses/``) ships a ``course.json``.
+code; the bridge is exercised out-of-band against a neutral in-memory course.
 """
 
 from __future__ import annotations
 
 import copy
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -41,27 +39,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
-def _libv2_courses_root() -> Path:
-    """LibV2 courses dir, honoring the ``ED4ALL_LIBV2_ROOT`` override."""
-    root = os.environ.get("ED4ALL_LIBV2_ROOT")
-    base = Path(root) if root else PROJECT_ROOT / "LibV2"
-    return base / "courses"
-
-
-def _discover_artifact() -> Path | None:
-    """First ``<course>/course.json`` under the LibV2 courses root."""
-    courses_root = _libv2_courses_root()
-    if not courses_root.is_dir():
-        return None
-    for course_dir in sorted(courses_root.iterdir()):
-        candidate = course_dir / "course.json"
-        if candidate.exists():
-            return candidate
-    return None
-
-
 CONTEXT_PATH = PROJECT_ROOT / "schemas" / "context" / "course_v1.jsonld"
-ARTIFACT_PATH = _discover_artifact()
 
 # Canonical IRI shape pinned by the @context.  The course context follows
 # Worker A's https://ed4all.io/vocab/ namespace (NOT the Wave 65
@@ -102,15 +80,21 @@ def context_doc() -> dict:
 
 @pytest.fixture(scope="module")
 def course_artifact() -> dict:
-    """Load the JSON artifact that we are bridging to RDF."""
-    if ARTIFACT_PATH is None or not ARTIFACT_PATH.exists():
-        pytest.skip(
-            "No LibV2 course with course.json present — Phase 1.2 round-trip "
-            "test depends on a real corpus under ED4ALL_LIBV2_ROOT / "
-            "LibV2/courses/."
-        )
-    with ARTIFACT_PATH.open() as f:
-        return json.load(f)
+    """Return a neutral, hermetic course projection fixture."""
+    return {
+        "course_code": "SAMPLE_101",
+        "title": "Sample Course",
+        "learning_outcomes": [
+            {
+                "id": f"lo-{index:02d}",
+                "title": f"Outcome {index}",
+                "description": "Demonstrate a neutral skill.",
+                "bloom_level": "apply",
+                "hierarchy_level": "terminal",
+            }
+            for index in range(1, 8)
+        ],
+    }
 
 
 @pytest.fixture(scope="module")

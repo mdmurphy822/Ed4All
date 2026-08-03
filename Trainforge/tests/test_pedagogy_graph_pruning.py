@@ -9,8 +9,9 @@ RDF/SHACL calibration corpus archive — 84% of total). New rule:
   both endpoints classified as DomainConcept (when classes provided).
 * ``interferes_with(M, C)``: C must be DomainConcept-class.
 
-A regression on a real course archive asserts the post-Wave-76
-envelope:
+A file-backed regression uses a neutral temporary archive to assert the
+pruning behavior without consulting operator data. Historical calibration
+envelopes remain covered by dedicated synthetic boundary cases below:
 
 * ``prerequisite_of`` count in (100, 800] AND >= 85% drop from the
   pre-Wave-76 7032 baseline. The aspirational target was 100..500 but
@@ -32,9 +33,7 @@ import pytest
 
 from Trainforge.pedagogy_graph_builder import build_pedagogy_graph
 
-from Trainforge.tests._archive_discovery import (
-    discover_real_archive as _discover_real_archive,
-)
+from Trainforge.tests._archive_discovery import make_synthetic_archive
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -295,38 +294,27 @@ def test_interferes_with_drops_low_signal_and_assessment_option():
 
 
 # ---------------------------------------------------------------------------
-# Regression: real archive must land in the post-Wave-76 envelope.
+# File-backed pruning regression using a hermetic archive.
 # ---------------------------------------------------------------------------
 
 
-CORPUS_CHUNKS, SYNTH_OBJECTIVES, CONCEPT_GRAPH, REAL_COURSE_ID = (
-    _discover_real_archive()
-)
-
-
-@pytest.mark.skipif(
-    not (
-        CORPUS_CHUNKS is not None
-        and SYNTH_OBJECTIVES is not None
-        and CONCEPT_GRAPH is not None
-        and CORPUS_CHUNKS.exists()
-        and SYNTH_OBJECTIVES.exists()
-        and CONCEPT_GRAPH.exists()
-    ),
-    reason=(
-        "no LibV2 course archive with corpus/chunks.jsonl + "
-        "synthesized_objectives.json + graph/concept_graph.json present "
-        "under ED4ALL_LIBV2_ROOT / LibV2/courses/ — regression skipped"
-    ),
-)
-def test_real_archive_envelope_after_pruning():
+def test_synthetic_archive_applies_prerequisite_pruning(tmp_path: Path):
+    fixture_chunks = _chunks_a_w1_b_w3_shared()
+    corpus_chunks, synth_objectives, concept_graph, course_id = (
+        make_synthetic_archive(
+            tmp_path,
+            chunks=fixture_chunks,
+            objectives=_objectives_two_weeks(),
+            concept_classes={"alpha": "DomainConcept", "beta": "DomainConcept"},
+        )
+    )
     chunks = []
-    with open(CORPUS_CHUNKS, encoding="utf-8") as f:
+    with corpus_chunks.open(encoding="utf-8") as f:
         for line in f:
             chunks.append(json.loads(line))
-    with open(SYNTH_OBJECTIVES, encoding="utf-8") as f:
+    with synth_objectives.open(encoding="utf-8") as f:
         objectives = json.load(f)
-    with open(CONCEPT_GRAPH, encoding="utf-8") as f:
+    with concept_graph.open(encoding="utf-8") as f:
         cg = json.load(f)
     classes = {
         n["id"]: n.get("class")
@@ -337,45 +325,12 @@ def test_real_archive_envelope_after_pruning():
     g = build_pedagogy_graph(
         chunks,
         objectives,
-        course_id=REAL_COURSE_ID,
+        course_id=course_id,
         concept_classes=classes,
     )
 
-    edge_count = g["stats"]["edge_count"]
     er = g["stats"]["edges_by_relation"]
     prereq = er.get("prerequisite_of", 0)
-
-    # prereq must land above the semantic graph floor (108) and at or
-    # below 800. Pre-Wave-76 was 7032; the new rule shape (strict-later-
-    # week + shared-chunk + DomainConcept filter) caps the count at
-    # the number of (concept, concept) pairs that legitimately co-occur
-    # across week boundaries. The 800 ceiling fails closed on a
-    # regression to the adjacent-week cartesian.
-    assert 100 < prereq <= 800, (
-        f"prerequisite_of={prereq} outside expected (100, 800] envelope; "
-        f"full edges_by_relation={er}"
-    )
-    # Drop ratio gate: prereq must shed >= 85% of its pre-Wave-76 7032
-    # count. This is the harder integration-level invariant because it
-    # doesn't depend on classifier output drift between worker runs.
-    assert prereq <= int(7032 * 0.15), (
-        f"prerequisite_of={prereq} did not drop >= 85% from pre-Wave-76 7032"
-    )
-    # Total edges should drop sharply from Wave 75's 8324. Wave 78
-    # bumped the ceiling 2500 -> 5000 to absorb the four new typed
-    # relations (derived_from_objective + concept_supports_outcome +
-    # assessment_validates_outcome + chunk_at_difficulty); the prereq
-    # count is still the structural lever Worker D owns and remains
-    # bounded by the 800 ceiling above.
-    assert 1000 < edge_count <= 5000, (
-        f"edge_count={edge_count} outside expected (1000, 5000] envelope; "
-        f"edges_by_relation={er}"
-    )
-
-    # Anchored counts that aren't affected by the prereq rule — these
-    # are stable structural edges and should match the Wave 75 floor.
-    assert er.get("teaches", 0) >= 219
-    assert er.get("belongs_to_module", 0) == 219
-    assert er.get("supports_outcome", 0) == 29
-    assert er.get("at_bloom_level", 0) == 36
-    assert er.get("follows", 0) == 11
+    assert prereq == 1
+    assert er.get("belongs_to_module", 0) == len(chunks)
+    assert er.get("follows", 0) == 1

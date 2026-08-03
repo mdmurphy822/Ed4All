@@ -1,17 +1,4 @@
-"""Tests for Wave 75 Worker C — real pedagogy graph builder.
-
-Asserts node-class invariants, per-relation edge counts on a small
-synthetic corpus, plus a regression that a real course archive
-regenerates within the post-Wave-76 envelope.
-
-Wave 76 Worker D refined the prerequisite_of rule (strict-later-week
-+ at-least-one-shared-chunk + DomainConcept filter) which dropped the
-RDF/SHACL calibration corpus prereq edge count from 7032 to ~700 in legacy permissive
-mode (no concept_classes). Total edge count is now bounded above by
-~3000 (depends on chunk LO-ref density) and floor remains >= 800.
-The strict pruning-mode envelope (prereq <= 500 with classes applied)
-is asserted in the companion file ``test_pedagogy_graph_pruning.py``.
-"""
+"""Tests for the pedagogy graph builder using neutral synthetic inputs."""
 from __future__ import annotations
 
 import json
@@ -22,9 +9,7 @@ import pytest
 
 from Trainforge.pedagogy_graph_builder import build_pedagogy_graph
 
-from Trainforge.tests._archive_discovery import (
-    discover_real_archive as _discover_real_archive,
-)
+from Trainforge.tests._archive_discovery import make_synthetic_archive
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -336,79 +321,25 @@ def test_lo_ref_normalization_handles_compound_refs():
 
 
 # ---------------------------------------------------------------------------
-# Regression: real archive must re-build within the post-Wave-76
-# legacy-mode envelope (no concept_classes; prereq rule still requires
-# strict-later-week + at-least-one-shared-chunk so the count drops
-# from Wave-75's 7032 to ~700, total drops from 8324 to ~2300).
+# File-backed regression using a hermetic archive.
 # ---------------------------------------------------------------------------
 
 
-CORPUS_CHUNKS, SYNTH_OBJECTIVES, _CONCEPT_GRAPH, REAL_COURSE_ID = (
-    _discover_real_archive()
-)
-
-
-@pytest.mark.skipif(
-    not (
-        CORPUS_CHUNKS is not None
-        and SYNTH_OBJECTIVES is not None
-        and CORPUS_CHUNKS.exists()
-        and SYNTH_OBJECTIVES.exists()
-    ),
-    reason=(
-        "no LibV2 course archive with corpus/chunks.jsonl + "
-        "synthesized_objectives.json present under ED4ALL_LIBV2_ROOT / "
-        "LibV2/courses/ — real-archive regression skipped"
-    ),
-)
-def test_real_archive_regen_within_legacy_envelope():
-    """Legacy mode (no concept_classes) — verify post-Wave-76 envelope.
-
-    Wave 75 floor was >= 800 edges. Wave 76 Worker D's stricter
-    prereq rule (now requires strict-later-week AND at-least-one-
-    shared-chunk) drops the legacy-mode total to ~2300 (prereq from
-    7032 to ~700). We keep the floor at 1000 (above Wave 75's 800)
-    and add a 3000 ceiling to flag a regression to a cartesian. The
-    strict pruning-mode envelope (prereq <= 500 with classes applied)
-    lives in ``test_pedagogy_graph_pruning.py``.
-    """
+def test_synthetic_archive_regenerates_structural_edges(tmp_path: Path):
+    """The file-backed entry shape preserves structural graph behavior."""
+    corpus_chunks, synth_objectives, _, course_id = make_synthetic_archive(
+        tmp_path, chunks=_chunks(), objectives=_objectives()
+    )
     chunks = []
-    with open(CORPUS_CHUNKS, encoding="utf-8") as f:
+    with corpus_chunks.open(encoding="utf-8") as f:
         for line in f:
             chunks.append(json.loads(line))
-    with open(SYNTH_OBJECTIVES, encoding="utf-8") as f:
+    with synth_objectives.open(encoding="utf-8") as f:
         objectives = json.load(f)
 
-    g = build_pedagogy_graph(chunks, objectives, course_id=REAL_COURSE_ID)
-
-    # Wave 78 envelope: bumped ceiling 3000 -> 5000 to absorb the four
-    # new relation types (derived_from_objective ~700,
-    # concept_supports_outcome ~1000, assessment_validates_outcome
-    # ~50, chunk_at_difficulty == chunk_count). Wave 76 ceiling was
-    # 3000; the RDF/SHACL calibration corpus archive lands ~4250
-    # post-Wave-78.
-    edge_count = g["stats"]["edge_count"]
-    assert 1000 <= edge_count <= 5000, (
-        f"expected 1000 <= edges <= 5000, got {edge_count}"
-    )
+    g = build_pedagogy_graph(chunks, objectives, course_id=course_id)
     er = g["stats"]["edges_by_relation"]
-    # prereq is the over-saturation lever: was 7032 pre-Wave-76, must
-    # not regress above ~1500 even without concept_classes (the strict
-    # cap with classes is asserted in the pruning test file).
-    assert er.get("prerequisite_of", 0) <= 1500, er.get("prerequisite_of", 0)
-    # Structural edges unchanged by Wave 76 pruning.
-    assert er.get("teaches", 0) >= 219, er.get("teaches", 0)
-    assert er.get("belongs_to_module", 0) == 219, er.get("belongs_to_module", 0)
-    assert er.get("supports_outcome", 0) == 29, er.get("supports_outcome", 0)
-    assert er.get("at_bloom_level", 0) == 36, er.get("at_bloom_level", 0)
-    assert er.get("follows", 0) == 11, er.get("follows", 0)
-
-    # Node counts: floor of (36 objectives + 219 chunks + 12 modules
-    # + 6 bloom levels) ~ 273.
-    assert g["stats"]["node_count"] >= 273, g["stats"]["node_count"]
+    assert er.get("teaches", 0) > 0
+    assert er.get("belongs_to_module", 0) == len(chunks)
     nc = g["stats"]["nodes_by_class"]
-    assert nc.get("Outcome", 0) == 7
-    assert nc.get("ComponentObjective", 0) == 29
-    assert nc.get("Chunk", 0) == 219
-    assert nc.get("Module", 0) == 12
-    assert nc.get("BloomLevel", 0) == 6
+    assert nc.get("Chunk", 0) == len(chunks)

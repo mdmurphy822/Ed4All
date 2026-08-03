@@ -15,9 +15,8 @@ complete substrate to operate on:
 * ``chunk_at_difficulty`` — Chunk → DifficultyLevel typed node
   (foundational / intermediate / advanced).
 
-A regression on a real course archive asserts the post-Wave-
-78 relation-type count (10 → 14) and the four edge counts land in
-sensible envelopes.
+The file-backed regression uses a neutral temporary archive and checks all
+four completion relations without consulting operator data.
 """
 from __future__ import annotations
 
@@ -29,9 +28,7 @@ import pytest
 
 from Trainforge.pedagogy_graph_builder import build_pedagogy_graph
 
-from Trainforge.tests._archive_discovery import (
-    discover_real_archive as _discover_real_archive,
-)
+from Trainforge.tests._archive_discovery import make_synthetic_archive
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -428,40 +425,34 @@ def test_concept_supports_outcome_rolls_co_to_parent_to():
 
 
 # ---------------------------------------------------------------------------
-# Regression on a real course archive: relation-type count
-# must land at 14 with all four new edge types present in non-trivial
-# counts.
+# File-backed completion regression using a hermetic archive.
 # ---------------------------------------------------------------------------
 
 
-CORPUS_CHUNKS, SYNTH_OBJECTIVES, CONCEPT_GRAPH, REAL_COURSE_ID = (
-    _discover_real_archive()
-)
-
-
-@pytest.mark.skipif(
-    not (
-        CORPUS_CHUNKS is not None
-        and SYNTH_OBJECTIVES is not None
-        and CONCEPT_GRAPH is not None
-        and CORPUS_CHUNKS.exists()
-        and SYNTH_OBJECTIVES.exists()
-        and CONCEPT_GRAPH.exists()
-    ),
-    reason=(
-        "no LibV2 course archive with corpus/chunks.jsonl + "
-        "synthesized_objectives.json + graph/concept_graph.json present "
-        "under ED4ALL_LIBV2_ROOT / LibV2/courses/ — regression skipped"
-    ),
-)
-def test_real_archive_has_14_distinct_relation_types_after_wave78():
+def test_synthetic_archive_emits_completion_relations(tmp_path: Path):
+    fixture_chunks = [
+        {"id": "ck_a", "chunk_type": "explanation", "difficulty": "foundational",
+         "concept_tags": ["alpha"], "learning_outcome_refs": ["co-01"],
+         "source": {"module_id": "week_01", "item_path": "week_01/a.html"}},
+        {"id": "ck_b", "chunk_type": "assessment_item", "difficulty": "advanced",
+         "concept_tags": ["alpha"], "learning_outcome_refs": ["co-02"],
+         "source": {"module_id": "week_02", "item_path": "week_02/b.html"}},
+    ]
+    corpus_chunks, synth_objectives, concept_graph, course_id = (
+        make_synthetic_archive(
+            tmp_path,
+            chunks=fixture_chunks,
+            objectives=_objectives_basic(),
+            concept_classes={"alpha": "DomainConcept"},
+        )
+    )
     chunks = []
-    with open(CORPUS_CHUNKS, encoding="utf-8") as f:
+    with corpus_chunks.open(encoding="utf-8") as f:
         for line in f:
             chunks.append(json.loads(line))
-    with open(SYNTH_OBJECTIVES, encoding="utf-8") as f:
+    with synth_objectives.open(encoding="utf-8") as f:
         objectives = json.load(f)
-    with open(CONCEPT_GRAPH, encoding="utf-8") as f:
+    with concept_graph.open(encoding="utf-8") as f:
         cg = json.load(f)
     classes = {
         n["id"]: n.get("class")
@@ -472,40 +463,13 @@ def test_real_archive_has_14_distinct_relation_types_after_wave78():
     g = build_pedagogy_graph(
         chunks,
         objectives,
-        course_id=REAL_COURSE_ID,
+        course_id=course_id,
         concept_classes=classes,
     )
     er = g["stats"]["edges_by_relation"]
-    # All 10 pre-Wave-78 relation types must still be present.
-    pre_wave78 = {
-        "teaches",
-        "assesses",
-        "practices",
-        "exemplifies",
-        "prerequisite_of",
-        "interferes_with",
-        "belongs_to_module",
-        "supports_outcome",
-        "at_bloom_level",
-        "follows",
-    }
-    for rel in pre_wave78:
-        assert er.get(rel, 0) > 0, f"missing pre-Wave-78 relation: {rel}"
-    # All 4 new relation types must be present in non-trivial counts.
-    assert er.get("derived_from_objective", 0) >= 400, er.get(
-        "derived_from_objective", 0
-    )
-    assert er.get("concept_supports_outcome", 0) >= 100, er.get(
-        "concept_supports_outcome", 0
-    )
-    assert er.get("assessment_validates_outcome", 0) >= 10, er.get(
-        "assessment_validates_outcome", 0
-    )
-    # chunk_at_difficulty == chunk count exactly (one edge per chunk;
-    # all 219 chunks in this archive have a canonical difficulty).
-    assert er.get("chunk_at_difficulty", 0) == 219, er.get("chunk_at_difficulty", 0)
-    # Total relation_type count must be 14.
-    assert len(er) == 14, sorted(er.keys())
-    # DifficultyLevel typed nodes must be present.
+    assert er.get("derived_from_objective", 0) == 2
+    assert er.get("concept_supports_outcome", 0) >= 1
+    assert er.get("assessment_validates_outcome", 0) >= 1
+    assert er.get("chunk_at_difficulty", 0) == len(chunks)
     nbc = g["stats"]["nodes_by_class"]
     assert nbc.get("DifficultyLevel", 0) == 3
