@@ -33,13 +33,13 @@ def _clean_env(monkeypatch):
     yield
 
 
-def test_default_resolves_to_local_loopback_qwen():
+def test_default_resolves_to_canonical_local_loopback_model():
     resolved = resolve_answer_backend()
     assert isinstance(resolved, ResolvedAnswerBackend)
     assert resolved.provider_name == "local"
-    # Default model chain → LOCAL_SYNTHESIS_MODEL registry default (the 2-tier
-    # design pins the local row to the 8GB-resident 7B; env still overrides).
-    assert resolved.model_id == "qwen2.5:7b-instruct-q4_K_M"
+    # Default model chain resolves through the canonical local registry row;
+    # an explicit LOCAL_SYNTHESIS_MODEL still overrides this identity.
+    assert resolved.model_id == "nemotron-3-nano-30b-a3b"
     assert "localhost" in resolved.base_url or "127.0.0.1" in resolved.base_url
     assert resolved.timeout == 120.0
 
