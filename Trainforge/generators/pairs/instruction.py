@@ -31,6 +31,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from lib.decision_capture import DecisionAlternative
 from lib.ontology.slugs import deslugify_concept
 
 logger = logging.getLogger(__name__)
@@ -183,7 +184,7 @@ class InstructionSynthesisResult:
     template_id: str
     rationale: str
     topic: str
-    alternatives: List[str] = field(default_factory=list)
+    alternatives: List[DecisionAlternative] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .constants import MIN_DECISIONS_PER_PHASE, OPERATION_MAP, RELAXED_DECISION_TYPES
 from .decision_capture import (
+    DecisionAlternative,
     InputRef,
     MLFeatures,
     OutcomeSignals,
@@ -92,7 +93,7 @@ class StreamingDecision:
     decision_type: str = ""
     decision: str = ""
     rationale: str = ""
-    alternatives_considered: List[str] = field(default_factory=list)
+    alternatives_considered: List[DecisionAlternative] = field(default_factory=list)
     context: Optional[str] = None
     confidence: Optional[float] = None
 
@@ -371,7 +372,7 @@ class StreamingDecisionCapture:
         decision: str,
         rationale: str,
         operation: Optional[str] = None,
-        alternatives_considered: Optional[List[str]] = None,
+        alternatives_considered: Optional[List[DecisionAlternative]] = None,
         context: Optional[str] = None,
         confidence: Optional[float] = None,
         ml_features: Optional[MLFeatures] = None,

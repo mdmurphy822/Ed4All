@@ -273,14 +273,70 @@ class TestLogDecision:
     @pytest.mark.unit
     def test_log_decision_with_alternatives(self, capture):
         """Should log alternatives considered."""
+        alternatives = [
+            {
+                "option": "tabs",
+                "reason_rejected": "Less suitable for sequential disclosure",
+            },
+            {
+                "option": "expandable sections",
+                "score": 0.61,
+                "reason_rejected": "Lower usability score than the selection",
+            },
+            {
+                "option": "flat list",
+                "reason_rejected": "Does not provide progressive disclosure",
+            },
+        ]
         capture.log_decision(
             decision_type="content_structure",
             decision="Use accordion",
             rationale="Better for progressive disclosure",
-            alternatives_considered=["tabs", "expandable sections", "flat list"],
+            alternatives_considered=alternatives,
         )
 
-        assert len(capture.decisions[0]["alternatives_considered"]) == 3
+        assert capture.decisions[0]["alternatives_considered"] == alternatives
+
+    @pytest.mark.unit
+    def test_schema_shaped_alternatives_pass_strict_validation(
+        self, capture, monkeypatch
+    ):
+        """Strict validation accepts canonical alternative objects."""
+        monkeypatch.setenv("DECISION_VALIDATION_STRICT", "true")
+
+        capture.log_decision(
+            decision_type="content_structure",
+            decision="Use accordion",
+            rationale="The selected structure best supports progressive disclosure.",
+            alternatives_considered=[
+                {
+                    "option": "tabs",
+                    "score": 0.72,
+                    "reason_rejected": "Lower accessibility score",
+                }
+            ],
+        )
+
+        assert len(capture.decisions) == 1
+
+    @pytest.mark.unit
+    def test_bare_string_alternatives_fail_strict_validation(
+        self, capture, monkeypatch
+    ):
+        """Strict validation rejects alternatives that are not objects."""
+        monkeypatch.setenv("DECISION_VALIDATION_STRICT", "true")
+
+        with pytest.raises(ValueError, match="validation failed"):
+            capture.log_decision(
+                decision_type="content_structure",
+                decision="Use accordion",
+                rationale=(
+                    "The selected structure best supports progressive disclosure."
+                ),
+                alternatives_considered=["tabs"],  # type: ignore[list-item]
+            )
+
+        assert capture.decisions == []
 
     @pytest.mark.unit
     def test_log_decision_with_ml_features(self, capture):

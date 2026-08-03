@@ -29,6 +29,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
+from lib.decision_capture import DecisionAlternative
 from lib.ontology.slugs import deslugify_concept
 
 logger = logging.getLogger(__name__)
@@ -49,7 +50,7 @@ class PreferenceSynthesisResult:
     rationale: str
     source: str  # "misconception" or "rule_synthesized"
     misconception_id: Optional[str] = None
-    alternatives: List[str] = field(default_factory=list)
+    alternatives: List[DecisionAlternative] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

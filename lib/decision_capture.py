@@ -41,7 +41,7 @@ except ImportError:  # pragma: no cover - non-POSIX (Windows) fallback
     _fcntl = None  # type: ignore[assignment]
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TypedDict
 
 from .constants import (
     MIN_DECISIONS_PER_PHASE,
@@ -51,6 +51,14 @@ from .constants import (
 from .libv2_storage import LibV2Storage
 from .paths import TRAINING_DIR as LEGACY_TRAINING_DIR  # noqa: F401  back-compat re-export
 from .paths import get_training_captures_dir
+
+
+class DecisionAlternative(TypedDict, total=False):
+    """Schema-shaped option considered but not selected for a decision."""
+
+    option: str
+    score: float
+    reason_rejected: str
 
 
 def _coerce_record_field(value: Any) -> Any:
@@ -685,7 +693,7 @@ class DecisionCapture:
         decision: str,
         rationale: str,
         operation: Optional[str],
-        alternatives_considered: Optional[List[str]],
+        alternatives_considered: Optional[List[DecisionAlternative]],
         context: Optional[str],
         confidence: Optional[float],
         ml_features: Optional[MLFeatures],
@@ -815,23 +823,19 @@ class DecisionCapture:
         return record
 
     def _validate_record(self, record: Dict[str, Any]) -> None:
-        """Validate a decision record (REC-CTR-04 Worker G).
+        """Validate a decision record according to the configured mode.
 
         Behavior matrix:
 
-        * ``VALIDATE_DECISIONS`` unset/false -> no-op. Preserves backward
-          compat for callers that explicitly opted out of validation entirely.
+        * ``VALIDATE_DECISIONS`` unset/false -> no-op.
         * ``VALIDATE_DECISIONS`` truthy + ``DECISION_VALIDATION_STRICT`` unset
           -> warn-only. Validation issues are appended to
           ``record["metadata"]["validation_issues"]`` and the record IS still
-          written by the caller. This is the historical default.
+          written by the caller.
         * ``VALIDATE_DECISIONS`` truthy + ``DECISION_VALIDATION_STRICT=true``
           -> fail-closed. Validation failures raise ``ValueError`` and the
           record is NOT written (the caller must handle the exception).
 
-        Opt-in strict mode is the reconciliation target for REC-CTR-04. The
-        env-var gate preserves backward compat: callers relying on loose
-        behavior do not break on this PR landing.
         """
         if not VALIDATE_DECISIONS:
             return
@@ -846,18 +850,8 @@ class DecisionCapture:
                     raise ValueError(
                         f"Decision validation failed (strict mode): {issues}"
                     )
-                # Wave 29 Defect 4: the non-strict validation-issues
-                # path previously hit ``logger.warning`` on EVERY
-                # record, flooding stderr with hundreds of
-                # ``Decision validation issues: [...]`` lines on a
-                # normal run (≥ 90% of stderr in the first 30
-                # seconds of the SIM_RUN_01 reproduction). Real
-                # errors got buried. The issues are still attached
-                # to the record's metadata so they're recoverable at
-                # save time (see ``_validation_issue_count`` +
-                # ``save``) — we just stop spamming stderr per-call.
-                # Strict mode still raises, so fail-closed callers
-                # are unaffected.
+                # Retain advisory issues on the record and summarize them at
+                # save time; strict mode raises before the record is written.
                 logger.debug("Decision validation issues: %s", issues)
                 record["metadata"]["validation_issues"] = issues
                 self._validation_issue_count = (
@@ -985,7 +979,7 @@ class DecisionCapture:
         decision: str,
         rationale: str,
         operation: Optional[str] = None,
-        alternatives_considered: Optional[List[str]] = None,
+        alternatives_considered: Optional[List[DecisionAlternative]] = None,
         context: Optional[str] = None,
         confidence: Optional[float] = None,
         ml_features: Optional[MLFeatures] = None,
@@ -1029,7 +1023,7 @@ class DecisionCapture:
         self,
         rationale_length: int,
         inputs_ref: Optional[List[InputRef]],
-        alternatives: Optional[List[str]],
+        alternatives: Optional[List[DecisionAlternative]],
         decision_type: str = ""
     ) -> str:
         """Assess decision quality for training data filtering."""
