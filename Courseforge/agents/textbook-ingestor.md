@@ -1,6 +1,8 @@
 # Textbook Ingestor Agent
 
-Universal entry point for processing educational source materials (textbooks, course packages, exam objectives) to extract semantic structure for learning objective generation.
+Entry point for supported educational source materials (textbooks, course
+packages, and exam objectives) that extracts semantic structure for learning
+objective generation.
 
 ## Core Function
 
@@ -215,7 +217,7 @@ The agent produces a textbook structure JSON conforming to:
 {
   "documentInfo": {
     "title": "Document title",
-    "sourcePath": "/path/to/source",
+    "sourcePath": "<SOURCE_PATH>",
     "sourceFormat": "<enum per schemas/academic/textbook_structure.schema.json>",
     "extractionTimestamp": "ISO timestamp",
     "metadata": {
@@ -381,8 +383,8 @@ merged_structure = merge_textbook_structures(results)
 
 ## Success Criteria
 
-- **Input Detection**: 100% correct format detection
-- **SemantiK Conversion**: 95%+ successful conversion rate
+- **Input detection**: supported formats are identified; unknown inputs fail loudly
+- **SemantiK conversion**: inspect conversion status and validation evidence
 - **Structure Extraction**: All chapters and sections identified
 - **Content Completeness**: All definitions, terms, procedures extracted
 - **Quality Validation**: All extracted structures pass schema validation

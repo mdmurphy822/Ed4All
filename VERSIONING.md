@@ -189,7 +189,11 @@ The reason this can't be deferred to "the v1.0 branch will produce both": once t
 
 ## §8 Cross-worker coordination (schema, metrics, branch policy)
 
-§1–§7 above describe v0.1.0 shape and the v0.1.x → v1.0 path. §8 describes how multiple concurrent workers (the `worker-*` branch family) keep shared constants and shared files from racing. The operational detail lives in [`docs/architecture/ADR-001-pipeline-shape.md`](docs/architecture/ADR-001-pipeline-shape.md) and [`docs/architecture/workers.md`](docs/architecture/workers.md); this section is the canonical top-level pointer.
+§1–§7 above describe v0.1.0 shape and the v0.1.x → v1.0 path. §8 records the
+durable coordination rule for shared constants and files. The architectural
+contract lives in
+[`docs/architecture/ADR-001-pipeline-shape.md`](docs/architecture/ADR-001-pipeline-shape.md),
+while current file ownership and batching rules live in [`AGENTS.md`](AGENTS.md).
 
 ### §8.1 Chunk-schema-version policy
 

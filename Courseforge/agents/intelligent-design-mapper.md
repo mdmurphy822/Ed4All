@@ -409,10 +409,10 @@ From `templates/` directory:
 | Metric | Target |
 |--------|--------|
 | Analysis speed | <1 second per section |
-| Component accuracy | 90%+ appropriate selection |
-| Styling consistency | 100% design system compliance |
-| Accessibility preservation | 100% |
-| Total styling | <10 minutes for 100-file course |
+| Component selection | Review chosen components against instructional intent |
+| Styling consistency | Validate against the design-system tokens |
+| Accessibility preservation | Rerun configured accessibility checks |
+| Completion | Every selected page has a terminal mapping status |
 
 ---
 

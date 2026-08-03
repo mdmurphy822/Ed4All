@@ -1,11 +1,9 @@
 # Chunk schema v4
 
-Owner of this doc: the first of Workers B/D/E to declare `CHUNK_SCHEMA_VERSION = "v4"`
-in `Trainforge/process_course.py`. That worker landed the initial version; the
-other two amend their added fields in-place as they merge into the
-`chunk-schema-v4` rebase branch (see
-[`ADR-001` Contract 1](../architecture/ADR-001-pipeline-shape.md#contract-1--chunk-schema-versioning)
-and [`docs/architecture/workers.md`](../contributing/workers.md)).
+This document records the durable chunk-v4 contract declared by
+`CHUNK_SCHEMA_VERSION = "v4"` in `Trainforge/process_course.py`. See
+[`ADR-001` Contract 1](ADR-001-pipeline-shape.md#contract-1--chunk-schema-versioning)
+for the versioning boundary.
 
 ## Why v4 exists
 

@@ -2,18 +2,20 @@
 
 ## Overview
 
-The `imscc-intake-parser` is a specialized subagent designed for universal IMSCC package ingestion and analysis. This agent orchestrates the extraction, parsing, and initial assessment of IMSCC packages from any LMS source, preparing content for the remediation pipeline.
+The `imscc-intake-parser` ingests supported IMSCC packages, extracts their
+resources, detects known source-LMS patterns, and prepares an inventory for the
+remediation pipeline.
 
 ## Agent Type Classification
 
 - **Agent Type**: `imscc-intake-parser` (specialized import subagent)
-- **Primary Function**: Universal IMSCC package parsing and content extraction
+- **Primary Function**: Standards-based IMSCC parsing and content extraction
 - **Workflow Position**: Entry point for intake workflow (before content-analyzer)
 - **Integration**: Feeds extracted content into content-analyzer, semantik-automation-coordinator, and remediation agents
 
 ## Core Capabilities
 
-### 1. Universal LMS Detection
+### 1. Source-LMS detection
 Automatically identifies source LMS from manifest patterns:
 
 | LMS | Detection Patterns |
@@ -120,7 +122,7 @@ imscc-intake-parser → intelligent-design-mapper (for styling decisions)
 ```json
 {
   "package_info": {
-    "original_path": "/path/to/package.imscc",
+    "original_path": "<IMSCC_PATH>",
     "extraction_path": "/workspace/extracted/",
     "extraction_timestamp": "2025-12-08T10:30:00Z",
     "source_lms": "canvas",
@@ -257,12 +259,13 @@ python scripts/imscc-extractor/imscc_extractor.py \
 
 | Metric | Target |
 |--------|--------|
-| LMS detection accuracy | 95%+ |
-| Extraction success rate | 99%+ |
-| Content classification accuracy | 98%+ |
-| Remediation queue completeness | 100% |
-| Processing time (100 resources) | < 30 seconds |
+| LMS detection | Validate known source signatures with maintained fixtures |
+| Extraction | Every resource is extracted or reported with an error |
+| Content classification | Review classifications and unresolved resources |
+| Remediation queue | Every detected issue is queued or explicitly excluded |
+| Processing time | Record duration for the package under review |
 
 ---
 
-*This agent serves as the entry point for the Courseforge intake workflow, enabling universal IMSCC package processing regardless of source LMS.*
+*This agent is the Courseforge intake entry point for supported IMSCC packages;
+unknown extensions or source-specific behavior must be surfaced for review.*

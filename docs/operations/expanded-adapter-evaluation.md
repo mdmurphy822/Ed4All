@@ -52,15 +52,15 @@ Example:
 
 ```bash
 python -m Trainforge.eval.expanded_suite \
-  --assessments /path/to/assessment_items.json \
-  --answer-key /path/to/answer_key.json \
-  --objectives /path/to/objectives.json \
-  --chunks /path/to/imscc_chunks/chunks.jsonl \
-  --authored-items /path/to/authored_eval_items.jsonl \
-  --ood-probes /path/to/reviewed_foreign_refusal_probes.json \
-  --training-pairs /path/to/instruction_pairs.jsonl \
-  --training-pairs /path/to/preference_pairs.jsonl \
-  --output-dir /path/to/eval/expanded_suite
+  --assessments <ASSESSMENTS_PATH> \
+  --answer-key <ANSWER_KEY_PATH> \
+  --objectives <OBJECTIVES_PATH> \
+  --chunks <CHUNKS_PATH> \
+  --authored-items <AUTHORED_ITEMS_PATH> \
+  --ood-probes <OOD_PROBES_PATH> \
+  --training-pairs <INSTRUCTION_PAIRS_PATH> \
+  --training-pairs <PREFERENCE_PAIRS_PATH> \
+  --output-dir <EVAL_OUTPUT_DIR>
 ```
 
 Exit code `0` means the offline suite is complete and clean. Exit code `2`

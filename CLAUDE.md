@@ -43,7 +43,7 @@ ed4all run textbook-to-course --corpus textbook.pdf --course-name <course-name>
 ed4all run textbook-to-course --corpus ./pdfs/ --course-name <course-name> --weeks 16
 ed4all run rag_training --corpus course.imscc --course-name <course-name> --mode api
 ed4all run textbook-to-course --corpus x.pdf --course-name T --dry-run   # plan only
-ed4all run textbook-to-course --resume WF-20260420-abc12345               # resume
+ed4all run textbook-to-course --resume <RUN_ID>                            # resume
 
 # ed4all stop: graceful "checkpoint on command". Drops a stop sentinel; the run
 # finishes its in-flight unit, checkpoints it, and pauses (exit code 3) —
@@ -51,7 +51,7 @@ ed4all run textbook-to-course --resume WF-20260420-abc12345               # resu
 # --force after a stop — force clears the resume sidecars). SIGTERM/Ctrl-C to a
 # live `ed4all run` is the same request (signal again to hard-kill). Full
 # runbook: docs/operations/pipeline-invocation.md § 7.
-ed4all stop WF-20260420-abc12345    # pause ONE run at its next unit boundary
+ed4all stop <RUN_ID>                 # pause ONE run at its next unit boundary
 ed4all stop --all                   # global STOP_ALL — pause + BLOCK all runs
 ed4all stop --clear-all             # remove STOP_ALL (operator-owned)
 
@@ -274,43 +274,19 @@ end-to-end), `Trainforge/tests/fixtures/` (mini-course corpora),
 
 ---
 
-## Orchestrator Protocol
+## Orchestrator protocol
 
-### Phase 1: Planning (NO EXECUTION)
+`config/workflows.yaml` is the source of truth for phase order, dependencies,
+concurrency, and validation gates. `config/agents.yaml` owns the pipeline-agent
+registry, while `MCP/core/executor.py` owns dispatch overrides that cannot be
+inferred from YAML alone.
 
-Planning agent creates comprehensive todo list:
-- Analyze requirements
-- Break into discrete tasks
-- Assign to appropriate agents
-- **NO file creation, NO code execution**
-
-### Phase 2: Load TodoWrite
-
-TodoWrite is the **single source of truth**:
-- All agents read from TodoWrite
-- All agents update TodoWrite
-- Status tracking: `pending` -> `in_progress` -> `completed`
-
-### Phase 3: Batch Execution
-
-Execute via parallel agent dispatch:
-- **Maximum 10 simultaneous Task calls per batch**
-- Wait for ALL batch completions before next batch
-- Use `poll_task_completions()` to check status
-
-### Phase 4: Quality Validation
-
-Every artifact validated before finalization:
-- SemantiK: WCAG compliance check
-- Courseforge: IMSCC validation
-- Trainforge: Assessment quality scoring
-
-### Phase 5: Packaging
-
-Final packaging and export:
-- Update GENERATION_PROGRESS.md
-- Export training captures
-- Archive logs
+Agents execute the task state supplied by the active harness. Do not create a
+second planning ledger or require a harness-specific todo API. Respect the
+repository-wide ten-task batch ceiling, wait for a batch before starting the
+next one, and keep one writer per file. A workflow advances only through its
+configured validation gates; stop at the first blocking failure and fix the
+artifact rather than weakening the gate.
 
 ---
 

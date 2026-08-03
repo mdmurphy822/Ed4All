@@ -9,7 +9,7 @@ never the confidential surface, and never course content.
 ed4all support-bundle
 
 # A specific run (adds the doctor POST-MORTEM group over its checkpoints/VRAM)
-ed4all support-bundle --run-id WF-20260707-abc12345 -o /tmp/bundle.tar.gz
+ed4all support-bundle --run-id <RUN_ID> -o <BUNDLE_PATH>
 
 # Include decision captures (OFF by default — see "Secret handling")
 ed4all support-bundle --run-id WF-... --include-captures

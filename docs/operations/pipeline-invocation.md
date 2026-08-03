@@ -228,7 +228,7 @@ ed4all run courseforge-rewrite  --course-name <course-name> --pages week_03   # 
 **Resume** a crashed/stopped run past completed phases:
 
 ```bash
-ed4all run textbook-to-course --resume WF-20260420-abc12345
+ed4all run textbook-to-course --resume <RUN_ID>
 ```
 
 **Preflight** without dispatching anything: append `--dry-run`.

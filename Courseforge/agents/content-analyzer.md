@@ -308,7 +308,7 @@ Task(
 | Metric | Target |
 |--------|--------|
 | Analysis speed | <1 second per HTML file |
-| Detection accuracy | 95%+ for critical issues |
+| Detection quality | Review critical findings against maintained fixtures |
 | False positive rate | <5% |
 | Complete analysis | <5 minutes for 200-file course |
 

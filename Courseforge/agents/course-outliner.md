@@ -604,7 +604,8 @@ Phase / Wave 1.6 amends the objective-synthesis output contract: every newly aut
 ## Validation and Quality Gates
 
 ### **Template Compliance Validation**
-- **Feature Preservation**: Template's OSCQR compliance and technical features maintained (95%+ retention)
+- **Feature preservation**: Retain validated template behavior and report any
+  intentional deviation for review.
 - **Customization Integration**: Course-specific requirements implemented without breaking template
 - **Performance Standards**: Template's loading speed and accessibility performance preserved
 - **Import Compatibility**: Template's proven Brightspace import functionality maintained

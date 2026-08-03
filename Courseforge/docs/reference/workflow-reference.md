@@ -22,12 +22,12 @@ Textbooks ────────┘         │                │            
 ## Phase 1: Input Analysis & Planning
 
 **Orchestrator Actions:**
-1. Create timestamped project folder: `exports/YYYYMMDD_HHMMSS_coursename/`
+1. Resolve the private project folder: `exports/<PROJECT_ID>/`
 2. Invoke planning agent based on input type:
    - Exam objectives → `exam-research` agent
    - New course → `requirements-collector` agent
 3. Planning agent analyzes input and returns todo list (NO EXECUTION)
-4. Orchestrator loads todo list into TodoWrite
+4. Orchestrator records the tasks in the active workflow state
 
 **Key Principle:** Planning agents provide structured todo lists. They do NOT execute tasks.
 
@@ -58,7 +58,7 @@ Textbooks ────────┘         │                │            
 - Maximum: 10 agents per batch (proven optimal limit)
 - Each agent creates exactly ONE file
 - Wait for batch completion before next batch
-- Update TodoWrite after each batch
+- Record completion in the active workflow state after each batch
 
 **Anti-Patterns (NEVER DO):**
 - ❌ Assign multiple files to one agent
@@ -94,12 +94,13 @@ Task(content-generator, "week_01_module_02_concepts.html")
 | Step | Actor | Action |
 |------|-------|--------|
 | 1 | Planning Agent | Analyzes input, returns todo list (NO execution) |
-| 2 | Orchestrator | Loads todo list into TodoWrite |
+| 2 | Orchestrator | Records tasks in workflow state |
 | 3 | Orchestrator | Executes todos via appropriate agents |
 | 4 | Execution Agents | Work from todo specs (NO todo modifications) |
 | 5 | Orchestrator | Manages all todo state changes |
 
-**Critical Rule:** Only orchestrator modifies TodoWrite. No agent-to-agent todo feedback loops.
+**Critical rule:** The orchestrator owns workflow state. Agents return task
+results through the dispatcher and do not maintain a competing progress ledger.
 
 ---
 
@@ -142,7 +143,7 @@ Examples:
 ## Project Folder Structure
 
 ```
-exports/YYYYMMDD_HHMMSS_coursename/
+exports/<PROJECT_ID>/
 ├── 00_template_analysis/
 ├── 01_learning_objectives/
 ├── 02_course_planning/
@@ -154,7 +155,7 @@ exports/YYYYMMDD_HHMMSS_coursename/
 ├── 05_final_package/
 ├── agent_workspaces/
 ├── project_log.md
-└── coursename.imscc
+└── <COURSE_NAME>.imscc
 ```
 
 ---
@@ -163,7 +164,7 @@ exports/YYYYMMDD_HHMMSS_coursename/
 
 **Before Content Generation:**
 - [ ] Planning agent has provided todo list
-- [ ] Orchestrator has loaded todos into TodoWrite
+- [ ] Orchestrator has recorded the task set in workflow state
 - [ ] Individual file assignments prepared (not multi-file)
 - [ ] Batch size ≤10 confirmed
 

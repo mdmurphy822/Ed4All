@@ -1271,7 +1271,10 @@ Exact file:line anchors to key emit/consume sites. Grep-verified against the tre
 
 ## § 12 v0.2.0 changes (Waves 1–6 summary)
 
-Additive section. Descriptive record of what Waves 1–6 (commits `fea48f8` → post-Worker-V/W Wave 6 merges, on the `dev-v0.2.0` baseline) added to the Ed4All ontology over the §§ 1–11 baseline. No goal-setting, no gap analysis. For full rationale per recommendation, see `plans/kg-quality-review-2026-04/review.md` and the per-worker sub-plans under `plans/kg-quality-review-2026-04/`.
+Additive section describing the knowledge-graph quality contracts added over
+the §§ 1–11 baseline. The live schemas, validators, and validation-gate
+documentation are authoritative; this section records the resulting ontology
+surface rather than an implementation plan.
 
 ### SemantiK conversion engine
 
@@ -1514,7 +1517,10 @@ Wave 11 completes the end-to-end provenance chain by threading Wave 10's chunk-l
 
 ### Waves 89–93 — SLM training artifacts
 
-Five waves (`f654847` → `dc06ba1`, plan: `plans/slm-training-2026-04-26.md`) land the post-import LibV2 sub-stage that produces SLM adapters. The contract is two new schemas + a 7-hash provenance pattern + the long-dormant `CourseManifest.slm_processing` field finally being written.
+The post-import LibV2 stage that produces SLM adapters is governed by two
+schemas, a seven-hash provenance pattern, and the populated
+`CourseManifest.slm_processing` field. The schemas and current training runner
+are the authoritative implementation contracts.
 
 - **`schemas/models/model_card.schema.json`** (Wave 89, extended Wave 92). Draft 2020-12, strict additionalProperties at every level. Required: `model_id` (kebab-case), `course_slug`, `base_model{name,revision,huggingface_repo}`, `adapter_format` (enum: `safetensors` / `gguf` / `merged_safetensors`), `training_config` (seed, learning_rate, epochs, lora_rank, lora_alpha, max_seq_length, batch_size), `provenance` (seven SHA-256 hashes — see below), `created_at`. Optional: `eval_scores` (sub-object dropped in directly from `Trainforge/eval/runners/slm_eval_harness.py` output), `config_overrides` (the per-run `TrainingConfig` override set an operator supplied via `--config-overrides`, recorded verbatim; omitted when none was supplied), `license`, `description`, `tags`. `training_config` additionally accepts the optional `dpo_learning_rate` (emitted only when set — some bases require an operator-calibrated DPO rate and refuse to reuse the SFT rate). Wave 92 added `holdout_graph_hash` to `provenance.required` + `provenance.properties` so Bloom-stratified KG holdout splits are pinned alongside the chunks/graphs.
 - **`schemas/models/model_pointers.schema.json`** (Wave 93). Draft 2020-12, strict. Required: `current` (nullable when no model promoted yet) and `history[]` (append-only array of `{model_id, promoted_at, promoted_by, demoted_at}`). Atomic write through tmpfile + rename. Schema is the canonical write side of the pointer file that `Trainforge/eval/regression.py::RegressionEvaluator` (Wave 92) reads forward-compatibly.
@@ -1629,7 +1635,10 @@ known-strict-validation-failure on Wave-8 deterministic paths.
 
 ## JSON-LD round-trip
 
-Wave 1+2 of the RDF/SHACL enrichment plan (`plans/rdf-shacl-enrichment-2026-04-26.md`) added a JSON-LD `@context` to four of the canonical artifacts above so each round-trips losslessly to RDF without a JSON rewrite. This section documents the resulting surface for maintainers — the JSON shapes themselves are unchanged.
+RDF/SHACL enrichment added a JSON-LD `@context` to four canonical artifacts so
+each round-trips losslessly to RDF without a JSON rewrite. This section
+documents the resulting surface for maintainers; the JSON shapes themselves
+are unchanged.
 
 ### Context files and the artifacts they wrap
 
@@ -1651,7 +1660,12 @@ Cross-namespace bridges are declared in `schemas/context/aliases.ttl` via `owl:e
 
 Edges in `concept_graph_semantic_v1.jsonld` materialize as typed `ed4all:TypedEdge` blank nodes carrying `(rule, rule_version, evidence, run_id, created_at)` rather than collapsing to bare `<source> <type> <target>` triples. This preserves per-edge metadata as a reachable subgraph that SPARQL can join against. **Convention:** any new artifact that needs per-edge metadata should follow the same reified-blank-node pattern (Q46 corpus guidance). The pedagogy_graph context applies it consistently.
 
-**RDF-star is superseded here, not deferred.** The reified-blank-node pattern above plus the named-graph provenance shipped in Phase 3 of `plans/rdf-shacl-enrichment-2026-04-26.md` cover the per-edge-metadata use case that originally motivated RDF-star evaluation. Q49's tooling-maturity caveat still holds, but the design has moved past needing RDF-star — do not add it back without a use case that named graphs and reified TypedEdges genuinely cannot model.
+**RDF-star is superseded here, not deferred.** The reified-blank-node pattern
+above plus named-graph provenance cover the per-edge-metadata use case that
+originally motivated RDF-star evaluation. Q49's tooling-maturity caveat still
+holds, but the design has moved past needing RDF-star — do not add it back
+without a use case that named graphs and reified TypedEdges genuinely cannot
+model.
 
 ### Cross-artifact join
 

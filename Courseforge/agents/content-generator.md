@@ -389,7 +389,7 @@ Source Material for this page (week_03_content_01_visual_perception):
   Contributing: semantik:source-alpha#s4_p0, semantik:source-alpha#s6_p1
   Confidence:   0.85
 
-Read the staging sidecar at {staging_dir}/science_of_learning_synthesized.json
+Read the staging sidecar at `{staging_dir}/<SOURCE_STEM>_synthesized.json`.
 and locate each block_id. Ground every claim in the primary block;
 use contributing blocks for examples and counterpoints only.
 Emit sourceReferences[] in JSON-LD + data-cf-source-ids on every

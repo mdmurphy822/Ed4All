@@ -2,7 +2,11 @@
 
 ## Overview
 
-The `semantik-automation-coordinator` is a specialized subagent that orchestrates automatic SemantiK conversion of all non-accessible content. It manages the conversion pipeline for PDFs, Office documents, and other non-HTML content, ensuring 100% accessible course materials. A read-compat dispatch alias in `MCP/core/executor.py::AGENT_TOOL_MAPPING` covers legacy pre-SemantiK resume states.
+The `semantik-automation-coordinator` orchestrates SemantiK conversion for
+supported non-HTML content and routes its HTML and validation evidence into
+Courseforge. A read-compat dispatch alias in
+`MCP/core/executor.py::AGENT_TOOL_MAPPING` covers legacy pre-SemantiK resume
+states.
 
 ## Agent Type Classification
 
@@ -118,7 +122,7 @@ the SemantiK v2 conversion cascade (PDF/Office → accessible HTML). Standalone,
 the same conversion runs via the `ed4all convert` CLI verb:
 
 ```bash
-ed4all convert <input.pdf-or-dir> --output /path/to/converted/
+ed4all convert <input.pdf-or-dir> --output <OUTPUT_DIR>
 ```
 
 ### Configuration
@@ -218,11 +222,11 @@ Task(
 
 | Metric | Target |
 |--------|--------|
-| PDF conversion success | 98%+ |
-| Office conversion success | 95%+ |
-| WCAG compliance rate | 100% |
-| Average conversion time | <10s per page |
-| Total batch throughput | 50+ docs/hour |
+| PDF conversion | Review conversion status and configured gate results |
+| Office conversion | Review conversion status and configured gate results |
+| Accessibility review | Configured gates pass or findings are surfaced |
+| Conversion time | Record per-page duration for the active source |
+| Batch throughput | Record completed, failed, and skipped documents |
 
 ## Integration Points
 
@@ -235,4 +239,5 @@ Task(
 
 ---
 
-*This agent ensures 100% accessible course content through automated SemantiK conversion, supporting Courseforge's goal of fully accessible educational materials.*
+*This agent automates conversion and validation routing. It does not replace
+human accessibility review or guarantee conformance for every source.*

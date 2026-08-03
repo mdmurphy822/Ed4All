@@ -349,8 +349,8 @@ Task(
 |--------|--------|
 | Enhancement speed | <5 seconds per file |
 | Objective generation accuracy | 90%+ appropriate |
-| Content coherence | 95%+ natural flow |
-| Style consistency | 98%+ match original |
+| Content coherence | Editorial review plus configured quality gates |
+| Style consistency | Review against the source course and templates |
 | Total enhancement | <15 minutes for 100-file course |
 
 ---

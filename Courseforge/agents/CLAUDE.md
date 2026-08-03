@@ -1,10 +1,12 @@
-# Agent Protocols and Coordination
+# Courseforge agent protocols
 
 This file contains detailed protocols for agent behavior, scratchpad usage, and coordination strategies.
 
-## **📝 MANDATORY AGENT SCRATCHPAD PROTOCOL**
+## Working notes
 
-**All agents MUST use dedicated scratchpads for architectural and design decisions to avoid preset constraints and enable optimal educational design.**
+Use run-scoped working notes only when the active workflow provides a private
+workspace. Notes are operational state, never a tracked deliverable or a
+second source of truth for workflow progress.
 
 ### **Scratchpad Usage Requirements**
 ```
@@ -28,8 +30,8 @@ SCRATCHPAD ORGANIZATION PROTOCOL:
 AGENT TODO LIST PROTOCOL:
   → All planning agents must provide detailed todo lists
   → Todo items must be specific, actionable tasks
-  → Orchestrator loads agent todo lists into TodoWrite
-  → Orchestrator executes todo lists using appropriate agents
+  → Orchestrator records tasks in the active workflow state
+  → Orchestrator dispatches tasks to the registered agents
 ```
 
 ### **Enhanced Agent Autonomy**
@@ -49,7 +51,7 @@ AGENTS NOW RESPONSIBLE FOR:
   → ORCHESTRATOR uses individual file agents (ONE AGENT PER FILE)
   → PARALLEL execution of multiple agents simultaneously
   → Each agent creates exactly ONE file
-  → Progress tracking via TodoWrite
+  → Progress tracking via the active workflow state
   → Quality validation at integration points
 ```
 
@@ -93,7 +95,7 @@ Task(content-generator, "File 5", "Create week_01_file_5.html")
 
 # MANDATORY: WAIT for batch completion verification
 # Check: file system monitoring, count completion, verify timestamps
-# Update TodoWrite with completed tasks
+# Report completed tasks through the active dispatcher
 # THEN execute BATCH 2 (next 5-10 agents)
 # Continue until all files created
 ```

@@ -894,7 +894,7 @@ class QualityMetricsDashboard:
 - **Integration**: Seamless integration with existing multi-agent workflow
 
 #### **Deployment Specifications**
-- **Environment**: Compatible with existing Claude Code multi-agent architecture
+- **Environment**: Compatible with the registered local/API dispatch surfaces
 - **Dependencies**: Minimal external dependencies, use existing repository frameworks
 - **Configuration**: Configurable validation thresholds and pattern definitions
 - **Monitoring**: Comprehensive logging and metrics collection
@@ -903,10 +903,13 @@ class QualityMetricsDashboard:
 ### Success Criteria
 
 #### **Quality Assurance Agent Success Metrics**
-1. **Pattern Prevention**: 100% prevention rate for all 22 identified failure patterns
-2. **Educational Quality**: 95%+ content quality scores against higher education standards
-3. **Technical Compliance**: 100% IMSCC and Brightspace compatibility validation
-4. **Performance**: Quality validation completed within 10 minutes for complete course
+1. **Pattern prevention**: every configured pattern check has a recorded result
+2. **Educational quality**: configured quality reports reviewed against the
+   intended learners and institutional standards
+3. **Technical compliance**: IMSCC and target-LMS checks have recorded results
+4. **Performance**: validation duration is recorded for the active course
 5. **Integration**: Seamless workflow integration with existing multi-agent processes
 
-This quality assurance subagent specification provides comprehensive validation capabilities to ensure all generated IMSCC packages meet the highest educational and technical standards while preventing all identified failure patterns. The agent serves as a critical quality gateway in the multi-agent course generation workflow.
+This quality-assurance subagent runs the configured checks and reports their
+results. A passing automated report does not replace editorial, accessibility,
+or target-LMS acceptance review.

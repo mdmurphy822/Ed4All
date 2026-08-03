@@ -87,7 +87,7 @@ HuggingFace hub in **offline** mode so nothing reaches out mid-build:
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 # Optional: pin the cache location so backups + containers agree.
-export HF_HOME=/path/to/hf-cache
+export HF_HOME=<HF_CACHE_DIR>
 ```
 
 The embedding provider enforces this itself: `lib/embedding/providers.py` sets
@@ -104,8 +104,8 @@ repo-relative). Set it before anything else if you are not running out of the
 checkout:
 
 ```bash
-export ED4ALL_HOME=/path/to/ed4all-data
-export ED4ALL_LIBV2_ROOT=/path/to/ed4all-data/LibV2   # optional explicit override
+export ED4ALL_HOME=<ED4ALL_DATA_DIR>
+export ED4ALL_LIBV2_ROOT=<ED4ALL_DATA_DIR>/LibV2   # optional explicit override
 ```
 
 ### 0.4 Preflight — `ed4all doctor`
@@ -249,20 +249,20 @@ names / URLs / container names / launch-script paths for your box, and source it
 ```bash
 # Full build, through vector_indexing to a fully archived, askable course.
 ed4all run textbook-to-course \
-  --corpus /path/to/corpus \
+  --corpus <CORPUS_PATH> \
   --course-name <COURSE_NAME> \
   --skip-training
 
 # Retrieval-ready slice: packaged cartridge + chunkset, no training synthesis,
 # no LibV2 archival and no vector index (so not yet askable).
 ed4all run textbook-to-course \
-  --corpus /path/to/corpus \
+  --corpus <CORPUS_PATH> \
   --course-name <COURSE_NAME> \
   --skip-training --stop-after imscc_chunking
 
 # Plan only — resolves the workflow and prints the phase list, dispatches nothing.
 ed4all run textbook-to-course \
-  --corpus /path/to/corpus --course-name <COURSE_NAME> --dry-run
+  --corpus <CORPUS_PATH> --course-name <COURSE_NAME> --dry-run
 ```
 
 The two-pass content path is what the evidence run used and what the seat

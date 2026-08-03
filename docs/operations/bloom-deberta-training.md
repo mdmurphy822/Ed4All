@@ -377,7 +377,7 @@ Checklist before enabling:
 export ED4ALL_BLOOM_TRIVOTE=true
 export ED4ALL_BLOOM_TRIVOTE_HEADS=true
 # Optional — only needed if the heads live somewhere other than the default:
-# export ED4ALL_BLOOM_HEADS_DIR=/path/to/heads
+# export ED4ALL_BLOOM_HEADS_DIR=<BLOOM_HEADS_DIR>
 ```
 
 Both flags default OFF; unset (or falsey / garbage) leaves

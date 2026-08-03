@@ -1,6 +1,6 @@
 ---
 name: accessibility-remediation
-description: Specialized subagent that automatically fixes accessibility issues in HTML content to achieve WCAG 2.2 AA compliance without manual intervention.
+description: Specialized subagent that remediates detectable accessibility issues in HTML content and emits evidence for WCAG review.
 model: sonnet
 ---
 
@@ -8,7 +8,9 @@ model: sonnet
 
 ## Overview
 
-The `accessibility-remediation` is a specialized subagent that automatically fixes accessibility issues in HTML content to achieve WCAG 2.2 AA compliance. It transforms course content into fully accessible educational materials without manual intervention.
+The `accessibility-remediation` subagent fixes detectable accessibility issues
+in HTML content and routes unresolved issues to review. Automated results feed
+the configured WCAG gates; they are not an unconditional conformance claim.
 
 ## Agent Type Classification
 
@@ -297,8 +299,8 @@ def fix_contrast(element, background_color):
     }
   ],
   "wcag_compliance": {
-    "level_a": "100%",
-    "level_aa": "100%",
+    "level_a": "validator_passed",
+    "level_aa": "manual_review_required",
     "remaining_issues": []
   }
 }
@@ -344,7 +346,7 @@ Task(
 - [ ] Contrast calculation accurate
 
 ### Post-Remediation
-- [ ] WCAG 2.2 AA compliance: 100%
+- [ ] Configured WCAG 2.2 AA checks passed
 - [ ] No new issues introduced
 - [ ] HTML validation passed
 - [ ] Visual appearance preserved
@@ -381,12 +383,14 @@ Task(
 
 | Metric | Target |
 |--------|--------|
-| Fix application speed | <2 seconds per file |
-| WCAG compliance rate | 100% after remediation |
-| Fix accuracy | 98%+ appropriate fixes |
-| Regression rate | <1% |
-| Total remediation | <10 minutes for 200-file course |
+| Fix application | Every proposed edit is recorded in the remediation report |
+| WCAG review | Configured checks pass or unresolved findings are reported |
+| Fix quality | Review validator findings and sampled remediations |
+| Regression control | No new validator failures are introduced |
+| Completion | Every input file has a terminal remediation status |
 
 ---
 
-*This agent ensures 100% WCAG 2.2 AA compliance for all course content through intelligent automated remediation, supporting Courseforge's accessibility-first mission.*
+*This agent remediates detectable accessibility defects and produces evidence
+for the configured WCAG gates. Human review remains required for final
+conformance claims.*
