@@ -7,7 +7,6 @@ location, or a previously generated evaluation artifact.
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import html
 import json
@@ -17,8 +16,8 @@ from typing import Any, Callable
 
 import pytest
 
-from Trainforge.eval.manual_review import evaluate_manual_review_gate
 from Trainforge.eval.expanded_suite import _source_family_closure
+from Trainforge.eval.qualification.manual_review import evaluate_manual_review_gate
 from Trainforge.synthesis_holdout import (
     ENV_ENABLED,
     ENV_MANIFEST,
@@ -27,7 +26,6 @@ from Trainforge.synthesis_holdout import (
     load_synthesis_holdout_registry,
 )
 from Trainforge.synthesize_training import run_synthesis
-
 
 SPLITS = ("checkpoint_dev", "grounding_stress", "pedagogy_misconception")
 

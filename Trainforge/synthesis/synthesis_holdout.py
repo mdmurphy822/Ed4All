@@ -11,11 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
-from Trainforge.eval.manual_review import (
+from Trainforge.eval.expanded_suite import _source_family_closure
+from Trainforge.eval.qualification.manual_review import (
     ManualReviewError,
     evaluate_manual_review_gate,
 )
-from Trainforge.eval.expanded_suite import _source_family_closure
 
 ENV_ENABLED = "TRAINFORGE_SYNTHESIS_HOLDOUT_EXCLUSION"
 ENV_REGISTRY = "TRAINFORGE_SYNTHESIS_HOLDOUT_REGISTRY"

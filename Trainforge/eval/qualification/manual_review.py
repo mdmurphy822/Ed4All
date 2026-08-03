@@ -16,8 +16,9 @@ from typing import Any, Mapping, Sequence
 
 import jsonschema
 
-
-SCHEMA_PATH = Path(__file__).parent / "schemas" / "manual_eval_review.schema.json"
+SCHEMA_PATH = (
+    Path(__file__).parents[1] / "schemas" / "manual_eval_review.schema.json"
+)
 
 
 class ManualReviewError(ValueError):

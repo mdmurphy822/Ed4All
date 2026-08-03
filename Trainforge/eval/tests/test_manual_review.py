@@ -7,11 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from Trainforge.eval.manual_review import (
+from Trainforge.eval.qualification.manual_review import (
     ManualReviewError,
     evaluate_manual_review_gate,
 )
-
 
 CHECKS = {
     "assignment_binding": True,

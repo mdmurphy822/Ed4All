@@ -332,9 +332,11 @@ risk. Completed items are marked below.
    headline-delta summaries, and reproducibility exports form the cohesive
    `publication/` package. `Trainforge.eval.hf_model_index` remains a supported
    import facade for `eval_report_to_model_index` and `write_hf_readme`; new
-   code imports `Trainforge.eval.publication.hf_model_index`. Three supported
-   compatibility aliases remain at the package root, alongside 12 cohesive
-   orchestration/configuration peers. The exact flat cap is now 15.
+   code imports `Trainforge.eval.publication.hf_model_index`. Manual-review
+   artifact validation lives under `qualification/`; its former internal path
+   had no compatibility obligation. Three supported compatibility aliases
+   remain at the package root, alongside 11 cohesive orchestration and
+   configuration peers. The exact flat cap is now 14.
 4. **`SemantiK/data/` — DONE.** Dataset utilities now live under `alignment/`,
    `augmentation/`, `builders/`, `common/`, and `sources/`; two package-level
    entry modules remain flat and the exact cap is 2.
