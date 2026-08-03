@@ -81,9 +81,9 @@ def test_resolve_detects_split_brain(tmp_path):
 
 @pytest.mark.unit
 def test_resolve_no_twin_no_split_brain(tmp_path):
-    _populate(tmp_path, "phys-101")
-    identity = ci.resolve_course_identity("PHYS_101", libv2_root=tmp_path)
-    assert identity.slug == "phys-101"
+    _populate(tmp_path, "tst-901")
+    identity = ci.resolve_course_identity("TST_901", libv2_root=tmp_path)
+    assert identity.slug == "tst-901"
     assert identity.split_brain_detected is False
     assert identity.empty_skeleton_twins == []
 

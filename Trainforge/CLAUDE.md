@@ -32,7 +32,7 @@ package = parser.parse("/path/to/course.imscc")
 # Generate assessments (with optional decision capture)
 generator = AssessmentGenerator(capture=None)
 assessment = generator.generate(
-    course_code="INT_101",
+    course_code="TST_908",
     objective_ids=["TO-01", "TO-02"],
     bloom_levels=["understand", "apply"],
     question_count=10

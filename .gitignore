@@ -11,6 +11,14 @@ dist/
 *.egg-info/
 *.egg
 .eggs/
+*.dist-info/
+*.whl
+*.dll
+*.dylib
+*.onnx
+**/node_modules/
+**/.cache/
+pip-wheel-metadata/
 
 # Virtual environments
 venv/
@@ -227,6 +235,12 @@ schemas/training/schema_translation_catalog.*.yaml
 # =============================================================================
 plans/
 /plan/
+
+# Third-party IMS Common Cartridge / W3C XML schemas are operator-installed
+# dependencies, not Ed4All source. Keep the first-party installation README.
+/Courseforge/schemas/imscc/*.xsd
+/ms-playwright/
+/.cache/ms-playwright/
 
 # =============================================================================
 # Windows-from-WSL leftovers

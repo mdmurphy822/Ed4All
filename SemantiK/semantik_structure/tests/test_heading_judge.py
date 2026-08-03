@@ -469,7 +469,7 @@ def test_decision_capture_fires_with_dynamic_rationale(monkeypatch):
     prov, esc, tree = _prov(), _escalations(), []
     stub = _StubPost(content='{"levels": {"1": 4, "24": 3}}')
     hj.run_heading_judge(prov, tree, esc, post_fn=stub, use_cache=False,
-                         course_code="PHYS_101")
+                         course_code="TST_901")
     assert captured["init"]["phase"] == "semantik_conversion"
     assert captured["init"]["tool"] == "semantik"
     log = captured["log"]
@@ -2669,7 +2669,7 @@ def test_final_review_decision_capture_has_discriminator(monkeypatch):
 
     hj.run_final_review(_review_prov(), [], [],
                         post_fn=_StubPost('{"levels": {"21": 3}}'),
-                        use_cache=False, course_code="PHYS_101")
+                        use_cache=False, course_code="TST_901")
     log = captured["log"]
     assert log["decision_type"] == "structure_review"
     assert log["final_review"] is True

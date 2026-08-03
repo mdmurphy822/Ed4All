@@ -53,11 +53,11 @@ class TestDeriveCourseIdFromChunks:
         # mixing chunk shapes.)
         chunks = [
             {"id": "no-prefix"},
-            {"id": "bio_201_chunk_00042"},
+            {"id": "tst_904_chunk_00042"},
             {"id": "synthetic_course_chunk_00001"},
         ]
         # First match wins, even if later chunks have different prefixes.
-        assert _derive_course_id_from_chunks(chunks) == "BIO_201"
+        assert _derive_course_id_from_chunks(chunks) == "TST_904"
 
     def test_handles_non_dict_entries(self):
         # Defensive: skip entries that aren't dicts or lack id field.

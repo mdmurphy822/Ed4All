@@ -368,7 +368,7 @@ class LibV2Storage:
     - Course content (corpus, sources)
 
     Usage:
-        storage = LibV2Storage("INT_101")
+        storage = LibV2Storage("TST_908")
         storage.ensure_directories()
 
         # Get paths
@@ -388,7 +388,7 @@ class LibV2Storage:
         Initialize LibV2 storage for a course.
 
         Args:
-            course_id: Course identifier (e.g., "INT_101")
+            course_id: Course identifier (e.g., "TST_908")
             course_slug: URL-friendly slug (defaults to lowercase course_id with hyphens)
             auto_create: If True, create directories immediately
             libv2_root: Explicit LibV2 root override. Precedence (high → low):

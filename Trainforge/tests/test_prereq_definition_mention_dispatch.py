@@ -51,14 +51,14 @@ def _inputs():
     chunks = [
         {
             "id": "chunk_01",
-            "source": {"course_id": "BIO_101", "module_id": "m", "lesson_id": "l1"},
+            "source": {"course_id": "TST_905", "module_id": "m", "lesson_id": "l1"},
             "learning_outcome_refs": ["to-01"],
             "concept_tags": ["photosynthesis"],
             "chunk_type": "definition",
         },
         {
             "id": "chunk_02",
-            "source": {"course_id": "BIO_101", "module_id": "m", "lesson_id": "l2"},
+            "source": {"course_id": "TST_905", "module_id": "m", "lesson_id": "l2"},
             "learning_outcome_refs": ["to-02"],
             "concept_tags": ["photosynthesis"],
             "chunk_type": "explanation",

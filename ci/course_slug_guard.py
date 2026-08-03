@@ -61,8 +61,8 @@ Narrow and explicit, three tiers:
   * An inline ``slug-guard: allow`` marker on a source line skips that
     line — for a doc that must show a real slug as a forbidden example.
 
-Synthetic doc placeholders (``PHYS_101``, ``WF-20260420-abc12345``,
-``course-a``) need no allowlisting: the scheme patterns do not match them
+Synthetic doc placeholders (``<COURSE_CODE>``, ``<RUN_ID>``, ``course-a``)
+need no allowlisting: the scheme patterns do not match them
 by construction.
 
 Standalone:  ``python ci/course_slug_guard.py``  (exit 1 on violation).

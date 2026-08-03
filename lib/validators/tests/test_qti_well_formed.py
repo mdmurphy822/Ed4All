@@ -473,3 +473,21 @@ def test_non_qti_docs_skip_item_checks():
     codes = _codes(result)
     assert "QTI_NO_ANSWER_KEY" not in codes
     assert "QTI_UNSUPPORTED_PROFILE" not in codes
+
+
+def test_missing_schema_blocks_with_installation_link(monkeypatch):
+    """A missing external schema is a dependency failure, never a pass."""
+    pytest.importorskip("lxml")
+    import lib.validators.qti_well_formed as mod
+
+    monkeypatch.setattr(mod, "_resolve_xsd_path", lambda basename: None)
+    result = mod.QtiWellFormedValidator().validate(
+        _inputs(_well_formed_qti())
+    )
+
+    issue = next(i for i in result.issues if i.code == "QTI_XSD_MISSING")
+    assert result.passed is False
+    assert issue.severity == "critical"
+    assert "docs/operations/installation.md#ims-common-cartridge-schemas" in (
+        issue.suggestion or ""
+    )

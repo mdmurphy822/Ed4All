@@ -1,7 +1,8 @@
 """Track-L (L2) — CartridgeConformanceValidator.
 
 A FULL-CARTRIDGE strict-conformance gate that validates a *built* ``.imscc``
-package end-to-end against the vendored IMS Common Cartridge / QTI schema pack,
+package end-to-end against an operator-installed IMS Common Cartridge / QTI
+schema pack,
 so a cartridge that would silently fail (or import wrong) into an LMS is caught
 at the packaging boundary. This is the LMS-agnostic portability guarantee that
 replaces per-LMS testing: SPEC conformance is the contract, not per-vendor
@@ -20,18 +21,16 @@ assembled ``.imscc`` ZIP and audits the whole thing:
 
 (B) **Namespace-routed XSD conformance (the historical wrong-XSD failure
     class).** Every XML document in the cartridge — the manifest AND every
-    resource document — is validated against the vendored XSD whose
+    resource document — is validated against the installed XSD whose
     ``targetNamespace`` EQUALS the document's root-element namespace. The
-    ns→XSD map is built by scanning the vendored schema dir
-    (``Courseforge/schemas/imscc/`` + any nested vendor subdir) and reading
+    ns→XSD map is built by scanning the installed schema directory
+    (``Courseforge/schemas/imscc/``) and reading
     each ``.xsd``'s ``@targetNamespace`` — so routing is by root namespace,
-    never by filename, and a NEW vendored XSD (e.g. the CC manifest-profile
-    schema the fetch-window is meant to add) is picked up automatically with
-    no code change here. A schema violation emits
-    ``CARTRIDGE_XSD_INVALID`` (critical). When NO vendored XSD carries the
-    document's root namespace the check degrades to a de-duplicated
-    ``CARTRIDGE_XSD_MISSING`` (warning) and the programmatic checks below
-    still run. When ``lxml`` is absent every XSD check degrades to a single
+    never by filename. A schema violation emits
+    ``CARTRIDGE_XSD_INVALID`` (critical). A missing required CC 1.3 schema
+    emits blocking ``CARTRIDGE_XSD_MISSING``; unsupported cartridge versions
+    retain that code as a warning. When ``lxml`` is absent every XSD check
+    degrades to a single
     ``CARTRIDGE_LXML_MISSING`` (warning), mirroring the qti_well_formed
     graceful-degrade contract.
 
@@ -57,9 +56,9 @@ assembled ``.imscc`` ZIP and audits the whole thing:
 
 Severity contract (mirrors ``QtiWellFormedValidator``): the validator emits
 critical-severity issues for every genuine conformance break and
-warning-severity issues for the graceful-degrade codes
-(``CARTRIDGE_LXML_MISSING`` / ``CARTRIDGE_XSD_MISSING`` /
-``CARTRIDGE_UNKNOWN_CC_VERSION``). ``passed`` / ``action="block"`` derive from
+warning-severity issues for unavailable lxml, unsupported schema versions, and
+unknown cartridge versions. Required-schema absence is critical. ``passed`` /
+``action="block"`` derive from
 the critical count. The GATE that wires this after ``packaging`` is
 **warning day-1** (``severity: warning`` / ``on_fail: warn``) per the
 calibration precedent (``synthesized_quiz_distractor`` etc.) — the validator's
@@ -85,7 +84,7 @@ Cross-references:
 * ``Courseforge/scripts/packaging/package_multifile_imscc.py`` — the packager whose
   manifest shape / resource-type strings this validator asserts
   (``_ASSESSMENT_RES_TYPE`` + ``webcontent``).
-* ``Courseforge/schemas/imscc/`` — the vendored XSD dir scanned for the
+* ``Courseforge/schemas/imscc/`` — the operator-installed XSD directory for the
   ns→XSD routing map.
 """
 
@@ -199,7 +198,7 @@ def _normalize_zip_href(href: str) -> str:
 
 
 def _resolve_vendored_schema_dir() -> Optional[Path]:
-    """Locate the vendored ``Courseforge/schemas/imscc/`` dir (walk upward)."""
+    """Locate operator-installed IMSCC schemas (walk upward)."""
     here = Path(__file__).resolve()
     for parent in [here, *here.parents]:
         candidate = parent / "Courseforge" / "schemas" / "imscc"
@@ -537,17 +536,28 @@ class CartridgeConformanceValidator:
         )
 
 
+_REQUIRED_INSTALLED_XSD_NAMESPACES = {
+    "http://www.imsglobal.org/xsd/imscc_extensions/assignment",
+    "http://www.imsglobal.org/xsd/imsccv1p3/imsccauth_v1p3",
+    "http://www.imsglobal.org/xsd/imsccv1p3/imscp_v1p1",
+    "http://www.imsglobal.org/xsd/imsccv1p3/imscsmd_v1p0",
+    "http://www.imsglobal.org/xsd/imsccv1p3/imsdt_v1p3",
+    "http://ltsc.ieee.org/xsd/imsccv1p3/LOM/manifest",
+    "http://ltsc.ieee.org/xsd/imsccv1p3/LOM/resource",
+    "http://www.imsglobal.org/xsd/ims_qtiasiv1p2",
+    "http://www.w3.org/XML/1998/namespace",
+}
+
+
 class _XsdRouter:
-    """Lazy ns→``lxml.XMLSchema`` router built from the vendored schema dir.
+    """Lazy ns→``lxml.XMLSchema`` router built from installed schemas.
 
     Scans ``Courseforge/schemas/imscc/`` (recursively — nested vendor subdirs
     included) once, reading each ``.xsd``'s ``@targetNamespace`` to build a
-    ``{namespace: xsd_path}`` map. ``schema_for(ns)`` lazily compiles (and
-    caches) the matching XMLSchema. Every failure mode (lxml absent, no XSD
-    for the namespace, XSD load error) returns ``(None, <warning GateIssue>)``
-    so the caller degrades gracefully — this is what makes the validator work
-    TODAY (only the 3 resource XSDs vendored) and auto-upgrade when the CC
-    manifest-profile XSDs are vendored.
+    ``{namespace: xsd_path}`` map. ``schema_for(ns)`` lazily compiles and
+    caches the matching XMLSchema. Missing or unreadable schemas fail loudly;
+    only the separately installed ``lxml`` Python dependency retains its
+    established warning behavior.
     """
 
     def __init__(self) -> None:
@@ -604,14 +614,24 @@ class _XsdRouter:
 
         xsd_path = self._ensure_map().get(ns)
         if xsd_path is None:
+            required = ns in _REQUIRED_INSTALLED_XSD_NAMESPACES
             return None, GateIssue(
-                severity="warning",
+                severity="critical" if required else "warning",
                 code="CARTRIDGE_XSD_MISSING",
                 message=(
-                    f"no vendored XSD carries targetNamespace {ns!r}; skipping "
-                    "the XSD conformance check for documents with that root "
-                    "namespace (vendor the matching CC/QTI schema to enable "
-                    "it). Programmatic checks still run."
+                    ("required IMSCC XSD" if required else "no supported XSD")
+                    + f" for targetNamespace {ns!r} is installed; "
+                    + (
+                        "cartridge conformance cannot be established."
+                        if required
+                        else "XSD validation is unavailable for that version."
+                    )
+                ),
+                suggestion=(
+                    "Install the third-party schemas exactly as documented in "
+                    "docs/operations/installation.md#ims-common-cartridge-schemas."
+                    if required
+                    else "Use the documented Common Cartridge 1.3 profile."
                 ),
             )
 
@@ -619,17 +639,21 @@ class _XsdRouter:
 
         try:
             schema = etree.XMLSchema(etree.parse(str(xsd_path)))
-        except Exception as exc:  # noqa: BLE001 — any lxml load failure degrades
+        except Exception as exc:  # noqa: BLE001 — surface dependency failures
             self._compiled[ns] = None
             return None, GateIssue(
-                severity="warning",
+                severity="critical",
                 code="CARTRIDGE_XSD_MISSING",
                 message=(
-                    f"failed to load vendored XSD {xsd_path.name} for "
+                    f"failed to load required IMSCC XSD {xsd_path.name} for "
                     f"namespace {ns!r}: {exc.__class__.__name__}: {exc}; "
-                    "skipping XSD check for that namespace."
+                    "cartridge conformance cannot be established."
                 ),
                 location=str(xsd_path),
+                suggestion=(
+                    "Reinstall the schema set using "
+                    "docs/operations/installation.md#ims-common-cartridge-schemas."
+                ),
             )
         self._compiled[ns] = schema
         return schema, None

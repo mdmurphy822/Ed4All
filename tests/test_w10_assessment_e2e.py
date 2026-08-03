@@ -34,7 +34,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 # The packager adds its own scripts dir to sys.path at import time (for its
 # sibling render_learning_objectives_page / validate_page_objectives imports).
-from Courseforge.scripts import qti_emitter
+from Courseforge.scripts.packaging import qti_emitter
 from Courseforge.scripts.packaging.package_multifile_imscc import package_imscc
 from gui.services import quiz_service
 
@@ -63,7 +63,7 @@ def _assessment_data() -> dict:
     return {
         "assessment_id": "week_03_quiz",
         "title": "Week 3 Quiz",
-        "course_code": "PHYS_101",
+        "course_code": "TST_901",
         "questions": [
             {
                 "question_id": "q_mc_01",
@@ -193,14 +193,14 @@ class TestW10AssessmentE2E:
         """Build + package once; the assertions share the produced cartridge."""
         root = tmp_path_factory.mktemp("w10_e2e")
         content_dir = _build_content_dir(root)
-        output = root / "PHYS_101.imscc"
+        output = root / "TST_901.imscc"
 
         # The REAL packager. skip_validation=True keeps the test off the
         # per-week LO contract (not what this seam exercises).
         package_imscc(
             content_dir,
             output,
-            "PHYS_101",
+            "TST_901",
             "Physics 101",
             skip_validation=True,
             emit_objectives_page=False,

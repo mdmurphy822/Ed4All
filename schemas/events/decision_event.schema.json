@@ -23,12 +23,12 @@
     "course_id": {
       "type": ["string", "null"],
       "pattern": "^[A-Z][A-Z0-9_-]{1,}$",
-      "description": "Normalized course code. Admits both legacy underscore form (e.g., MTH_101) and post-Wave-93 hyphenated multi-segment slugs (e.g., DEMO-ALG-201-2)."
+      "description": "Normalized course code. Admits both legacy underscore form (e.g., TST_907) and post-Wave-93 hyphenated multi-segment slugs (e.g., DEMO-ALG-201-2)."
     },
     "module_id": {
       "type": ["string", "null"],
       "pattern": "^[A-Z]{2,8}_[0-9]{3}_W[0-9]{2}_M[0-9]{2}$",
-      "description": "Module identifier (e.g., MTH_101_W01_M02)"
+      "description": "Module identifier (e.g., TST_907_W01_M02)"
     },
     "artifact_id": {
       "type": ["string", "null"],

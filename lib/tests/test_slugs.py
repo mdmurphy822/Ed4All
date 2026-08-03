@@ -565,7 +565,7 @@ def test_deslugify_concept_false_positive_guards():
 # Representative course names: codes, mixed case, spaces, punctuation, leading
 # articles, and a >50-char name that exercises the truncation rule.
 _LIBV2_SLUG_INPUTS = [
-    "PHYS_101",
+    "TST_901",
     "TST_101",
     "tst-101",
     "CS_101_Intro",

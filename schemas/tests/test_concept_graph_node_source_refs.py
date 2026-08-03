@@ -86,7 +86,7 @@ def _base_node(**overrides: Any) -> Dict[str, Any]:
 
 def _valid_ref(**overrides: Any) -> Dict[str, Any]:
     base = {
-        "sourceId": "semantik:science_of_learning#s3_c0",
+        "sourceId": "semantik:source_alpha#s3_c0",
         "role": "primary",
     }
     base.update(overrides)
@@ -207,8 +207,8 @@ def test_node_with_source_refs_and_course_id_validates():
     """Scoped concept IDs (Worker O) stay compatible with source_refs."""
     validator = _build_validator()
     node = _base_node(
-        id="INT_101:cognitive-load",
-        course_id="INT_101",
+        id="TST_908:cognitive-load",
+        course_id="TST_908",
         source_refs=[_valid_ref()],
     )
     graph = _base_graph(nodes=[node])

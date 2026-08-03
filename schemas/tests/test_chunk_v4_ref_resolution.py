@@ -124,14 +124,14 @@ def _sample_chunk_with_source_references() -> Dict[str, Any]:
     ``content_type.schema.json`` (external).
     """
     return {
-        "id": "sample_101_chunk_00001",
+        "id": "tst_903_chunk_00001",
         "schema_version": "v4",
         "chunk_type": "explanation",
         "text": "Sample.",
         "html": "<p>Sample.</p>",
         "follows_chunk": None,
         "source": {
-            "course_id": "SAMPLE_101",
+            "course_id": "TST_903",
             "module_id": "m1",
             "lesson_id": "l1",
             "source_references": [

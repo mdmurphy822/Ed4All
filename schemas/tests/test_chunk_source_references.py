@@ -75,7 +75,7 @@ def _build_validator():
 
 def _base_source() -> Dict[str, Any]:
     return {
-        "course_id": "SAMPLE_101",
+        "course_id": "TST_903",
         "module_id": "week_01",
         "lesson_id": "lesson_01",
     }
@@ -86,7 +86,7 @@ def _base_chunk(source_overrides: Dict[str, Any] = None) -> Dict[str, Any]:
     if source_overrides:
         source.update(source_overrides)
     return {
-        "id": "sample_101_chunk_00001",
+        "id": "tst_903_chunk_00001",
         "schema_version": "v4",
         "chunk_type": "explanation",
         "text": "Sample chunk content for testing.",
@@ -104,7 +104,7 @@ def _base_chunk(source_overrides: Dict[str, Any] = None) -> Dict[str, Any]:
 
 def _valid_ref(**overrides: Any) -> Dict[str, Any]:
     base = {
-        "sourceId": "semantik:science_of_learning#s3_c0",
+        "sourceId": "semantik:source_alpha#s3_c0",
         "role": "primary",
     }
     base.update(overrides)

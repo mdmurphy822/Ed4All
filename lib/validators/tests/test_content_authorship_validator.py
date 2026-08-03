@@ -146,7 +146,7 @@ def test_partial_runtime_degradation_warns(tmp_path):
 
 
 def test_builder_globs_export_dir(tmp_path):
-    export = tmp_path / "PROJ-X"
+    export = tmp_path / "project-theta"
     content_dir = export / "03_content_development"
     content_dir.mkdir(parents=True)
     _prov(export, llm_authoring_intended=True)  # writes into export/

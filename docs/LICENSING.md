@@ -4,6 +4,14 @@ This document is the canonical reference for Ed4All's licensing and Terms-of-Ser
 
 The repo-root `NOTICE` file is the short attribution summary (Apache-2.0 dependency notices + synthesis/embedding model attributions, e.g. Llama 3.3's "Built with Llama"). It deliberately points back here for the long-form posture; this file is the source of truth and `NOTICE` is the redistribution-facing acknowledgment. Keep them consistent: a new attributable dependency or model gets a `NOTICE` line and (when it selects a synthesis/embedding backend) a row in the tables below.
 
+IMS Common Cartridge validation also consumes operator-installed XML Schema
+files published by IMS Global Learning Consortium/1EdTech and W3C. Ed4All does
+not distribute those third-party payloads. Operators obtain them from their
+official locations, preserve their embedded copyright, IPR, license, and
+distribution notices, and install them according to
+`Courseforge/schemas/imscc/README.md`. This records provenance only; the
+upstream notices remain the authoritative terms.
+
 ---
 
 ## Purpose

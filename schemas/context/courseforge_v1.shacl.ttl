@@ -74,7 +74,7 @@ cfshapes:CourseModuleShape
     sh:maxCount 1 ;
     sh:datatype xsd:string ;
     sh:pattern "^[A-Z]{2,}_?\\d{3,}$" ;
-    sh:message "courseCode must match ^[A-Z]{2,}_?\\d{3,}$ (e.g., SAMPLE_101, ACCESS_201)." ;
+    sh:message "courseCode must match ^[A-Z]{2,}_?\\d{3,}$ (for example, TST_900)." ;
   ] ;
 
   sh:property [

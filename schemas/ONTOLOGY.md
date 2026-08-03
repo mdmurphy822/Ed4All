@@ -992,9 +992,9 @@ Sizes (file count + total lines per subfolder, regenerated 2026-05-07):
 
 Append-only newline-delimited JSON files — one record per decision event. Example paths:
 ```
-training-captures/courseforge/INT_101/phase_content-generator/decisions_20260419_101530.jsonl
+training-captures/courseforge/TST_908/phase_content-generator/decisions_20260419_101530.jsonl
 training-captures/trainforge/ACCESS_201/phase_question-generation/decisions_20260419_101530.jsonl
-training-captures/semantik/MTH_101/decisions_textbook.pdf_20260419_101530.jsonl
+training-captures/semantik/TST_907/decisions_textbook.pdf_20260419_101530.jsonl
 ```
 
 Hash-chained variant (`HashChainedEvent`) wraps each record with `{seq, prev_hash, event_hash, timestamp, event}` to make the ledger tamper-evident. `lib/hash_chain.py` is the writer; `lib/replay_engine.py` verifies chains on read.
@@ -1009,7 +1009,7 @@ Every identifier scheme currently in use.
 |---|---|---|---|
 | LibV2 course slug | `^[a-z0-9][a-z0-9-]*[a-z0-9]$`, 3–100 chars | `wcag-22-aa-compliance` | `LibV2/tools/libv2/importer.py:28` (`slugify`) |
 | Slug-uniqueness | suffix `-<N>` where N ≥ 2 | `wcag-22-aa-compliance-2` | `importer.py:49` (`ensure_unique_slug`) |
-| Course code | `^[A-Z]{2,8}_[0-9]{3}$` (decision event), `^[A-Z]{2,3}_[0-9]{3}$` (session annotation — narrower) | `ACCESS_201`, `INT_101` | Hand-assigned |
+| Course code | `^[A-Z]{2,8}_[0-9]{3}$` (decision event), `^[A-Z]{2,3}_[0-9]{3}$` (session annotation — narrower) | `ACCESS_201`, `TST_908` | Hand-assigned |
 | LO ID — terminal | `TO-NN` | `TO-05` | Course-outliner agent |
 | LO ID — chapter | `CO-NN` | `CO-03` | Objective-synthesizer |
 | LO ID — week-scoped (legacy) | `WNN-CO-NN` | `W03-CO-01` | Deprecated in favor of canonical CO-NN; week-prefix normalization at `generate_course.py:605-613` |

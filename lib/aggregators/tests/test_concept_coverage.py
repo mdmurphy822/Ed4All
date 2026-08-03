@@ -185,7 +185,7 @@ class TestSchemaValidation:
         _write_graph(tmp_path, graph)
         out_path = tmp_path / "concept_coverage.json"
         ConceptCoverageAggregator(
-            course_code="PHYS_101", run_id="WF-1",
+            course_code="TST_901", run_id="WF-1",
             libv2_course_path=tmp_path,
         ).write(out_path)
         report = json.loads(out_path.read_text(encoding="utf-8"))

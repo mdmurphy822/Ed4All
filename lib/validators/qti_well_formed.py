@@ -14,7 +14,8 @@ QTI ``<questestinterop>`` document:
     (critical, ``action="block"``).
 
 (b) **XSD conformance** — when ``lxml`` is installed, validate the document
-    against the vendored XSD MATCHING ITS ROOT NAMESPACE (assessment-tail
+    against the operator-installed XSD matching its root namespace
+    (assessment-tail
     fix 2026-07-19): QTI ``questestinterop`` → ``ccv1p3_qtiasiv1p2p1.xsd``;
     imsdt discussion ``topic`` → ``ccv1p3_imsdt_v1p3.xsd``; ``assignment``
     → ``cc_extresource_assignmentv1p0.xsd`` (all under
@@ -41,8 +42,9 @@ Severity contract:
 
 * The validator emits **critical-severity** GateIssues for every malformed
   case so a cartridge that would silently fail to import is visible to
-  downstream consumers. ``QTI_LXML_MISSING`` is the sole warning-severity
-  code (graceful degrade).
+  downstream consumers. Missing/unreadable schema files emit the critical
+  ``QTI_XSD_MISSING`` code. ``QTI_LXML_MISSING`` is the sole warning-severity
+  dependency code.
 * On any critical issue, ``action="block"`` and ``passed=False``; otherwise
   ``action`` is ``None`` and ``passed=True``.
 
@@ -119,7 +121,7 @@ _SUPPORTED_ITEM_PROFILES = _AUTO_GRADABLE_PROFILES | _MANUAL_PROFILES
 # document types into ``06_assessments/`` — QTI 1.2 assessments
 # (``questestinterop``), discussion topics (``imsdt`` ``topic``), and
 # assignment learning-application resources (``assignment``). Each has its
-# OWN vendored XSD under ``Courseforge/schemas/imscc/``. The pre-fix gate
+# OWN operator-installed XSD under ``Courseforge/schemas/imscc/``. The pre-fix gate
 # validated every ``*.xml`` against the QTI XSD only, so every (schema-valid)
 # discussion/assignment doc failed with "No matching global declaration
 # available for the validation root". The gate now routes each document to
@@ -129,7 +131,7 @@ _QTI_ROOT_NS = "http://www.imsglobal.org/xsd/ims_qtiasiv1p2"
 _IMSDT_ROOT_NS = "http://www.imsglobal.org/xsd/imsccv1p3/imsdt_v1p3"
 _ASSIGNMENT_ROOT_NS = "http://www.imsglobal.org/xsd/imscc_extensions/assignment"
 
-# doc_kind -> vendored XSD basename. ``qti`` doubles as the fallback for
+# doc_kind -> installed XSD basename. ``qti`` doubles as the fallback for
 # unknown roots so a mystery document still fails LOUDLY against the QTI
 # schema rather than silently passing.
 _XSD_BY_DOC_KIND = {
@@ -156,10 +158,10 @@ def _doc_kind_of_root(root: ET.Element) -> str:
 
 
 def _resolve_xsd_path(basename: str = "ccv1p3_qtiasiv1p2p1.xsd") -> Optional[Path]:
-    """Locate a vendored XSD under ``Courseforge/schemas/imscc/``.
+    """Locate an operator-installed XSD under ``Courseforge/schemas/imscc/``.
 
-    Walks up from this file until it finds the vendored XSD. Returns ``None``
-    when not found (validator degrades to well-formed-only with a warning).
+    Walks up from this file until it finds the installed XSD. Returns ``None``
+    when not found; the caller emits a blocking dependency issue.
     """
     here = Path(__file__).resolve()
     for parent in [here, *here.parents]:
@@ -392,12 +394,11 @@ class QtiWellFormedValidator:
     def _load_xsd_validator(
         basename: str = "ccv1p3_qtiasiv1p2p1.xsd",
     ) -> Tuple[Any, Optional[GateIssue]]:
-        """Lazily build the lxml ``XMLSchema`` validator for one vendored XSD.
+        """Build the lxml validator for one operator-installed XSD.
 
         Returns ``(schema_or_None, lxml_or_schema_issue_or_None)``. When
-        ``lxml`` is absent, returns ``(None, QTI_LXML_MISSING warning)`` —
-        the graceful-degrade path. When the XSD file can't be located /
-        loaded, returns ``(None, warning)`` so the XSD dimension passes.
+        ``lxml`` is absent, returns ``(None, QTI_LXML_MISSING warning)``.
+        A missing or unreadable schema is a critical dependency failure.
         """
         try:
             from lxml import etree  # type: ignore
@@ -417,27 +418,34 @@ class QtiWellFormedValidator:
         xsd_path = _resolve_xsd_path(basename)
         if xsd_path is None:
             return None, GateIssue(
-                severity="warning",
-                code="QTI_LXML_MISSING",
+                severity="critical",
+                code="QTI_XSD_MISSING",
                 message=(
-                    f"{basename} not found (searched upward "
-                    f"from {Path(__file__).resolve()}); skipping XSD "
-                    "conformance check for this document type."
+                    f"required IMSCC schema {basename} is not installed in "
+                    "Courseforge/schemas/imscc; XSD conformance cannot run."
+                ),
+                suggestion=(
+                    "Install the third-party schemas exactly as documented in "
+                    "docs/operations/installation.md#ims-common-cartridge-schemas."
                 ),
             )
 
         try:
             schema_doc = etree.parse(str(xsd_path))
             return etree.XMLSchema(schema_doc), None
-        except Exception as exc:  # noqa: BLE001 — any lxml load failure degrades
+        except Exception as exc:  # noqa: BLE001 — surface dependency failures
             return None, GateIssue(
-                severity="warning",
-                code="QTI_LXML_MISSING",
+                severity="critical",
+                code="QTI_XSD_MISSING",
                 message=(
-                    f"failed to load QTI XSD at {xsd_path}: "
-                    f"{exc.__class__.__name__}: {exc}; skipping XSD check."
+                    f"required IMSCC schema {xsd_path.name} could not be "
+                    f"loaded: {exc.__class__.__name__}: {exc}."
                 ),
                 location=str(xsd_path),
+                suggestion=(
+                    "Reinstall the schema set using "
+                    "docs/operations/installation.md#ims-common-cartridge-schemas."
+                ),
             )
 
     def _validate_one(

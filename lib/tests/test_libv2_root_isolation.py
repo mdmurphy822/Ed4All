@@ -101,23 +101,23 @@ class TestLibV2StoragePrecedence:
         env_root = tmp_path / "env"
         explicit = tmp_path / "explicit"
         monkeypatch.setenv("ED4ALL_LIBV2_ROOT", str(env_root))
-        s = LibV2Storage("INT_101", libv2_root=str(explicit))
-        assert s.catalog_path == explicit / "catalog" / "INT_101"
-        assert s.course_path == explicit / "courses" / "int-101"
+        s = LibV2Storage("TST_908", libv2_root=str(explicit))
+        assert s.catalog_path == explicit / "catalog" / "TST_908"
+        assert s.course_path == explicit / "courses" / "tst-908"
 
     def test_env_root_used_when_no_kwarg(self, tmp_path, monkeypatch):
         env_root = tmp_path / "env"
         monkeypatch.setenv("ED4ALL_LIBV2_ROOT", str(env_root))
-        s = LibV2Storage("INT_101")
-        assert s.catalog_path == env_root / "catalog" / "INT_101"
-        assert s.course_path == env_root / "courses" / "int-101"
+        s = LibV2Storage("TST_908")
+        assert s.catalog_path == env_root / "catalog" / "TST_908"
+        assert s.course_path == env_root / "courses" / "tst-908"
 
     def test_default_root_when_unset(self, monkeypatch):
         monkeypatch.delenv("ED4ALL_LIBV2_ROOT", raising=False)
-        s = LibV2Storage("INT_101")
+        s = LibV2Storage("TST_908")
         # Resolves to the call-time lib.paths.LIBV2_PATH (session tmp
         # under the autouse isolation) — NOT the real in-tree root.
-        assert s.catalog_path == paths.LIBV2_PATH / "catalog" / "INT_101"
+        assert s.catalog_path == paths.LIBV2_PATH / "catalog" / "TST_908"
         assert not str(s.catalog_path).startswith(str(REAL_LIBV2))
 
     def test_auto_create_default_leg_never_touches_real_tree(

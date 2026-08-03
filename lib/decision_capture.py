@@ -186,8 +186,8 @@ def normalize_course_code(raw: str) -> str:
 
     Examples
     --------
-    >>> normalize_course_code("MTH_101")
-    'MTH_101'
+    >>> normalize_course_code("TST_907")
+    'TST_907'
     >>> normalize_course_code("Ed4All")  # doctest: +ELLIPSIS
     'ED_...'
     """
@@ -317,7 +317,7 @@ class DecisionCapture:
         Initialize decision capture.
 
         Args:
-            course_code: Course code (e.g., "MTH_101")
+            course_code: Course code (e.g., "TST_907")
             phase: Pipeline phase (e.g., "input-research", "content-generator")
             tool: "semantik", "courseforge", or "trainforge"
             streaming: If True, write decisions immediately to disk (crash-safe)
@@ -354,7 +354,7 @@ class DecisionCapture:
                 or f"{tool}_{course_code}_{self.session_id}"
             )
 
-        self.course_id = course_code.replace(' ', '_').upper()  # Normalized: "MTH_101"
+        self.course_id = course_code.replace(' ', '_').upper()  # Normalized: "TST_907"
         self.module_id: Optional[str] = None  # Set per-module via set_module_context()
         self.artifact_id: Optional[str] = None  # Hash of produced content
 

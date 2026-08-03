@@ -112,7 +112,6 @@ script:nvidia_corpus_to_semantik.py
 # Seeded at dirs holding >=8 loose files; see repo-organization.md § 7.
 
 flatcap:Courseforge/generators=8
-flatcap:Courseforge/schemas/imscc=9
 flatcap:LibV2/tools/libv2=28
 flatcap:MCP/tools=11
 flatcap:SemantiK/scripts=3

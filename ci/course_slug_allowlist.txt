@@ -11,7 +11,7 @@
 #
 # The guard's own module and test are always allowed in code (they hold the
 # patterns and planted fixtures) and need no entry here. Synthetic doc
-# placeholders (PHYS_101, WF-20260420-abc12345, course-a) never match the
+# placeholders (<COURSE_CODE>, <RUN_ID>, course-a) never match the
 # scheme patterns and need no entry either. Prefer marking a single doc line
 # with the inline 'slug-guard: allow' comment over allowlisting a whole file.
 

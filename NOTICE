@@ -95,3 +95,14 @@ Other dependencies (beautifulsoup4 [MIT], lxml [BSD], pyyaml [MIT], click [BSD],
 jsonschema [MIT], pydantic [MIT], rdflib [BSD], pyld [BSD], fastapi/uvicorn
 [MIT/BSD], torch [BSD], trl [Apache-2.0]) carry permissive licenses; see each
 project's distribution for the authoritative terms.
+
+================================================================================
+Operator-installed validation schemas
+================================================================================
+
+IMS Common Cartridge validation uses operator-installed XML Schema files from
+IMS Global Learning Consortium (now 1EdTech Consortium) and the W3C XML
+namespace schema. These third-party payloads are not distributed in this
+repository. Their embedded copyright, IPR, license, and distribution notices
+are authoritative and must remain intact. Provenance and placement are
+documented in Courseforge/schemas/imscc/README.md.

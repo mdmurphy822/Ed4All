@@ -185,13 +185,13 @@ class TestAggregator:
         agg = CourseforgeValidationReport(
             project_path=tmp_path,
             phase_outputs=phase_outputs,
-            course_code="PHYS_101",
+            course_code="TST_901",
             run_id="WF-W5-TEST",
         )
         report = agg.build()
 
         assert report["schema_version"] == SCHEMA_VERSION
-        assert report["course_code"] == "PHYS_101"
+        assert report["course_code"] == "TST_901"
         assert report["run_id"] == "WF-W5-TEST"
         assert report["status"] == "pass"
 
@@ -411,7 +411,7 @@ def test_post_loop_aggregator_writes_top_level_report(tmp_path, monkeypatch):
 
     # Pre-stage a project export with one per-phase report on disk so
     # the aggregator has something to walk.
-    project_path = tmp_path / "PROJ-W5_INT-20260505"
+    project_path = tmp_path / "project-gamma"
     _write_report(
         project_path,
         "inter_tier_validation",
@@ -431,7 +431,7 @@ def test_post_loop_aggregator_writes_top_level_report(tmp_path, monkeypatch):
     phase_outputs = {
         "objective_extraction": {
             "_completed": True,
-            "project_id": "PROJ-W5_INT-20260505",
+            "project_id": "project-gamma",
             "project_path": str(project_path),
         },
         "inter_tier_validation": {
@@ -781,7 +781,7 @@ class TestManifestHashResults:
     ):
         # Prepare a synthetic LibV2 model_card.json under a custom root.
         libv2_root = tmp_path / "LibV2"
-        course_slug = "phys_101"
+        course_slug = "tst_901"
         models_dir = libv2_root / "courses" / course_slug / "models"
         models_dir.mkdir(parents=True, exist_ok=True)
         adapter_dir = models_dir / "adapter-v1"
@@ -812,9 +812,9 @@ class TestManifestHashResults:
         }
         # ``project_path`` is irrelevant; we explicitly pass libv2_root.
         agg = CourseforgeValidationReport(
-            project_path=tmp_path / "Courseforge" / "exports" / "PROJ-PHYS_101-x",
+            project_path=tmp_path / "Courseforge" / "exports" / "PROJ-TST_901-x",
             phase_outputs=phase_outputs,
-            course_code="PHYS_101",
+            course_code="TST_901",
             run_id="WF-MANIFEST",
             libv2_root=libv2_root,
         )

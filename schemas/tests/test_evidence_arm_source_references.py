@@ -94,7 +94,7 @@ def _base_graph(edges: List[Dict[str, Any]] = None) -> Dict[str, Any]:
 
 def _valid_ref(**overrides: Any) -> Dict[str, Any]:
     base = {
-        "sourceId": "semantik:science_of_learning#s3_c0",
+        "sourceId": "semantik:source_alpha#s3_c0",
         "role": "primary",
     }
     base.update(overrides)

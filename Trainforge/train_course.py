@@ -8,13 +8,13 @@ LibV2 course and writes ``models/<model_id>/`` back into the same slug.
 
 Wired through the canonical CLI as::
 
-    ed4all run trainforge_train --course-name TST_101 \\
+    ed4all run trainforge_train --course-name <COURSE_NAME> \\
         --base-model qwen2.5-1.5b
 
 …via :mod:`cli.commands.run`. This module also functions as a direct
 script::
 
-    python -m Trainforge.train_course --course-code TST_101 \\
+    python -m Trainforge.train_course --course-code <COURSE_CODE> \\
         --base-model qwen2.5-1.5b --dry-run
 
 Wave 90 ships dry-run + LocalBackend. RunPod backend is stubbed
@@ -51,11 +51,11 @@ logger = logging.getLogger(__name__)
 
 
 def _slugify(course_code: str) -> str:
-    """Convert ``TST_101`` → ``tst-101`` to match the LibV2 slug convention.
+    """Convert ``<COURSE_CODE>`` → ``<course-slug>`` for LibV2 storage.
 
     Delegates to the canonical ``lib.ontology.slugs.libv2_course_slug`` so the
     resolved slug matches the archive directory ``LibV2/tools/libv2/importer.py``
-    created. ``train_course.py`` accepts either the course-code form (``TST_101``)
+    created. ``train_course.py`` accepts either the course-code form (``<COURSE_CODE>``)
     or the slug form (``tst-101``) for ergonomics — both resolve identically.
     The prior local implementation only swapped ``_``→``-`` and left spaces /
     punctuation intact, so it diverged from the importer on any non-code input.
@@ -68,7 +68,7 @@ def _slugify(course_code: str) -> str:
     "--course-code",
     required=True,
     help=(
-        "Course code (TST_101) or LibV2 slug (tst-101). The runner "
+        "Course code (<COURSE_CODE>) or LibV2 slug (<course-slug>). The runner "
         "resolves both via _slugify."
     ),
 )
@@ -131,7 +131,7 @@ def train_course_command(
     Example:
 
     \b
-        python -m Trainforge.train_course --course-code TST_101 \\
+        python -m Trainforge.train_course --course-code <COURSE_CODE> \\
             --base-model qwen2.5-1.5b --dry-run
 
     Modes:

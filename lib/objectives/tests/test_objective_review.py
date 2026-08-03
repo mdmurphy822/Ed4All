@@ -708,7 +708,7 @@ def test_review_objectives_emits_remap_counters(monkeypatch):
     result = review_objectives(
         terminals=obj["terminals"],
         chapter_objectives=obj["chapter_objectives"],
-        course_name="BIO_101",
+        course_name="TST_905",
         capture=capture,
         embedder=_Embed(),
         client=object(),
@@ -768,7 +768,7 @@ def test_review_objectives_emits_decision_capture(monkeypatch):
     result = review_objectives(
         terminals=obj["terminals"],
         chapter_objectives=obj["chapter_objectives"],
-        course_name="BIO_101",
+        course_name="TST_905",
         capture=capture,
         embedder=_Embed(),
         client=object(),  # non-None so client construction doesn't need httpx
@@ -786,7 +786,7 @@ def test_review_objectives_emits_decision_capture(monkeypatch):
     assert "statements_adjusted=" in rationale
     assert "statements_reverted_for_grounding=" in rationale
     assert "bloom_edits_applied=" in rationale
-    assert "BIO_101" in rationale or "course-planning" in rationale
+    assert "TST_905" in rationale or "course-planning" in rationale
     assert "nvidia" in rationale
     # source_refs untouched.
     assert _source_refs_snapshot(obj["chapter_objectives"]) == refs_before
@@ -879,7 +879,7 @@ def test_review_objectives_chunked_reviews_all_cos_and_tos(monkeypatch):
     result = review_objectives(
         terminals=obj["terminals"],
         chapter_objectives=obj["chapter_objectives"],
-        course_name="BIO_101",
+        course_name="TST_905",
         capture=capture,
         embedder=_Embed(),
         client=object(),
@@ -957,7 +957,7 @@ def test_review_objectives_one_chunk_fails_others_apply(monkeypatch):
     result = review_objectives(
         terminals=obj["terminals"],
         chapter_objectives=obj["chapter_objectives"],
-        course_name="BIO_101",
+        course_name="TST_905",
         capture=capture,
         embedder=_Embed(),
         client=object(),
@@ -1018,7 +1018,7 @@ def test_default_off_is_noop(monkeypatch):
     result = review_objectives(
         terminals=obj["terminals"],
         chapter_objectives=obj["chapter_objectives"],
-        course_name="BIO_101",
+        course_name="TST_905",
         capture=capture,
     )
     assert result == {"enabled": False, "applied": False, "counters": {}}
@@ -1047,7 +1047,7 @@ def test_unparseable_response_keeps_originals(monkeypatch):
     result = review_objectives(
         terminals=obj["terminals"],
         chapter_objectives=obj["chapter_objectives"],
-        course_name="BIO_101",
+        course_name="TST_905",
         capture=capture,
         embedder=_Embed(),
         client=object(),

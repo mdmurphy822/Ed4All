@@ -209,7 +209,7 @@ def test_fully_populated_card_round_trips():
         "x",
         "qwen2-5-1-5b-tst-101-v1",
         "smollm2-1-7b-bio-201-v3",
-        "phi-3-5-mini-chem-101",
+        "model-tst-900",
     ],
 )
 def test_valid_model_id_shapes(model_id):

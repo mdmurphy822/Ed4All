@@ -172,7 +172,7 @@ def test_workflow_runner_dispatches_post_rewrite_validation_handler_to_disk(
         workflow_params={
             "course_name": "PHASE4_TEST",
             "blocks_final_path": str(tmp_path / "blocks_final.jsonl"),
-            "project_id": "PROJ-PHASE4-TEST",
+            "project_id": "project-alpha",
         },
         phase_outputs={},
     )
@@ -284,7 +284,7 @@ def test_workflow_runner_synthetic_task_carries_routed_params_to_handler(
         workflow_params={
             "course_name": "PHASE4_TEST",
             "blocks_final_path": "/tmp/canned/blocks_final.jsonl",
-            "project_id": "PROJ-CARRY-PARAMS",
+            "project_id": "project-beta",
         },
         phase_outputs={},
     )
@@ -326,7 +326,7 @@ def test_workflow_runner_synthetic_task_carries_routed_params_to_handler(
         "handler must receive kwargs — empty kwargs would mean the "
         "synthetic task lost its params on the way through the executor"
     )
-    assert received.get("project_id") == "PROJ-CARRY-PARAMS", (
+    assert received.get("project_id") == "project-beta", (
         f"project_id must propagate routed_params -> synthetic task "
         f"-> handler kwargs (got {received.get('project_id')!r})"
     )

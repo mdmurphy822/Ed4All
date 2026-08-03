@@ -484,7 +484,7 @@ def test_synthesized_objectives_path_loaded(tmp_path: Path):
     """Path-based input loads + flattens terminal + chapter objectives."""
     validator = AbcdObjectiveValidator()
     payload = {
-        "course_name": "BIO_101",
+        "course_name": "TST_905",
         "duration_weeks": 8,
         "terminal_objectives": [
             {

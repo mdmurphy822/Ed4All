@@ -57,7 +57,7 @@ def _validator():
 
 def _valid_ref(**overrides: Any) -> Dict[str, Any]:
     base = {
-        "sourceId": "dart:science_of_learning#s3_c0",
+        "sourceId": "dart:source_alpha#s3_c0",
         "role": "primary",
     }
     base.update(overrides)
@@ -159,7 +159,7 @@ def test_fully_populated_reference_validates():
 @pytest.mark.parametrize(
     "source_id",
     [
-        "dart:science_of_learning#s3_c0",          # positional
+        "dart:source_alpha#s3_c0",          # positional
         "dart:foo#a3f9d812ac04bbc1",               # 16-hex content hash
         "dart:x#y",                                # minimal
         "dart:slug-with-dash#block-with-dash",     # dashes allowed
@@ -197,7 +197,7 @@ def test_missing_required_field_fails(missing_field):
     "bad_source_id",
     [
         "",                                   # empty
-        "science_of_learning#s3_c0",          # missing dart: prefix
+        "source_alpha#s3_c0",          # missing dart: prefix
         "dart:SCIENCE#s3_c0",                 # uppercase in slug
         "dart:science#S3_C0",                 # uppercase in block id
         "dart:science",                       # missing # separator
@@ -301,7 +301,7 @@ def test_additional_properties_rejected():
 def test_dart_positional_block_id_validates():
     """Positional IDs like s3_c0 from DART validate."""
     validator = _validator()
-    ref = _valid_ref(sourceId="dart:science_of_learning#s3_c0")
+    ref = _valid_ref(sourceId="dart:source_alpha#s3_c0")
     errors = list(validator.iter_errors(ref))
     assert errors == [], [e.message for e in errors]
 
@@ -309,6 +309,6 @@ def test_dart_positional_block_id_validates():
 def test_dart_content_hash_block_id_validates():
     """Content-hash IDs from DART (16-hex) validate."""
     validator = _validator()
-    ref = _valid_ref(sourceId="dart:science_of_learning#a3f9d812ac04bbc1")
+    ref = _valid_ref(sourceId="dart:source_alpha#a3f9d812ac04bbc1")
     errors = list(validator.iter_errors(ref))
     assert errors == [], [e.message for e in errors]

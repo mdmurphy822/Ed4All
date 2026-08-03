@@ -56,13 +56,13 @@ def _build_validator():
 
 def _base_chunk() -> Dict[str, Any]:
     return {
-        "id": "sample_101_chunk_00001",
+        "id": "tst_903_chunk_00001",
         "schema_version": "v4",
         "chunk_type": "explanation",
         "text": "Sample chunk content for testing.",
         "html": "<p>Sample chunk content for testing.</p>",
         "follows_chunk": None,
-        "source": {"course_id": "SAMPLE_101", "module_id": "week_01", "lesson_id": "lesson_01"},
+        "source": {"course_id": "TST_903", "module_id": "week_01", "lesson_id": "lesson_01"},
         "concept_tags": ["sample"],
         "learning_outcome_refs": [],
         "difficulty": "foundational",
@@ -114,8 +114,8 @@ def test_new_fields_excluded_from_content_hash_id():
         # The content-hash id payload is text|source_locator|schema_version —
         # difficulty_provenance / difficulty_irt never enter it, so two chunks
         # with identical text+locator share an id regardless of the new fields.
-        id_a = _generate_chunk_id("sample_101_chunk_", 1, "the chunk text", "loc#1")
-        id_b = _generate_chunk_id("sample_101_chunk_", 1, "the chunk text", "loc#1")
+        id_a = _generate_chunk_id("tst_903_chunk_", 1, "the chunk text", "loc#1")
+        id_b = _generate_chunk_id("tst_903_chunk_", 1, "the chunk text", "loc#1")
         assert id_a == id_b
     finally:
         os.environ.pop("TRAINFORGE_CONTENT_HASH_IDS", None)

@@ -397,6 +397,26 @@ def test_lxml_missing_degrades(tmp_path, monkeypatch):
     assert result.passed, _critical_codes(result)
 
 
+def test_missing_schema_blocks_with_installation_link(tmp_path, monkeypatch):
+    """An absent external schema must block with actionable setup guidance."""
+    import lib.validators.cartridge_conformance as mod
+
+    monkeypatch.setattr(mod, "_resolve_vendored_schema_dir", lambda: None)
+    path = _build_zip(tmp_path, _default_members())
+    result = mod.CartridgeConformanceValidator().validate(
+        {"imscc_path": str(path)}
+    )
+
+    issue = next(
+        i for i in result.issues if i.code == "CARTRIDGE_XSD_MISSING"
+    )
+    assert result.passed is False
+    assert issue.severity == "critical"
+    assert "docs/operations/installation.md#ims-common-cartridge-schemas" in (
+        issue.suggestion or ""
+    )
+
+
 # The exact XSD-error signature the CC 1.3 imscp profile emits for a <title>
 # child on the ROOT (ItemOrg.Type) organization item — the ONE known legacy
 # defect (see below). lxml's message reads e.g. "Element '{...}title': This

@@ -60,7 +60,7 @@ def _base_page() -> dict:
     return {
         "@context": "https://ed4all.dev/ns/courseforge/v1",
         "@type": "CourseModule",
-        "courseCode": "SAMPLE_101",
+        "courseCode": "TST_903",
         "weekNumber": 1,
         "moduleType": "content",
         "pageId": "week_01_content_01_intro",
@@ -131,12 +131,12 @@ def test_page_with_valid_source_refs_validates():
         **_base_page(),
         "sourceReferences": [
             {
-                "sourceId": "semantik:science_of_learning#s3_c0",
+                "sourceId": "semantik:source_alpha#s3_c0",
                 "role": "primary",
                 "confidence": 0.9,
             },
             {
-                "sourceId": "semantik:science_of_learning#s4_p0",
+                "sourceId": "semantik:source_alpha#s4_p0",
                 "role": "contributing",
             },
         ],
@@ -154,7 +154,7 @@ def test_section_with_valid_source_refs_validates():
                 "contentType": "definition",
                 "sourceReferences": [
                     {
-                        "sourceId": "semantik:science_of_learning#s5_c1",
+                        "sourceId": "semantik:source_alpha#s5_c1",
                         "role": "primary",
                     }
                 ],

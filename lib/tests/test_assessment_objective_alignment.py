@@ -54,8 +54,8 @@ def test_phantom_refs_fail_loudly(tmp_path):
     chunks = tmp_path / "chunks.jsonl"
     _write_json(assessments, {
         "questions": [
-            {"question_id": "Q1", "objective_id": "PHYS_101_OBJ_1"},
-            {"question_id": "Q2", "objective_id": "PHYS_101_OBJ_2"},
+            {"question_id": "Q1", "objective_id": "TST_901_OBJ_1"},
+            {"question_id": "Q2", "objective_id": "TST_901_OBJ_2"},
         ],
     })
     _write_chunks(chunks, [

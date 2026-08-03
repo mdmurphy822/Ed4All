@@ -386,8 +386,8 @@ if __name__ == "__main__":
     print("Testing TrainforgeDecisionCapture...")
 
     with create_trainforge_capture(
-        "INT_101",
-        "/path/to/INT_101.imscc"
+        "TST_908",
+        "/path/to/TST_908.imscc"
     ) as capture:
         # Set learning objective context
         capture.set_learning_objective_context(

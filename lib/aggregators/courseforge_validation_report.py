@@ -355,7 +355,7 @@ class CourseforgeValidationReport:
         report still contribute to the aggregator. The aggregator
         treats this map as read-only.
     course_code:
-        Operator-facing course code (e.g. ``PHYS_101``). Surfaces as
+        Operator-facing course code (for example, ``<COURSE_CODE>``). Surfaces as
         the top-level ``course_code`` field for at-a-glance reading.
     run_id:
         Workflow ID (e.g. ``WF-20260505-abc12345``). Surfaces as the
@@ -1127,7 +1127,7 @@ class CourseforgeValidationReport:
         """
         if self.course_code:
             return self.course_code.lower()
-        # ``Courseforge/exports/PROJ-PHYS_101-20260505`` -> "phys_101"
+        # ``Courseforge/exports/<PROJECT_ID>`` -> the normalized course code.
         name = self.project_path.name
         # Strip ``PROJ-`` prefix + trailing timestamp if present.
         parts = name.split("-")

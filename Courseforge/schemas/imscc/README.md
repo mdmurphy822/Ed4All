@@ -1,62 +1,97 @@
-# IMSCC XML Schemas
+# IMS Common Cartridge schema dependency
 
-This directory contains XML Schema Definition (XSD) files for validating IMSCC package components.
+Ed4All validates Common Cartridge packages offline, but it does not publish the
+third-party IMS Global/1EdTech and W3C schema payloads in this repository.
+Operators must install the upstream files in this directory before running QTI
+or cartridge-conformance gates. Missing or unreadable schemas are blocking
+validation errors; Ed4All does not silently fall back to partial validation.
 
-## Schema Files
+## Required files
 
-| File | Namespace | Purpose |
-|------|-----------|---------|
-| `cc_extresource_assignmentv1p0.xsd` | `http://www.imsglobal.org/xsd/imscc_extensions/assignment` | Assignment XML validation |
-| `ccv1p3_imsdt_v1p3.xsd` | `http://www.imsglobal.org/xsd/imsccv1p3/imsdt_v1p3` | Discussion topic XML validation |
-| `ccv1p3_qtiasiv1p2p1.xsd` | `http://www.imsglobal.org/xsd/ims_qtiasiv1p2` | QTI 1.2 assessment validation |
-| `ccv1p3_imscp_v1p2_v1p0.xsd` | `http://www.imsglobal.org/xsd/imsccv1p3/imscp_v1p1` | CC 1.3 manifest-profile validation (imsmanifest.xml) |
-| `ccv1p3_lommanifest_v1p0.xsd` | `http://ltsc.ieee.org/xsd/imsccv1p3/LOM/manifest` | LOM manifest-metadata profile |
-| `ccv1p3_lomresource_v1p0.xsd` | `http://ltsc.ieee.org/xsd/imsccv1p3/LOM/resource` | LOM resource-metadata profile |
-| `ccv1p3_imsccauth_v1p3.xsd` | `http://www.imsglobal.org/xsd/imsccv1p3/imsccauth_v1p3` | Authorization import (imscp dependency) |
-| `ccv1p3_imscsmd_v1p0.xsd` | `http://www.imsglobal.org/xsd/imsccv1p3/imscsmd_v1p0` | Curriculum-standards metadata import (imscp dependency) |
-| `xml.xsd` | `http://www.w3.org/XML/1998/namespace` | W3C xml base attributes (imscp dependency) |
+Install these nine files directly beside this README:
 
-The manifest-profile set (`ccv1p3_imscp_*` + its five imports above) was vendored
-2026-07-19 from the canonical 1EdTech URLs
-(`http://www.imsglobal.org/profile/cc/ccv1p3/...` + `/xsd/w3/2001/xml.xsd`);
-remote `schemaLocation` URLs inside `ccv1p3_imscp_v1p2_v1p0.xsd` were rewritten
-to local relative filenames so lxml resolves them offline (the only edit — all
-declarations are canonical). `lib/validators/cartridge_conformance.py`
-auto-discovers every XSD here by `targetNamespace`, so adding a schema file
-enables its namespace check with no code change.
+- `cc_extresource_assignmentv1p0.xsd`
+- `ccv1p3_imsccauth_v1p3.xsd`
+- `ccv1p3_imscp_v1p2_v1p0.xsd`
+- `ccv1p3_imscsmd_v1p0.xsd`
+- `ccv1p3_imsdt_v1p3.xsd`
+- `ccv1p3_lommanifest_v1p0.xsd`
+- `ccv1p3_lomresource_v1p0.xsd`
+- `ccv1p3_qtiasiv1p2p1.xsd`
+- `xml.xsd`
 
-## Usage
+The exact installation path is `Courseforge/schemas/imscc/<filename>`,
+relative to the repository root.
 
-### Python (lxml)
-```python
+## Provenance and acquisition
+
+Acquire the Common Cartridge 1.3 schemas from the official IMS Global/1EdTech
+Common Cartridge schema locations under
+`http://www.imsglobal.org/profile/cc/ccv1p3/`. The assignment schema is
+published under
+`http://www.imsglobal.org/profile/cc/cc_extensions/cc_extresource_assignmentv1p0_v1p0.xsd`.
+The QTI and discussion schemas identify these official source files in their
+headers:
+
+- `ccv1p3_qtiasiv1p2p1_v1p0.xsd`
+- `ccv1p3_imsdt_v1p3.xsd`
+
+The manifest profile and its IMS authorization, curriculum-metadata, and LOM
+imports identify the IMS Common Cartridge and Curriculum Standards Metadata
+specifications in their own headers. Acquire `xml.xsd` from the official W3C
+XML namespace schema location at `http://www.w3.org/2001/xml.xsd`.
+
+Preserve every upstream copyright, IPR, license, and distribution notice in
+full. Do not copy these payloads into a commit. The repository's `.gitignore`
+intentionally excludes every `*.xsd` in this directory.
+
+The manifest schema must resolve its five imports locally. In
+`ccv1p3_imscp_v1p2_v1p0.xsd`, set the `schemaLocation` values to these sibling
+filenames while leaving the namespace declarations unchanged:
+
+- `xml.xsd`
+- `ccv1p3_imsccauth_v1p3.xsd`
+- `ccv1p3_lommanifest_v1p0.xsd`
+- `ccv1p3_lomresource_v1p0.xsd`
+- `ccv1p3_imscsmd_v1p0.xsd`
+
+## Verify the installation
+
+From the repository root, run:
+
+```bash
+python - <<'PY'
+from pathlib import Path
 from lxml import etree
 
-# Load schema
-with open('cc_extresource_assignmentv1p0.xsd', 'rb') as f:
-    schema_doc = etree.parse(f)
-    schema = etree.XMLSchema(schema_doc)
-
-# Validate XML
-xml_doc = etree.parse('assignment.xml')
-is_valid = schema.validate(xml_doc)
-if not is_valid:
-    print(schema.error_log)
+root = Path("Courseforge/schemas/imscc")
+required = {
+    "cc_extresource_assignmentv1p0.xsd",
+    "ccv1p3_imsccauth_v1p3.xsd",
+    "ccv1p3_imscp_v1p2_v1p0.xsd",
+    "ccv1p3_imscsmd_v1p0.xsd",
+    "ccv1p3_imsdt_v1p3.xsd",
+    "ccv1p3_lommanifest_v1p0.xsd",
+    "ccv1p3_lomresource_v1p0.xsd",
+    "ccv1p3_qtiasiv1p2p1.xsd",
+    "xml.xsd",
+}
+missing = sorted(name for name in required if not (root / name).is_file())
+if missing:
+    raise SystemExit("Missing IMSCC schemas: " + ", ".join(missing))
+for name in sorted(required):
+    etree.parse(str(root / name))
+etree.XMLSchema(etree.parse(str(root / "ccv1p3_imscp_v1p2_v1p0.xsd")))
+print("IMSCC schema dependency is complete and loadable.")
+PY
 ```
 
-## Official Sources
+Then run the schema-dependent validator tests:
 
-These schemas are based on official IMS Global specifications:
-- Assignment: http://www.imsglobal.org/profile/cc/cc_extensions/cc_extresource_assignmentv1p0_v1p0.xsd
-- Discussion: http://www.imsglobal.org/profile/cc/ccv1p3/ccv1p3_imsdt_v1p3.xsd
-- QTI: http://www.imsglobal.org/profile/cc/ccv1p3/ccv1p3_qtiasiv1p2p1_v1p0.xsd
+```bash
+pytest -q lib/validators/tests/test_qti_well_formed.py \
+  lib/validators/tests/test_cartridge_conformance.py
+```
 
-The manifest (`imscp`) XSD is not bundled here; manifest structure is validated programmatically by `scripts/packaging/package_multifile_imscc.py` (IMS CC v1.3 `imscp_v1p1` namespace).
-
-## Resource Types in Manifest
-
-| Content Type | Resource Type Attribute |
-|--------------|------------------------|
-| Assignment | `assignment_xmlv1p0` |
-| Discussion | `imsdt_xmlv1p3` |
-| Quiz/Assessment | `imsqti_xmlv1p2/imscc_xmlv1p3/assessment` |
-| Web Content | `webcontent` |
+See [the installation guide](../../../docs/operations/installation.md) for the
+full environment and dependency setup.

@@ -16,7 +16,7 @@
     "course_code": {
       "type": "string",
       "minLength": 1,
-      "description": "Course code (e.g., SAMPLE_101, ACCESS_201). Mirrors the literal value emitted at generate_course.py:2182 — no pattern constraint imposed here so callers like the LibV2 course.json shape stay aligned. The stricter ^[A-Z]{2,}_?\\d{3,}$ pattern is enforced at the JSON-LD courseCode field, where the canonical IMSCC ingest contract requires it."
+      "description": "Operator-supplied course code. No pattern constraint is imposed here so callers like the LibV2 course.json shape stay aligned. The stricter ^[A-Z]{2,}_?\\d{3,}$ pattern is enforced at the JSON-LD courseCode field, where the canonical IMSCC ingest contract requires it."
     },
     "course_title": {
       "type": "string",

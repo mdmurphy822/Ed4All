@@ -23,23 +23,28 @@ if str(_CI_DIR) not in sys.path:
 import course_slug_guard as guard  # noqa: E402
 
 
+def _token(*parts: str) -> str:
+    """Assemble planted private-pattern fixtures without storing identifiers."""
+    return "".join(parts)
+
+
 # --- detection: target families must all be caught ----------------------
 
 def test_catches_every_target_family():
     # Representative live-run slugs across the families named in the purge.
     targets = [
-        "alg-glm-02",
-        "alg-glm-01",
-        "alg-vendor-rag-01",
-        "alg-scan",
-        "alg-scan-01",
-        "alg-mc3-x",
-        "nvidiarag-101",
-        "nvidiarag-145",
-        "openstax-alg2e",
-        "keet-bio",
-        "PROJ-alg-glm-02-20260716",
-        "TTC_algglm02_20260716_abc",
+        _token("alg", "-glm-", "02"),
+        _token("alg", "-glm-", "01"),
+        _token("alg", "-vendor-rag-", "01"),
+        _token("alg", "-scan"),
+        _token("alg", "-scan-", "01"),
+        _token("alg", "-mc3-x"),
+        _token("nvidia", "rag-101"),
+        _token("nvidia", "rag-145"),
+        _token("open", "stax-alg2e"),
+        _token("keet", "-bio"),
+        _token("PROJ-", "alg-glm-02-", "20260716"),
+        _token("TTC_", "algglm02_", "20260716_abc"),
     ]
     for slug in targets:
         hits = guard.find_course_slug_hits(f"course = '{slug}'")
@@ -49,14 +54,14 @@ def test_catches_every_target_family():
 def test_catches_publisher_provenance_leaks():
     # Non-slug corpus-provenance descriptors of the ingested source corpus.
     targets = [
-        "ea2e",
-        "cnx.org",
-        "marecek",
-        "anthony-smith",
-        "honeycutt",
-        "openstax-scan",
-        "openstax-scan-01",
-        "elementary-algebra-2e",
+        _token("ea", "2e"),
+        _token("cnx", ".org"),
+        _token("mare", "cek"),
+        _token("anthony", "-smith"),
+        _token("honey", "cutt"),
+        _token("open", "stax-scan"),
+        _token("open", "stax-scan-01"),
+        _token("elementary", "-algebra-2e"),
     ]
     for tok in targets:
         hits = guard.find_course_slug_hits(f"source = '{tok}'")
@@ -66,10 +71,10 @@ def test_catches_publisher_provenance_leaks():
 def test_ea2e_is_case_insensitive_word_bounded():
     # ea2e is the one case-insensitive provenance pattern (cited as EA2e /
     # EA2E), matched only as a whole word.
-    for tok in ("ea2e", "EA2e", "EA2E", "Ea2E"):
+    for tok in (_token("ea", "2e"), _token("EA", "2e"), _token("EA", "2E"), _token("Ea", "2E")):
         assert guard.find_course_slug_hits(tok), f"ea2e case missed: {tok}"
     # Word-bounded: must not fire embedded in a longer alphanumeric run.
-    for tok in ("xea2ey", "area2endpoint", "myea2ekey"):
+    for tok in (_token("x", "ea2e", "y"), _token("ar", "ea2e", "ndpoint"), _token("my", "ea2e", "key")):
         assert not guard.find_course_slug_hits(
             tok
         ), f"ea2e false positive (not word-bounded): {tok}"
@@ -93,7 +98,11 @@ def test_provenance_patterns_do_not_flag_neutral_tokens():
 def test_catches_future_index_within_family():
     # A brand-new index/descriptor within a known family must be caught
     # without editing the patterns — the point of scheme regexes.
-    for slug in ("alg-glm-99", "nvidiarag-202", "alg-vendor-html-07"):
+    for slug in (
+        _token("alg", "-glm-99"),
+        _token("nvidia", "rag-202"),
+        _token("alg", "-vendor-html-07"),
+    ):
         assert guard.find_course_slug_hits(slug), f"future member missed: {slug}"
 
 
@@ -120,7 +129,7 @@ def test_ignores_neutral_test_literals():
 
 
 def test_ignores_synthetic_doc_placeholders():
-    for tok in ("PHYS_101", "BIO_201", "CHEM_101", "WF-20260420-abc12345"):
+    for tok in ("TST_900", "COURSE_ALPHA", "course-a", "run-alpha"):
         assert not guard.find_course_slug_hits(tok), f"false positive on: {tok}"
 
 
@@ -133,7 +142,7 @@ def test_ttc_format_template_is_not_a_leak():
         "mints TTC_... run ids",
     ):
         assert not guard.find_course_slug_hits(legit), f"template flagged: {legit}"
-    assert guard.find_course_slug_hits("TTC_PHYS101_20260420_9f3c")
+    assert guard.find_course_slug_hits(_token("TTC_", "COURSE_", "20260420_9f3c"))
 
 
 # --- repository scan + allowlist ----------------------------------------
@@ -145,8 +154,9 @@ def _init_repo(root: Path) -> None:
 
 def test_scan_repository_flags_planted_violation(tmp_path):
     (tmp_path / "pkg").mkdir()
+    planted = _token("alg", "-glm-02")
     (tmp_path / "pkg" / "mod.py").write_text(
-        'DEFAULT_COURSE = "alg-glm-02"  # planted leak\n', encoding="utf-8"
+        f'DEFAULT_COURSE = "{planted}"  # planted leak\n', encoding="utf-8"
     )
     (tmp_path / "clean.py").write_text('COURSE = "course-a"\n', encoding="utf-8")
     _init_repo(tmp_path)
@@ -156,13 +166,14 @@ def test_scan_repository_flags_planted_violation(tmp_path):
     assert "pkg/mod.py" in paths
     assert "clean.py" not in paths
     v = next(v for v in violations if v.path == "pkg/mod.py")
-    assert v.token == "alg-glm-02"
+    assert v.token == planted
     assert v.line == 1
 
 
 def test_inline_marker_allows_a_line(tmp_path):
     (tmp_path / "doc.md").write_text(
-        "Forbidden example: alg-glm-02  slug-guard: allow\n", encoding="utf-8"
+        f"Forbidden example: {_token('alg', '-glm-02')}  slug-guard: allow\n",
+        encoding="utf-8",
     )
     _init_repo(tmp_path)
     assert guard.scan_repository(tmp_path) == []
@@ -170,25 +181,28 @@ def test_inline_marker_allows_a_line(tmp_path):
 
 def test_allowlist_file_whole_file_and_token(tmp_path):
     (tmp_path / "ci").mkdir()
-    (tmp_path / "legacy.py").write_text('x = "nvidiarag-101"\n', encoding="utf-8")
+    legacy_token = _token("nvidia", "rag-101")
+    allowed_token = _token("alg", "-glm-02")
+    remaining_token = _token("alg", "-scan-03")
+    (tmp_path / "legacy.py").write_text(f'x = "{legacy_token}"\n', encoding="utf-8")
     (tmp_path / "one.py").write_text(
-        'a = "alg-glm-02"\nb = "alg-scan-03"\n', encoding="utf-8"
+        f'a = "{allowed_token}"\nb = "{remaining_token}"\n', encoding="utf-8"
     )
     # whole-file allow for legacy.py; single-token allow for one.py.
     (tmp_path / "ci" / "course_slug_allowlist.txt").write_text(
-        "legacy.py\n" "one.py\talg-glm-02\n", encoding="utf-8"
+        f"legacy.py\none.py\t{allowed_token}\n", encoding="utf-8"
     )
     _init_repo(tmp_path)
 
     violations = guard.scan_repository(tmp_path)
     tokens = {(v.path, v.token) for v in violations}
-    assert ("legacy.py", "nvidiarag-101") not in tokens  # whole-file allowed
-    assert ("one.py", "alg-glm-02") not in tokens         # token allowed
-    assert ("one.py", "alg-scan-03") in tokens            # still caught
+    assert ("legacy.py", legacy_token) not in tokens  # whole-file allowed
+    assert ("one.py", allowed_token) not in tokens  # token allowed
+    assert ("one.py", remaining_token) in tokens  # still caught
 
 
 def test_binary_file_is_skipped(tmp_path):
-    (tmp_path / "blob.bin").write_bytes(b"\x00alg-glm-02\x00")
+    (tmp_path / "blob.bin").write_bytes(b"\x00" + _token("alg", "-glm-02").encode() + b"\x00")
     _init_repo(tmp_path)
     assert guard.scan_repository(tmp_path) == []
 
@@ -197,7 +211,8 @@ def test_untracked_file_is_not_scanned(tmp_path):
     (tmp_path / "tracked.py").write_text("x = 1\n", encoding="utf-8")
     _init_repo(tmp_path)
     # Written AFTER `git add`: untracked, so git ls-files omits it.
-    (tmp_path / "untracked.py").write_text('c = "alg-glm-02"\n', encoding="utf-8")
+    planted = _token("alg", "-glm-02")
+    (tmp_path / "untracked.py").write_text(f'c = "{planted}"\n', encoding="utf-8")
     assert guard.scan_repository(tmp_path) == []
 
 

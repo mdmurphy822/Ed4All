@@ -303,7 +303,7 @@ class CaptureValidator:
         Validate all captures for a specific phase.
 
         Args:
-            course_code: Course code (e.g., "MTH_101")
+            course_code: Course code (e.g., "TST_907")
             phase: Phase name
 
         Returns:
@@ -368,7 +368,7 @@ class CaptureValidator:
         Validate all captures for a course.
 
         Args:
-            course_code: Course code (e.g., "MTH_101")
+            course_code: Course code (e.g., "TST_907")
 
         Returns:
             Full validation result for the course

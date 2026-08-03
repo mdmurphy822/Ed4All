@@ -145,7 +145,7 @@ def _run(objs: Dict[str, Any], sidecar: Path):
     return review_objectives(
         terminals=objs["terminals"],
         chapter_objectives=objs["chapter_objectives"],
-        course_name="BIO_101",
+        course_name="TST_905",
         embedder=_Embed(),
         client=object(),
         checkpoint_path=sidecar,

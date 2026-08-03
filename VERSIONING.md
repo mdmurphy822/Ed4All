@@ -137,7 +137,7 @@ Concrete shape on `dev-v0.2.0`:
 
 ## §5b Anonymization policy (v0.2.0)
 
-As of v0.2.0, the repository's public tree is course-agnostic. All example-course references in docs, scripts, schemas, and tests use generic placeholders (`SAMPLE_101`, `sample-course`, `<your-course-slug>`, `sample_course_chunk_00042`). The following artifacts are intentionally **not** tracked in git and live only in the user's local checkout:
+As of v0.2.0, the repository's public tree is course-agnostic. Public examples use placeholders such as `<COURSE_CODE>`, `<course-slug>`, and `<chunk-id>`; tests use neutral synthetic fixture identifiers. The following artifacts are intentionally **not** tracked in git and live only in the user's local checkout:
 
 - `LibV2/courses/<slug>/` course subtrees (`imscc_chunks/chunks.jsonl` — Phase 7c rename of `corpus/chunks.jsonl`, `graph/`, `retrieval/gold_queries.jsonl`, `retrieval/README.md`, `quality/`, ...).
 - `LibV2/catalog/cross_package_concepts.json` (regenerated on demand via `libv2 cross-index`).

@@ -80,8 +80,8 @@ def libv2_course_slug(title: str, max_length: int = 50) -> str:
         5. Truncate to ``max_length`` (default 50), then rstrip trailing
            hyphens introduced by the truncation.
 
-        >>> libv2_course_slug("PHYS_101")
-        'phys-101'
+        >>> libv2_course_slug("TST_900")
+        'tst-900'
         >>> libv2_course_slug("The Great Course")
         'great-course'
         >>> libv2_course_slug("BIO 201: Cell Biology")

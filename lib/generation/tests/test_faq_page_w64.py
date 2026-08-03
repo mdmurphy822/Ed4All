@@ -117,7 +117,7 @@ def test_build_blocks_empty_when_enabled_false():
 
 def test_entries_seed_from_both_sources():
     entries = fp.build_faq_entries(
-        _OBJECTIVES, _MISCONCEPTIONS, _CHUNKS, course_slug="algebra-101"
+        _OBJECTIVES, _MISCONCEPTIONS, _CHUNKS, course_slug="course-alpha"
     )
     seeds = {e["seed"] for e in entries}
     assert "misconception" in seeds
@@ -152,11 +152,11 @@ def test_leaky_sentence_not_used_as_answer():
 
 def test_entries_carry_source_link():
     entries = fp.build_faq_entries(
-        _OBJECTIVES, _MISCONCEPTIONS, _CHUNKS, course_slug="algebra-101"
+        _OBJECTIVES, _MISCONCEPTIONS, _CHUNKS, course_slug="course-alpha"
     )
     assert all("source_link" in e for e in entries)
     for e in entries:
-        assert e["source_link"].startswith("/api/learn/source/algebra-101")
+        assert e["source_link"].startswith("/api/learn/source/course-alpha")
 
 
 def test_no_source_link_without_course_slug():
@@ -188,7 +188,7 @@ def test_blocks_projection():
         _MISCONCEPTIONS,
         _CHUNKS,
         enabled=True,
-        course_slug="algebra-101",
+        course_slug="course-alpha",
         page_id="week_01_faq",
     )
     assert len(blocks) == 2
@@ -198,7 +198,7 @@ def test_blocks_projection():
         assert b.page_id == "week_01_faq"
         assert 'data-cf-content-type="faq"' in b.content
         # each block is grounded to a real chunk source id.
-        assert b.source_ids and b.source_ids[0].startswith("semantik:algebra-101#")
+        assert b.source_ids and b.source_ids[0].startswith("semantik:course-alpha#")
 
 
 def test_objective_block_carries_objective_id():
@@ -242,7 +242,7 @@ def test_faq_blocks_not_classified_as_glossary_cards():
         _MISCONCEPTIONS,
         _CHUNKS,
         enabled=True,
-        course_slug="algebra-101",
+        course_slug="course-alpha",
         page_id="week_01_faq",
     )
     assert blocks  # sanity: the builder produced FAQ cards

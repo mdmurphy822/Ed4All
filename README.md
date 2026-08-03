@@ -86,6 +86,10 @@ retrieval library remain useful on their own.
 Ed4All requires Python 3.10 or newer. Tesseract OCR and Poppler improve
 extraction from scanned or image-heavy PDFs.
 
+See the [installation guide](docs/operations/installation.md) for platform
+dependencies, capability extras, Playwright, and the required third-party IMS
+Common Cartridge schemas.
+
 ```bash
 git clone https://github.com/mdmurphy822/Ed4All.git
 cd Ed4All
@@ -212,6 +216,7 @@ and shared service surfaces.
 
 ## Documentation
 
+- [Installation and local dependencies](docs/operations/installation.md)
 - [Architecture overview](ARCHITECTURE.md)
 - [Pipeline flow](docs/architecture/pipeline-flow.md)
 - [Validation gates](docs/validation/gates.md)

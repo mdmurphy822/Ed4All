@@ -1037,7 +1037,7 @@ class TestCourseforgeStageParamPropagation:
 
         # Params as built by _build_workflow_params for `ed4all run courseforge`
         params = {
-            "course_name": "DEMO_ALG_101",
+            "course_name": "TST_909",
             "pdf_paths": str(pdf),
             "corpus": str(pdf),
             "courseforge_stage": "courseforge",

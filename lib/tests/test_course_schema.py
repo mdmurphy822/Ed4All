@@ -28,7 +28,7 @@ def _load_schema() -> dict:
 
 def _valid_minimal_course() -> dict:
     return {
-        "course_code": "PHYS_101",
+        "course_code": "TST_901",
         "title": "Intro Physics",
         "learning_outcomes": [
             {
@@ -72,7 +72,7 @@ def test_phantom_obj_id_shape_rejected():
     """Pre-Wave-24 {COURSE}_OBJ_N phantoms fail the id pattern."""
     schema = _load_schema()
     data = _valid_minimal_course()
-    data["learning_outcomes"][0]["id"] = "PHYS_101_OBJ_1"
+    data["learning_outcomes"][0]["id"] = "TST_901_OBJ_1"
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(data, schema)
 

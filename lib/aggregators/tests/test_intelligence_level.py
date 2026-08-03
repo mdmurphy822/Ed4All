@@ -159,7 +159,7 @@ class TestSchemaValidation:
         _write_objectives(tmp_path, 4)
         out_path = tmp_path / "intelligence_level_report.json"
         IntelligenceLevelAggregator(
-            course_code="BIO_201", run_id="WF-9",
+            course_code="TST_904", run_id="WF-9",
             libv2_course_path=tmp_path,
         ).write(out_path)
         report = json.loads(out_path.read_text(encoding="utf-8"))

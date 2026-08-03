@@ -109,7 +109,7 @@ def test_import_receipt_shape(tmp_path: Path) -> None:
 
     receipt_path = pc.prune_output_after_import(
         output_dir=output_dir,
-        course_code="ASTRO_101",
+        course_code="TST_906",
         libv2_slug="astro-101-fall26",
         libv2_target_path=libv2_root / "courses" / "astro-101-fall26",
         libv2_root=libv2_root,

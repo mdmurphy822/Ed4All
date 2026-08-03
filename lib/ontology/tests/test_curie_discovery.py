@@ -59,7 +59,7 @@ class TestMintCuriePrefix:
     def test_lowercases_and_strips_punctuation(self):
         # Underscores / hyphens / dots all fuse out.
         assert mint_curie_prefix("DEMO_ALG_9") == "demoalg9"
-        assert mint_curie_prefix("phys-101.intro") == "phys101intro"
+        assert mint_curie_prefix("tst-901.intro") == "tst901intro"
 
     def test_digit_led_gets_letter_prepended(self):
         prefix = mint_curie_prefix("9to5-physics")
@@ -163,8 +163,8 @@ class TestBuildMintedCurieMap:
 
     def test_course_id_arg_overrides_vocab(self):
         vocab = _vocab([{"canonical": "slope"}], course_id="IGNORED")
-        result = build_minted_curie_map(vocab, course_id="PHYS_101")
-        assert "phys101:slope" in result
+        result = build_minted_curie_map(vocab, course_id="TST_901")
+        assert "tst901:slope" in result
 
     def test_course_slug_fallback(self):
         vocab = {

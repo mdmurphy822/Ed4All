@@ -13,7 +13,7 @@
   "properties": {
     "course_code": {
       "type": "string",
-      "description": "Stable course identifier (e.g. PHYS_101).",
+      "description": "Stable course identifier supplied by the operator.",
       "minLength": 1
     },
     "title": {

@@ -74,7 +74,7 @@ def test_validate_accepts_canonical_ids():
 
 def test_validate_rejects_drift_shapes():
     # Pre-Wave-24 phantom shape.
-    assert not validate_lo_id("PHYS_101_OBJ_1")
+    assert not validate_lo_id("TST_901_OBJ_1")
     # Too few digits.
     assert not validate_lo_id("TO-1")
     # Single-letter prefix.
@@ -129,7 +129,7 @@ def test_hierarchy_from_id_rejects_unregistered_prefix():
 
 def test_hierarchy_from_id_rejects_invalid():
     with pytest.raises(ValueError, match="canonical"):
-        hierarchy_from_id("PHYS_101_OBJ_1")
+        hierarchy_from_id("TST_901_OBJ_1")
     with pytest.raises(ValueError, match="canonical"):
         hierarchy_from_id("to-01")
 

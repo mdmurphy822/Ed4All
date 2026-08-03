@@ -62,7 +62,7 @@ def _make_staging(tmp_path: Path, slug: str, block_ids: list, include_manifest: 
     if include_manifest:
         manifest = {
             "run_id": "TEST_RUN",
-            "course_name": "SAMPLE_101",
+            "course_name": "TST_903",
             "files": [
                 {"path": f"{slug}.html", "role": "content"},
                 {"path": sidecar_name, "role": "provenance_sidecar"},
@@ -78,7 +78,7 @@ def _html_with_json_ld(source_ids: list) -> str:
     ld = {
         "@context": "https://ed4all.dev/ns/courseforge/v1",
         "@type": "CourseModule",
-        "courseCode": "SAMPLE_101",
+        "courseCode": "TST_903",
         "weekNumber": 3,
         "moduleType": "content",
         "pageId": "week_03_content_01_x",
@@ -115,8 +115,8 @@ def _html_with_attrs_only(source_ids: list, primary: str = "") -> str:
 
 class TestHappyPath:
     def test_valid_refs_with_staging_pass(self, tmp_path):
-        staging = _make_staging(tmp_path, "science_of_learning", ["s0_c0", "s1_c0"])
-        html = _html_with_json_ld(["semantik:science_of_learning#s0_c0"])
+        staging = _make_staging(tmp_path, "source_alpha", ["s0_c0", "s1_c0"])
+        html = _html_with_json_ld(["semantik:source_alpha#s0_c0"])
         result = PageSourceRefValidator().validate({
             "staging_dir": str(staging),
             "html_contents": [{"path": "page.html", "html": html}],
@@ -176,8 +176,8 @@ class TestHappyPath:
 
 class TestUnresolvedSourceId:
     def test_unresolved_source_id_fails_critical(self, tmp_path):
-        staging = _make_staging(tmp_path, "science_of_learning", ["s0_c0"])
-        html = _html_with_json_ld(["semantik:science_of_learning#not_a_block"])
+        staging = _make_staging(tmp_path, "source_alpha", ["s0_c0"])
+        html = _html_with_json_ld(["semantik:source_alpha#not_a_block"])
         result = PageSourceRefValidator().validate({
             "staging_dir": str(staging),
             "html_contents": [{"path": "bad.html", "html": html}],
@@ -189,7 +189,7 @@ class TestUnresolvedSourceId:
         assert any("not_a_block" in i.message for i in crit)
 
     def test_wrong_document_slug_fails(self, tmp_path):
-        staging = _make_staging(tmp_path, "science_of_learning", ["s0_c0"])
+        staging = _make_staging(tmp_path, "source_alpha", ["s0_c0"])
         html = _html_with_json_ld(["semantik:other_doc#s0_c0"])
         result = PageSourceRefValidator().validate({
             "staging_dir": str(staging),
@@ -321,7 +321,7 @@ class TestJsonLdWalker:
 class TestSidecarWalker:
     def test_walks_campus_code_and_sections(self):
         sidecar = {
-            "campus_code": "Science_of_Learning",
+            "campus_code": "source_alpha",
             "sections": [
                 {"section_id": "s0", "data": {"contacts": [
                     {"block_id": "s0_c0"}
@@ -337,14 +337,14 @@ class TestSidecarWalker:
         # ratified ``semantik:`` prefix so a freshly-emitted semantik: sourceId
         # and a legacy dart: sourceId both resolve against the same sidecar.
         assert ids == [
-            "dart:science_of_learning#s0",
-            "dart:science_of_learning#s0_c0",
-            "dart:science_of_learning#s1",
-            "dart:science_of_learning#s1_r0",
-            "semantik:science_of_learning#s0",
-            "semantik:science_of_learning#s0_c0",
-            "semantik:science_of_learning#s1",
-            "semantik:science_of_learning#s1_r0",
+            "dart:source_alpha#s0",
+            "dart:source_alpha#s0_c0",
+            "dart:source_alpha#s1",
+            "dart:source_alpha#s1_r0",
+            "semantik:source_alpha#s0",
+            "semantik:source_alpha#s0_c0",
+            "semantik:source_alpha#s1",
+            "semantik:source_alpha#s1_r0",
         ]
 
     def test_walker_prefers_explicit_document_slug(self):
@@ -655,7 +655,7 @@ def _make_converter_shaped_staging(
     if include_manifest:
         (staging_dir / "staging_manifest.json").write_text(json.dumps({
             "run_id": "TEST_RUN",
-            "course_name": "SAMPLE_101",
+            "course_name": "TST_903",
             "files": [
                 {"path": f"{file_stem}.html", "role": "content"},
                 {"path": sidecar_name, "role": "provenance_sidecar"},
@@ -769,7 +769,7 @@ class TestConverterShapedSidecarHarvest:
         campus_code/document_slug resolution (multi_source_interpreter
         sidecars + existing unit-test callers)."""
         legacy = {
-            "campus_code": "Science_of_Learning",
+            "campus_code": "source_alpha",
             "sections": [
                 {"section_id": "s1", "data": {
                     "contacts": [{"block_id": "s1_c0"}]
@@ -777,5 +777,5 @@ class TestConverterShapedSidecarHarvest:
             ],
         }
         ids = set(_iter_sidecar_block_ids(legacy))
-        assert "semantik:science_of_learning#s1" in ids
-        assert "semantik:science_of_learning#s1_c0" in ids
+        assert "semantik:source_alpha#s1" in ids
+        assert "semantik:source_alpha#s1_c0" in ids

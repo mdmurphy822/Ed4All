@@ -134,7 +134,7 @@ def _write_assessments(export: Path) -> None:
 
 @pytest.fixture()
 def sample_export(tmp_path: Path) -> Path:
-    export = tmp_path / "PROJ-SAMPLE"
+    export = tmp_path / "project-zeta"
     _write_objectives(export)
     _write_blocks(export)
     _write_assessments(export)
@@ -198,7 +198,7 @@ def test_dedupe_across_two_runs(sample_export: Path, tmp_path: Path):
 
 
 def test_dedupe_within_run(tmp_path: Path):
-    export = tmp_path / "PROJ-DUP"
+    export = tmp_path / "project-eta"
     d = export / "01_learning_objectives"
     d.mkdir(parents=True)
     # Two objectives files with an identical (text, level) pair.

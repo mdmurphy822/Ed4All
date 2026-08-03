@@ -57,7 +57,7 @@ SUPPORTED_WORKFLOWS = {
     "rag_training",
     # Wave 90 — post-import SLM adapter training stage, run STANDALONE
     # against an already-archived LibV2 course. Generic workflow path:
-    # ``ed4all run trainforge_train --course-name TST_101`` creates the
+    # ``ed4all run trainforge_train --course-name <COURSE_NAME>`` creates the
     # workflow state via create_workflow_impl, then the ``training`` phase
     # routes by phase NAME through ``_PHASE_TOOL_MAPPING`` to the
     # ``run_training`` registry handler, which drives the Trainforge
@@ -899,7 +899,7 @@ def _build_orchestrator(
 )
 @click.option(
     "--course-name",
-    help="Course identifier (e.g., PHYS_101). Required for most workflows.",
+    help="Course identifier (for example, <COURSE_NAME>). Required for most workflows.",
 )
 @click.option(
     "--mode",
@@ -1323,9 +1323,9 @@ def run_command(
     Example:
 
     \b
-        ed4all run textbook-to-course --corpus textbook.pdf --course-name PHYS_101
-        ed4all run textbook-to-course --corpus ./pdfs/ --course-name BIO_201 --weeks 16
-        ed4all run rag_training --corpus course.imscc --course-name CHEM_101
+        ed4all run textbook-to-course --corpus <TEXTBOOK_PATH> --course-name <COURSE_NAME>
+        ed4all run textbook-to-course --corpus <CORPUS_DIR> --course-name <COURSE_NAME> --weeks 16
+        ed4all run rag_training --corpus <COURSE_PACKAGE> --course-name <COURSE_NAME>
 
     Modes:
 
