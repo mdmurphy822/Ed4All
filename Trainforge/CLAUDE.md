@@ -418,7 +418,12 @@ Trainforge/
 │   ├── pair_decontamination.py  # Deprecated compatibility alias
 │   ├── assessment_generator.py  # Deprecated compatibility alias
 │   └── question_factory.py      # Deprecated compatibility alias
-├── eval/                        # 5-layer × 3-tier eval harness (slm_eval_harness.py)
+├── eval/                        # 5-layer × 3-tier evaluation surface
+│   ├── publication/             # Model-index, headline-delta, and reproducibility exports
+│   ├── hf_model_index.py       # Compatibility import facade for publication/model-index
+│   ├── metrics/                 # Question and property metrics
+│   ├── retrieval/               # Retrieval-grounded evaluation
+│   └── runners/                 # Harness and verification entry points
 ├── training/                    # Training orchestration, configuration, and probes
 │   ├── probes/                  # Checkpoint scoring/selection and memorization probes
 │   ├── checkpoint_probe.py     # Import + python -m compatibility facade
@@ -984,13 +989,21 @@ Eval lives in `Trainforge/eval/` and runs after training inside the runner. Two 
 
 Profiles select the active matrix: `Trainforge/eval/configs/rdf_shacl.yaml` (all three tiers on) and `generic.yaml` (Tier 1 omitted — not every domain has machine-verifiable surfaces). The harness emits `eval_report.json` shaped to drop directly into `model_card.json::eval_scores`.
 
+Evaluation publication helpers live in `Trainforge.eval.publication`:
+`headline_delta` computes release-facing comparison summaries,
+`reproducibility` writes reproduction scripts, and `hf_model_index` converts
+validated reports into Hugging Face model-index metadata and README content.
+The supported `Trainforge.eval.hf_model_index` compatibility facade re-exports
+`eval_report_to_model_index` and `write_hf_readme`; new imports use
+`Trainforge.eval.publication.hf_model_index`.
+
 **Eval observability + reproducibility.** Three additions tightened the eval surface:
 
 - **`eval_progress.jsonl`** — written next to `eval_report.json`. `Trainforge/eval/runners/slm_eval_harness.py::_EvalProgressTracker` emits `stage_start`, `model_call`, `stage_end`, `run_end` events around each of the 8 evaluator/invariant chains. Lets a long-running adapter eval be monitored from another terminal without touching the harness.
 - **Per-course `eval_config.yaml`** — `LibV2/courses/<slug>/eval/eval_config.yaml` (`Trainforge/eval/eval_config.py::load_eval_config`) drives `AdapterCallable` generation parameters (`max_new_tokens`, `temperature`, `top_p`, `seed`, `revision`). The runner passes them explicitly so eval generation is deterministic across trainer invocations on different nodes.
 - **`Trainforge/eval/retrieval/chunk_ids.py`** — canonical `is_chunk_id` / `normalize_chunk_id` / `chunk_ids_match` helpers. The eval harness, `source_match.py`, and `ablation_runner.py` use them so short (`chunk_00270`) and full (`<course_code>_chunk_00270`) corpus IDs compare equal. Closes the previous mismatch where `source_match` scored 0 on full-corpus IDs that pointed at the right chunk.
 
-**Eval smoke mode.** `python -m Trainforge.eval.runners.slm_eval_harness --smoke ...` runs the harness end-to-end against the real adapter at N=3 prompts/evaluator (faithfulness, negative_grounding, source_match, per_property), forces `with_ablation=False` regardless of the operator-passed flag, and writes to `<adapter>/eval/smoke_eval_report.json` (sidecar — never overwrites the canonical `eval_report.json`). The emitted report carries `smoke_mode: true` at the top level; `EvalGatingValidator` refuses to gate any report carrying that field (`EVAL_REPORT_IS_SMOKE` critical), and `hf_model_index.py` consumers should refuse to render it. Mutually exclusive with `--stub` (the combination is meaningless: `--stub` uses a fake callable, `--smoke` uses the real adapter at small N). Smoke mode is intentionally bounded; runtime depends on the selected model and hardware. Use it to verify the eval pipeline and CLI arguments before paying for a full run.
+**Eval smoke mode.** `python -m Trainforge.eval.runners.slm_eval_harness --smoke ...` runs the harness end-to-end against the real adapter at N=3 prompts/evaluator (faithfulness, negative_grounding, source_match, per_property), forces `with_ablation=False` regardless of the operator-passed flag, and writes to `<adapter>/eval/smoke_eval_report.json` (sidecar — never overwrites the canonical `eval_report.json`). The emitted report carries `smoke_mode: true` at the top level; `EvalGatingValidator` refuses to gate any report carrying that field (`EVAL_REPORT_IS_SMOKE` critical), and `Trainforge/eval/publication/hf_model_index.py` consumers should refuse to render it. Mutually exclusive with `--stub` (the combination is meaningless: `--stub` uses a fake callable, `--smoke` uses the real adapter at small N). Smoke mode is intentionally bounded; runtime depends on the selected model and hardware. Use it to verify the eval pipeline and CLI arguments before paying for a full run.
 
 **Eval truth-telling.** Five gameable-eval holes are closed:
 

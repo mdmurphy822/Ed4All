@@ -1,4 +1,4 @@
-"""Wave 103 - tests for the ED4ALL-Bench headline-delta computation.
+"""Tests for the ED4ALL-Bench headline-delta computation.
 
 The renderer must emit:
 * Hallucination reduction percentage from base -> adapter+rag.
@@ -13,7 +13,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -41,7 +40,7 @@ def _build_report(*, base_h, final_h, base_s, final_s, base_acc, final_acc):
 
 
 def test_compute_headline_delta_basic():
-    from Trainforge.eval.headline_delta import compute_headline_delta
+    from Trainforge.eval.publication.headline_delta import compute_headline_delta
 
     report = _build_report(
         base_h=0.5, final_h=0.1,
@@ -63,7 +62,7 @@ def test_compute_headline_delta_basic():
 
 
 def test_headline_sentence_contains_required_tokens():
-    from Trainforge.eval.headline_delta import compute_headline_delta
+    from Trainforge.eval.publication.headline_delta import compute_headline_delta
 
     report = _build_report(
         base_h=0.5, final_h=0.1,
@@ -88,7 +87,7 @@ def test_headline_sentence_contains_required_tokens():
 
 
 def test_headline_delta_handles_missing_rows():
-    from Trainforge.eval.headline_delta import compute_headline_delta
+    from Trainforge.eval.publication.headline_delta import compute_headline_delta
 
     out = compute_headline_delta(
         {"headline_table": []},
@@ -103,7 +102,7 @@ def test_headline_delta_handles_missing_rows():
 
 
 def test_headline_delta_handles_zero_base_source():
-    from Trainforge.eval.headline_delta import compute_headline_delta
+    from Trainforge.eval.publication.headline_delta import compute_headline_delta
 
     report = _build_report(
         base_h=0.5, final_h=0.1,

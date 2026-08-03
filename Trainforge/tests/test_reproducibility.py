@@ -1,4 +1,4 @@
-"""Wave 102 - Reproducibility envelope tests.
+"""Reproducibility envelope tests.
 
 Asserts:
 
@@ -16,9 +16,6 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-
-import pytest
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -87,7 +84,7 @@ def _build_eval_report(**overrides):
 
 
 def test_write_reproduce_script_pins_commit_and_model(tmp_path):
-    from Trainforge.eval.reproducibility import write_reproduce_script
+    from Trainforge.eval.publication.reproducibility import write_reproduce_script
 
     card = _build_card()
     script = write_reproduce_script(
@@ -105,7 +102,7 @@ def test_write_reproduce_script_pins_commit_and_model(tmp_path):
 
 
 def test_write_reproduce_script_falls_back_when_no_commit(tmp_path):
-    from Trainforge.eval.reproducibility import write_reproduce_script
+    from Trainforge.eval.publication.reproducibility import write_reproduce_script
 
     card = _build_card()
     # Drop scoring_commit; the writer should still produce a script.
@@ -190,7 +187,7 @@ def test_verify_eval_flags_ablation_table_row_count_drift(tmp_path):
 
 def test_end_to_end_reproduce_then_verify(tmp_path):
     """Synthetic run dir round-trip: write the script + run the verifier."""
-    from Trainforge.eval.reproducibility import write_reproduce_script
+    from Trainforge.eval.publication.reproducibility import write_reproduce_script
     from Trainforge.eval.runners.verify_eval import verify
 
     card = _build_card()

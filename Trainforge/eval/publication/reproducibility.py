@@ -1,4 +1,4 @@
-"""Wave 102 - Reproducibility envelope.
+"""Reproducibility envelope for published evaluation results.
 
 Emits ``reproduce_eval.sh`` next to the README so a procurement
 reviewer can re-run the verification step without reading any code:
@@ -28,12 +28,11 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-
 logger = logging.getLogger(__name__)
 
 
 _REPRODUCE_SCRIPT_TEMPLATE = """#!/usr/bin/env bash
-# Wave 102 - Reproduce Trainforge eval scores from stored reports.
+# Reproduce Trainforge evaluation scores from stored reports.
 #
 # This script re-runs the verifier against the eval_report.json +
 # ablation_report.json that ship alongside this README. It does NOT

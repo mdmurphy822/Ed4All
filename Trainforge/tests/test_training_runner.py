@@ -1110,7 +1110,9 @@ def test_runner_eval_bridge_uses_eval_config_generation_settings(
 
     adapter_module = importlib.import_module("Trainforge.eval.retrieval.adapter_callable")
     harness_module = importlib.import_module("Trainforge.eval.runners.slm_eval_harness")
-    hf_index_module = importlib.import_module("Trainforge.eval.hf_model_index")
+    hf_index_module = importlib.import_module(
+        "Trainforge.eval.publication.hf_model_index"
+    )
     monkeypatch.setattr(adapter_module, "AdapterCallable", _FakeAdapterCallable)
     monkeypatch.setattr(harness_module, "SLMEvalHarness", _FakeHarness)
     monkeypatch.setattr(hf_index_module, "write_hf_readme", lambda **kwargs: None)

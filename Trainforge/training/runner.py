@@ -930,7 +930,7 @@ class TrainingRunner:
 
         from Trainforge.eval.retrieval.adapter_callable import AdapterCallable
         from Trainforge.eval.eval_config import load_eval_config
-        from Trainforge.eval.hf_model_index import write_hf_readme
+        from Trainforge.eval.publication.hf_model_index import write_hf_readme
         from Trainforge.eval.runners.slm_eval_harness import SLMEvalHarness
 
         if adapter_path is None:

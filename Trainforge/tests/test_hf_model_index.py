@@ -1,6 +1,6 @@
-"""Wave 101 - HF model-index converter + README writer tests.
+"""HF model-index converter and README writer tests.
 
-Synthesizes a Wave 92 ``eval_report`` shape with all 5 layers
+Synthesizes an ``eval_report`` shape with all five layers
 populated and asserts:
 
 * ``eval_report_to_model_index`` produces >=3 entries each carrying
@@ -12,12 +12,12 @@ populated and asserts:
 """
 from __future__ import annotations
 
+import importlib
 import sys
 from pathlib import Path
 
 import pytest
 import yaml
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -30,7 +30,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 def _build_eval_report() -> dict:
-    """Mirror the Wave 92 ``EvalReport.to_dict()`` shape with all
+    """Mirror the complete ``EvalReport.to_dict()`` shape with all
     optional fields populated. Used as the round-trip fixture."""
     return {
         "faithfulness": 0.8412,
@@ -95,8 +95,33 @@ def _build_model_card() -> dict:
 # ---------------------------------------------------------------------- #
 
 
+def test_legacy_hf_model_index_facade_preserves_public_objects_and_source_link(
+    tmp_path,
+):
+    """The legacy module re-exports canonical objects without changing output."""
+    legacy = importlib.import_module("Trainforge.eval.hf_model_index")
+    canonical = importlib.import_module(
+        "Trainforge.eval.publication.hf_model_index"
+    )
+
+    assert legacy is not canonical
+    assert legacy.eval_report_to_model_index is canonical.eval_report_to_model_index
+    assert legacy.write_hf_readme is canonical.write_hf_readme
+
+    readme_path = legacy.write_hf_readme(
+        run_dir=tmp_path,
+        eval_report=_build_eval_report(),
+        course_slug="demo-course-1",
+        base_model="qwen2.5-1.5b",
+        model_id="m-01",
+        model_card=_build_model_card(),
+    )
+    rendered = readme_path.read_text(encoding="utf-8")
+    assert "Trainforge/eval/hf_model_index.py" in rendered
+
+
 def test_eval_report_to_model_index_emits_at_least_three_entries():
-    from Trainforge.eval.hf_model_index import eval_report_to_model_index
+    from Trainforge.eval.publication.hf_model_index import eval_report_to_model_index
 
     report = _build_eval_report()
     results = eval_report_to_model_index(
@@ -120,7 +145,7 @@ def test_eval_report_to_model_index_emits_at_least_three_entries():
 
 
 def test_eval_report_to_model_index_dataset_namespace():
-    from Trainforge.eval.hf_model_index import eval_report_to_model_index
+    from Trainforge.eval.publication.hf_model_index import eval_report_to_model_index
 
     report = _build_eval_report()
     results = eval_report_to_model_index(
@@ -131,14 +156,14 @@ def test_eval_report_to_model_index_dataset_namespace():
     )
     for entry in results:
         ds = entry["dataset"]
-        # Wave 103: dataset namespace flipped from "ed4all" to "ed4all-bench".
+        # Published datasets use the ED4ALL-Bench namespace.
         assert ds["type"] == "ed4all-bench/demo-course-1"
         assert ds["split"] == "holdout"
 
 
 def test_eval_report_to_model_index_metric_types():
     """Each canonical-layer score must map to its expected metric.type."""
-    from Trainforge.eval.hf_model_index import eval_report_to_model_index
+    from Trainforge.eval.publication.hf_model_index import eval_report_to_model_index
 
     report = _build_eval_report()
     results = eval_report_to_model_index(
@@ -163,7 +188,7 @@ def test_eval_report_to_model_index_metric_types():
 
 
 def test_write_hf_readme_renders_yaml_frontmatter(tmp_path):
-    from Trainforge.eval.hf_model_index import write_hf_readme
+    from Trainforge.eval.publication.hf_model_index import write_hf_readme
 
     readme_path = write_hf_readme(
         run_dir=tmp_path,
@@ -192,7 +217,7 @@ def test_write_hf_readme_renders_yaml_frontmatter(tmp_path):
 def test_write_hf_readme_round_trip_metric_values(tmp_path):
     """Parse the rendered README's frontmatter and assert every metric
     value matches the input eval_report (within rounding)."""
-    from Trainforge.eval.hf_model_index import write_hf_readme
+    from Trainforge.eval.publication.hf_model_index import write_hf_readme
 
     report = _build_eval_report()
     readme_path = write_hf_readme(
@@ -255,7 +280,7 @@ def test_write_hf_readme_round_trip_metric_values(tmp_path):
 
 
 def test_write_hf_readme_includes_provenance_hashes(tmp_path):
-    from Trainforge.eval.hf_model_index import write_hf_readme
+    from Trainforge.eval.publication.hf_model_index import write_hf_readme
 
     card = _build_model_card()
     readme_path = write_hf_readme(
@@ -282,7 +307,7 @@ def test_write_hf_readme_includes_provenance_hashes(tmp_path):
 
 def test_write_hf_readme_tags_for_rdf_shacl_slug(tmp_path):
     """RDF/SHACL slugs auto-tag with rdf + shacl for HF discovery."""
-    from Trainforge.eval.hf_model_index import write_hf_readme
+    from Trainforge.eval.publication.hf_model_index import write_hf_readme
 
     readme_path = write_hf_readme(
         run_dir=tmp_path,
@@ -302,7 +327,7 @@ def test_write_hf_readme_tags_for_rdf_shacl_slug(tmp_path):
 
 def test_write_hf_readme_partial_eval_report(tmp_path):
     """Partial eval_report (only faithfulness) still yields a valid README."""
-    from Trainforge.eval.hf_model_index import write_hf_readme
+    from Trainforge.eval.publication.hf_model_index import write_hf_readme
 
     minimal = {"faithfulness": 0.5, "coverage": 0.4, "profile": "generic"}
     readme_path = write_hf_readme(
@@ -358,7 +383,7 @@ def _build_ablation_report() -> dict:
 
 
 def test_readme_includes_thesis_statement(tmp_path):
-    from Trainforge.eval.hf_model_index import write_hf_readme
+    from Trainforge.eval.publication.hf_model_index import write_hf_readme
 
     readme_path = write_hf_readme(
         run_dir=tmp_path,
@@ -379,7 +404,7 @@ def test_readme_includes_thesis_statement(tmp_path):
 
 
 def test_readme_renders_headline_4row_table(tmp_path):
-    from Trainforge.eval.hf_model_index import write_hf_readme
+    from Trainforge.eval.publication.hf_model_index import write_hf_readme
 
     readme_path = write_hf_readme(
         run_dir=tmp_path,
@@ -400,7 +425,7 @@ def test_readme_renders_headline_4row_table(tmp_path):
 
 
 def test_readme_renders_qualitative_column_when_provided(tmp_path):
-    from Trainforge.eval.hf_model_index import write_hf_readme
+    from Trainforge.eval.publication.hf_model_index import write_hf_readme
 
     abl = _build_ablation_report()
     abl["headline_table"][3]["qualitative_score"] = 4.5
@@ -419,7 +444,7 @@ def test_readme_renders_qualitative_column_when_provided(tmp_path):
 
 
 def test_readme_renders_retrieval_method_5row_table(tmp_path):
-    from Trainforge.eval.hf_model_index import write_hf_readme
+    from Trainforge.eval.publication.hf_model_index import write_hf_readme
 
     readme_path = write_hf_readme(
         run_dir=tmp_path,
@@ -438,7 +463,7 @@ def test_readme_renders_retrieval_method_5row_table(tmp_path):
 
 
 def test_readme_includes_reproducing_section(tmp_path):
-    from Trainforge.eval.hf_model_index import write_hf_readme
+    from Trainforge.eval.publication.hf_model_index import write_hf_readme
 
     card = _build_model_card()
     card["eval_scores"] = {
@@ -465,7 +490,7 @@ def test_readme_includes_reproducing_section(tmp_path):
 
 
 def test_readme_includes_limitations_with_synthesis_drift_note(tmp_path):
-    from Trainforge.eval.hf_model_index import write_hf_readme
+    from Trainforge.eval.publication.hf_model_index import write_hf_readme
 
     readme_path = write_hf_readme(
         run_dir=tmp_path,
@@ -485,7 +510,7 @@ def test_readme_includes_limitations_with_synthesis_drift_note(tmp_path):
 def test_readme_opens_with_headline_sentence(tmp_path):
     """Wave 103: ED4ALL-Bench headline sentence ships as the README's
     very first user-visible line - before the YAML frontmatter."""
-    from Trainforge.eval.hf_model_index import write_hf_readme
+    from Trainforge.eval.publication.hf_model_index import write_hf_readme
 
     readme_path = write_hf_readme(
         run_dir=tmp_path,
@@ -511,7 +536,7 @@ def test_readme_opens_with_headline_sentence(tmp_path):
 def test_readme_opens_with_headline_result_callout(tmp_path):
     """The Headline Result section opens the README body, leading
     with hallucination reduction as the procurement claim."""
-    from Trainforge.eval.hf_model_index import write_hf_readme
+    from Trainforge.eval.publication.hf_model_index import write_hf_readme
 
     readme_path = write_hf_readme(
         run_dir=tmp_path,
@@ -536,7 +561,7 @@ def test_readme_opens_with_headline_result_callout(tmp_path):
 def test_readme_metric_table_includes_reduction_row(tmp_path):
     """The Evaluation metric table carries a Hallucination reduction
     row alongside the rate row, so the table is self-contained."""
-    from Trainforge.eval.hf_model_index import write_hf_readme
+    from Trainforge.eval.publication.hf_model_index import write_hf_readme
 
     readme_path = write_hf_readme(
         run_dir=tmp_path,
@@ -555,7 +580,7 @@ def test_readme_metric_table_includes_reduction_row(tmp_path):
 def test_headline_result_block_falls_back_when_ablation_missing(tmp_path):
     """Without an ablation_report, the section is still emitted (anchor
     stable) but carries a 'pending' stub instead of percentages."""
-    from Trainforge.eval.hf_model_index import write_hf_readme
+    from Trainforge.eval.publication.hf_model_index import write_hf_readme
 
     readme_path = write_hf_readme(
         run_dir=tmp_path,
@@ -573,7 +598,7 @@ def test_headline_result_block_falls_back_when_ablation_missing(tmp_path):
 
 
 def test_readme_renders_diagnostic_findings_when_provided(tmp_path):
-    from Trainforge.eval.hf_model_index import write_hf_readme
+    from Trainforge.eval.publication.hf_model_index import write_hf_readme
 
     findings = [
         {
@@ -602,7 +627,7 @@ def test_readme_renders_diagnostic_findings_when_provided(tmp_path):
 
 
 def test_readme_omits_diagnostic_section_when_no_findings(tmp_path):
-    from Trainforge.eval.hf_model_index import write_hf_readme
+    from Trainforge.eval.publication.hf_model_index import write_hf_readme
 
     readme_path = write_hf_readme(
         run_dir=tmp_path,
@@ -619,7 +644,7 @@ def test_readme_omits_diagnostic_section_when_no_findings(tmp_path):
 
 
 def test_readme_tags_include_ed4all_bench_branding(tmp_path):
-    from Trainforge.eval.hf_model_index import write_hf_readme
+    from Trainforge.eval.publication.hf_model_index import write_hf_readme
 
     readme_path = write_hf_readme(
         run_dir=tmp_path,
@@ -637,7 +662,7 @@ def test_readme_tags_include_ed4all_bench_branding(tmp_path):
 
 
 def test_readme_includes_hallucination_rate_row(tmp_path):
-    from Trainforge.eval.hf_model_index import write_hf_readme
+    from Trainforge.eval.publication.hf_model_index import write_hf_readme
 
     report = _build_eval_report()
     report["metrics"] = {"hallucination_rate": 0.15, "source_match": 0.55}
@@ -691,7 +716,7 @@ def test_hf_tags_from_manifest(tmp_path):
     """Manifest with classification.tags=['rdf','shacl','semantic-web']
     -> frontmatter contains those tags (manifest wins over substring
     sniff)."""
-    from Trainforge.eval.hf_model_index import write_hf_readme
+    from Trainforge.eval.publication.hf_model_index import write_hf_readme
 
     course_path = tmp_path / "course"
     _write_manifest(course_path, tags=["rdf", "shacl", "semantic-web"])
@@ -718,7 +743,7 @@ def test_hf_tags_from_manifest(tmp_path):
 def test_hf_tags_fallback_to_substring_sniff_when_manifest_missing(tmp_path):
     """No course_path / no manifest.json -> legacy substring behavior
     preserved. RDF/SHACL slug still picks up 'rdf' + 'shacl'."""
-    from Trainforge.eval.hf_model_index import write_hf_readme
+    from Trainforge.eval.publication.hf_model_index import write_hf_readme
 
     readme_path = write_hf_readme(
         run_dir=tmp_path,
@@ -739,7 +764,7 @@ def test_hf_tags_fallback_to_substring_sniff_when_manifest_missing(tmp_path):
 def test_hf_tags_fallback_when_manifest_tags_empty(tmp_path):
     """Manifest exists but classification.tags=[] -> substring sniff
     still kicks in. Empty list is treated as 'not declared'."""
-    from Trainforge.eval.hf_model_index import write_hf_readme
+    from Trainforge.eval.publication.hf_model_index import write_hf_readme
 
     # Use an RDF-bearing slug so the substring branch has something
     # to emit when the empty manifest tags trigger the fallback.

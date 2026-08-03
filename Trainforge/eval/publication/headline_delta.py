@@ -1,4 +1,4 @@
-"""Wave 103 - Headline-delta computation + ED4ALL-Bench branding.
+"""Headline-delta computation and ED4ALL-Bench branding.
 
 Pulls the four numbers any procurement reader actually wants out of
 the ablation report:
@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import math
 from typing import Any, Dict, Optional
-
 
 _HEADLINE_TEMPLATE = (
     "**ED4ALL-Bench v1.0**: Adapter + ED4ALL RAG reduces hallucinations "

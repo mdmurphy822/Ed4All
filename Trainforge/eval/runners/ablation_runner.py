@@ -22,7 +22,7 @@ callers wire the four callables via :class:`AdapterCallable` /
 module.
 
 Output: ``<run_dir>/ablation_report.json``. The renderer in
-``Trainforge.eval.hf_model_index`` reads this file and adds the
+``Trainforge.eval.publication.hf_model_index`` reads this file and adds the
 markdown tables to the README.
 """
 from __future__ import annotations
@@ -34,14 +34,13 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from Trainforge.eval.eval_config import LoadedEvalConfig, load_eval_config
+from Trainforge.eval.retrieval.chunk_ids import chunk_ids_match, is_chunk_id, normalize_chunk_id
 from Trainforge.eval.retrieval.evidence_trace import (
     EvidenceTrace,
     TraceWriter,
     classify_failure_mode,
     extract_citations,
 )
-from Trainforge.eval.retrieval.chunk_ids import chunk_ids_match, is_chunk_id, normalize_chunk_id
-
 
 logger = logging.getLogger(__name__)
 
@@ -272,7 +271,9 @@ class AblationRunner:
             )
             report["eval_config_is_default"] = self.eval_config.is_default
 
-        from Trainforge.eval.headline_delta import compute_headline_delta
+        from Trainforge.eval.publication.headline_delta import (
+            compute_headline_delta,
+        )
         report["headline_delta"] = compute_headline_delta(report)
 
         if output_path is None:
@@ -353,7 +354,7 @@ class AblationRunner:
         self,
         *,
         setup_label: str,
-        recorder: Optional["_RAGRecordingProxy"],
+        recorder: Optional[_RAGRecordingProxy],
         eval_report: Dict[str, Any],
     ) -> Optional[str]:
         """Classify RAG health for a setup row.
@@ -385,7 +386,7 @@ class AblationRunner:
         setup_label: str,
         retrieval_method: Optional[str],
         eval_report: Dict[str, Any],
-        rag_recorder: Optional["_RAGRecordingProxy"] = None,
+        rag_recorder: Optional[_RAGRecordingProxy] = None,
     ) -> None:
         """Append one trace row per probe to the trace writer.
 
