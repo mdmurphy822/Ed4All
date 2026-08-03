@@ -11,6 +11,65 @@
 ╰────────────────────────────────────────────────────────────╯
 </pre>
 
+<!-- development-token-stats:start -->
+## Built with a little help from our AI friends
+
+![Observed tokens](https://img.shields.io/badge/observed_tokens-12881262377-7C3AED?style=for-the-badge)
+![Sessions](https://img.shields.io/badge/sessions-53-2563EB?style=for-the-badge)
+![Recorded user turns](https://img.shields.io/badge/recorded_user_turns-6427-0F766E?style=for-the-badge)
+![Average session span](https://img.shields.io/badge/avg_session_span-17h_3m-EA580C?style=for-the-badge)
+![Maintained lines](https://img.shields.io/badge/maintained_LOC-1211265-DB2777?style=for-the-badge)
+
+Ed4All's local development logs record **12,881,262,377 tokens** across
+**53 sessions**—a playful, approximate measure of the
+Claude and Codex collaboration behind the project. Updated 2026-08-03; only numeric
+aggregates are published. [How it is counted](docs/operations/development-token-stats.md).
+
+| Collaborator | Tokens | Sessions | Avg tokens/session | Avg session span | Recorded user turns |
+|---|---:|---:|---:|---:|---:|
+| Claude | 12,016,436,779 | 38 | 316,222,020 | 18h 20m | 5,961 |
+| Codex | 864,825,598 | 15 | 57,655,039 | 13h 49m | 466 |
+| **Combined** | **12,881,262,377** | **53** | **243,042,686** | **17h 3m** | **6,427** |
+
+### What those tokens did
+
+| Token type | Claude | Codex | Combined |
+|---|---:|---:|---:|
+| Fresh input | 2,199,648 | 22,362,156 | 24,561,804 |
+| Cache creation | 285,091,038 | — | 285,091,038 |
+| Cached input read | 11,684,381,384 | 840,809,728 | 12,525,191,112 |
+| Output written | 44,764,709 | 1,653,714 | 46,418,423 |
+| ↳ reasoning output | Not separately reported | 364,686 | 364,686 |
+
+**12,834,843,954 input/read tokens** and **46,418,423 output/write tokens** were
+observed. Codex cached input is already included in its input total, while
+Claude reports cache creation and reads as additive categories; reasoning is a
+subset of Codex output, not an extra token charge.
+
+### Maintained repository lines
+
+| Source | Tests | Docs | Tooling/config | Other | Total |
+|---:|---:|---:|---:|---:|---:|
+| 553,319 | 504,578 | 37,955 | 114,237 | 1,176 | **1,211,265** |
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"xyChart":{"plotColorPalette":"#7C3AED, #2563EB, #0F766E, #EA580C, #DB2777"}}}}%%
+xychart-beta
+    title "Maintained lines by role"
+    x-axis [Source, Tests, Docs, Tooling, Other]
+    y-axis "Lines" 0 --> 1211265
+    bar [553319, 504578, 37955, 114237, 1176]
+```
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"pie1":"#7C3AED","pie2":"#2563EB","pieStrokeColor":"#334155","pieOuterStrokeColor":"#334155","pieTitleTextColor":"#475569","pieSectionTextColor":"#ffffff","pieLegendTextColor":"#475569"}}}%%
+pie showData
+    title Development tokens by collaborator
+    "Claude" : 12016436779
+    "Codex" : 864825598
+```
+<!-- development-token-stats:end -->
+
 # Ed4All
 
 ### Turn learning materials into accessible courses—and course-grounded AI
