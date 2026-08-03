@@ -42,7 +42,7 @@ WAVE9_HTML_FULL = """<!DOCTYPE html>
   {
     "@context": "https://ed4all.dev/ns/courseforge/v1",
     "@type": "CourseModule",
-    "courseCode": "SAMPLE_101",
+    "courseCode": "SYNTHETIC_COURSE",
     "weekNumber": 3,
     "moduleType": "content",
     "pageId": "week_03_content_01_cognitive_load",
@@ -114,7 +114,7 @@ WAVE9_HTML_DATA_ATTR_ONLY = """<!DOCTYPE html>
   {
     "@context": "https://ed4all.dev/ns/courseforge/v1",
     "@type": "CourseModule",
-    "courseCode": "SAMPLE_101",
+    "courseCode": "SYNTHETIC_COURSE",
     "weekNumber": 4,
     "moduleType": "content",
     "pageId": "week_04_attr_only"
@@ -265,7 +265,7 @@ def _make_processor():
         run_id="test_run_w10",
         log_decision=lambda **kwargs: None,
     )
-    processor.course_code = "sample_101"
+    processor.course_code = "synthetic_course"
     processor.stats = {
         "total_chunks": 0,
         "total_words": 0,
@@ -364,7 +364,7 @@ def _build_graph(chunks, course_id=""):
 
 def _mk_chunk(chunk_id, tags, refs=None):
     source: Dict[str, Any] = {
-        "course_id": "sample_101",
+        "course_id": "synthetic_course",
         "module_id": "m",
         "lesson_id": "l",
     }

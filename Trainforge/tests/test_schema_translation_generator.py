@@ -640,7 +640,7 @@ def _load_rdf_shacl_manifest_curies() -> List[str]:
     """Load the rdf-shacl manifest from disk; return its CURIE list."""
     from lib.ontology.property_manifest import load_property_manifest
 
-    manifest = load_property_manifest("rdf-shacl-demo")
+    manifest = load_property_manifest("rdf-shacl-synthetic")
     return [p.curie for p in manifest.properties]
 
 

@@ -45,7 +45,7 @@ def _make_processor(min_size: int = 200, max_size: int = 1000):
         run_id="test_run_w10_merge",
         log_decision=lambda **kwargs: None,
     )
-    processor.course_code = "sample_101"
+    processor.course_code = "synthetic_course"
     processor.stats = {
         "total_chunks": 0,
         "total_words": 0,

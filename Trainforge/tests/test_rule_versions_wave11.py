@@ -97,7 +97,7 @@ def _minimal_semantic_graph_inputs():
         {
             "id": "chunk_01",
             "source": {
-                "course_id": "SAMPLE_101",
+                "course_id": "SYNTHETIC_COURSE",
                 "module_id": "m",
                 "lesson_id": "l",
             },

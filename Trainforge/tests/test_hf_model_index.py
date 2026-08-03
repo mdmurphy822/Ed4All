@@ -287,7 +287,7 @@ def test_write_hf_readme_tags_for_rdf_shacl_slug(tmp_path):
     readme_path = write_hf_readme(
         run_dir=tmp_path,
         eval_report=_build_eval_report(),
-        course_slug="rdf-shacl-demo",
+        course_slug="rdf-shacl-synthetic",
         base_model="qwen2.5-1.5b",
         model_id="m-01",
         model_card=_build_model_card(),
@@ -723,7 +723,7 @@ def test_hf_tags_fallback_to_substring_sniff_when_manifest_missing(tmp_path):
     readme_path = write_hf_readme(
         run_dir=tmp_path,
         eval_report=_build_eval_report(),
-        course_slug="rdf-shacl-demo",
+        course_slug="rdf-shacl-synthetic",
         base_model="qwen2.5-1.5b",
         model_id="m-01",
         model_card=_build_model_card(),
@@ -743,7 +743,7 @@ def test_hf_tags_fallback_when_manifest_tags_empty(tmp_path):
 
     # Use an RDF-bearing slug so the substring branch has something
     # to emit when the empty manifest tags trigger the fallback.
-    course_path = tmp_path / "rdf-shacl-test"
+    course_path = tmp_path / "rdf-shacl-synthetic"
     _write_manifest(course_path, tags=[])
 
     run_dir = tmp_path / "run"
@@ -751,7 +751,7 @@ def test_hf_tags_fallback_when_manifest_tags_empty(tmp_path):
     readme_path = write_hf_readme(
         run_dir=run_dir,
         eval_report=_build_eval_report(),
-        course_slug="rdf-shacl-test",
+        course_slug="rdf-shacl-synthetic",
         base_model="qwen2.5-1.5b",
         model_id="m-01",
         model_card=_build_model_card(),

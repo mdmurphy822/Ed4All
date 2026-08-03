@@ -388,14 +388,14 @@ The maintenance contract for these flags is in root `CLAUDE.md`: any new behavio
 
 ```bash
 # Unified CLI:
-ed4all run rag_training --corpus course.imscc --course-name CHEM_101 --mode api
+ed4all run rag_training --corpus course.imscc --course-name <course-name> --mode api
 
 # Direct module invocation:
 python -m Trainforge.process_course \
-  --imscc /path/to/CHEM_101.imscc \
-  --course-code CHEM_101 \
+  --imscc /path/to/course.imscc \
+  --course-code <course-code> \
   --division ARTS --domain education --subdomain instructional-design \
-  --output Trainforge/output/chem_101 \
+  --output Trainforge/output/<course-code> \
   --import-to-libv2
 ```
 

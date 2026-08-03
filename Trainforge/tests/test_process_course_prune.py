@@ -224,7 +224,7 @@ def test_prune_after_import_drops_output(
             "--imscc",
             str(imscc),
             "--course-code",
-            "PHYS_101",
+            "SYNTHETIC_COURSE",
             "--output",
             str(output_dir),
             "--import-to-libv2",
@@ -235,7 +235,7 @@ def test_prune_after_import_drops_output(
     assert output_dir.exists()
     assert {p.name for p in output_dir.iterdir()} == {"IMPORT_RECEIPT.json"}
     receipt = json.loads((output_dir / "IMPORT_RECEIPT.json").read_text())
-    assert receipt["course_code"] == "PHYS_101"
+    assert receipt["course_code"] == "SYNTHETIC_COURSE"
     assert receipt["libv2_slug"] == "stub-physics"
     assert receipt["chunks_imported"] == 2
 
@@ -262,7 +262,7 @@ def test_prune_without_import_warns_and_no_op(
             "--imscc",
             str(imscc),
             "--course-code",
-            "PHYS_101",
+            "SYNTHETIC_COURSE",
             "--output",
             str(output_dir),
             "--prune-after-import",
@@ -300,7 +300,7 @@ def test_prune_skipped_when_import_fails(
             "--imscc",
             str(imscc),
             "--course-code",
-            "PHYS_101",
+            "SYNTHETIC_COURSE",
             "--output",
             str(output_dir),
             "--import-to-libv2",
@@ -340,7 +340,7 @@ def test_import_to_libv2_without_prune_keeps_full_output(
             "--imscc",
             str(imscc),
             "--course-code",
-            "PHYS_101",
+            "SYNTHETIC_COURSE",
             "--output",
             str(output_dir),
             "--import-to-libv2",

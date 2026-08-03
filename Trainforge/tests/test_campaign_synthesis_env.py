@@ -4,7 +4,7 @@ Pins the exact provider/roster combination the operator campaign env
 template (§ "Stage-B enablement") exports for in-build training synthesis:
 
     TRAINFORGE_SYNTHESIS_PROVIDER=local
-    LOCAL_SYNTHESIS_BASE_URL=http://localhost:8001/v1   (the spark-super seat)
+    LOCAL_SYNTHESIS_BASE_URL=http://localhost:8001/v1   (the local model seat)
     LOCAL_SYNTHESIS_MODEL=nemotron-3-super              (--served-model-name)
 
 Asserts, fully hermetically (no network, no LLM, no course slugs):
@@ -16,7 +16,7 @@ Asserts, fully hermetically (no network, no LLM, no course slugs):
      Nemotron license pin holds, and the coarse ``local`` provenance is SAFE;
   3. a pair stamped with this teacher passes the fail-closed export filter;
   4. the trap that motivated ``provider=local``: the pair factories hard-
-     whitelist provider names, so the raw seat name ``spark-super`` (what the
+     whitelist provider names, so the raw seat name ``local-seat`` (what the
      workflow runner's Gap-C fill would have setdefault'd from LLM_PROVIDER)
      raises ``NotImplementedError`` — the campaign env MUST export the
      literal ``local``;
@@ -115,7 +115,7 @@ def test_raw_seat_name_is_rejected_by_pair_factories():
     )
 
     with pytest.raises(NotImplementedError):
-        synthesize_instruction_pair({}, seed=0, provider="spark-super")
+        synthesize_instruction_pair({}, seed=0, provider="local-seat")
 
 
 def test_env_override_keeps_anthropic_fail_closed(campaign_env, monkeypatch, tmp_path):

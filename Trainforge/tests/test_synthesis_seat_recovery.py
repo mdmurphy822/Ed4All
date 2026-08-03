@@ -187,7 +187,7 @@ def test_legacy_fatal_rows_are_never_reclassified_by_recovery(
     monkeypatch.setattr(
         "lib.vllm_container_lifecycle.recover_seat_for_base_url",
         lambda *args, **kwargs: SeatRecoveryResult(
-            True, "recovered", "spark-super", True, ("Hang detected",), 9.0
+            True, "recovered", "local-seat", True, ("Hang detected",), 9.0
         ),
     )
     assert coordinator.recover(RuntimeError(_TIMEOUT)) is True
@@ -266,7 +266,7 @@ def test_recovery_budget_does_not_blindly_accept_second_incident(
     monkeypatch.setattr(
         "lib.vllm_container_lifecycle.recover_seat_for_base_url",
         lambda *args, **kwargs: SeatRecoveryResult(
-            True, "recovered", "spark-super", True, ("Hang detected",), 9.0
+            True, "recovered", "local-seat", True, ("Hang detected",), 9.0
         ),
     )
     assert coordinator.recover(RuntimeError(_TIMEOUT)) is True
@@ -306,7 +306,7 @@ def test_final_recovery_marker_failure_cannot_publish_success(
     monkeypatch.setattr(
         "lib.vllm_container_lifecycle.recover_seat_for_base_url",
         lambda *args, **kwargs: SeatRecoveryResult(
-            True, "recovered", "spark-super", True, ("Hang detected",), 9.0
+            True, "recovered", "local-seat", True, ("Hang detected",), 9.0
         ),
     )
     real_append = coordinator._append_marker
@@ -345,7 +345,7 @@ def test_crash_resume_keeps_prior_marker_and_records_correlated_incident(
     monkeypatch.setattr(
         "lib.vllm_container_lifecycle.recover_seat_for_base_url",
         lambda *args, **kwargs: SeatRecoveryResult(
-            True, "recovered", "spark-super", True, ("Hang detected",), 9.0
+            True, "recovered", "local-seat", True, ("Hang detected",), 9.0
         ),
     )
     context = {
@@ -365,7 +365,7 @@ def test_crash_resume_keeps_prior_marker_and_records_correlated_incident(
     assert rows[0]["recovery_id"] == "crashed-process"
     assert rows[-1]["state"] == "recovered"
     assert rows[-1]["run_id"] == "run-generic"
-    assert rows[-1]["seat_name"] == "spark-super"
+    assert rows[-1]["seat_name"] == "local-seat"
     assert rows[-1]["task"] == context
 
 
@@ -393,7 +393,7 @@ def test_crash_started_incident_cannot_recycle_twice(
             "incident_key": incident_key,
             "state": "started",
             "run_id": "run-generic",
-            "seat_name": "spark-super",
+            "seat_name": "local-seat",
             "task": context,
         }) + "\n",
         encoding="utf-8",
@@ -442,7 +442,7 @@ def test_healthy_crash_probe_appends_durable_recovery_marker(
             "incident_key": incident_key,
             "state": "started",
             "run_id": "run-generic",
-            "seat_name": "spark-super",
+            "seat_name": "local-seat",
             "task": context,
         }) + "\n",
         encoding="utf-8",
@@ -453,7 +453,7 @@ def test_healthy_crash_probe_appends_durable_recovery_marker(
     )
     monkeypatch.setattr(
         "lib.vllm_container_lifecycle._seat_for_base_url",
-        lambda *args, **kwargs: "spark-super",
+        lambda *args, **kwargs: "local-seat",
     )
     assert coordinator.recover(
         RuntimeError(_TIMEOUT),

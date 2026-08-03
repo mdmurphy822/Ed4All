@@ -380,7 +380,7 @@ def maybe_append_usage_row(
             row["task"] = str(task).strip()
         # Metering-correctness — stamp the SPENDING phase so the per-phase
         # token breakdown (GUI ``_usage_stats`` groups rows by ``phase``)
-        # attributes local content-gen (e.g. the spark-super course_planning
+        # attributes local content-gen (e.g. the local-seat course_planning
         # TO/CO synthesis) to the phase that spent it, exactly as the SemantiK
         # cascade taps already do. Read from the executor-published active-phase
         # env; additive + best-effort — unset / blank leaves the field off so a

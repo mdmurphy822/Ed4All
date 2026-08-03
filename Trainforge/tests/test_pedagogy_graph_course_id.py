@@ -31,8 +31,8 @@ class TestDeriveCourseIdFromChunks:
         assert _derive_course_id_from_chunks(chunks) == "DEMO_COURSE_1"
 
     def test_uppercases_the_prefix(self):
-        chunks = [{"id": "phys_101_chunk_00001"}]
-        assert _derive_course_id_from_chunks(chunks) == "PHYS_101"
+        chunks = [{"id": "synthetic_course_chunk_00001"}]
+        assert _derive_course_id_from_chunks(chunks) == "SYNTHETIC_COURSE"
 
     def test_empty_chunks_returns_empty_string(self):
         assert _derive_course_id_from_chunks([]) == ""
@@ -54,7 +54,7 @@ class TestDeriveCourseIdFromChunks:
         chunks = [
             {"id": "no-prefix"},
             {"id": "bio_201_chunk_00042"},
-            {"id": "chem_101_chunk_00001"},
+            {"id": "synthetic_course_chunk_00001"},
         ]
         # First match wins, even if later chunks have different prefixes.
         assert _derive_course_id_from_chunks(chunks) == "BIO_201"
@@ -112,13 +112,13 @@ class TestBuildPedagogyGraphCourseIdFallback:
         # corpus actual broken state).
         chunks = [
             {
-                "id": "phys_101_chunk_00001",
+                "id": "synthetic_course_chunk_00001",
                 "chunk_type": "explanation",
                 "learning_outcome_refs": ["TO-01"],
             }
         ]
         graph = build_pedagogy_graph(chunks, _objectives_basic(), course_id="")
-        assert graph["course_id"] == "PHYS_101"
+        assert graph["course_id"] == "SYNTHETIC_COURSE"
 
     def test_no_course_id_no_canonical_chunks_emits_empty(self):
         # When neither the caller nor the chunks supply a course code,

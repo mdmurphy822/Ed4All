@@ -30,7 +30,7 @@ class TestTemplateChromeSkip:
         html = """<html><body>
           <main><p>Real body content.</p></main>
           <footer role="contentinfo" data-cf-role="template-chrome">
-            <p>&copy; 2026 SAMPLE_101. All rights reserved.</p>
+            <p>&copy; 2026 SYNTHETIC_COURSE. All rights reserved.</p>
           </footer>
         </body></html>"""
         text = _extract(html)
@@ -41,7 +41,7 @@ class TestTemplateChromeSkip:
     def test_header_chrome_skipped(self):
         html = """<html><body>
           <header role="banner" data-cf-role="template-chrome">
-            <p>SAMPLE_101 &mdash; Week 3</p>
+            <p>SYNTHETIC_COURSE &mdash; Week 3</p>
           </header>
           <main><h1>Topic</h1><p>Body.</p></main>
         </body></html>"""
@@ -49,7 +49,7 @@ class TestTemplateChromeSkip:
         assert "Topic" in text
         assert "Body." in text
         assert "Week 3" not in text
-        assert "SAMPLE_101" not in text
+        assert "SYNTHETIC_COURSE" not in text
 
     def test_skip_link_chrome_skipped(self):
         """Skip-to-main links are chrome too; Courseforge now marks them."""

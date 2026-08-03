@@ -123,10 +123,10 @@ def _read_chunks(path: Path) -> list:
 def test_backfill_writes_matches_against_allowlist(tmp_path: Path):
     """End-to-end: scan, filter, persist — only allowed IDs land."""
     libv2_root = tmp_path / "LibV2"
-    chunks_path = libv2_root / "courses" / "phys-101" / "dart_chunks" / "chunks.jsonl"
+    chunks_path = libv2_root / "courses" / "synthetic-course" / "dart_chunks" / "chunks.jsonl"
     _write_chunks(chunks_path, [
         {
-            "id": "phys_101_chunk_00001",
+            "id": "synthetic_course_chunk_00001",
             "schema_version": "v4",
             "chunk_type": "explanation",
             "text": "This section addresses TO-01 and supports CO-03.",
@@ -134,7 +134,7 @@ def test_backfill_writes_matches_against_allowlist(tmp_path: Path):
             "learning_outcome_refs": [],
         },
         {
-            "id": "phys_101_chunk_00002",
+            "id": "synthetic_course_chunk_00002",
             "schema_version": "v4",
             "chunk_type": "explanation",
             "text": "Newton's first law — see ALGEBRA-12 for vector math.",
@@ -142,7 +142,7 @@ def test_backfill_writes_matches_against_allowlist(tmp_path: Path):
             "learning_outcome_refs": [],
         },
         {
-            "id": "phys_101_chunk_00003",
+            "id": "synthetic_course_chunk_00003",
             "schema_version": "v4",
             "chunk_type": "explanation",
             "text": "Energy conservation — no LO refs in this prose.",
@@ -152,7 +152,7 @@ def test_backfill_writes_matches_against_allowlist(tmp_path: Path):
     ])
 
     summary = _backfill_dart_chunk_lo_refs(
-        course_slug="phys-101",
+        course_slug="synthetic-course",
         objective_ids=["TO-01", "TO-02", "CO-03", "CO-04"],
         libv2_root=str(libv2_root),
     )
@@ -171,10 +171,10 @@ def test_backfill_writes_matches_against_allowlist(tmp_path: Path):
 def test_backfill_preserves_existing_refs_via_union(tmp_path: Path):
     """Union semantics: never destroy pre-existing refs (legacy corpora)."""
     libv2_root = tmp_path / "LibV2"
-    chunks_path = libv2_root / "courses" / "phys-101" / "dart_chunks" / "chunks.jsonl"
+    chunks_path = libv2_root / "courses" / "synthetic-course" / "dart_chunks" / "chunks.jsonl"
     _write_chunks(chunks_path, [
         {
-            "id": "phys_101_chunk_00001",
+            "id": "synthetic_course_chunk_00001",
             "text": "Now addresses TO-02 explicitly.",
             "html": "",
             "learning_outcome_refs": ["TO-01"],  # pre-existing upstream ref
@@ -182,7 +182,7 @@ def test_backfill_preserves_existing_refs_via_union(tmp_path: Path):
     ])
 
     summary = _backfill_dart_chunk_lo_refs(
-        course_slug="phys-101",
+        course_slug="synthetic-course",
         objective_ids=["TO-01", "TO-02"],
         libv2_root=str(libv2_root),
     )
@@ -209,12 +209,12 @@ def test_backfill_missing_chunks_file_skips_gracefully(tmp_path: Path):
 def test_backfill_empty_allowlist_is_noop(tmp_path: Path):
     """Empty allowlist → no scan (preserves false-positive guard)."""
     libv2_root = tmp_path / "LibV2"
-    chunks_path = libv2_root / "courses" / "phys-101" / "dart_chunks" / "chunks.jsonl"
+    chunks_path = libv2_root / "courses" / "synthetic-course" / "dart_chunks" / "chunks.jsonl"
     _write_chunks(chunks_path, [
         {"id": "c1", "text": "TO-99 mentioned.", "html": "", "learning_outcome_refs": []},
     ])
     summary = _backfill_dart_chunk_lo_refs(
-        course_slug="phys-101",
+        course_slug="synthetic-course",
         objective_ids=[],
         libv2_root=str(libv2_root),
     )
@@ -228,13 +228,13 @@ def test_backfill_empty_allowlist_is_noop(tmp_path: Path):
 def test_backfill_no_matches_leaves_file_unchanged(tmp_path: Path):
     """When no chunks need updates, the JSONL file is byte-identical."""
     libv2_root = tmp_path / "LibV2"
-    chunks_path = libv2_root / "courses" / "phys-101" / "dart_chunks" / "chunks.jsonl"
+    chunks_path = libv2_root / "courses" / "synthetic-course" / "dart_chunks" / "chunks.jsonl"
     _write_chunks(chunks_path, [
         {"id": "c1", "text": "No LO ids here.", "html": "", "learning_outcome_refs": []},
     ])
     before = chunks_path.read_bytes()
     summary = _backfill_dart_chunk_lo_refs(
-        course_slug="phys-101",
+        course_slug="synthetic-course",
         objective_ids=["TO-01"],
         libv2_root=str(libv2_root),
     )
@@ -278,14 +278,14 @@ def test_backfill_heuristic_off_is_byte_identical(tmp_path: Path, monkeypatch):
     summary carries no heuristic keys."""
     monkeypatch.delenv("ED4ALL_CHUNK_LO_HEURISTIC", raising=False)
     libv2_root = tmp_path / "LibV2"
-    chunks_path = libv2_root / "courses" / "phys-101" / "dart_chunks" / "chunks.jsonl"
+    chunks_path = libv2_root / "courses" / "synthetic-course" / "dart_chunks" / "chunks.jsonl"
     _write_chunks(chunks_path, [
         {"id": "c1", "text": _HEURISTIC_CHUNK_TEXT, "html": "",
          "learning_outcome_refs": []},
     ])
     before = chunks_path.read_bytes()
     summary = _backfill_dart_chunk_lo_refs(
-        course_slug="phys-101",
+        course_slug="synthetic-course",
         objective_ids=["TO-01"],
         libv2_root=str(libv2_root),
         objectives=_HEURISTIC_OBJECTIVES,
@@ -306,13 +306,13 @@ def test_backfill_heuristic_on_links_unlinked_chunk(tmp_path: Path, monkeypatch)
     monkeypatch.setattr("lib.decision_capture.DecisionCapture",
                         lambda *a, **k: cap)
     libv2_root = tmp_path / "LibV2"
-    chunks_path = libv2_root / "courses" / "phys-101" / "dart_chunks" / "chunks.jsonl"
+    chunks_path = libv2_root / "courses" / "synthetic-course" / "dart_chunks" / "chunks.jsonl"
     _write_chunks(chunks_path, [
         {"id": "c1", "text": _HEURISTIC_CHUNK_TEXT, "html": "",
          "learning_outcome_refs": []},
     ])
     summary = _backfill_dart_chunk_lo_refs(
-        course_slug="phys-101",
+        course_slug="synthetic-course",
         objective_ids=["TO-01"],
         libv2_root=str(libv2_root),
         objectives=_HEURISTIC_OBJECTIVES,
@@ -334,13 +334,13 @@ def test_backfill_heuristic_only_links_existing_ids(tmp_path: Path, monkeypatch)
     monkeypatch.setattr("lib.decision_capture.DecisionCapture",
                         lambda *a, **k: _RecordingCapture())
     libv2_root = tmp_path / "LibV2"
-    chunks_path = libv2_root / "courses" / "phys-101" / "dart_chunks" / "chunks.jsonl"
+    chunks_path = libv2_root / "courses" / "synthetic-course" / "dart_chunks" / "chunks.jsonl"
     _write_chunks(chunks_path, [
         {"id": "c1", "text": "Entirely unrelated prose about photosynthesis.",
          "html": "", "learning_outcome_refs": []},
     ])
     summary = _backfill_dart_chunk_lo_refs(
-        course_slug="phys-101",
+        course_slug="synthetic-course",
         objective_ids=["TO-01"],
         libv2_root=str(libv2_root),
         objectives=_HEURISTIC_OBJECTIVES,

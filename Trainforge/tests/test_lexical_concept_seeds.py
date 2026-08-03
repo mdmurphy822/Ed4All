@@ -114,7 +114,7 @@ def _run_extraction(
     result = asyncio.run(
         tool(
             project_id="",
-            course_name="BIO_LEXICAL",
+            course_name="SYNTHETIC_COURSE",
             staging_dir="",
             dart_chunks_path=str(chunks_path),
             libv2_root=str(custom_libv2),

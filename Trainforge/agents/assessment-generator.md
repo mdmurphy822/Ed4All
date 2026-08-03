@@ -21,8 +21,8 @@ Generate Bloom's taxonomy-aligned assessment questions from analyzed course cont
 
 ```json
 {
-  "assessment_id": "ASM-PYTHON_101-20260110",
-  "course_code": "PYTHON_101",
+  "assessment_id": "ASM-<course-code>-<date>",
+  "course_code": "<course-code>",
   "generated_at": "2026-01-10T15:30:00Z",
   "questions": [
     {
@@ -157,7 +157,7 @@ capture.log_distractor_rationale(
 ```python
 from libv2 import MultiRetriever
 
-retriever = MultiRetriever(course_slug="python-101")
+retriever = MultiRetriever(course_slug="<course-slug>")
 chunks = retriever.retrieve(
     query=learning_objective.text,
     top_k=15,

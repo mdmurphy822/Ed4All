@@ -306,8 +306,8 @@ def test_violation_pair_carries_audit_fields_after_run_synthesis(tmp_path):
     # `_family_slug` in lib.ontology.property_manifest.
     run_synthesis(
         corpus_dir=working,
-        course_code="rdf-shacl-test",
-        slug="rdf-shacl-test",
+        course_code="rdf-shacl-synthetic",
+        slug="rdf-shacl-synthetic",
         provider="mock",
         seed=29,
         with_violation_detection=True,
@@ -334,8 +334,8 @@ def test_schema_translation_pair_carries_audit_fields_after_run_synthesis(
 
     run_synthesis(
         corpus_dir=working,
-        course_code="rdf-shacl-test",
-        slug="rdf-shacl-test",
+        course_code="rdf-shacl-synthetic",
+        slug="rdf-shacl-synthetic",
         provider="mock",
         seed=31,
         with_schema_translation=True,
@@ -370,8 +370,8 @@ def test_pair_lo_refs_validate_walk_skips_deterministic_pairs(tmp_path):
 
     run_synthesis(
         corpus_dir=working,
-        course_code="rdf-shacl-test",
-        slug="rdf-shacl-test",
+        course_code="rdf-shacl-synthetic",
+        slug="rdf-shacl-synthetic",
         provider="mock",
         seed=37,
         with_kg_metadata=True,
@@ -430,8 +430,8 @@ def test_pair_promotion_validate_walk_passes_deterministic_pairs(tmp_path):
 
     run_synthesis(
         corpus_dir=working,
-        course_code="rdf-shacl-test",
-        slug="rdf-shacl-test",
+        course_code="rdf-shacl-synthetic",
+        slug="rdf-shacl-synthetic",
         provider="mock",
         seed=41,
         with_kg_metadata=True,

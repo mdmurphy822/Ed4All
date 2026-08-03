@@ -3145,7 +3145,7 @@ def run_synthesis(
         corpus_dir: The course output directory (NOT the inner ``corpus/``).
             This is the dir that contains ``corpus/chunks.jsonl`` and
             ``training_specs/``.
-        course_code: Course code, e.g. ``"SAMPLE_101"``. Used for decision capture.
+        course_code: Course code used for decision capture.
         provider: Synthesis provider; ``"mock"`` (default) is the only one wired.
         seed: Base seed. Each chunk's effective seed is ``seed + chunk_index``.
         capture: Optional pre-built DecisionCapture. If None, one is created
@@ -7214,7 +7214,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--course-code",
         help=(
-            "Course code for decision capture, e.g. SAMPLE_101. "
+            "Course code for decision capture. "
             "Required when --corpus is used; optional with --slug "
             "(falls back to objectives.json:course_code)."
         ),

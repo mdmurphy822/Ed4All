@@ -190,7 +190,7 @@ def test_holdout_emits_property_probes_when_manifest_present(tmp_path):
     course = _build_synthetic_course(tmp_path, n_prereq=30, n_teaches=20)
     # Use the rdf-shacl family slug so load_property_manifest finds
     # the existing fixture under schemas/training/.
-    rdf_course = tmp_path / "rdf-shacl-test-1"
+    rdf_course = tmp_path / "rdf-shacl-synthetic"
     course.rename(rdf_course)
     # Synthetic chunks covering ALL SIX declared RDF/SHACL surface forms.
     (rdf_course / "corpus").mkdir(parents=True, exist_ok=True)

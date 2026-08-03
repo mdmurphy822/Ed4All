@@ -58,7 +58,7 @@ def _chunk_with_refs(chunk_id: str, **extras: Any) -> Dict[str, Any]:
     return {
         "id": chunk_id,
         "source": {
-            "course_id": "SAMPLE_101",
+            "course_id": "SYNTHETIC_COURSE",
             "module_id": "m",
             "lesson_id": "l",
             "source_references": [dict(r) for r in SAMPLE_REFS],
@@ -71,7 +71,7 @@ def _chunk_no_refs(chunk_id: str, **extras: Any) -> Dict[str, Any]:
     return {
         "id": chunk_id,
         "source": {
-            "course_id": "SAMPLE_101",
+            "course_id": "SYNTHETIC_COURSE",
             "module_id": "m",
             "lesson_id": "l",
         },
