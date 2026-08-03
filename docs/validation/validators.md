@@ -1,184 +1,230 @@
-# Validator Catalog
+# Validator contributor guide
 
-> **What this page is:** a user-facing map of Ed4All’s validation layers.
-> For workflow placement, severity, actions, and configured thresholds, use
-> [Validation Gates](gates.md). For execution and result flow, use
-> [Validation Architecture](../architecture/validation-architecture.md).
+Validators inspect pipeline artifacts and return structured evidence. Workflow
+gates decide when those validators run, which inputs they receive, and whether
+a failed result is advisory or blocking.
 
-Validators inspect artifacts and return structured results. Gates decide when
-those validators run and whether a result warns, regenerates, blocks, or is
-reported for review. Keeping those responsibilities separate makes validation
-behavior visible without duplicating workflow policy here.
+This guide describes validator families and the extension contract. For the
+configured workflow instances, severities, and thresholds, see
+[Validation gates](gates.md). For end-to-end result flow, see
+[Validation architecture](../architecture/validation-architecture.md).
 
-## How validation fits together
+## Validator families
+
+The families overlap by design. Choose a home based on the artifact and
+responsibility, then reuse shared helpers instead of creating a parallel
+framework.
+
+### Structure, schema, and provenance
+
+These validators check machine-readable contracts: required fields, identifier
+resolution, source references, manifests, hashes, graph shapes, ordering, and
+package integrity. Most are deterministic and should report malformed or
+missing artifacts with stable issue codes and actionable locations.
+
+Representative modules include:
+
+- `page_objectives.py`, `source_refs.py`, and `content_type.py` for authored
+  block contracts;
+- `shacl_runner.py` and the `shacl/` resources for graph constraints;
+- `chunkset_manifest.py` and `chunkset_drift.py` for corpus integrity; and
+- the `libv2/` package for archive and model-package validation.
+
+### Accessibility and content quality
+
+These validators inspect accessible markup, interaction semantics, writing
+quality, instructional scaffolds, and assessment construction. Examples
+include `rewrite_html_shape.py`, `interactive_a11y.py`, `mayer_ctml.py`,
+`assessment_item_writing.py`, and `key_terms_definition_quality.py`.
+
+Keep deterministic syntax and structure checks separate from semantic claims.
+An HTML parser can prove that alternative text exists; it cannot, by itself,
+prove that the text accurately describes an image.
+
+### Alignment and semantic support
+
+These validators compare objectives, assessments, blocks, source evidence, and
+claims. The family includes deterministic rubric checks as well as embedding
+and natural-language-inference (NLI) checks.
+
+Optional statistical dependencies must fail loudly:
+
+- missing embedding packages use `EMBEDDING_DEPS_MISSING`;
+- an unavailable requested embedding device uses
+  `EMBEDDING_MODEL_UNAVAILABLE` and fails closed;
+- an individual encoding failure uses `EMBEDDING_ENCODE_ERROR`; and
+- missing NLI support produces a structured dependency result or abstention,
+  never evidence that a semantic claim passed.
+
+Selecting CPU for embeddings is explicit through
+`ED4ALL_EMBEDDING_DEVICE=cpu`; the validation layer does not silently change
+the requested device.
+
+### Graph, synthesis, and training packages
+
+These validators protect the knowledge graph, generated training pairs, and
+post-training artifacts. They cover graph sufficiency, property coverage,
+pair diversity, leakage, learning-outcome references, promotion eligibility,
+archive completeness, and evaluation gates.
+
+Training data and model promotion remain operator-governed. A validator
+produces evidence and a gate verdict; it does not authorize synthesis,
+training, or promotion by itself.
+
+## Result contract
+
+A validator class implements the protocol in
+[`MCP/hardening/validation_gates.py`](../../MCP/hardening/validation_gates.py):
+it exposes `name` and `version`, accepts an input mapping through `validate`,
+and returns a `GateResult`.
+
+A useful result includes:
+
+- a stable `passed` value;
+- a score when the check has a meaningful aggregate measure;
+- structured `GateIssue` entries with severity, stable code, message,
+  location when available, and a practical suggestion;
+- an error field when validation could not execute; and
+- an action only when an owning router consumes the validator action contract.
+
+Issue severity describes an individual finding. Gate severity is workflow
+policy. Do not infer one from the other or hard-code workflow blocking inside
+an ordinary validator.
+
+Validators must not lower thresholds, substitute a weaker check, or convert an
+unavailable dependency into a clean pass. Feature-gated behavior may return an
+explicit no-op or abstention only when that behavior is part of the documented
+contract.
+
+## Runtime flow
 
 ```mermaid
-flowchart LR
-    A[Pipeline artifact] --> B[Validator input builder]
-    B --> C[Validator]
-    C --> D[Structured result<br/>passed · score · issues]
-    D --> E[Gate manager]
-    E --> F[Continue]
-    E --> G[Warn or regenerate]
-    E --> H[Block]
-
-    classDef input fill:#E8F1FF,stroke:#173B70,color:#081B33,stroke-width:2px;
-    classDef check fill:#FFF4CC,stroke:#6B5200,color:#241C00,stroke-width:2px;
-    classDef result fill:#E7F7ED,stroke:#176438,color:#092A19,stroke-width:2px;
-    classDef stop fill:#FFE8E8,stroke:#8A1C1C,color:#350909,stroke-width:2px;
-    class A,B input;
-    class C check;
-    class D,E,F,G result;
-    class H stop;
+flowchart TD
+    A["Phase produces an artifact"] --> B["Input builder resolves validator inputs"]
+    B --> C{"Required inputs available?"}
+    C -- No --> D["Record structured missing-input skip"]
+    C -- Yes --> E["Load allowlisted validator"]
+    E --> F["Validate and return GateResult"]
+    F --> G["Apply thresholds, waiver, and error policy"]
+    G --> H{"Failed critical gate?"}
+    H -- Yes --> I["Fail phase gate verdict"]
+    H -- No --> J["Record result and continue"]
+    D --> J
 ```
 
-The diagram is intentionally redundant in text: an artifact is normalized by
-an input builder, inspected by a validator, returned as a structured result,
-and interpreted by the gate manager.
+The labels carry the full meaning; color is not required to interpret the
+diagram. Explicitly requested training synthesis has a stricter artifact
+contract: unresolved required gate inputs fail that phase rather than becoming
+a non-blocking skip.
 
-## Catalog at a glance
+## Input routing and loading
 
-| Layer | What it checks | Representative validators | Dependency behavior |
-|---|---|---|---|
-| **Deterministic** | Schemas, references, HTML structure, accessibility metadata, graph shape, coverage, ordering, provenance, and archive integrity | `page_objectives`, `content_type`, `source_refs`, `assessment_objective_alignment`, `libv2_manifest`, `libv2_model`, `course_completeness`, `min_edge_count`, `synthesis_diversity`, `synthesis_leakage`, `rewrite_html_shape`, `chunk_wcag_status`, `udl_coverage`, `key_terms_definition_quality`, `mayer_ctml`, `bloom_distribution`, `bloom_type_range`, `prereq_sequencing`, `recall_self_check`, `misconception_productive_failure`, `difficulty_provenance` | No embedding or language model is required. Missing or malformed required artifacts are reported through each validator’s structured issue codes. |
-| **Embedding** | Semantic similarity and source alignment | `objective_assessment_similarity`, `concept_example_similarity`, `objective_roundtrip_similarity`, `co_terminal_alignment`, `source_coverage`, `terminal_objective_source_grounding` | Missing optional packages produce `EMBEDDING_DEPS_MISSING`. A requested device that cannot initialize produces `EMBEDDING_MODEL_UNAVAILABLE` and fails closed. Per-item encoding failures use `EMBEDDING_ENCODE_ERROR`. |
-| **NLI** | Entailment, contradiction, claim support, and optional semantic grounding | `objective_entailment`, discussion/source grounding integrations, synthesis support checks, and the NLI signal used by Bloom trivote | Missing NLI support produces `NLI_DEPS_MISSING` or a validator-specific abstention. Strict modes fail closed where documented by the owning gate. DeBERTa is the active NLI engine; it is not a trained Bloom classifier. |
-| **Experimental or opt-in** | Additional quality signals that are disabled, warning-only, or explicitly unprovisioned by default | Bloom disagreement/trivote, prerequisite-health extensions, distribution checks, advanced multimedia and instructional-design checks | Disabled modes return their documented no-op or abstention result. Enabling a flag does not create model artifacts or bypass dependency checks. |
+`GateInputRouter` in
+[`MCP/hardening/gate_input_routing.py`](../../MCP/hardening/gate_input_routing.py)
+maps a validator's dotted class path to a builder. A builder returns the input
+mapping and a list of unresolved required keys. Missing builders and builder
+errors become structured missing-input results instead of vacuous validation.
 
-This matrix is intentionally compact. The complete, live validator paths are
-declared in `config/workflows.yaml`; [Validation Gates](gates.md) renders that
-wiring into an operator-readable catalog.
+`ValidationGateManager` restricts dynamic imports to its allowlisted module
+prefixes. A new validator must live under an allowed namespace or accompany an
+explicit, reviewed allowlist change.
 
-## Core deterministic families
+Thresholds and validator-specific `config` originate in
+[`config/workflows.yaml`](../../config/workflows.yaml). The executor forwards
+them to the validator, and the gate manager also applies generic result-level
+thresholds. Per-call inputs retain precedence over duplicate configured keys.
 
-### Artifact and reference integrity
+## Error policy
 
-- `page_objectives.py` and `assessment_objective_alignment.py` verify that
-  instructional and assessment content resolves to declared objectives.
-- `source_refs.py` verifies source provenance against the staged conversion
-  manifest. Its read path accepts the documented legacy provenance prefix for
-  existing artifacts; new output uses the canonical SemantiK form.
-- `libv2_manifest.py`, `libv2_model.py`, and
-  `libv2/course_completeness.py` verify archive structure, hashes, model-card
-  integrity, weights, graphs, chunks, and index consistency. Common public
-  issue codes include `ARCHIVE_NO_CHUNKS`, `ARCHIVE_TOO_THIN`,
-  `ARCHIVE_NO_INDEX`, `ARCHIVE_INDEX_MISMATCH`, and `ARCHIVE_FAKE_INDEX`.
+Validator errors stay distinguishable from content findings:
 
-### Content, accessibility, and instructional structure
+- ordinary exceptions produce `VALIDATOR_ERROR`; `behavior.on_error` decides
+  whether that result warns or fails closed;
+- CUDA out-of-memory produces `VALIDATOR_OOM`; the configured error behavior
+  applies unless `ED4ALL_VALIDATOR_FAIL_CLOSED_ON_OOM` forces failure;
+- an unavailable configured embedding device produces
+  `EMBEDDING_MODEL_UNAVAILABLE` and always fails closed; and
+- strict embedding dependency mode promotes missing packages to a failed
+  result rather than installing or downloading anything.
 
-- `rewrite_html_shape.py`, `chunk_wcag_status.py`, `udl_coverage.py`, and
-  `mayer_ctml.py` inspect structural accessibility and multimedia-learning
-  signals. User-visible codes include `REWRITE_BLOCK_SHAPE_INVALID`,
-  `REWRITE_BLOCK_A11Y_CONTRACT`, `CHUNK_WCAG_FLAGGED`,
-  `CHUNK_FIGURE_NO_ALT`, `WCAG_FIELDS_ABSENT`,
-  `UDL_SINGLE_REPRESENTATION`, `UDL_NO_AUTONOMY_AFFORDANCE`,
-  `CTML_NO_SIGNALING`, `CTML_CAPTION_NOT_ADJACENT`,
-  `CTML_REDUNDANT_NARRATION`, and `CTML_NOT_SEGMENTED`.
-- `key_terms_definition_quality.py`, `recall_self_check.py`, and
-  `misconception_productive_failure.py` inspect glossary, recall, and
-  misconception scaffolds. Their stable codes include `KEYTERM_DEF_CIRCULAR`,
-  `KEYTERM_DEF_TOO_LONG`, `KEYTERM_DEF_NOT_DISTINCT`,
-  `RECALL_SELF_CHECK_OPTIONS_VISIBLE`, `RECALL_SELF_CHECK_ANSWER_INLINE`,
-  `MISCONCEPTION_NO_NAMED_CONCEPT`, and
-  `MISCONCEPTION_NO_PRODUCTIVE_FAILURE`.
+After error handling, a result that remains failed blocks the phase only when
+its declared gate severity is critical. See
+[ADR-005](../architecture/ADR-005-gate-severity-blocking.md) for that decision.
 
-### Graph, synthesis, and training-package quality
+## Decision capture
 
-- `kg_quality.py` delegates graph scoring to Trainforge’s KG reporter.
-  Optional prerequisite-health output uses `KG_PREREQ_CYCLE_DETECTED` and
-  `KG_PREREQ_DANGLING_BACKGROUND`; it does not change the primary composite.
-- `min_edge_count.py` protects synthesis from structurally empty graphs.
-- `synthesis_diversity.py` and `synthesis_leakage.py` inspect generated pair
-  diversity and contamination without invoking a model.
-- `difficulty_provenance.py` reports `DIFFICULTY_PROVENANCE_MISSING` and
-  `DIFFICULTY_IRT_WITHOUT_RESPONSES` when calibration claims lack evidence.
+The executor makes `decision_capture` and `capture` available to validators.
+Every validator path that calls an LLM must emit at least one decision event
+per call, or per batch for a batched call. Its rationale must be at least 20
+characters and must include dynamic evidence such as artifact identifiers,
+model settings, scores, or result distributions. Static boilerplate is not an
+audit trail.
 
-## Statistical dependency contracts
+Deterministic validators that make auditable selection, scoring, or governance
+decisions should follow the established capture pattern for their family.
+Capture failures must not disguise the validation result. Add a regression
+test that injects a capture double, proves the event fires, and checks the
+dynamic rationale. The canonical event contract is documented in
+[Decision capture](../architecture/decision-capture.md).
 
-### Embeddings
+## Bloom classification status
 
-Embedding validators distinguish three states:
+Structural Bloom checks remain deterministic: declared levels, verb ranges,
+ladders, and distributions do not require a trained text classifier.
 
-1. **Packages unavailable:** return `EMBEDDING_DEPS_MISSING`; the configured
-   gate policy decides whether that warning is blocking.
-2. **Packages present, requested device unavailable:** the gate manager emits
-   `EMBEDDING_MODEL_UNAVAILABLE` and fails closed. There is no automatic CPU
-   fallback; select CPU explicitly with `ED4ALL_EMBEDDING_DEVICE=cpu`.
-3. **A specific encode operation fails:** the validator reports
-   `EMBEDDING_ENCODE_ERROR` for the affected comparison according to its
-   documented result contract.
+`ED4ALL_BLOOM_TRIVOTE` enables a heuristic vote using available declared,
+verb, and active DeBERTa NLI evidence. It is not a trained or provisioned Bloom
+classifier; unavailable signals abstain rather than fabricate a vote.
 
-`TRAINFORGE_REQUIRE_EMBEDDINGS` is the strict dependency switch used by the
-statistical tier. It changes failure posture; it does not install packages or
-provision a device.
+`ED4ALL_BLOOM_TRIVOTE_HEADS` selects an optional heads voter only when a
+complete local artifact can load. The repository does not ship that local
+artifact. A missing or invalid artifact abstains, and the heuristic path falls
+back to or continues with its remaining available voters.
 
-### NLI
+`TRAINFORGE_REQUIRE_BERT_ENSEMBLE` is a strict availability policy. It does
+not provision a classifier; strict mode fails when the required provisioned
+signal is unavailable.
 
-NLI validators use `lib/classifiers/nli_classifier.py`. The active model is
-DeBERTa-based entailment infrastructure shared across groundedness and support
-checks. Missing support is surfaced as `NLI_DEPS_MISSING` or a structured
-abstention; it is never evidence that a claim passed.
+DeBERTa is the active NLI entailment service used by semantic support checks.
+It is distinct from a trained Bloom classifier, even when its zero-shot signal
+participates in the heuristic vote.
 
-## Bloom classifier status
+## Adding or changing a validator
 
-> **Default status: no trained or provisioned Bloom classifier.**
->
-> The default compatibility path loads no reliable classifier members and
-> returns structured abstention. The Bloom taxonomy, verb ontology, declared
-> levels, distribution checks, and type-range checks remain active
-> deterministic features; classifier abstention does not disable them.
+Treat implementation, routing, policy, and tests as one contract:
 
-| Mode | Signals | Current behavior |
-|---|---|---|
-| Default | Legacy classifier compatibility surface | No trained/provisioned member is available. The disagreement validator abstains rather than inventing a vote. |
-| `ED4ALL_BLOOM_TRIVOTE=on` | Artifact’s asserted level + canonical verb detector + active DeBERTa NLI heuristic | This is an interpretable heuristic vote, not a trained Bloom classifier. Missing signals abstain; insufficient participation emits `BLOOM_TRIVOTE_INSUFFICIENT_VOTERS`. |
-| `ED4ALL_BLOOM_TRIVOTE_HEADS=on` | Replaces the trivote NLI heuristic only when a complete local head artifact loads | A fresh checkout ships no heads. The loader accepts only explicitly supplied local artifacts. When no complete artifact loads, the head backend abstains and trivote continues with its zero-shot NLI signal. |
-| `TRAINFORGE_REQUIRE_BERT_ENSEMBLE=on` | Strict availability policy | Fails closed with `BERT_ENSEMBLE_DEPS_MISSING` when the required classifier signal is unavailable. The flag provisions nothing and downloads nothing. |
+1. Place the validator in the family that owns its artifact and reuse canonical
+   ontology, parsing, and result helpers.
+2. Implement `validate(inputs) -> GateResult` with stable issue codes and
+   explicit malformed-input and dependency behavior.
+3. Register the dotted validator path with the correct input builder. Add an
+   allowlist entry only if an existing allowed namespace is unsuitable.
+4. Declare the gate in the owning workflow phase with explicit severity,
+   threshold, `config`, `on_fail`, and `on_error` values.
+5. Wire `DecisionCapture` for every LLM call and for other decisions required
+   by the owning validator family.
+6. Test a clean artifact, each important defect, malformed and missing inputs,
+   threshold forwarding, dependency failures, and decision capture where
+   applicable.
+7. Run the gate through the executor path to prove the builder supplies real
+   inputs and the result is persisted with the intended severity.
+8. Update [Validation gates](gates.md) when the configured instance or its
+   public rationale changes. Do not copy the gate inventory into this guide.
 
-Disagreement and dispersion continue to use the public compatibility codes in
-the `BERT_ENSEMBLE_*` family. The narrow import shim at
-`lib/validators/bloom_classifier_disagreement.py` remains for older imports;
-the canonical implementation is
-`lib/validators/bloom/classifier_disagreement.py`.
+Do not promote a warning gate to critical from a convenient single run.
+Threshold and severity changes require representative calibration evidence and
+explicit review.
 
-## Gate-manager error semantics
+## Sources of truth
 
-`MCP/hardening/validation_gates.py::ValidationGateManager` loads only allowed
-validator modules, forwards configured thresholds, injects decision capture,
-and converts validator output into a common result shape.
-
-- Ordinary exceptions become `VALIDATOR_ERROR`; the gate’s configured
-  `behavior.on_error` decides warn versus fail-closed behavior.
-- CUDA out-of-memory failures become the distinct `VALIDATOR_OOM` issue and a
-  decision-capture event. By default, pass/block still follows
-  `behavior.on_error`. `ED4ALL_VALIDATOR_FAIL_CLOSED_ON_OOM=on` always blocks.
-- Embedding device initialization failures become
-  `EMBEDDING_MODEL_UNAVAILABLE` and always fail closed, even for a gate whose
-  ordinary error policy is `warn`.
-- Missing embedding packages remain distinguishable as
-  `EMBEDDING_DEPS_MISSING`; strict dependency policy can promote them to a
-  blocking result.
-
-These rules prevent infrastructure failures from masquerading as validator
-success while preserving each gate’s declared policy.
-
-## Canonical ontology helpers
-
-Validators should reuse these authorities instead of maintaining local copies:
-
-- `lib/ontology/bloom.py` — Bloom levels, verbs, and cognitive domains.
-- `lib/ontology/slugs.py::canonical_slug` — canonical identifier formatting.
-- `lib/ontology/teaching_roles.py` — component/purpose to teaching-role map.
-- `lib/ontology/taxonomy.py::load_taxonomy` — checked-in taxonomy loader.
-- `lib/ontology/misconception_id.py::canonical_mc_id` — stable misconception
-  identity across graphs and training pairs.
-
-## Finding the exact policy
-
-Use this page to identify the validator family, then follow the source of truth:
-
-- **Where and when does it run?** See [Validation Gates](gates.md).
-- **How are inputs, results, retries, and decisions handled?** See
-  [Validation Architecture](../architecture/validation-architecture.md).
-- **What threshold or action applies?** Read the gate entry in
-  `config/workflows.yaml`; do not infer it from a validator default.
+- [Validation gates](gates.md): configured workflow instances and policy.
+- [Validation architecture](../architecture/validation-architecture.md):
+  execution, persistence, waivers, aggregators, and post-training boundaries.
+- [`config/workflows.yaml`](../../config/workflows.yaml): executable gate
+  declarations.
+- [`MCP/hardening/validation_gates.py`](../../MCP/hardening/validation_gates.py):
+  result, threshold, waiver, loading, and error semantics.
+- [`MCP/hardening/gate_input_routing.py`](../../MCP/hardening/gate_input_routing.py):
+  validator input builders.
+- [`lib/validators/`](../../lib/validators/): validator implementations and
+  family-level tests.
