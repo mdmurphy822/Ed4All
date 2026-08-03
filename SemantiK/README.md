@@ -2,7 +2,7 @@
 
 <pre align="center">
 ╭───────────────────────────────────────────────────────────────────╮
-│ ███████╗███████╗███╗   ███╗ █████╗ ███╗   ██╗███████╗██╗██╗  ██╗  │
+│ ███████╗███████╗███╗   ███╗ █████╗ ███╗   ██╗████████╗██╗██╗  ██╗ │
 │ ██╔════╝██╔════╝████╗ ████║██╔══██╗████╗  ██║╚══██╔══╝██║██║ ██╔╝ │
 │ ███████╗█████╗  ██╔████╔██║███████║██╔██╗ ██║   ██║   ██║█████╔╝  │
 │ ╚════██║██╔══╝  ██║╚██╔╝██║██╔══██║██║╚██╗██║   ██║   ██║██╔═██╗  │
@@ -13,17 +13,19 @@
 
 # SemantiK
 
-### Turn source documents into accessible, traceable HTML
+### From source document to structured, accessibility-oriented HTML
 
-SemantiK is Ed4All's document-conversion engine. It extracts source content,
-reconstructs reading structure, generates semantic HTML, validates the result,
-and preserves block-level provenance for downstream course and retrieval tools.
+SemantiK is Ed4All's document-conversion engine. It turns PDFs and existing
+HTML into semantic web content, preserves source provenance, and produces the
+structured foundation used by Courseforge, Trainforge, and LibV2.
 
+**Extract clearly. Structure deliberately. Keep every block traceable.**
+
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/License-Apache--2.0-22C55E)](LICENSE)
-[![Output](https://img.shields.io/badge/Output-Accessible_HTML-2563EB)](#output-contract)
-[![Runtime](https://img.shields.io/badge/Runtime-Local_by_default-7C3AED)](#runtime-options)
+[![Output](https://img.shields.io/badge/Output-Semantic_HTML-2563EB)](#what-semantik-delivers)
 
-[Quick start](#quick-start) · [Conversion flow](#conversion-flow) · [Output contract](#output-contract) · [Architecture](architecture.md) · [Ed4All](../README.md)
+[Quick start](#quick-start) · [See the flow](#the-conversion-flow) · [Understand the output](#output-contract) · [Read the architecture](architecture.md) · [Explore Ed4All](../README.md)
 
 </div>
 
@@ -31,162 +33,155 @@ and preserves block-level provenance for downstream course and retrieval tools.
 
 ## What SemantiK delivers
 
-- Semantic HTML organized for assistive technology and downstream processing.
-- Lane-specific accessibility evidence that never presents an unevaluated check
-  as a pass.
-- Stable source references and physical-page provenance for citations and review.
-- Explicit status and audit data for review, publication, and downstream use.
+- **Structured HTML** with headings, sections, tables, figures, math, and other
+  document regions represented for web and assistive-technology workflows.
+- **Source-level traceability** through stable block identifiers, physical-page
+  references, and ordered region provenance.
+- **Deterministic normalization and enrichment** around model-produced OCR,
+  keeping the output contract inspectable and repeatable.
+- **Explicit quality evidence** that distinguishes evaluated, flagged, and
+  not-evaluated checks instead of presenting missing evidence as success.
+- **A clean downstream handoff** for course creation, content chunking,
+  retrieval, accessibility review, and source-grounded citations.
 
-The compatibility cascade targets WCAG 2.2 AA requirements through
-deterministic assembly and automated gates. Automated checks do not prove that
-every document is fully conformant; skipped, unevaluated, and flagged output
-still requires appropriate review.
+SemantiK is designed to support WCAG 2.2 AA remediation. Automated conversion
+and validation are evidence toward accessibility, not a guarantee that every
+source document is fully conformant. Publication still requires review of the
+source, generated structure, and reported findings.
 
-## Conversion flow
+## The conversion flow
 
 ```mermaid
-flowchart TB
-    source["Source PDF"] --> route{"GLM-OCR lane enabled?"}
+flowchart LR
+    source["Private source<br/>PDF or HTML"]
+    extract["GLM-OCR<br/>SDK extraction"]
+    normalize["SDK normalization<br/>ordered document regions"]
+    enrich["Deterministic enrichment<br/>tables · figures · math · provenance"]
+    judge["Super Judge<br/>heading hierarchy review"]
+    adapt["Ed4All adapter<br/>stable output contract"]
+    output["Private output<br/>semantic HTML + audit evidence"]
 
-    route -->|Operator-preferred: enabled| glm["GLM-OCR + SDK transform"]
-    glm --> enrich["Deterministic enrichment"]
-    enrich --> judge["Super heading judge<br/>default on within this lane"]
-    judge --> glmout["Region provenance<br/>status: not_evaluated<br/>action: ship_with_flag"]
+    source --> extract --> normalize --> enrich --> judge --> adapt --> output
 
-    route -->|Code default: disabled| extract["Stages 1–2<br/>extract + features"]
-    extract --> council["Stages 3–5<br/>five ModernBERT specialists<br/>reranker + structure graph"]
-    council --> generate["Stages 6–9<br/>generate + gate + assemble"]
-    generate --> validate["Stages 10–13<br/>document gates + theta + exit"]
+    classDef sourceNode fill:#EEF6FF,stroke:#2563EB,color:#172554,stroke-width:2px;
+    classDef modelNode fill:#FAF5FF,stroke:#9333EA,color:#581C87,stroke-width:2px;
+    classDef deterministicNode fill:#F0FDF4,stroke:#16A34A,color:#14532D,stroke-width:2px;
+    classDef outputNode fill:#FFF7ED,stroke:#EA580C,color:#7C2D12,stroke-width:2px;
 
-    glmout --> adapter["Ed4All adapter + provenance contract"]
-    validate --> adapter
-    adapter --> output["Accessible HTML + lane-specific evidence"]
-
-    classDef preferred fill:#E7F8EF,stroke:#08783E,color:#103A26,stroke-width:2px;
-    classDef compat fill:#EAF2FF,stroke:#2457A7,color:#102A4C,stroke-width:2px;
-    classDef contract fill:#FFF4D8,stroke:#8A5A00,color:#402A00,stroke-width:2px;
-    class glm,enrich,judge,glmout preferred;
-    class extract,council,generate,validate compat;
-    class adapter,output contract;
+    class source sourceNode;
+    class extract,judge modelNode;
+    class normalize,enrich,adapt deterministicNode;
+    class output outputNode;
 ```
 
-SemantiK has two live, non-convergent conversion routes. The operator-preferred
-route uses GLM-OCR, SDK transformation and normalization, deterministic
-enrichment, and a default-on Super heading judge. It produces ordered
-`region_provenance` for the Ed4All adapter without entering the staged
-generation, gate, assembly, or theta pipeline. Its current posture is explicit:
-accessibility is `not_evaluated`, and the exit action is `ship_with_flag`.
+The preferred PDF route uses GLM-OCR through its SDK, converts the response
+into SemantiK's ordered region model, and enriches those regions without
+discarding their source lineage. The Super heading judge reviews the recovered
+heading hierarchy, while deterministic code owns normalization, provenance,
+output assembly, and the final contract.
 
-When the GLM-OCR lane is not enabled—the code default—the compatibility route
-runs the Stage-1–13 cascade in `semantik_structure/cascade.py`. Five ModernBERT
-specialists cover structure, semantics, merge/split, tables, and math through a
-shared backbone. A cross-reranker and deterministic structure graph feed Qwen
-candidate generation, hard gates, document assembly, theta evaluation, and the
-exit policy. Both routes meet only at the Ed4All adapter and public provenance
-contract. See [the architecture guide](architecture.md) for the complete map.
+The preferred lane currently reports accessibility as `not_evaluated` and the
+exit action as `ship_with_flag`; it does not claim that the compatibility
+route's WCAG gate suite ran. Review that evidence before publication.
+
+This division is intentional: learned components interpret difficult source
+material; auditable code decides how that interpretation becomes a document.
+See [architecture.md](architecture.md) for the implemented stages, evidence
+boundaries, and current limitations.
 
 ## Quick start
 
-SemantiK is exposed through Ed4All's CLI. Convert one PDF, a directory of PDFs,
-or a directory of publisher HTML without creating a course:
+Install Ed4All and only the capabilities needed for your environment. Runtime
+dependencies and platform packages are documented in the
+[installation guide](../docs/operations/installation.md); dependencies and
+model weights are not vendored in this repository.
+
+Convert a PDF, a directory of PDFs, or publisher HTML without building a
+course:
 
 ```bash
-ed4all convert <INPUT_PATH> --output <OUTPUT_DIR>
+SEMANTIK_GLMOCR_LANE=1 \
+ed4all convert <PRIVATE_INPUT_PATH> --output <PRIVATE_OUTPUT_DIR>
 ```
 
-Useful conversion options include `--figures-dir <FIGURES_DIR>` for PDF figure
-assets and `--reuse-conversion` to reuse compatible artifacts already present
-in the output directory. The command writes `{stem}_accessible.html` and its
-sidecars beneath `<OUTPUT_DIR>`.
-
-Run conversion as part of the complete source-to-course workflow:
+Or run SemantiK as the conversion stage of the complete Ed4All pipeline:
 
 ```bash
+SEMANTIK_GLMOCR_LANE=1 \
 ed4all run textbook-to-course \
-  --corpus <SOURCE_PATH> \
-  --course-name <COURSE_NAME>
+  --corpus <PRIVATE_SOURCE_PATH> \
+  --course-name <PRIVATE_COURSE_NAME>
 ```
 
-Use non-identifying placeholders in examples, logs, fixtures, and tracked
-configuration. Course names, course slugs, source filenames, and generated
-content may be private and should not be committed.
+The GLM-OCR route is the preferred conversion path but remains explicitly
+selected by `SEMANTIK_GLMOCR_LANE=1`. Configuration details live in the
+[SemantiK behavior-flag reference](../docs/operations/behavior-flags-semantik.md),
+and standalone conversion semantics are covered by the
+[conversion guide](../docs/operations/convert-verb.md).
 
-Start with the [installation guide](../docs/operations/installation.md) and the
-[conversion command guide](../docs/operations/convert-verb.md). Runtime flags
-are listed in the [SemantiK behavior-flag reference](../docs/operations/behavior-flags-semantik.md).
-
-## Runtime options
-
-SemantiK's heavy ML dependencies may run in the Ed4All environment or in a
-dedicated SemantiK environment behind the JSON bridge at
-`scripts/run_cascade_json.py`.
-
-- **Local specialists are the default.** With
-  `SEMANTIK_SPECIALIST_PROVIDER=local` (or unset), configured Stage-6 GGUF
-  specialists run through `llama-cpp-python` without a hosted API.
-- **Hosted generation is explicit.** A non-local provider configures an
-  OpenAI-compatible endpoint but does not by itself replace local Stage-6
-  authoring. `SEMANTIK_SPECIALIST_REFINE=1` enables endpoint refinement;
-  `SEMANTIK_SPECIALIST_ENDPOINT_DISPLACE=1` enables endpoint-only generation.
-- **GLM-OCR is operator-preferred and explicitly enabled.** The compatibility
-  Stage-1–13 cascade remains the code default when the lane flag is off.
-- **Scan-page arrangement is also explicit.** Optional routing never activates
-  silently because a dependency or model is unavailable.
-
-Provider and model licensing considerations are documented in
-[the licensing guide](../docs/LICENSING.md). Deployment flags and model paths
-belong in local environment configuration, not tracked documentation.
+Source material, course names, generated HTML, sidecars, logs, and concrete
+document slugs are always private working data. Keep them in ignored input and
+runtime locations; do not commit them or embed them in code, comments, tests,
+examples, or documentation.
 
 ## Output contract
 
-The Ed4All adapter in `lib/semantik/` normalizes conversion results into one
-downstream-facing contract:
+For each converted document, SemantiK produces assembled HTML plus structured
+evidence used by Ed4All's downstream stages. The adapter under `lib/semantik/`
+normalizes the result into a stable interface:
 
-- `{stem}_accessible.html` contains the assembled document.
-- Provenance-stamped sections carry `data-semantik-*` attributes for stable
-  block identity, source type, physical pages, confidence, and gate status.
-- Source references use the public shape
-  `semantik:{document-slug}#{block-id}`. The concrete document slug is private
-  run data and must not be hardcoded in tracked files.
-- `region_provenance` records regions in emission order with their source text,
-  page span, structure, confidence, and available review metadata.
-- Lane-specific evidence records the route and exit posture. The compatibility
-  cascade can include full conformance-audit data: gate results, skip counts,
-  semantic-preservation evidence, thresholds, and heading tree. The GLM route
-  reports accessibility as `not_evaluated` and exits `ship_with_flag`; consumers
-  must not infer that compatibility gates ran.
+- HTML blocks carry `data-semantik-*` metadata for identity, source type,
+  page provenance, confidence, and available review status.
+- Source references use the generic form
+  `semantik:{document-slug}#{block-id}`; concrete values remain private run
+  data.
+- Ordered `region_provenance` retains the relationship between emitted blocks
+  and their source regions.
+- Heading and conformance evidence records what was evaluated, what was
+  flagged, and what still needs review.
+- GLM-OCR results retain the explicit `not_evaluated` / `ship_with_flag`
+  posture until the required accessibility review is complete.
 
-Stable identifiers support repeatable source mapping, but content-hash IDs are
-used only when their documented flag is enabled. A skipped gate means no
-measurement was made; it must never be presented as a verified pass. The
-complete wire contract is in [architecture.md](architecture.md#data-contracts).
+Downstream consumers can therefore map course content and retrieval results
+back to the converted source without treating the HTML as an anonymous text
+dump. The complete contract is defined in [architecture.md](architecture.md).
 
-## Design boundaries
+## Why SemantiK
 
-- Learned components propose classifications, structure corrections, or HTML;
-  deterministic code owns orchestration, text-conservation checks, hard gates,
-  hierarchy normalization, and final assembly.
-- Hard validation failures eliminate a candidate before soft quality ranking.
-- The semantic-preservation score cannot override an accessibility-gate result.
-- Optional reviewers and refinement passes must preserve source text and revert
-  or fail closed when their invariants are violated.
-- Model weights are deployment artifacts and are not included in this source
-  tree. Review the license of every selected weight and hosted provider.
+- **Accessibility-oriented by design.** Structure and review evidence are
+  produced as part of conversion, not added as an afterthought.
+- **Provenance survives transformation.** Page and block lineage remain
+  available after OCR, normalization, enrichment, and heading review.
+- **Deterministic ownership is clear.** Code owns document assembly and output
+  contracts; model responses remain bounded inputs to that process.
+- **Private by default and by policy.** Source corpora and generated artifacts
+  stay outside the public repository.
+- **Built for reuse.** The same semantic HTML can feed course generation,
+  chunking, retrieval, validation, and human remediation.
 
 ## Project map
 
 | Path | Purpose |
-|------|---------|
-| `semantik_structure/` | Extraction, routing, conversion cascade, gates, assembly, and model runtimes |
-| `scripts/run_cascade_json.py` | Out-of-process JSON bridge entry point |
-| `../lib/semantik/` | Ed4All adapter, output normalization, and deterministic front-matter handling |
-| `../MCP/tools/pipeline_tools.py` | Conversion bridge and workflow integration |
+|---|---|
+| `semantik_structure/glmocr/` | GLM-OCR SDK client, document transform, enrichment, and heading judgment |
+| `semantik_structure/` | Conversion models, document structures, assembly, and supporting utilities |
+| `scripts/run_cascade_json.py` | Out-of-process JSON bridge used by the Ed4All conversion seam |
+| `../lib/semantik/` | Downstream adapter, normalization, provenance, and deterministic remediation helpers |
+| `../MCP/tools/pipeline_tools.py` | Workflow integration and conversion-phase orchestration |
 | [architecture.md](architecture.md) | Detailed architecture, contracts, and limitations |
-| [CLAUDE.md](CLAUDE.md) | Maintainer instructions, flags, tests, and operational invariants |
-| [Ontology](../schemas/ONTOLOGY.md) | Canonical semantic types and vocabulary |
+
+## Documentation
+
+- [Installation and dependencies](../docs/operations/installation.md)
+- [Standalone conversion](../docs/operations/convert-verb.md)
+- [SemantiK architecture](architecture.md)
+- [Behavior flags](../docs/operations/behavior-flags-semantik.md)
+- [Licensing and model posture](../docs/LICENSING.md)
+- [Ed4All overview](../README.md)
 
 ## License
 
 SemantiK source code is available under the [Apache License 2.0](LICENSE).
-Model weights are separate artifacts; their licenses and any provider terms
-must be reviewed independently.
+Runtime dependencies, model weights, and hosted providers retain their own
+licenses and terms; review the [licensing guide](../docs/LICENSING.md) before
+selecting them.
