@@ -70,63 +70,15 @@ dev = [
     "pyld>=2.0.0,<4.0.0",
     "pyshacl>=0.25.0,<1.0.0",
 ]
-# Wave 90: heavy ML deps for the Trainforge.training submodule.
-# Kept out of the default install so CPU-only dev boxes / the MCP
-# server don't pull in 5+GB of CUDA wheels. RunPod SDK is reserved
-# for the follow-up wave; LocalBackend uses HF transformers + TRL +
-# PEFT + bitsandbytes for QLoRA.
+# Trainforge adapter fitting uses Transformers, TRL, PEFT, and bitsandbytes.
+# Keep these large accelerator dependencies out of the default install so
+# non-training commands remain lightweight.
 #
-# Wave 100: pin trl 0.12.x + transformers 4.46–4.49 because trl 0.13+
-# renamed SFTConfig.max_seq_length → max_length and tightened the
-# DPOTrainer model arg shape, breaking Wave 90's
-# Trainforge/training/peft_trainer.py wiring. The Wave 99 worker
-# manually downgraded to trl==0.12.2 + transformers==4.46.3 +
-# tokenizers==0.20.3 to make training work; this pin makes that
-# combination the default resolved set for ``ed4all[training]``.
-#
-# Audit 2026-04-30 (Phase B): three pins co-evolved to resolve a
-# four-way constraint conflict. The combinations that DON'T work:
-#
-#   accelerate>=1.0 + transformers<4.49  → AttributeError: 'frozenset'
-#                                          has no attribute 'discard'
-#                                          (accelerate calls .discard()
-#                                          on a frozenset attr that
-#                                          older transformers shipped
-#                                          as immutable; fix landed in
-#                                          transformers 4.49+).
-#
-#   bitsandbytes<0.45                    → fragile CUDA self-test
-#                                          (``CUDA is required but not
-#                                          available``) + imports the
-#                                          deprecated ``triton.ops``
-#                                          namespace removed in
-#                                          triton 3.0+.
-#
-#   bitsandbytes>=0.46 + accelerate<1.0  → bnb 0.46 hard-depends on
-#                                          accelerate>=1.0 so the
-#                                          resolver silently bumps
-#                                          accelerate to 1.x, which
-#                                          re-trips the frozenset bug
-#                                          unless transformers is also
-#                                          on 4.49+.
-#
-# Working band: transformers>=4.49 + accelerate>=1.0 + bnb>=0.45. trl
-# 0.12.x supports transformers 4.49, peft is unconstrained in this
-# band. The BitsAndBytesConfig shape this codebase uses (``nf4`` +
-# ``bnb_4bit_compute_dtype=torch.float16`` + double-quant) is fully
-# supported in 0.45+.
-# Training-setup audit 2026-07-21 (nemotron3-nano-30b enablement): band
-# lifted to transformers>=4.57 (nemotron_h remote-code support) +
-# trl>=0.25,<0.27 + peft>=0.17 + bitsandbytes>=0.48. The trl>=0.25 flip
-# ACTIVATES SFTConfig.completion_only_loss (prompt-masked loss — the
-# 0.12 band silently fell back to the full-sequence "text" path) and the
-# peft_trainer.py rename shims (tokenizer=→processing_class=,
-# max_seq_length=→max_length=) switch to their modern spellings.
-# NB: this is a TEXT-ONLY pin change — the live environment has NOT been
-# upgraded (env changes deferred while a production pipeline is live).
-# After the environment is actually upgraded, re-run the qwen2.5-1.5b
-# regression fit to re-validate the shim-selected call surfaces before
-# any 30B fit.
+# The supported band provides Nemotron remote-code loading, TRL's
+# completion-only loss, current PEFT trainer argument names, and compatible
+# 4-bit NF4 quantization. Keep these versions synchronized with the qualified
+# training environment and validate the small-model regression fit before a
+# larger training run.
 training = [
     "torch>=2.1.0",
     "transformers>=4.57,<5",
@@ -136,8 +88,8 @@ training = [
     "bitsandbytes>=0.48,<1.0",
     "datasets>=2.18.0",
     "safetensors>=0.4.0",
-    # Wave 101: optional generic-benchmark sanity floor via the
-    # EleutherAI lm-evaluation-harness. Wired through
+    # Optional generic-benchmark sanity floor via the EleutherAI
+    # lm-evaluation-harness. Wired through
     # ``Trainforge/eval/lm_eval_wrapper.py``; gated at runtime by
     # ``LM_EVAL_ENABLED=true`` because the multi-task sweep is intentionally
     # opt-in. The wrapper handles missing-package gracefully, so

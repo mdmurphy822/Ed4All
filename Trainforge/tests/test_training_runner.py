@@ -1,8 +1,8 @@
-"""Wave 90 — TrainingRunner + base-model registry + config loader tests.
+"""TrainingRunner, base-model registry, and configuration-loader tests.
 
 All tests are dry-run / CPU-only. No GPU required, no heavy ML
-dependencies imported. The Wave 89 → Wave 90 contract test
-(``test_dry_run_emits_valid_model_card``) asserts the runner's emitted
+dependencies imported. ``test_dry_run_emits_valid_model_card`` asserts
+the runner's emitted
 ``model_card.json`` validates against
 :class:`lib.validators.libv2_model.LibV2ModelValidator`.
 """
@@ -29,10 +29,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from lib.validators.libv2_model import LibV2ModelValidator  # noqa: E402
 from Trainforge.training import (  # noqa: E402
     BaseModelRegistry,
     LocalBackend,
-    RunPodBackend,
     TrainingConfig,
     TrainingRunner,
     format_instruction,
@@ -42,8 +42,6 @@ from Trainforge.training.compute_backend import TrainingJobSpec  # noqa: E402
 from Trainforge.training.runner import (  # noqa: E402
     InsufficientPreferencePairsError,
 )
-from lib.validators.libv2_model import LibV2ModelValidator  # noqa: E402
-
 
 # ---------------------------------------------------------------------- #
 # Fixtures                                                                #
@@ -422,26 +420,6 @@ def test_local_backend_raises_without_gpu(libv2_root: Path):
     with pytest.raises(RuntimeError) as excinfo:
         backend.run(spec)
     assert "GPU" in str(excinfo.value) or "training" in str(excinfo.value)
-
-
-# ---------------------------------------------------------------------- #
-# 8. RunPodBackend stub raises NotImplementedError                        #
-# ---------------------------------------------------------------------- #
-
-
-def test_runpod_backend_raises_not_implemented(libv2_root: Path):
-    backend = RunPodBackend()
-    spec = TrainingJobSpec(
-        course_slug="tst-101",
-        base_model="qwen2.5-1.5b",
-        instruction_pairs_path=Path("/dev/null"),
-        preference_pairs_path=Path("/dev/null"),
-        training_config={},
-        output_dir=Path("/dev/null"),
-    )
-    with pytest.raises(NotImplementedError) as excinfo:
-        backend.run(spec)
-    assert "Wave 90" in str(excinfo.value) or "stub" in str(excinfo.value).lower()
 
 
 # ---------------------------------------------------------------------- #

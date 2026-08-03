@@ -1,32 +1,23 @@
-"""Wave 90 — compute-backend abstraction for ``Trainforge.training``.
+"""Compute-backend abstraction for ``Trainforge.training``.
 
-Two implementations:
-
-* :class:`LocalBackend` — runs the trainer in-process on the calling
+The :class:`LocalBackend` runs the trainer in-process on the calling
   machine. Requires a CUDA-capable GPU; raises a clear
   :class:`RuntimeError` if no GPU is visible.
 
-* :class:`RunPodBackend` — STUBBED in Wave 90. The real implementation
-  dispatches a job to the same RunPod account the NeMo captioning
-  pipeline uses (single GPU billing surface, per the SLM training
-  plan). Lands in a follow-up wave; calling :meth:`run` today raises
-  :class:`NotImplementedError`.
-
-The abstract :class:`ComputeBackend` is what the runner depends on, so
-swapping backends is a one-line config change.
+The runner depends on the abstract :class:`ComputeBackend`, preserving an
+injection seam for tested alternative implementations without exposing an
+unimplemented backend to operators.
 """
 from __future__ import annotations
 
 import abc
 import logging
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from lib.generation.stop_control import GracefulStopRequested
 from lib.utils import read_jsonl as _utils_read_jsonl
-
 
 logger = logging.getLogger(__name__)
 
@@ -130,8 +121,8 @@ class LocalBackend(ComputeBackend):
         if not torch.cuda.is_available():
             raise RuntimeError(
                 "LocalBackend.run requires a CUDA-capable GPU. "
-                "torch.cuda.is_available() returned False. Use "
-                "RunPodBackend (Wave 90+ follow-up) or run on a GPU host."
+                "torch.cuda.is_available() returned False. Run training "
+                "on a CUDA-capable host."
             )
 
     def run(self, spec: TrainingJobSpec) -> TrainingJobResult:
@@ -146,10 +137,8 @@ class LocalBackend(ComputeBackend):
             course_dir=spec.extra.get("course_dir"),
             decision_capture=spec.extra.get("decision_capture"),
         )
-        # Wave 100: ensure the run-dir parent exists for TRL/PEFT
-        # checkpoint emit. The actual adapter filename is owned by
-        # PEFTTrainer.fit_sft (returns adapter_model.safetensors per
-        # Bug 2 fix); we only need the directory here.
+        # Create the run directory before TRL/PEFT emits checkpoints.
+        # PEFTTrainer.fit_sft owns the adapter filename.
         spec.output_dir.mkdir(parents=True, exist_ok=True)
 
         sft_pairs = _read_jsonl(spec.instruction_pairs_path)
@@ -172,11 +161,8 @@ class LocalBackend(ComputeBackend):
                     "DPO requested but filtered preference-pair count "
                     f"{len(pref_pairs)} is below min_dpo_pairs={min_dpo_pairs}."
                 )
-            # Wave 100 Bug 5 extension: DPO failure must not void the
-            # SFT adapter. SFT has already saved adapter_model.safetensors
-            # to disk; if DPO crashes (e.g. peft-DPO grad_fn drift,
-            # OOM during the higher-memory DPO pass), the runner still
-            # has a usable trained adapter to point the model card at.
+            # Preserve the completed SFT adapter when the explicitly
+            # configured DPO policy permits an SFT-only result.
             try:
                 adapter_out = trainer.fit_dpo(
                     pref_pairs, sft_out, spec.output_dir,
@@ -207,40 +193,6 @@ class LocalBackend(ComputeBackend):
             adapter_path=adapter_out,
             metrics=metrics,
         )
-
-
-# ---------------------------------------------------------------------- #
-# RunPodBackend (stub)                                                    #
-# ---------------------------------------------------------------------- #
-
-
-class RunPodBackend(ComputeBackend):
-    """STUB — full implementation lands in a follow-up wave.
-
-    Wave 90 only ships the abstract class + LocalBackend. The RunPod
-    integration reuses the same RunPod account / API key the NeMo
-    captioning pipeline uses (env: ``RUNPOD_API_KEY``); see the
-    SLM training plan for the contract.
-
-    Calling :meth:`run` raises :class:`NotImplementedError` with a
-    pointer to the follow-up wave so the failure is not mysterious.
-    """
-
-    name = "runpod"
-
-    def __init__(self, api_key: Optional[str] = None) -> None:
-        # Read the env var eagerly so a misconfigured runner fails at
-        # construction time, not at job dispatch time.
-        self.api_key = api_key or os.environ.get("RUNPOD_API_KEY")
-
-    def run(self, spec: TrainingJobSpec) -> TrainingJobResult:
-        raise NotImplementedError(
-            "RunPodBackend.run is stubbed in Wave 90. The full RunPod "
-            "dispatch integration (reusing the NeMo captioning RunPod "
-            "account) lands in a follow-up wave. Use LocalBackend on a "
-            "CUDA host until then."
-        )
-
 
 # ---------------------------------------------------------------------- #
 # Helpers                                                                 #
@@ -302,7 +254,6 @@ def _filter_dpo_pairs(records: list, mode: str) -> list:
 __all__ = [
     "ComputeBackend",
     "LocalBackend",
-    "RunPodBackend",
     "TrainingJobSpec",
     "TrainingJobResult",
 ]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Trainforge — train_course CLI (Wave 90 — slm-training-2026-04-26).
+"""Trainforge command-line entry point for adapter training.
 
 Top-level entry point for one training run, sibling of
 ``Trainforge/synthesize_training.py`` and ``Trainforge/process_course.py``.
@@ -17,9 +17,8 @@ script::
     python -m Trainforge.train_course --course-code <COURSE_CODE> \\
         --base-model qwen2.5-1.5b --dry-run
 
-Wave 90 ships dry-run + LocalBackend. RunPod backend is stubbed
-(``--backend runpod`` will fail loud); HF-gated bases (Llama, Phi)
-require ``HF_TOKEN`` in the environment when actually training.
+Training runs in-process through ``LocalBackend``. HF-gated bases require
+``HF_TOKEN`` in the environment when actually training.
 """
 from __future__ import annotations
 
@@ -35,17 +34,15 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from lib.generation.stop_control import GracefulStopRequested  # noqa: E402
+from lib.ontology.slugs import libv2_course_slug  # noqa: E402
 from Trainforge.training import (  # noqa: E402
     BaseModelRegistry,
     ConfigOverrideError,
     LocalBackend,
-    RunPodBackend,
     TrainingRunner,
     parse_config_overrides,
 )
-from lib.generation.stop_control import GracefulStopRequested  # noqa: E402
-from lib.ontology.slugs import libv2_course_slug  # noqa: E402
-
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +53,8 @@ def _slugify(course_code: str) -> str:
     Delegates to the canonical ``lib.ontology.slugs.libv2_course_slug`` so the
     resolved slug matches the archive directory ``LibV2/tools/libv2/importer.py``
     created. ``train_course.py`` accepts either the course-code form (``<COURSE_CODE>``)
-    or the slug form (``tst-101``) for ergonomics — both resolve identically.
-    The prior local implementation only swapped ``_``→``-`` and left spaces /
-    punctuation intact, so it diverged from the importer on any non-code input.
+    or the slug form (``tst-101``) for ergonomics — both resolve identically,
+    including inputs that contain spaces or punctuation.
     """
     return libv2_course_slug(course_code)
 
@@ -94,12 +90,6 @@ def _slugify(course_code: str) -> str:
     ),
 )
 @click.option(
-    "--backend",
-    type=click.Choice(["local", "runpod"], case_sensitive=False),
-    default="local",
-    help="Compute backend. 'local' requires a CUDA GPU; 'runpod' is stubbed (Wave 90 follow-up).",
-)
-@click.option(
     "--output-dir",
     type=click.Path(file_okay=False),
     default=None,
@@ -122,7 +112,6 @@ def train_course_command(
     course_code: str,
     base_model: str,
     config_overrides: Optional[str],
-    backend: str,
     output_dir: Optional[str],
     dry_run: bool,
 ) -> None:
@@ -134,12 +123,7 @@ def train_course_command(
         python -m Trainforge.train_course --course-code <COURSE_CODE> \\
             --base-model qwen2.5-1.5b --dry-run
 
-    Modes:
-
-    \b
-      local   (default)  Runs in-process; needs a CUDA GPU.
-      runpod              STUBBED — full RunPod dispatch lands in a
-                          follow-up wave.
+    Real training runs in-process and requires a CUDA-capable GPU.
     """
     slug = _slugify(course_code)
 
@@ -148,27 +132,22 @@ def train_course_command(
     try:
         overrides = parse_config_overrides(config_overrides)
     except ConfigOverrideError as exc:
-        raise click.BadParameter(str(exc), param_hint="--config-overrides")
-
-    backend_choice = (backend or "local").lower()
-    backend_obj = (
-        LocalBackend(allow_no_gpu=dry_run)
-        if backend_choice == "local"
-        else RunPodBackend()
-    )
+        raise click.BadParameter(
+            str(exc), param_hint="--config-overrides"
+        ) from exc
 
     runner = TrainingRunner(
         course_slug=slug,
         base_model=base_model,
         output_dir=Path(output_dir) if output_dir else None,
-        backend=backend_obj,
+        backend=LocalBackend(allow_no_gpu=dry_run),
         dry_run=dry_run,
         config_overrides=overrides or None,
     )
     # NB: a graceful stop (``ed4all stop`` sentinel tripping mid-training) makes
     # ``runner.run()`` raise ``GracefulStopRequested``. It is deliberately NOT
     # caught here: on the in-process ``ed4all run trainforge_train`` path the
-    # executor's Wave-A carve-out catches it and marks the phase ``paused``.
+    # executor catches it and marks the phase ``paused``.
     # The standalone ``python -m Trainforge.train_course`` path converts it to
     # the canonical paused exit code 3 in :func:`main`.
     result = runner.run()

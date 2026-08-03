@@ -845,17 +845,24 @@ Twelve fail-loud invariants close the surfaces where the synthesis pipeline coul
 
 ```bash
 # Direct entry point (works today end-to-end via Python module):
-python -m Trainforge.train_course --course-code <slug> --base-model <name> [--dry-run] [--backend local|runpod]
+python -m Trainforge.train_course --course-code <slug> --base-model <name> [--dry-run]
 
 # Examples
 python -m Trainforge.train_course --course-code <course-slug> --base-model qwen2.5-1.5b --dry-run
-python -m Trainforge.train_course --course-code <course-slug> --base-model llama-3.2-3b --backend runpod
+python -m Trainforge.train_course --course-code <course-slug> --base-model llama-3.2-3b
 
 # Via the unified CLI (workflow registered in config/workflows.yaml):
 ed4all run trainforge_train --course-name <course-slug> --base-model qwen2.5-1.5b
 ```
 
 `--dry-run` produces a runner plan JSON dump without invoking the trainer (no GPU, no network).
+
+Training runs locally on the operator-selected host with sufficient accelerator
+memory and the qualified software stack. Course content, training pairs, and
+adapter outputs remain private on operator-controlled storage. Remote execution
+is not a current backend capability; adding it requires an implemented backend
+contract with explicit transport, privacy, credential, stop/resume, and artifact
+ownership semantics before it can be documented as runnable.
 
 **Real fitting runs through the repository-managed training environment, not a
 bare `pip install`.** `scripts/ops/bootstrap-training-env.sh` builds the qualified
@@ -1163,7 +1170,7 @@ python -m Trainforge.train_course --course-code <course-slug> \
 #    see § Provider configuration and docs/LICENSING.md.
 pip install ed4all[training]
 python -m Trainforge.train_course --course-code <course-slug> \
-  --base-model qwen2.5-1.5b --backend local
+  --base-model qwen2.5-1.5b
 
 # 4. Import + promote the adapter.
 libv2 import-model runtime/training/<run_id>/ \

@@ -514,8 +514,15 @@ Verified options: `--course-code` (accepts either the course-code form or the
 LibV2 slug — both resolve identically), `--base-model` (required),
 `--config-overrides` (per-run `TrainingConfig` overrides — a YAML/JSON file
 path, an inline JSON object, or inline `key=value[,key=value]` pairs; the same
-flag exists on `ed4all run`), `--backend {local,runpod}` (default `local`;
-`runpod` is stubbed and fails loud), `--output-dir`, `--dry-run`.
+flag exists on `ed4all run`), `--output-dir`, `--dry-run`.
+
+Training executes locally on the operator-selected host with sufficient
+accelerator memory and the qualified software stack. Course content, training
+pairs, checkpoints, and adapters remain private on operator-controlled storage.
+Remote execution is not a current capability. It must first land as an
+implemented backend contract covering transport, credentials, privacy,
+stop/resume behavior, and artifact ownership before this playbook can present
+it as runnable.
 
 `--config-overrides` is how a `dpo_learning_rate` reaches the trainer:
 `Trainforge/training/configs/nemotron3-nano-30b.yaml` ships it `null` on
