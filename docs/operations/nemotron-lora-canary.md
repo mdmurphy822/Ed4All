@@ -1,79 +1,106 @@
-# Nemotron Nano LoRA qualification
+# Qualify a Nemotron Nano LoRA
 
-Real SFT/DPO fitting must use the repository-managed training environment:
+Use this guide to verify a Nemotron Nano adapter recipe before approving a
+long-running SFT and DPO job. A canary proves that the selected environment,
+learning rate, memory budget, and evaluation route work together; it does not
+promote a model automatically.
+
+> Training is always an operator decision. Run it only against approved private
+> data, stop at the first failed gate, and keep run artifacts outside the public
+> repository.
+
+## Prepare the managed environment
+
+Create and use the repository-managed training environment:
 
 ```bash
 scripts/ops/bootstrap-training-env.sh
 scripts/ops/ed4all-training --help
 ```
 
-The bootstrap is offline-first and consumes
-`$ED4ALL_TRAINING_WHEEL_DIR` (default: `~/wheel-cache/training-band`). The
-launcher fails before model weight loading when Torch, Transformers, TRL,
-PEFT, Accelerate, or Datasets falls outside the qualified version band.
-Do not repair this by modifying the system Python environment.
+The bootstrap validates the supported Torch, Transformers, TRL, PEFT,
+Accelerate, and Datasets version band before model weights load. It is
+offline-first and reads packages from `ED4ALL_TRAINING_WHEEL_DIR`. Set
+`ED4ALL_TRAINING_OFFLINE_ONLY=true` when network resolution must be forbidden.
 
-On Linux aarch64, the automatic `gb10-cu130` profile requires NVIDIA GB10
-(SM 12.1), Torch `2.13.0+cu130`, CUDA 13.0, Transformers 4.57.6, TRL 0.26.2,
-PEFT 0.19.1, Accelerate 1.12.0, and Datasets 4.4.1. It also imports the exact
-SSM fast-path symbols before any model weights are loaded. The cached
-architecture-specific wheels are verified before installation:
+Architecture-specific profiles validate the processor architecture, accelerator
+runtime, device capability, and extension ABI. An incompatible profile fails
+loudly. Keep wheel payloads and integrity records in the operator-local cache;
+the repository tracks installation behavior, not dependency binaries.
 
-| Wheel | SHA-256 |
-|---|---|
-| `causal_conv1d-1.6.2.post1-cp312-cp312-linux_aarch64.whl` | `0995ceb7e43deffc8860d357c02a0cc5ce8a0cc31018e35d3d2665e3ec4dd703` |
-| `mamba_ssm-2.3.2.post1-cp312-cp312-linux_aarch64.whl` | `ef9b8c7d4363fd7486dc4c7eccf6c37e5e0d9bc0f2cf6bb1ad798d9e154c7abc` |
+Do not modify the system Python environment to bypass a failed preflight. Fix
+the managed environment or select a compatible profile.
 
-The default remains offline-first. If the cache lacks portable dependencies,
-the bootstrap announces that it is resolving the same pinned constraints from
-the configured Python index. Set `ED4ALL_TRAINING_OFFLINE_ONLY=true` to require
-a complete air-gapped cache. Set `ED4ALL_TRAINING_PROFILE=gb10-cu130` to select
-the profile explicitly; an incompatible CPU architecture, CUDA build, GPU, or
-extension ABI fails loudly.
+## Run a bounded canary
 
-## Required preflight
+The checked-in Nemotron Nano recipe intentionally leaves
+`dpo_learning_rate` unset. Supply a positive candidate rate through the
+canonical per-run override route; the trainer will not silently reuse the SFT
+rate.
 
-Before a production run, use a copied course override file containing:
-
-```yaml
-base_model: nemotron3-nano-30b
-max_steps: 1
-dpo_learning_rate: 1.0e-6
+```bash
+scripts/ops/ed4all-training run trainforge_train \
+  --course-name <private-course-slug> \
+  --config-overrides 'max_steps=1,dpo_learning_rate=<positive-rate>'
 ```
 
-`max_steps: 1` is a canary-only bound. Run the normal `trainforge_train`
-invocation through `scripts/ops/ed4all-training`, inspect the SFT and DPO loss,
-peak allocated/reserved GPU memory, host available memory, and wall time, then
-repeat with the candidate DPO rates selected by the operator. Remove
-`max_steps` and pin the measured DPO rate before production. The Nano recipe
-deliberately refuses to reuse the SFT learning rate when
-`dpo_learning_rate` is unset.
+`max_steps=1` bounds both stages for qualification. Do not carry that override
+into a production run. Record candidate rates and observations in an ignored
+operator log, never in tracked documentation.
 
-The production gates are:
+Review the following evidence after each candidate:
 
-1. SFT completes one optimizer step without OOM or non-finite loss.
-2. DPO completes one optimizer step at an independently measured rate.
-3. The selected DPO checkpoint meets or exceeds the selected SFT checkpoint
-   on the same downstream probe. Regression refuses promotion.
-4. Evaluation compares base and adapter from one loaded BF16 base using
-   PEFT's adapter-disable context. It must not load a second 59-GiB base.
-5. Prompts are rendered by the pinned tokenizer template with
-   `enable_thinking=false`; hand-written ChatML is not an evaluation path.
+- SFT and DPO each complete one optimizer step without an out-of-memory event
+  or non-finite loss.
+- The model card records the supplied override and effective DPO rate.
+- Peak device and host memory leave a safe operating margin for the intended
+  deployment.
+- Checkpoints and resume metadata are complete.
 
-No canary command is run automatically. GPU execution and go/no-go remain
-operator decisions.
+## Evaluate before promotion
 
-## Serving handoff
+Promotion requires all of these gates:
 
-Do not assume dynamic LoRA support from a backend name alone. For an installed
-TensorRT-LLM release that has not explicitly qualified Nemotron-H dynamic
-adapters, export the promoted adapter as a merged BF16 Hugging Face checkpoint
-with `Trainforge.training.adapter_export.merge_promoted_adapter`, then build
-the TensorRT engine from that immutable directory. This preserves the learned
-feature; it does not disable the adapter. Keep the original adapter alongside
-the merged artifact for provenance and rollback.
+1. Compare the candidate DPO checkpoint with the selected SFT checkpoint on
+   the same downstream probe. A regression blocks promotion.
+2. Compare base and adapter from one loaded BF16 base through PEFT's
+   `disable_adapter()` context. Loading a second base is not the supported
+   evaluation route.
+3. Render prompts with the pinned tokenizer template and
+   `enable_thinking=false`. Hand-written ChatML is not an evaluation path.
+4. Review the evaluation matrix manually and record the operator's promote,
+   hold, or reject decision in private run state.
 
-An unmerged vLLM alternative is permitted only after the installed vLLM
-release reports LoRA support for the exact architecture and a fixed-prompt
-coherence check shows the same tokenization and materially equivalent output.
-Unsupported combinations fail loud; there is no silent backend fallback.
+```mermaid
+flowchart LR
+    A[Managed environment] --> B[One-step SFT]
+    B --> C[One-step DPO]
+    C --> D[Base and adapter evaluation]
+    D --> E{Operator decision}
+    E -->|Promote| F[Serving artifact]
+    E -->|Hold or reject| G[Revise recipe]
+```
+
+The same sequence in text is: validate the environment, run bounded SFT and
+DPO steps, compare base and adapter, then let the operator decide whether the
+candidate advances.
+
+## Prepare the serving artifact
+
+Do not infer dynamic-adapter support from a backend name. When the installed
+serving stack has not explicitly qualified dynamic LoRA for this architecture,
+merge the promoted adapter into an immutable BF16 Hugging Face checkpoint with
+`Trainforge.training.adapter_export.merge_promoted_adapter`, then build the
+serving artifact from that directory.
+
+Keep the original adapter with its model card for provenance and rollback. An
+unmerged serving route is acceptable only when the installed backend reports
+support for the exact architecture and a fixed-prompt coherence check confirms
+equivalent tokenization and materially equivalent output. Unsupported
+combinations fail loudly; there is no silent backend fallback.
+
+## Related guidance
+
+- [Training pipeline invocation](pipeline-invocation.md)
+- [Expanded adapter evaluation](expanded-adapter-evaluation.md)
+- [Licensing and provider posture](../LICENSING.md)

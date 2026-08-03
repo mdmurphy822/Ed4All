@@ -1,118 +1,172 @@
-# Expanded adapter evaluation
+# Build a trustworthy adapter evaluation suite
 
-The final adapter evaluation uses immutable, disjoint splits. Checkpoint
-selection is a development activity; it must not inspect the final test sets.
+Ed4All evaluates adapters against immutable, source-grounded questions that
+remain separate from training data. This guide covers the offline suite
+builder: how it allocates evaluation splits, records exclusions, detects
+contamination, and reports whether the suite is ready for downstream review.
 
-`Trainforge.eval.expanded_suite` builds the suite offline from the verified
-assessment bank, answer key, objectives, and canonical IMSCC chunks. It does
-not call an LLM or mutate workflow state.
+> **Final means unseen.** Use the development split for checkpoint selection.
+> Do not inspect final evaluation answers or results while choosing a
+> checkpoint, tuning retrieval, or changing training parameters.
 
-The allocator gives the objective-complete held-out split first priority,
-selecting one source-grounded item for every canonical terminal or component
-objective. It then fills the checkpoint-development, grounding-stress,
-pedagogy/misconception, and out-of-domain splits without reusing a fingerprint.
-If the verified source pool is too small, the manifest records the exact
-deficit and `ready` remains false. It never fills a quota by copying an item
-between splits.
+The builder is deterministic and offline. It reads existing verified artifacts,
+writes a suite and manifest, and does not call a model or mutate workflow state.
 
-Every item carries its canonical objective and Bloom level, answer and
-keypoints, chunk and citation anchors, content type, difficulty, provenance,
-retrieval expectations, split, and a canonical fingerprint. The suite
-manifest pins all input hashes and the ordered assessment-chunk exclusion
-list. Those assessment chunks must be excluded from synthesis before the first
-provider call; reserving only the emitted question text is insufficient.
-Final-source exclusion is family-closed using the approved
-`cf_block_id_or_contiguous_follows_v1` contract: chunks share a family only
-when they carry the same explicit `data-cf-block-id`, or when a direct
-`follows_chunk` edge has the same item path and a contiguous character
-boundary (delta zero or one). Aggregate source-reference lists, whole item
-paths, and generic follows links are deliberately not family keys. The
-registry records every qualifying contiguous edge and hashes that evidence.
+## Evaluation flow
 
-Final-set contamination checks cover exact and normalized text, fuzzy
-similarity, semantic similarity, source-chunk identity, and answer/keypoint
-containment. Semantic validation is performed with the production embedding
-model after candidate authoring and again over final emitted SFT/DPO records.
-Any finding quarantines the training pair or evaluation candidate; thresholds
-must not be weakened to obtain a pass.
-
-The runner projects each non-development item across the same six arms:
-
-- base model without retrieval
-- base model with retrieval
-- SFT adapter without retrieval
-- SFT adapter with retrieval
-- DPO adapter without retrieval
-- DPO adapter with retrieval
-
-All arms share the same item fingerprint. This makes differences attributable
-to retrieval and adapter stage rather than question sampling.
-
-Example:
-
-```bash
-python -m Trainforge.eval.expanded_suite \
-  --assessments <ASSESSMENTS_PATH> \
-  --answer-key <ANSWER_KEY_PATH> \
-  --objectives <OBJECTIVES_PATH> \
-  --chunks <CHUNKS_PATH> \
-  --authored-items <AUTHORED_ITEMS_PATH> \
-  --ood-probes <OOD_PROBES_PATH> \
-  --training-pairs <INSTRUCTION_PAIRS_PATH> \
-  --training-pairs <PREFERENCE_PAIRS_PATH> \
-  --output-dir <EVAL_OUTPUT_DIR>
+```mermaid
+flowchart LR
+    A[Verified private artifacts] --> B[Normalize and fingerprint]
+    B --> C[Allocate disjoint splits]
+    C --> D[Freeze training exclusions]
+    D --> E[Run deterministic leakage checks]
+    E --> F{Suite ready?}
+    F -- Yes --> G[External semantic check and evaluation]
+    F -- No --> H[Resolve recorded deficits]
+    G --> I[Validation gates and operator decision]
 ```
 
-Exit code `0` means the offline suite is complete and clean. Exit code `2`
-means the report was written but at least one quota, objective, or
-contamination requirement remains unresolved.
+In plain language: verified inputs become fingerprinted candidates; candidates
+are assigned once; their source families are excluded from training; leakage
+checks run; and only a complete, clean suite advances to semantic validation
+and model evaluation.
 
-Authored deficit items are accepted only into their preassigned development,
-grounding-stress, or pedagogy split and only after the independent structured
-review marks every quality dimension true. OOD cases are imported only from a
-foreign licensed course's operator-reviewed, verified refusal probes; they
-cannot be fabricated from the target course. Neither input expands the frozen
-target-course training exclusion set.
+## Prepare private inputs
 
-The final-set authoring queue rejects assessment-item chunks. Every queue also
-rejects aggregate overview chunks with more than five objective references and
-passages whose content-bearing body has insufficient lexical support for the
-selected canonical objective. It records a source deficit instead of reusing a
-held-out assessment or silently assigning the first objective ID.
+Keep every input and generated report in ignored or external storage. Real
+course identifiers, source identities, workflow identifiers, and model-service
+details must not enter tracked files.
 
-The frozen source-reuse policy is `dev_final_disjoint_family_max2_v1`.
-Development authoring may use only assessment surfaces assigned exclusively to
-the development split. Final grounding and pedagogy authoring may use only
-clean non-assessment families reserved for final evaluation. No family may
-cross development and final, and all remain inside the frozen training
-exclusion union. A final family contributes at most two items; a second item
-must use a different objective, task, and failure mode. Normalized, fuzzy, and
-semantic cross-split deduplication remains mandatory. The registry records the
-exact dev/final family assignments, the unchanged exclusion hash, and a policy
-fingerprint.
+The command requires:
 
-Automatic review is two bounded structured passes. The grounding pass sees
-only source text plus the compact scoring fields; the alignment pass also sees
-the full canonical objective statement, Bloom level, and target split. Neither
-pass receives provenance fan-out or aggregate source-ID lists. Promotion
-requires every grounding, scoreability, citation, objective, Bloom,
-independence, and split-fidelity boolean to be exactly true. Raw author output,
-both raw review objects, and deterministic aggregation are retained even for a
-rejected candidate so an offline replay can reproduce the decision.
+- a verified assessment bank;
+- its answer key;
+- canonical terminal and component objectives;
+- canonical IMSCC chunks; and
+- a private output directory.
 
-Before either model review can promote an item, deterministic verification is
-authoritative. It independently rechecks supported fraction, coin, place-value,
-numeric, and symbolic-algebra answers with the repository's safe SymPy parser;
-an item containing mathematical claims that the verifier cannot establish is
-rejected. It also checks question/answer operands and entities against chosen
-keypoints, objective and Bloom semantics, source-independent transfer, exact
-schema-boundary clipping, markup/control characters, and unexpected scripts.
-Model review can never override a deterministic failure. A model false
-negative may be recovered only when the independent deterministic transfer
-contract is completely verified and recorded in the raw audit.
+Pass each instruction and preference dataset with a separate
+`--training-pairs` option so the builder can compare final items with the
+actual training records. Optional authored items may fill eligible deficits;
+optional out-of-domain probes supply reviewed refusal cases.
 
-Author schemas are split-specific: development emits an objective probe;
-grounding emits an explicit evidence-conflict, missing-evidence, citation, or
-refusal challenge; pedagogy emits a plausible learner error plus correction
-rationale. A normal question with unused stress or misconception metadata does
-not satisfy either specialized split.
+Review provider and model terms in [Licensing and ToS posture](../LICENSING.md)
+before authoring any additional evaluation content.
+
+## Build the suite
+
+Run from the repository root:
+
+```bash
+python3 -m Trainforge.eval.expanded_suite \
+  --assessments <PRIVATE_ASSESSMENTS_JSON> \
+  --answer-key <PRIVATE_ANSWER_KEY_JSON> \
+  --objectives <PRIVATE_OBJECTIVES_JSON> \
+  --chunks <PRIVATE_CHUNKS_JSONL> \
+  --training-pairs <PRIVATE_INSTRUCTION_PAIRS_JSONL> \
+  --training-pairs <PRIVATE_PREFERENCE_PAIRS_JSONL> \
+  --authored-items <PRIVATE_AUTHORED_ITEMS_JSONL> \
+  --ood-probes <PRIVATE_OOD_PROBES_JSON> \
+  --output-dir <PRIVATE_EVALUATION_DIRECTORY>
+```
+
+Omit either optional input when it is not available. The builder writes:
+
+- `expanded_eval_suite.json`, containing splits, exclusions, findings,
+  deficits, source hashes, fingerprints, evaluation arms, and the arm-case
+  count; and
+- `manifest.json`, containing the suite hash, readiness state, split counts,
+  deficits, and input hashes.
+
+Exit code `0` means offline construction is complete and its enabled checks are
+clean. Exit code `2` means the reports were written, but a quota, objective, or
+contamination requirement remains unresolved. Neither exit code authorizes
+adapter promotion.
+
+## Understand split isolation
+
+The allocator prioritizes objective-complete held-out coverage, then fills the
+checkpoint-development, grounding-stress, pedagogy/misconception, and
+out-of-domain splits without reusing an item fingerprint. A shortage remains a
+visible deficit; the builder never copies an item between splits to make a
+quota appear complete.
+
+Each accepted item carries its scoring and audit contract: canonical objective,
+Bloom level, answers, keypoints, source and citation anchors, content type,
+difficulty, provenance, retrieval expectations, split, and fingerprint. Input
+hashes and ordered exclusion identifiers bind the suite to the artifacts from
+which it was built.
+
+Source isolation is family-closed under
+`cf_block_id_or_contiguous_follows_v1`. Chunks belong to the same family only
+when they share an explicit `data-cf-block-id`, or a direct `follows_chunk`
+edge connects contiguous character spans in the same item. Aggregate source
+lists, whole item paths, and generic follows relationships do not define a
+family. The suite records the qualifying evidence and its hash.
+
+The frozen `dev_final_disjoint_family_max2_v1` reuse policy keeps development
+and final source families disjoint. Final families remain inside the training
+exclusion union, and any permitted second item from a family must use a
+different objective, task, and failure mode.
+
+## Treat contamination as blocking
+
+The offline builder checks training records against non-development items for:
+
+- exact or normalized text overlap;
+- fuzzy text similarity;
+- source-chunk identity; and
+- answer or keypoint containment.
+
+The suite declares semantic similarity as
+`pending_external_embedder_validation`; the CLI does not run an embedding
+model. Complete semantic comparison with the production embedding setup before
+using the suite for a promotion decision, and repeat it against the final SFT
+and DPO records. Quarantine a contaminated training record or evaluation item.
+Never weaken a threshold or reassign an item merely to obtain a pass.
+
+## Fill deficits safely
+
+Authored deficit items are eligible only for their preassigned development,
+grounding-stress, or pedagogy split. They need a complete scoring contract,
+source anchors, a unique fingerprint, and qualified independent review before
+the builder accepts them.
+
+Out-of-domain items must be reviewed refusal probes grounded in other licensed
+material. Do not fabricate target-course facts to create them. Additional
+items do not expand or replace the frozen target-course training exclusion.
+
+The authoring queue rejects assessment-item sources, broad overview passages,
+and passages without adequate lexical support for the selected objective. A
+missing suitable source remains a deficit rather than silently receiving an
+unrelated objective or held-out source.
+
+## Compare like with like
+
+Every non-development item is projected across the same six arms:
+
+| Adapter stage | Without retrieval | With retrieval |
+|---|---|---|
+| Base model | `base_no_rag` | `base_rag` |
+| SFT adapter | `sft_no_rag` | `sft_rag` |
+| DPO adapter | `dpo_no_rag` | `dpo_rag` |
+
+All six cases retain the same item fingerprint. Differences can therefore be
+attributed to retrieval and adapter stage instead of question sampling.
+
+## Decide after validation
+
+Suite readiness is one prerequisite, not a promotion verdict. Run the
+evaluation harness and the configured validation gates, preserve their reports,
+and let an operator review the evidence before choosing promote, hold, or
+reject. A failed critical gate blocks promotion.
+
+Canonical references:
+
+- [Validation gates](../validation/gates.md) defines enforced gate behavior.
+- [Pipeline invocation](pipeline-invocation.md) covers execution, stop, and
+  resume semantics.
+- [Trainforge training pipeline](../../Trainforge/CLAUDE.md#training-pipeline)
+  documents the evaluation harness, gate integration, and promotion ledger.
+- [LibV2 operations](../../LibV2/CLAUDE.md) documents model import, inspection,
+  and promotion commands.
