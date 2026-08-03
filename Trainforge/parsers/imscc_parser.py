@@ -53,7 +53,7 @@ class IMSCCParser:
 
     Usage:
         parser = IMSCCParser()
-        package = parser.parse("/path/to/course.imscc")
+        package = parser.parse("<COURSE_PACKAGE>")
         for item in package.items:
             print(f"{item.title}: {item.type}")
     """

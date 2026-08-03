@@ -19,7 +19,7 @@ no device paths). To produce real-import evidence against an actual built
 course, point ``ED4ALL_MOODLE_SMOKE_IMSCC`` at a gitignored ``.imscc`` on disk
 (e.g. a scratch-built cartridge) and run:
 
-    ED4ALL_MOODLE_SMOKE_IMSCC=/path/to/course.imscc \\
+    ED4ALL_MOODLE_SMOKE_IMSCC=<COURSE_PACKAGE> \\
     ED4ALL_MOODLE_IMAGE=bitnami/moodle:latest \\
     pytest -m integration tests/integration/test_moodle_cc_import_smoke.py -s
 

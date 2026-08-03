@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 
 # Operator campaign-harness directory, site-configurable via
 # ``ED4ALL_CAMPAIGN_DIR`` (default: the neutral repo-relative
-# ``plans/campaign``). See ``lib.paths.campaign_dir``.
+# ``plan/campaign``). See ``lib.paths.campaign_dir``.
 CAMPAIGN_DIR = campaign_dir()
 PENDING_RUNS_DIR = CAMPAIGN_DIR / "pending-runs"
 REVIEW_QUEUE_DIR = CAMPAIGN_DIR / "review-queue"

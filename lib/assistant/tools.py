@@ -76,7 +76,7 @@ SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 #: Operator campaign-harness directory (manifest, per-book logs, review
 #: queue). Site-configurable via ``ED4ALL_CAMPAIGN_DIR``; defaults to the
-#: neutral repo-relative ``plans/campaign``. Resolved once at import so a
+#: neutral repo-relative ``plan/campaign``. Resolved once at import so a
 #: test can monkeypatch this module attribute directly.
 CAMPAIGN_DIR = campaign_dir()
 
@@ -258,7 +258,7 @@ def campaign_status() -> str:
     """Summarize the campaign manifest (counts + running slugs).
 
     Reads ``<campaign dir>/manifest.json`` — see ``lib.paths.campaign_dir``
-    (``ED4ALL_CAMPAIGN_DIR``, default ``plans/campaign``).
+    (``ED4ALL_CAMPAIGN_DIR``, default ``plan/campaign``).
     """
     manifest_path = CAMPAIGN_DIR / "manifest.json"
     if not manifest_path.is_file():
@@ -1693,7 +1693,7 @@ _HELP_TOPICS: Dict[str, str] = {
     ),
     "campaign": (
         "The operator campaign driver (under the campaign dir — "
-        "ED4ALL_CAMPAIGN_DIR, default plans/campaign) builds ONE "
+        "ED4ALL_CAMPAIGN_DIR, default plan/campaign) builds ONE "
         "pending book per invocation from manifest.json (stage-A recipe: "
         "textbook-to-course --skip-training). Source the campaign env first "
         "for a manual launch; it refuses under STOP_ALL, missing seats, or "

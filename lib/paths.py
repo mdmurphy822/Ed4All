@@ -31,7 +31,7 @@ Environment:
 
     ED4ALL_CAMPAIGN_DIR: Operator campaign-harness directory (see
         ``campaign_dir``). Defaults to the neutral repo-relative
-        ``plans/campaign``; a site with its harness elsewhere points at it
+        ``plan/campaign``; a site with its harness elsewhere points at it
         with this env var.
 """
 
@@ -325,7 +325,7 @@ def get_endpoints_path() -> Path:
 ENV_CAMPAIGN_DIR = "ED4ALL_CAMPAIGN_DIR"
 
 #: Neutral repo-relative default for the operator campaign-harness directory.
-CAMPAIGN_DIR_DEFAULT = PROJECT_ROOT / "plans" / "campaign"
+CAMPAIGN_DIR_DEFAULT = PROJECT_ROOT / "plan" / "campaign"
 
 
 def campaign_dir() -> Path:
@@ -342,7 +342,7 @@ def campaign_dir() -> Path:
     Priority:
     1. ``ED4ALL_CAMPAIGN_DIR`` env var. An absolute path is used verbatim;
        a relative path resolves against ``PROJECT_ROOT``. ``~`` expands.
-    2. ``PROJECT_ROOT / "plans" / "campaign"`` — the neutral repo-relative
+    2. ``PROJECT_ROOT / "plan" / "campaign"`` — the neutral repo-relative
        default (``CAMPAIGN_DIR_DEFAULT``).
 
     Read at call time so tests can monkeypatch the env var without

@@ -25,7 +25,7 @@ obviously fit a rule below, that is a design question, not a formatting one.
   set), subsystem products (`SemantiK/ Courseforge/ Trainforge/ LibV2/`),
   contracts/infra (`config/ schemas/ ci/ seats/ scripts/ docs/ tests/`), and
   gitignored data roots (`state/ runtime/ inputs/ training-captures/
-  extracted/ testruns/ scratchpad/ plans/ demo/`). The roles exist; nothing
+  extracted/ testruns/ scratchpad/ plan/ demo/`). The roles exist; nothing
   declared them, so new dirs landed by vibes.
 - **`scripts/` is a junk drawer**: ~23 loose top-level entries spanning three
   lifetimes — durable operator entry points, reusable measurement harnesses,
@@ -54,7 +54,7 @@ is the design review.
 | **CODE-PLATFORM** | `lib/ MCP/ cli/ gui/` | Ships in the wheel. Importable, tested, no data. TitleCase forbidden except `MCP`. |
 | **CODE-SUBSYSTEM** | `SemantiK/ Courseforge/ Trainforge/ LibV2/` | One product each, own `CLAUDE.md`, own `tests/fixtures/`. TitleCase names are **reserved** for this zone. |
 | **CONTRACTS & INFRA** | `config/ schemas/ ci/ seats/ scripts/ docs/ tests/` + root deploy files (`Dockerfile*`, `docker-compose*`, `Makefile`, `pyproject.toml`, `run-gui.*`) | Tracked, hand-authored, no generated data. |
-| **VAR (gitignored)** | `runtime/ inputs/ plans/` | `runtime/` holds ALL mutable data (`state/`, `training-captures/`, `seats/`, `demo/`, `extracted/`, `testruns/`, `scratchpad/`, `shots/`, ...). Only `.gitkeep` sentinels tracked. Nothing here is ever a git dependency of the build. |
+| **VAR (gitignored)** | `runtime/ inputs/ plan/` | `runtime/` holds ALL mutable data (`state/`, `training-captures/`, `seats/`, `demo/`, `extracted/`, `testruns/`, `scratchpad/`, `shots/`, ...). Only `.gitkeep` sentinels tracked. Nothing here is ever a git dependency of the build. |
 
 Per-dir placement rules (purpose / belongs / **never**):
 
@@ -95,7 +95,7 @@ Per-dir placement rules (purpose / belongs / **never**):
   Under `ED4ALL_HOME` the relocated basenames are unchanged (`state`,
   `training-captures`, ...) — the `runtime/` nesting is the in-repo default
   layout only (`lib/paths.py`).
-- `plans/` — local-only, unchanged.
+- `plan/` — the canonical local-only planning workspace; never a build dependency.
 
 **Naming conventions.** Dirs: lowercase (kebab or snake, match siblings);
 TitleCase only for subsystem products. Docs: kebab-case `.md`. Env flags: the

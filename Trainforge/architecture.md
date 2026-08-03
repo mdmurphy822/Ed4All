@@ -392,7 +392,7 @@ ed4all run rag_training --corpus course.imscc --course-name <course-name> --mode
 
 # Direct module invocation:
 python -m Trainforge.process_course \
-  --imscc /path/to/course.imscc \
+  --imscc <COURSE_PACKAGE> \
   --course-code <course-code> \
   --division ARTS --domain education --subdomain instructional-design \
   --output Trainforge/output/<course-code> \

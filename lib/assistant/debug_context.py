@@ -16,7 +16,7 @@ Run selection when ``run_id`` is ``None``:
    driver writes under ``ED4ALL_ASSISTANT_DEBUG_ON_FAILURE`` (validated
    before use; never trusted as a path). The campaign dir is resolved by
    ``lib.paths.campaign_dir`` (``ED4ALL_CAMPAIGN_DIR``, default
-   ``plans/campaign``).
+   ``plan/campaign``).
 2. Otherwise the newest ``runtime/state/workflows/WF-*.json`` whose status is
    FAILED (by file mtime).
 
