@@ -5,7 +5,7 @@ Provides centralized quality scoring for captured decisions to ensure
 training data meets minimum quality standards.
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .constants import QUALITY_THRESHOLDS, RELAXED_DECISION_TYPES
 
@@ -13,7 +13,7 @@ from .constants import QUALITY_THRESHOLDS, RELAXED_DECISION_TYPES
 def assess_decision_quality(
     rationale: str,
     inputs_ref: Optional[List[Any]] = None,
-    alternatives_considered: Optional[List[str]] = None,
+    alternatives_considered: Optional[Sequence[Any]] = None,
     decision_type: str = ""
 ) -> str:
     """Assess the quality level of a decision based on its components.
@@ -96,7 +96,7 @@ def assess_from_inputs_ref(inputs_ref: Optional[List[Any]]) -> Dict[str, Any]:
 def calculate_quality_breakdown(
     rationale: str,
     inputs_ref: Optional[List[Any]] = None,
-    alternatives_considered: Optional[List[str]] = None
+    alternatives_considered: Optional[Sequence[Any]] = None
 ) -> Dict[str, Any]:
     """Calculate detailed quality breakdown for a decision.
 
