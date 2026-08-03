@@ -1,166 +1,128 @@
-# Chunk provenance audit trail
+# Trace a chunk to source HTML
 
-> **Buyer-facing statement.** Every chunk Trainforge emits into a RAG corpus
-> carries a cryptographically verifiable pointer back to the source IMSCC
-> HTML element it was derived from. This is the audit trail required by
-> Section 508 and ADA Title II procurement for institutional buyers who
-> must be able to prove that a model-generated answer is grounded in
-> contracted-for course content.
+Trainforge v4 chunks can carry an element locator and character span that let
+an auditor trace retrieved text back to the private IMS Common Cartridge HTML
+from which it was derived. This supports provenance review; it is not a legal
+certification or a substitute for reviewing the source package.
 
-## The two provenance fields
+## Provenance fields
 
-Every chunk object in `corpus/chunks.jsonl` carries, under `source`, the
-two fields that together pinpoint its origin:
-
-| Field | Type | Meaning |
-|---|---|---|
-| `source.html_xpath` | string | Absolute XPath to the element that bounds the chunk's source content in the IMSCC's raw HTML. |
-| `source.char_span` | `[start, end]` | Character offsets into that element's plain-text content (descendant text, whitespace-collapsed with single-space joiner) where the chunk's text begins and ends. |
-
-Additional pointers carried on every chunk (not new, but required to make
-the trail actionable):
+The chunk's `source` object provides the locator:
 
 | Field | Meaning |
 |---|---|
-| `source.item_path` | Path to the HTML file inside the IMSCC package. Lets an auditor open the exact file without crawling `imsmanifest.xml`. |
-| `source.lesson_id` | IMSCC item id — unique per resource within the package. |
-| `source.module_id` / `source.module_title` | Enclosing module for context. |
-| `schema_version` | Chunk schema version (currently `"v4"`). Declares the provenance contract this chunk was emitted under. |
+| `item_path` | Path to the source HTML member inside the private package. |
+| `html_xpath` | Absolute, deterministic XPath for the source text container. |
+| `char_span` | Half-open `[start, end]` offsets in that container's normalized plain text. |
+| `lesson_id` | Package resource identifier. |
+| `module_id` | Enclosing module identifier. |
+| `source_document_sha256` | Optional digest joining the chunk to an upstream source artifact. |
 
-## The round-trip contract
+`html_xpath`, `char_span`, `item_path`, and `source_document_sha256` are
+optional in the v4 schema for compatibility with older or non-IMSCC inputs.
+Their absence means this locator form is unavailable; it must never be replaced
+with an invented path or span.
 
-Given a chunk and the IMSCC it was generated from, the auditor MUST be
-able to recover the chunk's source text in three steps:
+The authoritative shape is
+[`schemas/knowledge/chunk_v4.schema.json`](../../schemas/knowledge/chunk_v4.schema.json).
 
-1. Open the IMSCC file at `source.item_path` (raw HTML).
-2. Resolve `source.html_xpath` — walk the HTML to the element whose
-   absolute path matches. Extract its plain-text content (concatenate all
-   descendant text, whitespace-collapsed, joined by single spaces; this is
-   the joining semantics `Trainforge/parsers/xpath_walker.py::resolve_xpath`
-   and `Trainforge/parsers/html_content_parser.py::HTMLTextExtractor` both
-   use).
-3. Slice `element_text[char_span[0]:char_span[1]]`. The result equals
-   `chunk.text` modulo the normalization tolerance documented below.
+## Round-trip procedure
 
-The round-trip is tested in `Trainforge/tests/test_provenance.py`:
+Given a private chunk and its matching source package:
 
-- `test_xpath_roundtrip_recovers_chunk_text` — end-to-end slice test.
-- `test_char_span_end_greater_than_start` — non-empty spans only.
-- `test_char_span_does_not_overflow_element` — slices stay within bounds.
-- `test_xpath_is_absolute` — locked format; no relative paths, no `//`.
-- `test_every_chunk_has_provenance_fields` — 100% coverage on regenerated
-  corpora.
-- `test_multipart_spans_are_disjoint_and_contiguous` — when a long
-  section is split into multiple chunks, their spans cover the section
-  without overlaps and without gaps larger than the single-char sentence
-  joiner.
+1. Open the package member named by `source.item_path`.
+2. Resolve `source.html_xpath` with
+   `Trainforge.parsers.xpath_walker.resolve_xpath`.
+3. Read `start, end = source.char_span`.
+4. Slice the resolved text with `element_text[start:end]`.
+5. Compare the slice with the chunk using the normalization rules below.
 
-## Normalization tolerance
+```python
+from Trainforge.parsers.xpath_walker import resolve_xpath
 
-The chunker runs the plain text through three transforms between reading
-it from the HTML element and writing it to the chunk:
+element_text = resolve_xpath(private_html, chunk["source"]["html_xpath"])
+if element_text is None:
+    raise ValueError("source XPath does not resolve")
 
-1. **Whitespace collapse.** `HTMLTextExtractor` joins tokens by single
-   spaces; consecutive whitespace in the source HTML collapses to one
-   space in the chunk.
-2. **WCAG SC canonicalization.** `Trainforge/rag/wcag_canonical_names.py::
-   canonicalize_sc_references` rewrites success-criterion references to a
-   single canonical form before the chunk is written. A chunk may show
-   `"SC 1.1.1"` where the source HTML had `"Success Criterion 1.1.1"`.
-3. **Feedback / boilerplate strip (quiz and template-chrome only).**
-   `_strip_assessment_feedback`, `_strip_feedback_from_text`, and
-   `strip_boilerplate` remove answer-feedback text from quizzes and remove
-   detected template chrome from every item before chunking.
+start, end = chunk["source"]["char_span"]
+if not 0 <= start < end <= len(element_text):
+    raise ValueError("source span is outside the resolved element")
 
-Tolerance for the round-trip: the recovered substring MUST start with
-the first non-boilerplate sentence of `chunk.text` (or the full text,
-whichever is shorter) after both strings are whitespace-collapsed and
-lowercased. A strict byte-for-byte equality is not guaranteed because
-the three transforms above can legitimately modify the text between
-source and chunk.
-
-For quiz chunks specifically, `source.resource_type == "quiz"` — the
-auditor applies `_strip_assessment_feedback` to the element text before
-comparing. This matches how the chunker produced the text and avoids
-false audit failures on feedback-stripped content.
-
-## XPath format (locked)
-
-The walker at `Trainforge/parsers/xpath_walker.py` emits xpaths in a
-restricted, deterministic dialect:
-
-- **Absolute**, starting with `/`. The first step is the document's root
-  element (typically `html`) or the first encountered open tag for
-  malformed documents without an `<html>` shell.
-- **Step form**: `tag[n]` where `n` is the 1-based index of the element
-  among its same-tag siblings under the shared parent. Mirrors XPath 1.0
-  predicate semantics.
-- **No shortcuts**: no `//`, no wildcards, no namespaces, no predicates
-  beyond the sibling index. If a downstream tool wants a more compact
-  form, it can compute it from the absolute path — we never emit one.
-- **Tag names are lowercased**. Attribute-based selectors are not part of
-  the format.
-
-Example: `/html[1]/body[1]/h2[2]` — the second `<h2>` child of `<body>`,
-which is the first child of `<html>`.
-
-## What `html_xpath` points at
-
-Two cases in the chunker, `Trainforge/process_course.py::_chunk_text_block`:
-
-| Case | `html_xpath` anchors to |
-|---|---|
-| Item has parsed sections (most pages) | The `<hN>` heading element of the section that produced this chunk. |
-| Item has no sections (quizzes, assessments, pages without headings) | The `<body>` element of the document. |
-
-For multi-part chunks (a single long section split into N sub-chunks by
-`_split_by_sentences`), all N siblings share the same `html_xpath` and
-carry disjoint, contiguous `char_span` values. The section is fully
-recoverable by concatenating the N slices in chunk-id order.
-
-## What `char_span` is NOT
-
-- `char_span` is **not** an offset into the raw HTML bytes. It is an
-  offset into the whitespace-collapsed plain text of the element at
-  `html_xpath`. This is deliberate — byte offsets into HTML are fragile
-  under any parse-then-reserialize round trip, and almost every buyer
-  tool (AT, screen readers, evaluation harnesses) operates on the plain
-  text anyway.
-- `char_span` is **not** an offset into the source IMSCC file. The item
-  path lives in `source.item_path`, and the file-level offset is not
-  tracked — the element-level offset is sufficient for every known
-  audit use case.
-
-## Regeneration
-
-Any chunks.jsonl emitted by a Trainforge version with `CHUNK_SCHEMA_VERSION
->= "v4"` carries these fields on every chunk. Regenerate with the standard
-invocation — no new flag is required:
-
-```bash
-python -m Trainforge.process_course \
-  --imscc path/to/course.imscc \
-  --course-code <CODE> \
-  --division <DIV> --domain <DOMAIN> \
-  --output Trainforge/output/<slug>
+source_slice = element_text[start:end]
 ```
 
-Older corpora (emitted under `v3`) do not carry the fields. Re-run the
-pipeline on the original IMSCC to add provenance. No in-place migration
-is provided; the source HTML is authoritative and regeneration is cheap.
+Keep source HTML, chunk records, and comparison output private. They can contain
+licensed text and course identifiers.
 
-## Known follow-ups
+## XPath dialect
 
-- **`FOLLOWUP-WORKER-E-1`**: `schemas/library/chunk.schema.json` does not
-  exist in this tree. The repo ships `catalog_entry.schema.json` and
-  `course_manifest.schema.json` under `schemas/library/`, but there is no
-  chunk schema today. When someone lands a LibV2 chunk schema, add
-  `source.html_xpath` (optional string) and `source.char_span` (optional
-  array of two integers) to it. Until then, LibV2's importer accepts
-  extra fields on chunks without schema validation, so no migration is
-  blocked.
+`Trainforge.parsers.xpath_walker` emits a restricted XPath form:
 
-- **LibV2 importer copy-through.** `LibV2/tools/libv2/importer.py` copies
-  chunks.jsonl verbatim into `LibV2/courses/<slug>/corpus/chunks.jsonl`.
-  Re-running the importer after a `v4` regeneration propagates the
-  provenance fields with no import-side change needed.
+- the path is absolute and begins with `/`;
+- each step is a lowercase `tag[index]` pair;
+- sibling indexes are one-based within the shared parent;
+- `//`, wildcards, namespace prefixes, and attribute predicates are not used;
+  and
+- malformed HTML without a body falls back to its first indexed root element.
+
+For heading-led content, the locator targets the heading's parent container so
+the resolved text includes the section body. Content without a matching
+heading uses the body or document-root fallback.
+
+## Text normalization
+
+Offsets address normalized descendant text, not raw HTML bytes and not file
+offsets. The XPath walker and HTML extractor share their whitespace assembler:
+source whitespace collapses, inline-element boundaries do not add characters,
+and block-element boundaries add a separator.
+
+Chunk text can differ from the direct slice because the processing path may:
+
+- canonicalize supported reference notation;
+- remove template chrome, scripts, styles, or assessment feedback;
+- merge adjacent sections; or
+- split a long text block into multiple chunks.
+
+Compare using the owning parser's documented normalization. Do not claim
+byte-for-byte recovery when one of these transforms applies.
+
+For a split block, sibling spans share the same source container, do not
+overlap, and remain contiguous apart from the permitted joiner boundary.
+
+## Verification checklist
+
+For each audited chunk, verify that:
+
+- the package member exists and belongs to the same private source artifact;
+- the XPath is absolute and resolves exactly once under the deterministic
+  walker;
+- the span contains two non-negative integers with `start < end`;
+- `end` does not exceed the resolved text length;
+- the normalized slice supports the emitted chunk text; and
+- multipart sibling spans do not overlap or leave an unexplained gap.
+
+The regression coverage is concentrated in:
+
+- `Trainforge/tests/test_provenance.py`;
+- `Trainforge/tests/test_chunk_script_leak.py`;
+- `Trainforge/parsers/tests/test_html_extractor_inline_boundaries.py`; and
+- `Trainforge/tests/test_chunker_smoke.py`.
+
+Some provenance tests accept `TRAINFORGE_PROVENANCE_CORPUS` to audit an
+operator-local regenerated corpus. Never point that variable at tracked or
+public course data.
+
+## Regeneration and compatibility
+
+Older chunksets may not include this locator. Regenerate from the authoritative
+private source package with the current Trainforge pipeline when provenance is
+required. There is no supported in-place process that can reconstruct an exact
+XPath and span without the source HTML.
+
+LibV2 preserves chunk fields when importing a compatible chunkset, so the
+locator travels with the private archive. Consumers must still validate the
+chunk schema and source-artifact identity before trusting it.
+
+See [Chunk schema v4](../architecture/chunk-schema-v4.md) for the wider chunk
+contract and [Pipeline invocation](../operations/pipeline-invocation.md) for
+private artifact handling.
