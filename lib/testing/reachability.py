@@ -220,6 +220,17 @@ def make_local_synthesis_skip_hook():
 
     @pytest.hookimpl(hookwrapper=True)
     def pytest_runtest_call(item):  # noqa: ANN001
+        # An offline-verification fixture deliberately installs a process-wide
+        # socket guard before the test-call hooks run. Probing from this hook
+        # would then be the network attempt under test, causing an otherwise
+        # pure offline test to fail before its body executes. These tests do
+        # not need synthesis-backend translation, so leave them completely
+        # untouched. ``fixturenames`` is the resolved fixture closure, which
+        # also covers fixtures requested indirectly.
+        if "offline_guard" in item.fixturenames:
+            yield
+            return
+
         base_url = resolve_local_synthesis_base_url()
         # Probe ONCE up front: if the endpoint is reachable we never skip, so
         # there's no point inspecting the outcome.
