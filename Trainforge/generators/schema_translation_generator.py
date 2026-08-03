@@ -1901,7 +1901,7 @@ def validate_form_data_contract(
     # the runtime length checks the providers enforce. Imported inside
     # the function to keep the module-level import graph minimal — the
     # constants are referenced ONLY by the content rules.
-    from Trainforge.generators._synthesis_common import (
+    from Trainforge.generators.providers._synthesis_common import (
         COMPLETION_MAX,
         COMPLETION_MIN,
         PROMPT_MAX,

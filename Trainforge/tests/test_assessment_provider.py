@@ -47,7 +47,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.generators._assessment_provider import (  # noqa: E402
+from Trainforge.generators.providers._assessment_provider import (  # noqa: E402
     DEFAULT_PROVIDER,
     ENV_PROVIDER,
     AssessmentGeneratorProvider,

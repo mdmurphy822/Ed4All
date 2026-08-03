@@ -120,7 +120,7 @@ def _patch(monkeypatch, counter: Dict[str, int], *, arm_after: Optional[int] = N
             stop_control.request_stop(scope="run", reason="test", source="test")
         return json.dumps({"adjusted": {i: _ADJ[i] for i in ids if i in _ADJ}})
 
-    import Trainforge.generators._openai_compatible_client as _oac
+    import Trainforge.generators.providers._openai_compatible_client as _oac
 
     monkeypatch.setattr(_oac.OpenAICompatibleClient, "chat_completion", _fake_chat)
 

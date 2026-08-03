@@ -29,7 +29,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.utils.jsonschema import validate_pair_record  # noqa: E402
-from Trainforge.generators._synthesis_common import (  # noqa: E402
+from Trainforge.generators.providers._synthesis_common import (  # noqa: E402
     SynthesisProviderError,
 )
 

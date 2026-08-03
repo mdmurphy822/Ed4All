@@ -1546,7 +1546,7 @@ def test_validator_rejects_definition_above_length_ceiling() -> None:
 def test_validator_rejects_usage_prompt_below_length_floor() -> None:
     """Rule: LENGTH_OUT_OF_BOUNDS_USAGE_PROMPT — usage prompt below the
     schema's PROMPT_MIN floor (40 chars) is rejected."""
-    from Trainforge.generators._synthesis_common import PROMPT_MIN
+    from Trainforge.generators.providers._synthesis_common import PROMPT_MIN
     from Trainforge.generators.schema_translation_generator import (
         validate_form_data_contract,
     )
@@ -1575,7 +1575,7 @@ def test_validator_rejects_usage_prompt_below_length_floor() -> None:
 def test_validator_rejects_usage_answer_above_length_ceiling() -> None:
     """Rule: LENGTH_OUT_OF_BOUNDS_USAGE_ANSWER — answer above the
     schema's COMPLETION_MAX ceiling (600 chars) is rejected."""
-    from Trainforge.generators._synthesis_common import COMPLETION_MAX
+    from Trainforge.generators.providers._synthesis_common import COMPLETION_MAX
     from Trainforge.generators.schema_translation_generator import (
         validate_form_data_contract,
     )

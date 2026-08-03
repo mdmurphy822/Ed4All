@@ -949,16 +949,16 @@ def synthesize_instruction_pair(
                 # leaf-exact builder (verbose prompts, preserve disabled,
                 # hard 60s timeout). The leaf class is the rollback path
                 # when the agnostic builder is disabled.
-                from Trainforge.generators._synthesis_provider import (
+                from Trainforge.generators.providers._synthesis_provider import (
                     agnostic_synthesis_enabled,
                 )
                 if agnostic_synthesis_enabled():
-                    from Trainforge.generators._synthesis_provider import (
+                    from Trainforge.generators.providers._synthesis_provider import (
                         build_synthesis_provider,
                     )
                     provider_instance = build_synthesis_provider("together")
                 else:
-                    from Trainforge.generators._together_provider import (
+                    from Trainforge.generators.providers._together_provider import (
                         TogetherSynthesisProvider,
                     )
                     provider_instance = TogetherSynthesisProvider()
@@ -967,16 +967,16 @@ def synthesize_instruction_pair(
                 # builder (terse prompts, preserve enabled, hard 60s
                 # timeout). The leaf class is the rollback path when the
                 # agnostic builder is disabled.
-                from Trainforge.generators._synthesis_provider import (
+                from Trainforge.generators.providers._synthesis_provider import (
                     agnostic_synthesis_enabled,
                 )
                 if agnostic_synthesis_enabled():
-                    from Trainforge.generators._synthesis_provider import (
+                    from Trainforge.generators.providers._synthesis_provider import (
                         build_synthesis_provider,
                     )
                     provider_instance = build_synthesis_provider("local")
                 else:
-                    from Trainforge.generators._local_provider import (
+                    from Trainforge.generators.providers._local_provider import (
                         LocalSynthesisProvider,
                     )
                     provider_instance = LocalSynthesisProvider()

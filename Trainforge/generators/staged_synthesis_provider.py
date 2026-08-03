@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
-from Trainforge.generators._synthesis_common import SynthesisProviderError
+from Trainforge.generators.providers._synthesis_common import SynthesisProviderError
 from Trainforge.generators.synthesis_window_contract import (
     WINDOW_CONTRACT_VERSION,
     build_evidence_window,
@@ -2003,7 +2003,7 @@ class StagedSynthesisProvider:
                 },
             },
         }
-        from Trainforge.generators._openai_compatible_client import (
+        from Trainforge.generators.providers._openai_compatible_client import (
             apply_reasoning_thinking_off_payload,
         )
         apply_reasoning_thinking_off_payload(payload, force_thinking_off=True)

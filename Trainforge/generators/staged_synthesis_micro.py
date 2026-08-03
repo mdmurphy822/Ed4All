@@ -20,7 +20,7 @@ from typing import Any, Dict, Iterable, Iterator, Mapping, Optional, Sequence
 
 from lib.generation import stop_control
 from lib.ontology.misconception_id import canonical_mc_id
-from Trainforge.generators._synthesis_common import SynthesisProviderError
+from Trainforge.generators.providers._synthesis_common import SynthesisProviderError
 from Trainforge.generators.staged_synthesis_provider import (
     ENV_SERVED_CONTEXT_TOKENS,
     StagedSynthesisProvider,

@@ -2,7 +2,7 @@
 
 A SMALL, dependency-free, STRICTLY best-effort meter that appends ONE JSON row
 per LLM completion to an ``llm_usage.jsonl`` ledger, mirroring the Trainforge
-OP2 usage tap (``Trainforge/generators/_openai_compatible_client.py``
+OP2 usage tap (``Trainforge/generators/providers/_openai_compatible_client.py``
 ``_maybe_append_usage_row``) WITHOUT importing it — the vendored SemantiK tree
 runs inside its own venv (which ships ``requests`` but not the Trainforge
 package; see ``qwen_specialists/endpoint_runtime.py`` module docstring), so this

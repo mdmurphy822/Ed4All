@@ -68,7 +68,7 @@ class _CaptureMixin:
     no-op when ``capture is None`` so callers can opt out without ceremony.
 
     Mirrors the LLM-agnostic pattern at
-    ``Trainforge/generators/_openai_compatible_client.py``: rationale
+    ``Trainforge/generators/providers/_openai_compatible_client.py``: rationale
     interpolates dynamic signals (model, max_tokens, latency_ms,
     messages_count, response_text_len) so post-hoc replay sees per-call
     structure. The ``provider`` field is set per-backend (``"anthropic"``,
@@ -711,7 +711,7 @@ class MailboxBrokeredBackend(_CaptureMixin):
 # in decision-capture rationales for the audit trail but never branches
 # behavior inside the class.
 #
-# The backend wraps ``Trainforge.generators._openai_compatible_client.
+# The backend wraps ``Trainforge.generators.providers._openai_compatible_client.
 # OpenAICompatibleClient`` (the same HTTP client the synthesis pipeline
 # uses) — composition-over-inheritance, lazy-imported so the orchestrator
 # stays light when only Anthropic / Mock paths are exercised.
@@ -835,7 +835,7 @@ class OpenAICompatibleBackend(_CaptureMixin):
     so the audit trail records which OSS provider produced each call,
     but no branch inside the class body keys on the value.
 
-    Wraps ``Trainforge.generators._openai_compatible_client.
+    Wraps ``Trainforge.generators.providers._openai_compatible_client.
     OpenAICompatibleClient``: lazy import keeps the orchestrator slim
     when only Anthropic / Mock paths are wired, and reuses the existing
     HTTP retry / JSON parse / error-mapping code instead of duplicating
@@ -906,13 +906,13 @@ class OpenAICompatibleBackend(_CaptureMixin):
             try:
                 # Lazy import — keeps the orchestrator import-light in
                 # paths that never reach an OpenAI-compatible provider.
-                from Trainforge.generators._openai_compatible_client import (  # noqa: PLC0415
+                from Trainforge.generators.providers._openai_compatible_client import (  # noqa: PLC0415
                     OpenAICompatibleClient,
                 )
             except ImportError as exc:  # pragma: no cover — defensive
                 raise ImportError(
                     "OpenAICompatibleBackend requires "
-                    "Trainforge.generators._openai_compatible_client. "
+                    "Trainforge.generators.providers._openai_compatible_client. "
                     "This module is shipped with the project; if you see "
                     "this error your install is incomplete."
                 ) from exc

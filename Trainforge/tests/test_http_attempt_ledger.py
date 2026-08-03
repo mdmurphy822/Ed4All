@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 
 import httpx
 
-from Trainforge.generators._openai_compatible_client import OpenAICompatibleClient
-from Trainforge.generators.http_attempt_ledger import (
+from Trainforge.generators.providers._openai_compatible_client import OpenAICompatibleClient
+from Trainforge.generators.providers.http_attempt_ledger import (
     DurableHttpAttemptLedger,
     install_on_client,
 )

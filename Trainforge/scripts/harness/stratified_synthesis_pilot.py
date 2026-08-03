@@ -60,7 +60,7 @@ _RETRY_PATTERNS = {
 
 _PROVENANCE_FILES = (
     "Trainforge/synthesize_training.py",
-    "Trainforge/generators/_synthesis_provider.py",
+    "Trainforge/generators/providers/_synthesis_provider.py",
     "Trainforge/generators/staged_synthesis_provider.py",
     "Trainforge/generators/instruction_factory.py",
     "Trainforge/generators/preference_factory.py",
@@ -364,9 +364,9 @@ class _RequestRecorder:
 @contextmanager
 def record_provider_requests(recorder: _RequestRecorder) -> Iterator[None]:
     """Wrap every current local-provider implementation at the wire boundary."""
-    from Trainforge.generators._local_provider import LocalSynthesisProvider
-    from Trainforge.generators._synthesis_provider import SynthesisProvider
-    from Trainforge.generators._together_provider import TogetherSynthesisProvider
+    from Trainforge.generators.providers._local_provider import LocalSynthesisProvider
+    from Trainforge.generators.providers._synthesis_provider import SynthesisProvider
+    from Trainforge.generators.providers._together_provider import TogetherSynthesisProvider
 
     classes = (SynthesisProvider, LocalSynthesisProvider, TogetherSynthesisProvider)
     originals: list[tuple[type[Any], Any]] = []
@@ -515,8 +515,8 @@ def rejection_efficiency_ablation(name: str) -> Iterator[None]:
     if name != "modeled-old-leakage-policy":
         raise ValueError(f"unknown ablation: {name}")
 
-    from Trainforge.generators import _synthesis_provider as provider_module
-    from Trainforge.generators._synthesis_common import SynthesisProviderError
+    from Trainforge.generators.providers import _synthesis_provider as provider_module
+    from Trainforge.generators.providers._synthesis_common import SynthesisProviderError
 
     original_budget = provider_module.MAX_LEAKAGE_REWRITE_RETRIES
     provider_class = provider_module.SynthesisProvider

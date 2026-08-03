@@ -6,7 +6,7 @@ the instance-level ``self._active_phase_name`` it already tracks) so an
 in-process content-gen LLM usage tap — which is NOT handed the executor instance
 — can stamp the SPENDING phase on its ``llm_usage.jsonl`` row. This is the same
 env the Trainforge tap reads
-(``Trainforge.generators._openai_compatible_client.ENV_ACTIVE_PHASE``).
+(``Trainforge.generators.providers._openai_compatible_client.ENV_ACTIVE_PHASE``).
 
 Contract verified here:
 - The env is SET to the phase name while a task runs inside the phase.

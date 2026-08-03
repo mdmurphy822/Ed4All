@@ -36,7 +36,7 @@ from urllib.parse import urlparse
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from lib.decision_capture import DecisionCapture
-    from Trainforge.generators._openai_compatible_client import (
+    from Trainforge.generators.providers._openai_compatible_client import (
         OpenAICompatibleClient,
     )
 
@@ -254,7 +254,7 @@ def build_answer_client(
 
     # Lazy import keeps the heavy Trainforge module off the import path
     # for callers that only need resolution.
-    from Trainforge.generators._openai_compatible_client import (
+    from Trainforge.generators.providers._openai_compatible_client import (
         OpenAICompatibleClient,
     )
 

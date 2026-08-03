@@ -11,7 +11,7 @@ from Trainforge.synthesis.verification.benchmark_artifact_verifier import (
     verify_telemetry_artifacts,
     read_call_intents,
 )
-from Trainforge.generators.http_attempt_ledger import DurableCallIntentManifest
+from Trainforge.generators.providers.http_attempt_ledger import DurableCallIntentManifest
 
 ITERATION = (
     "iter=1 num_scheduled_requests=2 "

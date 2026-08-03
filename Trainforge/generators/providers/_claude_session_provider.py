@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 
 from lib.utils import append_jsonl as _utils_append_jsonl
 
-from Trainforge.generators._synthesis_common import (
+from Trainforge.generators.providers._synthesis_common import (
     COMPLETION_MAX,
     COMPLETION_MIN,
     PROMPT_MAX,
@@ -38,7 +38,7 @@ from Trainforge.generators._synthesis_common import (
     SynthesisProviderError,
     _KIND_BOUNDS,
 )
-from Trainforge.generators._session_budget import (
+from Trainforge.generators.providers._session_budget import (
     SynthesisBudgetExceeded,
     _BudgetTracker,
     _CircuitBreaker,
@@ -342,7 +342,7 @@ class ClaudeSessionProvider:
         # ignore the field (graceful-degrade); the consumer-side
         # validator (T11.2) handles the missing-quote case as
         # warning-only.
-        from Trainforge.generators._base_synthesis_provider import (
+        from Trainforge.generators.providers._base_synthesis_provider import (
             EVIDENCE_QUOTE_PROMPT_DIRECTIVE,
         )
         task_params = {
@@ -413,7 +413,7 @@ class ClaudeSessionProvider:
         # W-D11 T11.3 — interpolate per-claim evidence_quote emit rate
         # into the rationale. Same pattern as Anthropic / Together /
         # Local providers.
-        from Trainforge.generators._base_synthesis_provider import (
+        from Trainforge.generators.providers._base_synthesis_provider import (
             render_evidence_quote_rationale_fragment,
         )
         evidence_fragment = render_evidence_quote_rationale_fragment(parsed)

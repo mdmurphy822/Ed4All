@@ -346,7 +346,7 @@ def _build_provider(
     a higher value (e.g. 300) for high-coupling CURIEs.
     """
     if provider_name == "local":
-        from Trainforge.generators._local_provider import (  # noqa: WPS433
+        from Trainforge.generators.providers._local_provider import (  # noqa: WPS433
             LocalSynthesisProvider,
         )
         kwargs: Dict[str, Any] = {}
@@ -356,7 +356,7 @@ def _build_provider(
             kwargs["timeout"] = timeout
         return LocalSynthesisProvider(**kwargs)
     if provider_name == "together":
-        from Trainforge.generators._together_provider import (  # noqa: WPS433
+        from Trainforge.generators.providers._together_provider import (  # noqa: WPS433
             TogetherSynthesisProvider,
         )
         kwargs2: Dict[str, Any] = {}

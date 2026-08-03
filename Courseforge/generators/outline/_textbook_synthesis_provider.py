@@ -65,7 +65,7 @@ from MCP.orchestrator.llm_backend import (
     _OPENAI_COMPATIBLE_PROVIDERS,
     resolve_openai_compatible_backend,
 )
-from Trainforge.generators._openai_compatible_client import (
+from Trainforge.generators.providers._openai_compatible_client import (
     SynthesisProviderError,
 )
 from lib.ontology.learning_objectives import mint_lo_id

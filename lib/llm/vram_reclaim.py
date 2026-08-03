@@ -29,7 +29,7 @@ and unload each one, so we evict what's really on the card rather than
 guessing a single configured model name.
 
 Base-URL resolution mirrors the local synthesis client
-(:mod:`Trainforge.generators._local_provider`): the same
+(:mod:`Trainforge.generators.providers._local_provider`): the same
 ``LOCAL_SYNTHESIS_BASE_URL`` env (default ``http://localhost:11434/v1``).
 That env carries the OpenAI-compatible ``/v1`` suffix; ollama's native
 ``/api/*`` endpoints live at the server ROOT, so we strip a trailing

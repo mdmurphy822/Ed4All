@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from Trainforge.generators._synthesis_provider import SynthesisProvider
+from Trainforge.generators.providers._synthesis_provider import SynthesisProvider
 from Trainforge.synthesize_training import (
     _checkpoint_pair_matches_focus,
     _focus_chunk_on_objective,

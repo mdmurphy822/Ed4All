@@ -173,7 +173,7 @@ def _make_ping_client(
     symbol). A single attempt (``max_retries=1``) so a 401 / bad key fails
     fast instead of paying exponential backoff.
     """
-    from Trainforge.generators._openai_compatible_client import (  # lazy
+    from Trainforge.generators.providers._openai_compatible_client import (  # lazy
         OpenAICompatibleClient,
     )
 

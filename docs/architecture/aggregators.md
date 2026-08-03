@@ -185,7 +185,7 @@ Three independently degradable sections, sourced from artifacts the run already 
 
 1. **Per-phase wall-clock** from `checkpoints/*.json` (`started_at` / `completed_at`). Always emitted — a run that got far enough to aggregate has checkpoints.
 2. **GPU residency** from `vram_trajectory.jsonl` (rows carry `ts`, `phase`, `resident_models`), joined to the phase wall-clock windows for per-phase residency span and peak resident VRAM. **An absent file omits the section entirely** rather than emitting zeros — a run without `ED4ALL_VRAM_DOCTOR` writes no trajectory, and zeros would be a lie.
-3. **LLM calls / tokens** from `llm_usage.jsonl` (one row per chat-completion call, written by the usage tap in `Trainforge/generators/_openai_compatible_client.py` when `ED4ALL_RUN_ID` is set), tallied globally, per-provider, and per-model. Again **omitted when absent**, which is the honest reading for a run whose calls bypassed the shared client.
+3. **LLM calls / tokens** from `llm_usage.jsonl` (one row per chat-completion call, written by the usage tap in `Trainforge/generators/providers/_openai_compatible_client.py` when `ED4ALL_RUN_ID` is set), tallied globally, per-provider, and per-model. Again **omitted when absent**, which is the honest reading for a run whose calls bypassed the shared client.
 
 When `ED4ALL_LLM_TTFT_METER` is on, usage rows additionally carry `ttft_ms` and the aggregator surfaces p50 / p95 time-to-first-token (additive; no schema bump).
 

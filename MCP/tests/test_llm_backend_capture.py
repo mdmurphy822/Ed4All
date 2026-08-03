@@ -5,7 +5,7 @@ class so every concrete backend (``AnthropicBackend``, ``LocalBackend``,
 ``MailboxBrokeredBackend``, ``OpenAICompatibleBackend``, ``MockBackend``)
 emits one ``decision_type="llm_chat_call"`` event per dispatch when a
 capture is wired. Mirrors the canonical pattern at
-``Trainforge/generators/_openai_compatible_client.py``.
+``Trainforge/generators/providers/_openai_compatible_client.py``.
 
 LLM-agnostic intent: no hardcoded provider names appear in event
 field names — only the ``provider`` audit value identifies the

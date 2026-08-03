@@ -109,7 +109,7 @@ def test_build_answer_client_uses_json_mode_and_provider_label(monkeypatch):
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
-    import Trainforge.generators._openai_compatible_client as occ
+    import Trainforge.generators.providers._openai_compatible_client as occ
 
     monkeypatch.setattr(occ, "OpenAICompatibleClient", _FakeClient)
     resolved = resolve_answer_backend()
@@ -132,7 +132,7 @@ def test_build_answer_client_default_json_mode_is_true(monkeypatch):
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
-    import Trainforge.generators._openai_compatible_client as occ
+    import Trainforge.generators.providers._openai_compatible_client as occ
 
     monkeypatch.setattr(occ, "OpenAICompatibleClient", _FakeClient)
     build_answer_client()  # resolved=None → env/default resolution
@@ -196,7 +196,7 @@ def test_build_answer_client_json_mode_false_threads_through(monkeypatch):
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
-    import Trainforge.generators._openai_compatible_client as occ
+    import Trainforge.generators.providers._openai_compatible_client as occ
 
     monkeypatch.setattr(occ, "OpenAICompatibleClient", _FakeClient)
     resolved = resolve_answer_backend()

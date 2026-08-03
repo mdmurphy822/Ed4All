@@ -90,7 +90,7 @@ def _fake_client() -> httpx.Client:
 
 
 def test_synthesis_provider_local_stamps_local():
-    from Trainforge.generators._synthesis_provider import SynthesisProvider
+    from Trainforge.generators.providers._synthesis_provider import SynthesisProvider
 
     p = SynthesisProvider(provider="local", client=_fake_client())
     assert p._provenance_provider == "local"
@@ -98,7 +98,7 @@ def test_synthesis_provider_local_stamps_local():
 
 @pytest.mark.parametrize("name", ("groq", "fireworks", "deepseek"))
 def test_synthesis_provider_cloud_stamps_non_local(name):
-    from Trainforge.generators._synthesis_provider import SynthesisProvider
+    from Trainforge.generators.providers._synthesis_provider import SynthesisProvider
 
     p = SynthesisProvider(provider=name, client=_fake_client())
     assert p._provenance_provider != "local"
@@ -109,7 +109,7 @@ def test_synthesis_provider_cloud_stamps_non_local(name):
 
 
 def test_synthesis_provider_together_and_nvidia_are_identity():
-    from Trainforge.generators._synthesis_provider import SynthesisProvider
+    from Trainforge.generators.providers._synthesis_provider import SynthesisProvider
 
     assert (
         SynthesisProvider(provider="together", client=_fake_client())._provenance_provider
@@ -124,7 +124,7 @@ def test_synthesis_provider_together_and_nvidia_are_identity():
 def test_unknown_name_falls_back_to_raw_name():
     # A name absent from the registry (a test double) keeps the raw name so
     # non-registry callers never crash.
-    from Trainforge.generators._synthesis_provider import (
+    from Trainforge.generators.providers._synthesis_provider import (
         _resolve_provenance_provider,
     )
 

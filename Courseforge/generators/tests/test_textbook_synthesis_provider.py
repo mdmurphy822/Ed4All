@@ -52,7 +52,7 @@ from Courseforge.generators.outline._textbook_synthesis_provider import (  # noq
     _SKELETON_CHAR_BUDGET,
     _SKELETON_MAX_SECTION_TITLES,
 )
-from Trainforge.generators._openai_compatible_client import (  # noqa: E402
+from Trainforge.generators.providers._openai_compatible_client import (  # noqa: E402
     DEFAULT_TIMEOUT_SECONDS,
     SynthesisProviderError,
 )
@@ -1077,7 +1077,7 @@ def test_merge_local_num_ctx_noop_for_together(monkeypatch):
 def test_finish_reason_length_surfaces_output_truncated():
     """OpenAICompatibleClient._extract_text raises a distinct
     output_truncated code when finish_reason == 'length'."""
-    from Trainforge.generators._openai_compatible_client import (
+    from Trainforge.generators.providers._openai_compatible_client import (
         OpenAICompatibleClient,
     )
 

@@ -513,7 +513,7 @@ class CurieAnchoringValidator:
                     "Inspect the instruction_pairs.jsonl entries for "
                     "the listed chunk_ids; confirm Wave 135b "
                     "force-injection is wired into "
-                    "Trainforge/generators/_local_provider.py and the "
+                    "Trainforge/generators/providers/_local_provider.py and the "
                     "property manifest covers the chunk vocabulary."
                 ),
             ))

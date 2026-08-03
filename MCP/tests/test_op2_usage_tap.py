@@ -13,7 +13,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from Trainforge.generators._openai_compatible_client import (
+from Trainforge.generators.providers._openai_compatible_client import (
     OpenAICompatibleClient,
 )
 
@@ -159,7 +159,7 @@ def test_module_tap_stamps_active_phase(
 ):
     # The module-level tap (the seam the Courseforge two-pass dispatch calls
     # directly, bypassing ``chat_completion``) also stamps the active phase.
-    from Trainforge.generators._openai_compatible_client import (
+    from Trainforge.generators.providers._openai_compatible_client import (
         maybe_append_usage_row,
     )
 

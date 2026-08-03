@@ -6,8 +6,8 @@ import json
 import httpx
 import pytest
 
-from Trainforge.generators._openai_compatible_client import OpenAICompatibleClient
-from Trainforge.generators._synthesis_common import SynthesisProviderError
+from Trainforge.generators.providers._openai_compatible_client import OpenAICompatibleClient
+from Trainforge.generators.providers._synthesis_common import SynthesisProviderError
 from Trainforge.generators.staged_synthesis_provider import (
     StagedSynthesisProvider,
     _canonical_evidence_quote,

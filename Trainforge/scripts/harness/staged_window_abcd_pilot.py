@@ -2648,8 +2648,8 @@ def _provider(
     synthesis_seed: Optional[int] = None,
     completion_cap: int = 600,
 ) -> Any:
-    from Trainforge.generators._local_provider import LocalSynthesisProvider
-    from Trainforge.generators._openai_compatible_client import (
+    from Trainforge.generators.providers._local_provider import LocalSynthesisProvider
+    from Trainforge.generators.providers._openai_compatible_client import (
         RESPONSE_DIALECT_OPENAI_JSON_SCHEMA_STRICT,
     )
     from Trainforge.generators.staged_synthesis_provider import StagedSynthesisProvider
@@ -2687,7 +2687,7 @@ def _provider(
     staged._pilot_calls = probe.calls
     staged._pilot_transport_probe = probe
     if attempt_ledger_path is not None:
-        from Trainforge.generators.http_attempt_ledger import (
+        from Trainforge.generators.providers.http_attempt_ledger import (
             DurableCallIntentManifest,
             DurableHttpAttemptLedger,
             install_on_client,
@@ -2838,7 +2838,7 @@ def build_preflight_artifact(
         "Trainforge/generators/synthesis_window_contract.py",
         "Trainforge/synthesis_eligibility.py",
         "Trainforge/scripts/harness/staged_window_abcd_pilot.py",
-        "Trainforge/generators/http_attempt_ledger.py",
+        "Trainforge/generators/providers/http_attempt_ledger.py",
         "Trainforge/generators/trtllm_benchmark_telemetry.py",
         "Trainforge/synthesis/verification/benchmark_artifact_verifier.py",
         "Trainforge/synthesis/verification/decision_audit_verifier.py",

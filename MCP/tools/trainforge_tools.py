@@ -43,7 +43,7 @@ except ImportError:
 # OpenAI-compatible registry still work — when the import fails the
 # legacy ``AssessmentGenerator`` path is the only available branch.
 try:
-    from Trainforge.generators._assessment_provider import (  # noqa: F401
+    from Trainforge.generators.providers._assessment_provider import (  # noqa: F401
         AssessmentGeneratorProvider,
         AssessmentGeneratorProviderError,
     )

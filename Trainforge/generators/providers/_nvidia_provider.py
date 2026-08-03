@@ -4,10 +4,10 @@
 NVIDIA's hosted inference API (``https://integrate.api.nvidia.com/v1``)
 is an OpenAI-compatible ``/chat/completions`` endpoint, exactly the wire
 shape the existing ``together`` / ``local`` providers already speak via
-:class:`Trainforge.generators._openai_compatible_client.OpenAICompatibleClient`.
+:class:`Trainforge.generators.providers._openai_compatible_client.OpenAICompatibleClient`.
 
 This module is the registry-entry sibling of
-:mod:`Trainforge.generators._together_provider` — it carries only the
+:mod:`Trainforge.generators.providers._together_provider` — it carries only the
 provider-identity constants (default base URL, env-var names, default
 model). The Courseforge generator base
 (:class:`Courseforge.generators._base._BaseLLMProvider`) imports these

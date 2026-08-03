@@ -32,7 +32,7 @@ from __future__ import annotations
 import pytest
 
 from lib.ontology.misconception_id import canonical_mc_id
-from Trainforge.generators._synthesis_common import SynthesisProviderError
+from Trainforge.generators.providers._synthesis_common import SynthesisProviderError
 from Trainforge.generators.synthesis_window_contract import BLOOM_WINDOWS_ENV
 import Trainforge.generators.staged_synthesis_provider as provider_module
 from Trainforge.generators.staged_synthesis_micro import micro_preference_eligibility

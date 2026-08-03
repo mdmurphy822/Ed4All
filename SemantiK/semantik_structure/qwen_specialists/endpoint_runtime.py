@@ -21,7 +21,7 @@ Protocol as :class:`~.runtime.LlamaCppRuntime`, so the Stage 6 runner +
 Self-contained on purpose
 -------------------------
 
-We do NOT import ``Trainforge.generators._openai_compatible_client`` — the
+We do NOT import ``Trainforge.generators.providers._openai_compatible_client`` — the
 vendored SemantiK tree must run inside Semantic's venv (which ships
 ``requests`` but not the Trainforge package). We mirror that client's
 shape with a small ``requests``-based POST instead.

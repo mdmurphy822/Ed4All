@@ -65,7 +65,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from Trainforge.generators._openai_compatible_client import (
+from Trainforge.generators.providers._openai_compatible_client import (
     OpenAICompatibleClient,
     apply_reasoning_thinking_off_payload,
     maybe_append_usage_row,
@@ -663,7 +663,7 @@ class _BaseLLMProvider(ABC):
 
         Lazy-imports ``anthropic`` so callers using only Together /
         Local don't pay the import cost. Mirrors the
-        :class:`Trainforge.generators._anthropic_provider.AnthropicSynthesisProvider`
+        :class:`Trainforge.generators.providers._anthropic_provider.AnthropicSynthesisProvider`
         pattern for consistency. Returns
         ``(assistant_text, retry_count=0)`` — the SDK has its own
         retry policy so we don't double-count here.

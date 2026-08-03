@@ -36,17 +36,17 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.generators._synthesis_provider import (  # noqa: E402
+from Trainforge.generators.providers._synthesis_provider import (  # noqa: E402
     DEFAULT_PROVIDER,
     SynthesisProvider,
     SynthesisProviderError,
     build_synthesis_provider,
 )
-from Trainforge.generators._local_provider import (  # noqa: E402
+from Trainforge.generators.providers._local_provider import (  # noqa: E402
     DEFAULT_SYNTHESIS_MODEL,
     LocalSynthesisProvider,
 )
-from Trainforge.generators._together_provider import (  # noqa: E402
+from Trainforge.generators.providers._together_provider import (  # noqa: E402
     DEFAULT_SYNTHESIS_MODEL as TOGETHER_DEFAULT_MODEL,
     TogetherSynthesisProvider,
 )

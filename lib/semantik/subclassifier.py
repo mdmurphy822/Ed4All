@@ -927,7 +927,7 @@ def build_default_subclass_client() -> Callable[..., str]:
         LOCAL_DEFAULT_BASE_URL,
         LOCAL_DEFAULT_MODEL,
     )
-    from Trainforge.generators._openai_compatible_client import (
+    from Trainforge.generators.providers._openai_compatible_client import (
         OpenAICompatibleClient,
     )
 

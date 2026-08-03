@@ -3343,7 +3343,7 @@ class AssessmentGenerator:
             )
             return None
         try:
-            from Trainforge.generators._assessment_provider import (
+            from Trainforge.generators.providers._assessment_provider import (
                 AssessmentGeneratorProvider,
             )
             return AssessmentGeneratorProvider(

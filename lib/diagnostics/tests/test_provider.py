@@ -399,7 +399,7 @@ def test_ping_success_ok(patch_engine, monkeypatch):
 
 
 def test_ping_synthesis_error_fails(patch_engine, monkeypatch):
-    from Trainforge.generators._openai_compatible_client import SynthesisProviderError
+    from Trainforge.generators.providers._openai_compatible_client import SynthesisProviderError
 
     patch_engine([_seat("content", "local", source="fanout")], present={})
 
@@ -422,7 +422,7 @@ def test_ping_output_truncated_is_reachable_ok(patch_engine, monkeypatch):
     NOT a failure — the request was accepted and generation started, so the
     ping must report OK, not FAIL.
     """
-    from Trainforge.generators._openai_compatible_client import SynthesisProviderError
+    from Trainforge.generators.providers._openai_compatible_client import SynthesisProviderError
 
     patch_engine([_seat("content", "local", source="fanout")], present={})
 
@@ -443,7 +443,7 @@ def test_ping_output_truncated_is_reachable_ok(patch_engine, monkeypatch):
 
 def test_ping_auth_failure_fails(patch_engine, monkeypatch):
     """#4 — a genuine 401 auth failure is still a FAIL."""
-    from Trainforge.generators._openai_compatible_client import SynthesisProviderError
+    from Trainforge.generators.providers._openai_compatible_client import SynthesisProviderError
 
     patch_engine([_seat("content", "local", source="fanout")], present={})
 

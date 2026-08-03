@@ -2,7 +2,7 @@
 """Courseforge content-generator provider — LLM-agnostic page authoring.
 
 Provides a Phase-1 in-process LLM seam for the Courseforge content-
-generator surface. Mirrors :class:`Trainforge.generators._curriculum_provider.CurriculumAlignmentProvider`
+generator surface. Mirrors :class:`Trainforge.generators.providers._curriculum_provider.CurriculumAlignmentProvider`
 line-for-line so the operator-facing env-var contract and decision-
 capture posture match across the project's LLM call sites.
 
@@ -64,7 +64,7 @@ from blocks import (  # noqa: E402  (Phase 2 intermediate format)
 from Courseforge.generators._base import (  # noqa: E402
     _BaseLLMProvider,
 )
-from Trainforge.generators._synthesis_common import (  # noqa: E402
+from Trainforge.generators.providers._synthesis_common import (  # noqa: E402
     SynthesisProviderError,
 )
 
@@ -120,7 +120,7 @@ class ContentGeneratorProvider(_BaseLLMProvider):
     Together + Local route through :class:`OpenAICompatibleClient`
     (composition, not inheritance). Anthropic routes through the
     Anthropic SDK directly via the same lazy-import pattern
-    :class:`Trainforge.generators._anthropic_provider.AnthropicSynthesisProvider`
+    :class:`Trainforge.generators.providers._anthropic_provider.AnthropicSynthesisProvider`
     uses, so the Courseforge surface doesn't grow a second SDK
     dependency surface.
 

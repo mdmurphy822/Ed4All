@@ -80,10 +80,10 @@ from Trainforge.generators.instruction_factory import (  # noqa: E402
 from Trainforge.generators.preference_factory import (  # noqa: E402
     synthesize_preference_pair,
 )
-from Trainforge.generators._synthesis_provider import (  # noqa: E402
+from Trainforge.generators.providers._synthesis_provider import (  # noqa: E402
     agnostic_synthesis_enabled,
 )
-from Trainforge.generators._synthesis_common import SynthesisProviderError  # noqa: E402
+from Trainforge.generators.providers._synthesis_common import SynthesisProviderError  # noqa: E402
 from Trainforge.synthesis.synthesis_journal import (  # noqa: E402
     GenerationJournal,
     MAX_TRANSIENT_RESUME_ATTEMPTS,
@@ -1802,9 +1802,9 @@ _SYNTHESIS_REJECTION_CONTRACT_VERSION = "v1"
 _GENERATION_CONTRACT_FILES = (
     "Trainforge/synthesize_training.py",
     "Trainforge/synthesis_eligibility.py",
-    "Trainforge/generators/_synthesis_provider.py",
-    "Trainforge/generators/_synthesis_common.py",
-    "Trainforge/generators/_openai_compatible_client.py",
+    "Trainforge/generators/providers/_synthesis_provider.py",
+    "Trainforge/generators/providers/_synthesis_common.py",
+    "Trainforge/generators/providers/_openai_compatible_client.py",
     "Trainforge/generators/staged_synthesis_provider.py",
     # The micro contract's twin of staged_synthesis_provider.py. It decides
     # model-call outcomes exactly as its V4 sibling does, AND it owns
@@ -1813,7 +1813,7 @@ _GENERATION_CONTRACT_FILES = (
     # edit here changes which chunks generate preference pairs. Without this
     # entry a resumed run appended post-edit rows to a pre-edit corpus.
     "Trainforge/generators/staged_synthesis_micro.py",
-    "Trainforge/generators/_local_provider.py",
+    "Trainforge/generators/providers/_local_provider.py",
     "Trainforge/generators/instruction_factory.py",
     "Trainforge/generators/preference_factory.py",
     "Trainforge/generators/synthesis_window_contract.py",
@@ -3758,7 +3758,7 @@ def run_synthesis(
     # when there's actually an eligible chunk to paraphrase.
     paraphrase_provider: Optional[Any] = None
     if provider == "claude_session":
-        from Trainforge.generators._claude_session_provider import (
+        from Trainforge.generators.providers._claude_session_provider import (
             ClaudeSessionProvider,
         )
         # default telemetry_path under training_specs/.
@@ -3789,14 +3789,14 @@ def run_synthesis(
         # to TogetherSynthesisProvider on well-formed responses. The leaf
         # remains the rollback path when the flag is OFF.
         if agnostic_synthesis_enabled():
-            from Trainforge.generators._synthesis_provider import (
+            from Trainforge.generators.providers._synthesis_provider import (
                 build_synthesis_provider,
             )
             paraphrase_provider = build_synthesis_provider(
                 "together", capture=capture, synthesis_seed=seed,
             )
         else:
-            from Trainforge.generators._together_provider import (
+            from Trainforge.generators.providers._together_provider import (
                 TogetherSynthesisProvider,
             )
             paraphrase_provider = TogetherSynthesisProvider(capture=capture)
@@ -3827,14 +3827,14 @@ def run_synthesis(
         # into either class — SynthesisProvider accepts the identical
         # knobs with identical defaults.
         if agnostic_synthesis_enabled():
-            from Trainforge.generators._synthesis_provider import (
+            from Trainforge.generators.providers._synthesis_provider import (
                 build_synthesis_provider,
             )
             paraphrase_provider = build_synthesis_provider(
                 "local", synthesis_seed=seed, **local_kwargs,
             )
         else:
-            from Trainforge.generators._local_provider import (
+            from Trainforge.generators.providers._local_provider import (
                 LocalSynthesisProvider,
             )
             paraphrase_provider = LocalSynthesisProvider(**local_kwargs)
@@ -3920,7 +3920,7 @@ def run_synthesis(
     # finally-block can reference it even when an exception propagates before
     # the loop assigns it. Imported eagerly so the symbol exists in the
     # finally scope.
-    from Trainforge.generators._session_budget import (
+    from Trainforge.generators.providers._session_budget import (
         SynthesisBudgetExceeded as _SBE,
     )
     _budget_exhausted_exc: Optional[_SBE] = None

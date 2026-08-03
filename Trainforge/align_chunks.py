@@ -30,7 +30,7 @@ from lib.utils import write_jsonl as _utils_write_jsonl
 
 if TYPE_CHECKING:
     from MCP.orchestrator.llm_backend import LLMBackend
-    from Trainforge.generators._curriculum_provider import (
+    from Trainforge.generators.providers._curriculum_provider import (
         CurriculumAlignmentProvider,
     )
 
@@ -1299,7 +1299,8 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Curriculum-alignment provider for ambiguous-chunk teaching-role "
             "classification. Routes through "
-            "Trainforge.generators._curriculum_provider.CurriculumAlignmentProvider. "
+            "Trainforge.generators.providers._curriculum_provider."
+            "CurriculumAlignmentProvider. "
             "When unset, falls back to the CURRICULUM_ALIGNMENT_PROVIDER env "
             "var; when env is also unset, the legacy / mock path runs (no "
             "curriculum provider injected). Recommended setting for "
@@ -1356,7 +1357,7 @@ def _build_curriculum_provider(
     Threads through the optional ``capture`` so every classification
     call emits a ``curriculum_alignment_call`` decision event.
     """
-    from Trainforge.generators._curriculum_provider import (
+    from Trainforge.generators.providers._curriculum_provider import (
         CurriculumAlignmentProvider,
     )
     return CurriculumAlignmentProvider(

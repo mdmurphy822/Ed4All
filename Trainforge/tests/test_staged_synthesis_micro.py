@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 import Trainforge.generators.staged_synthesis_micro as micro_module
-from Trainforge.generators._synthesis_common import SynthesisProviderError
+from Trainforge.generators.providers._synthesis_common import SynthesisProviderError
 from lib.ontology.misconception_id import canonical_mc_id
 from Trainforge.generators.staged_synthesis_micro import (
     MICRO_CONTRACT_VERSION,

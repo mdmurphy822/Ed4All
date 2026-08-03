@@ -44,7 +44,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.generators._openai_compatible_client import (  # noqa: E402
+from Trainforge.generators.providers._openai_compatible_client import (  # noqa: E402
     OpenAICompatibleClient,
     SynthesisProviderError,
 )
@@ -773,7 +773,7 @@ def test_retry_after_http_date_is_parsed_to_seconds():
 
 def test_retry_after_above_ceiling_is_clamped():
     """A pathological ``Retry-After`` is clamped to the max ceiling."""
-    from Trainforge.generators._openai_compatible_client import (
+    from Trainforge.generators.providers._openai_compatible_client import (
         _RETRY_AFTER_MAX_SECONDS,
     )
 
@@ -975,7 +975,7 @@ def test_thinking_off_does_not_mutate_callers_messages(monkeypatch):
 
 def test_resolve_reasoning_thinking_off_parse_with_fallback(monkeypatch):
     """Truthy parse: ``1/true/yes/on`` (case-insensitive) → True; else False."""
-    from Trainforge.generators._openai_compatible_client import (
+    from Trainforge.generators.providers._openai_compatible_client import (
         resolve_reasoning_thinking_off,
     )
 
@@ -1003,7 +1003,7 @@ def _reasoning_payload():
 
 def test_apply_reasoning_neither_flag_is_byte_identical(monkeypatch):
     """Neither env truthy → no injection (no key, messages untouched)."""
-    from Trainforge.generators._openai_compatible_client import (
+    from Trainforge.generators.providers._openai_compatible_client import (
         apply_reasoning_thinking_off_payload,
     )
 
@@ -1017,7 +1017,7 @@ def test_apply_reasoning_neither_flag_is_byte_identical(monkeypatch):
 
 def test_apply_reasoning_thinking_off_only(monkeypatch):
     """THINKING_OFF on, LOW_EFFORT off → enable_thinking False + directive."""
-    from Trainforge.generators._openai_compatible_client import (
+    from Trainforge.generators.providers._openai_compatible_client import (
         apply_reasoning_thinking_off_payload,
     )
 
@@ -1033,7 +1033,7 @@ def test_apply_reasoning_thinking_off_only(monkeypatch):
 def test_apply_reasoning_low_effort_only(monkeypatch):
     """LOW_EFFORT on → enable_thinking True + low_effort True, NO system
     directive (thinking stays enabled, just cheaper)."""
-    from Trainforge.generators._openai_compatible_client import (
+    from Trainforge.generators.providers._openai_compatible_client import (
         apply_reasoning_thinking_off_payload,
     )
 
@@ -1051,7 +1051,7 @@ def test_apply_reasoning_low_effort_only(monkeypatch):
 
 def test_apply_reasoning_low_effort_wins_over_thinking_off(monkeypatch):
     """Both env truthy → LOW_EFFORT wins (precedence LOW_EFFORT > THINKING_OFF)."""
-    from Trainforge.generators._openai_compatible_client import (
+    from Trainforge.generators.providers._openai_compatible_client import (
         apply_reasoning_thinking_off_payload,
     )
 
@@ -1068,7 +1068,7 @@ def test_apply_reasoning_low_effort_wins_over_thinking_off(monkeypatch):
 
 def test_apply_reasoning_low_effort_preserves_sibling_kwargs(monkeypatch):
     """LOW_EFFORT merges into existing chat_template_kwargs; sibling keys kept."""
-    from Trainforge.generators._openai_compatible_client import (
+    from Trainforge.generators.providers._openai_compatible_client import (
         apply_reasoning_thinking_off_payload,
     )
 
@@ -1086,7 +1086,7 @@ def test_apply_reasoning_low_effort_preserves_sibling_kwargs(monkeypatch):
 
 def test_resolve_reasoning_low_effort_parse_with_fallback(monkeypatch):
     """Truthy parse: ``1/true/yes/on`` (case-insensitive) → True; else False."""
-    from Trainforge.generators._openai_compatible_client import (
+    from Trainforge.generators.providers._openai_compatible_client import (
         resolve_reasoning_low_effort,
     )
 
@@ -1722,7 +1722,7 @@ def test_ttft_reasoning_delta_counts_for_first_token(monkeypatch):
 
 def test_resolve_ttft_meter_parse_with_fallback(monkeypatch):
     """Truthy parse: ``1/true/yes/on`` (case-insensitive) → True; else False."""
-    from Trainforge.generators._openai_compatible_client import (
+    from Trainforge.generators.providers._openai_compatible_client import (
         resolve_ttft_meter,
     )
 

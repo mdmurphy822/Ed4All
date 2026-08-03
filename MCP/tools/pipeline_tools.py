@@ -33165,7 +33165,7 @@ def _build_tool_registry() -> dict:
         prose_provider = None
         if prose_provider_name:
             try:
-                from Trainforge.generators._assessment_provider import (
+                from Trainforge.generators.providers._assessment_provider import (
                     AssessmentGeneratorProvider,
                 )
                 prose_provider = AssessmentGeneratorProvider(

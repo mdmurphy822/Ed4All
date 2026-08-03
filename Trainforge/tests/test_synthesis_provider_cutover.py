@@ -28,7 +28,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.generators._synthesis_provider import (  # noqa: E402
+from Trainforge.generators.providers._synthesis_provider import (  # noqa: E402
     ENV_AGNOSTIC_SYNTHESIS,
     agnostic_synthesis_enabled,
 )
@@ -104,9 +104,9 @@ def _install_spies(monkeypatch) -> List[Tuple[str, Dict[str, Any]]]:
         record.append(("agnostic", {"provider": provider, **kwargs}))
         return _Rec()
 
-    from Trainforge.generators import _synthesis_provider as sp_mod
-    from Trainforge.generators import _local_provider as lp_mod
-    from Trainforge.generators import _together_provider as tp_mod
+    from Trainforge.generators.providers import _synthesis_provider as sp_mod
+    from Trainforge.generators.providers import _local_provider as lp_mod
+    from Trainforge.generators.providers import _together_provider as tp_mod
 
     monkeypatch.setattr(sp_mod, "build_synthesis_provider", _builder_recorder)
     monkeypatch.setattr(lp_mod, "LocalSynthesisProvider", _leaf_recorder("local_leaf"))

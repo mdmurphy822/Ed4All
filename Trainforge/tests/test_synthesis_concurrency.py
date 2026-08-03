@@ -29,7 +29,7 @@ from Trainforge.synthesis_journal import (
 )
 from Trainforge.generators.instruction_factory import InstructionSynthesisResult
 from Trainforge.generators.preference_factory import PreferenceSynthesisResult
-from Trainforge.generators._synthesis_common import SynthesisProviderError
+from Trainforge.generators.providers._synthesis_common import SynthesisProviderError
 
 
 _FIXTURE_ROOT = (

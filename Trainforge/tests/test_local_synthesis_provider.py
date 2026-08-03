@@ -37,13 +37,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.generators._local_provider import (  # noqa: E402
+from Trainforge.generators.providers._local_provider import (  # noqa: E402
     DEFAULT_BASE_URL,
     DEFAULT_SYNTHESIS_MODEL,
     LocalSynthesisProvider,
     SynthesisProviderError,
 )
-from Trainforge.generators._together_provider import (  # noqa: E402
+from Trainforge.generators.providers._together_provider import (  # noqa: E402
     MAX_HTTP_RETRIES,
     MAX_PARSE_RETRIES,
 )
@@ -335,7 +335,7 @@ def test_too_short_completion_retries_then_raises(monkeypatch):
         *[httpx.Response(200, json=_success_body(paraphrased)) for _ in range(MAX_PARSE_RETRIES)]
     )
     p = LocalSynthesisProvider(client=client)
-    with patch("Trainforge.generators._together_provider.time.sleep"):
+    with patch("Trainforge.generators.providers._together_provider.time.sleep"):
         with pytest.raises(SynthesisProviderError) as excinfo:
             p.paraphrase_instruction(_instruction_draft(), _chunk())
     assert excinfo.value.code == "paraphrase_invalid_after_retry"
@@ -360,7 +360,7 @@ def test_too_short_prompt_retries_then_raises(monkeypatch):
         *[httpx.Response(200, json=_success_body(paraphrased)) for _ in range(MAX_PARSE_RETRIES)]
     )
     p = LocalSynthesisProvider(client=client)
-    with patch("Trainforge.generators._together_provider.time.sleep"):
+    with patch("Trainforge.generators.providers._together_provider.time.sleep"):
         with pytest.raises(SynthesisProviderError) as excinfo:
             p.paraphrase_instruction(_instruction_draft(), _chunk())
     assert excinfo.value.code == "paraphrase_invalid_after_retry"
@@ -389,7 +389,7 @@ def test_http_503_then_200_succeeds_after_retry(monkeypatch):
     p = LocalSynthesisProvider(client=client)
     # Patch sleep so the test doesn't actually wait. The base-class
     # together-provider module owns the retry loop.
-    with patch("Trainforge.generators._together_provider.time.sleep"):
+    with patch("Trainforge.generators.providers._together_provider.time.sleep"):
         out = p.paraphrase_instruction(_instruction_draft(), _chunk())
     assert out["provider"] == "local"
 
@@ -400,7 +400,7 @@ def test_http_500_three_times_raises_with_status_code(monkeypatch):
         *[httpx.Response(500, json={"error": "boom"})] * MAX_HTTP_RETRIES
     )
     p = LocalSynthesisProvider(client=client)
-    with patch("Trainforge.generators._together_provider.time.sleep"):
+    with patch("Trainforge.generators.providers._together_provider.time.sleep"):
         with pytest.raises(SynthesisProviderError) as excinfo:
             p.paraphrase_instruction(_instruction_draft(), _chunk())
     assert excinfo.value.code == "500"
@@ -564,7 +564,7 @@ def test_local_provider_raises_after_lenient_retry_exhaustion(monkeypatch):
         *[httpx.Response(200, json=_success_body(bad_response)) for _ in range(MAX_PARSE_RETRIES)]
     )
     p = LocalSynthesisProvider(client=client)
-    with patch("Trainforge.generators._together_provider.time.sleep"):
+    with patch("Trainforge.generators.providers._together_provider.time.sleep"):
         with pytest.raises(SynthesisProviderError) as excinfo:
             p.paraphrase_instruction(_instruction_draft(), _chunk())
     assert excinfo.value.code == "paraphrase_invalid_after_retry"
@@ -644,10 +644,10 @@ def test_local_provider_default_prompt_floor_matches_schema(monkeypatch):
     prompts. Callers needing a lower floor pass an explicit
     ``kind_bounds={"prompt": (25, PROMPT_MAX), ...}`` to the
     constructor."""
-    from Trainforge.generators._local_provider import (  # noqa: E402
+    from Trainforge.generators.providers._local_provider import (  # noqa: E402
         DEFAULT_LOCAL_KIND_BOUNDS,
     )
-    from Trainforge.generators._synthesis_common import (  # noqa: E402
+    from Trainforge.generators.providers._synthesis_common import (  # noqa: E402
         PROMPT_MIN,
     )
 
@@ -712,7 +712,7 @@ def test_local_provider_retries_on_short_field_then_succeeds(monkeypatch):
         httpx.Response(200, json=_success_body(long_response)),
     )
     p = LocalSynthesisProvider(client=client)
-    with patch("Trainforge.generators._together_provider.time.sleep"):
+    with patch("Trainforge.generators.providers._together_provider.time.sleep"):
         result = p.paraphrase_instruction(_instruction_draft(), _chunk())
 
     # Second response was accepted, first was discarded.
@@ -728,7 +728,7 @@ def test_local_provider_uses_slim_local_system_prompts():
     models attend less reliably to long behavioral preambles, so the
     inlined JSON-shape directive in the user message carries the
     contract."""
-    from Trainforge.generators._local_provider import (  # noqa: E402
+    from Trainforge.generators.providers._local_provider import (  # noqa: E402
         _LOCAL_INSTRUCTION_SYSTEM_PROMPT,
         _LOCAL_PREFERENCE_SYSTEM_PROMPT,
     )
@@ -1029,7 +1029,7 @@ def test_default_min_preserve_rate_is_zero(monkeypatch):
     drops every preserve_token is accepted on the first try — no retry,
     no fallback."""
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
-    from Trainforge.generators._local_provider import (
+    from Trainforge.generators.providers._local_provider import (
         DEFAULT_MIN_PRESERVE_RATE,
     )
     assert DEFAULT_MIN_PRESERVE_RATE == 0.0

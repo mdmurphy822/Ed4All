@@ -7,7 +7,7 @@ import pytest
 from Trainforge.synthesis.verification.decision_audit_verifier import (
     verify_decision_audit,
 )
-from Trainforge.generators.http_attempt_ledger import request_sha256
+from Trainforge.generators.providers.http_attempt_ledger import request_sha256
 from Trainforge.generators.synthesis_window_contract import objective_card
 from Trainforge.scripts.harness.staged_window_abcd_pilot import (
     COHORT_SIZE,

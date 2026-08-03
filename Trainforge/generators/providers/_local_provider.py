@@ -5,7 +5,7 @@ Third synthesis path alongside ``anthropic`` / ``claude_session`` /
 ``together``. Speaks the same OpenAI-compatible chat-completions wire
 shape Together AI uses, so the entire HTTP loop + JSON parse +
 decision-capture-rationale machinery is provided by composing one
-:class:`Trainforge.generators._openai_compatible_client.OpenAICompatibleClient`
+:class:`Trainforge.generators.providers._openai_compatible_client.OpenAICompatibleClient`
 instance — exactly as :class:`TogetherSynthesisProvider` does.
 Composition over inheritance: this class is no longer a subclass of
 ``TogetherSynthesisProvider``; both providers compose the same
@@ -50,7 +50,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
-from Trainforge.generators._synthesis_common import (  # noqa: F401
+from Trainforge.generators.providers._synthesis_common import (  # noqa: F401
     COMPLETION_MAX,
     COMPLETION_MIN,
     PROMPT_MAX,
@@ -58,10 +58,10 @@ from Trainforge.generators._synthesis_common import (  # noqa: F401
     SynthesisProviderError,
     _KIND_BOUNDS,
 )
-from Trainforge.generators._openai_compatible_client import (
+from Trainforge.generators.providers._openai_compatible_client import (
     OpenAICompatibleClient,
 )
-from Trainforge.generators._together_provider import (
+from Trainforge.generators.providers._together_provider import (
     INITIAL_BACKOFF_SECONDS,
     MAX_HTTP_RETRIES,
     MAX_PARSE_RETRIES,
@@ -243,7 +243,7 @@ class LocalSynthesisProvider:
             client=client,
             # Route retry-backoff sleep through the together-provider
             # module's ``time.sleep`` so existing local-provider tests
-            # that patch ``Trainforge.generators._together_provider.time.sleep``
+            # that patch ``Trainforge.generators.providers._together_provider.time.sleep``
             # (per the local test docstring's stated contract) keep
             # working post-refactor.
             sleep_fn=_local_sleep,
@@ -673,7 +673,7 @@ class LocalSynthesisProvider:
         # Local training-pair generation is a constrained structured rewrite,
         # not a reasoning/judgment pass. Keep hidden reasoning from consuming
         # the fixed response budget even on the legacy rollback provider.
-        from Trainforge.generators._openai_compatible_client import (
+        from Trainforge.generators.providers._openai_compatible_client import (
             apply_reasoning_thinking_off_payload,
         )
 
@@ -731,7 +731,7 @@ class LocalSynthesisProvider:
         cls, draft: Dict[str, Any], chunk_id: str,
         preserve_tokens: Optional[List[str]] = None,
     ) -> str:
-        from Trainforge.generators._base_synthesis_provider import (
+        from Trainforge.generators.providers._base_synthesis_provider import (
             EVIDENCE_QUOTE_PROMPT_DIRECTIVE,
         )
         preserve = cls._preserve_directive(
@@ -795,7 +795,7 @@ class LocalSynthesisProvider:
         cls, draft: Dict[str, Any], chunk_id: str,
         preserve_tokens: Optional[List[str]] = None,
     ) -> str:
-        from Trainforge.generators._base_synthesis_provider import (
+        from Trainforge.generators.providers._base_synthesis_provider import (
             EVIDENCE_QUOTE_PROMPT_DIRECTIVE,
         )
         preserve = cls._preserve_directive(
@@ -942,7 +942,7 @@ class LocalSynthesisProvider:
         # the decision-capture validator scores formulaic rationales as
         # 'developing'. None of this changes what is sent to the model.
         # Also appends the per-claim evidence_quote emit rate.
-        from Trainforge.generators._base_synthesis_provider import (
+        from Trainforge.generators.providers._base_synthesis_provider import (
             render_evidence_quote_rationale_fragment,
         )
         tags_repr = ",".join(concept_tags) if concept_tags else "<none>"
@@ -970,13 +970,13 @@ def _local_sleep(seconds: float) -> None:
     """Forward retry-backoff sleeps through the together-provider module.
 
     The local-provider tests patch
-    ``Trainforge.generators._together_provider.time.sleep`` to keep
+    ``Trainforge.generators.providers._together_provider.time.sleep`` to keep
     test runs fast (per the test docstring). We honor that contract by
     routing the embedded client's backoff sleeps through that module's
     ``time.sleep`` reference rather than the local module's, so a
     single patch covers both providers' retry paths.
     """
-    from Trainforge.generators import _together_provider as _tg
+    from Trainforge.generators.providers import _together_provider as _tg
 
     _tg.time.sleep(seconds)
 

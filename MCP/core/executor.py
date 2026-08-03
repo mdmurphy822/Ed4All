@@ -1202,7 +1202,7 @@ class TaskExecutor:
         #   COURSEPLANNER_PROVIDER      -> course-outliner, via
         #       ``Courseforge.generators.outline._outliner_provider.OutlinerProvider``
         #   TRAINFORGE_ASSESSMENT_PROVIDER -> assessment-generator, via
-        #       ``Trainforge.generators._assessment_provider.AssessmentGeneratorProvider``
+        #       ``Trainforge.generators.providers._assessment_provider.AssessmentGeneratorProvider``
         #
         # Licensing is the reason these exist: synthesized LO text lands in
         # ``synthesized_objectives.json`` and propagates into every downstream
@@ -2036,7 +2036,7 @@ class TaskExecutor:
         # ``llm_usage.jsonl`` row — the local OpenAI-compatible seat serves many
         # phases and cannot know its phase from a static literal the way the
         # SemantiK cascade taps do. Env name kept in sync with the tap's
-        # ``Trainforge.generators._openai_compatible_client.ENV_ACTIVE_PHASE``.
+        # ``Trainforge.generators.providers._openai_compatible_client.ENV_ACTIVE_PHASE``.
         # Restored in ``finally`` so a nested / next phase never inherits a
         # stale value; best-effort (never perturbs phase execution).
         _active_phase_env = "ED4ALL_ACTIVE_PHASE"

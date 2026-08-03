@@ -13,7 +13,7 @@ from the artifacts every run already drops under ``runtime/state/runs/<run_id>/`
   without ``ED4ALL_VRAM_DOCTOR`` writes no trajectory).
 * **LLM calls / tokens** — from ``llm_usage.jsonl`` (one row per
   chat-completion call, written by the OP2 usage tap in
-  ``Trainforge/generators/_openai_compatible_client.py`` when ``ED4ALL_RUN_ID``
+  ``Trainforge/generators/providers/_openai_compatible_client.py`` when ``ED4ALL_RUN_ID``
   is set). Tallied globally + per-provider + per-model. **Absent file → the
   section is omitted** (a run whose calls bypassed the shared client, or a
   library user with no run id).

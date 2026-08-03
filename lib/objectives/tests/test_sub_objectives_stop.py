@@ -77,7 +77,7 @@ def _patch(monkeypatch, counter: Dict[str, int], *, arm_after: Optional[int] = N
         )
         return json.dumps({"sub_objectives": subs})
 
-    import Trainforge.generators._openai_compatible_client as _oac
+    import Trainforge.generators.providers._openai_compatible_client as _oac
 
     monkeypatch.setattr(_oac.OpenAICompatibleClient, "chat_completion", _fake_chat)
 

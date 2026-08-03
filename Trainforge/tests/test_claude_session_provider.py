@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from Trainforge.generators._claude_session_provider import ClaudeSessionProvider
+from Trainforge.generators.providers._claude_session_provider import ClaudeSessionProvider
 from Trainforge.tests._synthesis_fakes import (
     FakeLocalDispatcher,
     make_failure_response,
@@ -299,7 +299,7 @@ def test_cache_invalidates_on_provider_version_bump(tmp_path: Path) -> None:
 def test_max_dispatches_cap_raises_synthesis_budget_exceeded(tmp_path: Path) -> None:
     """When the cap is hit, the next dispatch raises before contacting
     the dispatcher — partial work in the cache is preserved."""
-    from Trainforge.generators._session_budget import SynthesisBudgetExceeded
+    from Trainforge.generators.providers._session_budget import SynthesisBudgetExceeded
     call_count = 0
 
     async def agent_tool(**_kwargs: object) -> dict:
@@ -394,7 +394,7 @@ def test_telemetry_jsonl_written_once_per_call(tmp_path: Path) -> None:
 def test_dispatch_rejects_empty_string_value() -> None:
     """Wave 112 Task 3: empty-string output values must fail loud rather
     than silently passing the key-presence check."""
-    from Trainforge.generators._synthesis_common import SynthesisProviderError
+    from Trainforge.generators.providers._synthesis_common import SynthesisProviderError
 
     async def agent_tool(**_kwargs: object) -> dict:
         return {
@@ -421,7 +421,7 @@ def test_dispatch_rejects_empty_string_value() -> None:
 
 def test_dispatch_rejects_whitespace_only_value() -> None:
     """Whitespace-only output values are equivalent to empty for our purposes."""
-    from Trainforge.generators._synthesis_common import SynthesisProviderError
+    from Trainforge.generators.providers._synthesis_common import SynthesisProviderError
 
     async def agent_tool(**_kwargs: object) -> dict:
         return {
@@ -448,7 +448,7 @@ def test_dispatch_rejects_whitespace_only_value() -> None:
 
 def test_dispatch_rejects_none_value() -> None:
     """A None value (json null) must fail loud as well — non-str sentinel."""
-    from Trainforge.generators._synthesis_common import SynthesisProviderError
+    from Trainforge.generators.providers._synthesis_common import SynthesisProviderError
 
     async def agent_tool(**_kwargs: object) -> dict:
         return {
@@ -476,7 +476,7 @@ def test_dispatch_rejects_none_value() -> None:
 def test_paraphrase_instruction_rejects_short_prompt() -> None:
     """Wave 112 Task 4: a paraphrased prompt below PROMPT_MIN must fail
     loud rather than silently shipping a sub-floor pair into the cache."""
-    from Trainforge.generators._synthesis_common import (
+    from Trainforge.generators.providers._synthesis_common import (
         SynthesisProviderError, PROMPT_MIN,
     )
 
@@ -505,7 +505,7 @@ def test_paraphrase_instruction_rejects_short_prompt() -> None:
 
 def test_paraphrase_preference_rejects_short_chosen() -> None:
     """Analogous floor-check on the preference path's `chosen` arm."""
-    from Trainforge.generators._synthesis_common import (
+    from Trainforge.generators.providers._synthesis_common import (
         SynthesisProviderError, COMPLETION_MIN,
     )
 
@@ -541,7 +541,7 @@ def test_load_cache_rejects_poisoned_outputs(tmp_path: Path) -> None:
     """Wave 112 Task 7: a JSONL cache row with null/empty `outputs` must
     be rejected at load time rather than silently surviving and serving
     a poisoned string on the next cache hit."""
-    from Trainforge.generators._synthesis_common import SynthesisProviderError
+    from Trainforge.generators.providers._synthesis_common import SynthesisProviderError
 
     cache_path = tmp_path / "synthesis_cache.jsonl"
     valid_entry = {
@@ -586,7 +586,7 @@ def test_load_cache_rejects_poisoned_outputs(tmp_path: Path) -> None:
 def test_circuit_opens_after_repeated_dispatcher_failures(tmp_path: Path) -> None:
     """Three MAILBOX_TIMEOUT in a row trips the breaker; the 4th call
     raises SynthesisCircuitOpen WITHOUT contacting the dispatcher."""
-    from Trainforge.generators._session_budget import SynthesisCircuitOpen
+    from Trainforge.generators.providers._session_budget import SynthesisCircuitOpen
 
     async def agent_tool(**_kwargs: object) -> dict:
         return make_failure_response(error="timed out", error_code="MAILBOX_TIMEOUT")

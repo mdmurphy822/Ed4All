@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 _API_SHOW_TIMEOUT_SECONDS = 2.0
 
 #: Documented canonical local model default (mirrors
-#: ``Trainforge.generators._local_provider.DEFAULT_SYNTHESIS_MODEL``; we resolve
+#: ``Trainforge.generators.providers._local_provider.DEFAULT_SYNTHESIS_MODEL``; we resolve
 #: it lazily/defensively in :func:`resolve_local_model` and fall back to this
 #: literal so importing the diagnostics check never drags in the synthesis
 #: provider stack).
@@ -105,7 +105,7 @@ def resolve_local_model() -> str:
 
     ``LOCAL_SYNTHESIS_MODEL`` wins; absent, the documented canonical default
     (``qwen2.5:7b-instruct-q4_K_M``). The default is sourced from
-    ``Trainforge.generators._local_provider.DEFAULT_SYNTHESIS_MODEL`` when it
+    ``Trainforge.generators.providers._local_provider.DEFAULT_SYNTHESIS_MODEL`` when it
     imports cleanly, falling back to the local literal otherwise so this check
     never hard-depends on the synthesis provider stack.
     """
@@ -113,7 +113,7 @@ def resolve_local_model() -> str:
     if raw and raw.strip():
         return raw.strip()
     try:  # best-effort — keep the literal default if the import chain is heavy/broken
-        from Trainforge.generators._local_provider import (  # noqa: PLC0415
+        from Trainforge.generators.providers._local_provider import (  # noqa: PLC0415
             DEFAULT_SYNTHESIS_MODEL,
         )
 

@@ -28,7 +28,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from Trainforge import align_chunks  # noqa: E402
-from Trainforge.generators._curriculum_provider import (  # noqa: E402
+from Trainforge.generators.providers._curriculum_provider import (  # noqa: E402
     CurriculumAlignmentProvider,
 )
 

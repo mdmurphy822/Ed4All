@@ -308,11 +308,18 @@ risk. Completed items are marked below.
    the two shared content-generation primitives, reducing its exact cap from
    8 to 2. All tracked callers use the canonical package paths; the moved
    underscore modules were internal and therefore need no compatibility shims.
-7. **`LibV2/tools/libv2/` — IN PROGRESS.** Evaluation implementations now
+7. **`Trainforge/generators/` — IN PROGRESS.** Provider dispatch, endpoint
+   identities, session controls, the shared OpenAI-compatible transport, and
+   its durable attempt ledger now live under `providers/`. These internal
+   modules moved without compatibility shims, and every tracked caller uses
+   the canonical package path. The exact loose-module cap fell from 32 to 19;
+   assessment, pair-generation, staged-synthesis, and deterministic-program
+   families remain candidates for later bounded moves.
+8. **`LibV2/tools/libv2/` — IN PROGRESS.** Evaluation implementations now
    live under `evaluation/`. Three documented compatibility modules remain at
    the package root through their deprecation window, so the exact flat cap
    stays 28 while internal imports use the canonical paths.
-8. **`lib/validators/` — 115 loose.** Largest number in the tree but the
+9. **`lib/validators/` — 115 loose.** Largest number in the tree but the
    *weakest* case: it is a genuine package whose flat module list is the
    registry `docs/validation/gates.md` maps onto. Listed for completeness;
    the recommendation is to leave it flat and let the cap hold the line.

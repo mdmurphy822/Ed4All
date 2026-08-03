@@ -39,7 +39,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 # stay where Courseforge / `_local_provider` / `_together_provider` /
 # `_curriculum_provider` / `_claude_session_provider` already import them
 # from.
-from Trainforge.generators._synthesis_common import (  # noqa: F401
+from Trainforge.generators.providers._synthesis_common import (  # noqa: F401
     SynthesisProviderError,
     _KIND_BOUNDS,
     _Usage,
@@ -57,7 +57,7 @@ _DEFAULT_SUPPORTED_PROVIDERS: Tuple[str, ...] = (
 
 # ---------------------------------------------------------------------------
 # Module-level helper for the ClaudeSession cache-load + paraphrase clamps.
-# Mirrors `Trainforge.generators._claude_session_provider._validate_lengths`
+# Mirrors `Trainforge.generators.providers._claude_session_provider._validate_lengths`
 # so new providers can import from the canonical base. The canonical leaf
 # import path is preserved by `_claude_session_provider.py`.
 # ---------------------------------------------------------------------------

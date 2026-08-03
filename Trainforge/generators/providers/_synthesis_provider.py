@@ -9,7 +9,7 @@ via :func:`lib.llm.endpoints.build_openai_compatible_client` — NOT a
 per-vendor subclass. This matches the project's standing "provider
 references stay dynamic — new providers are registry entries, not
 subclasses" principle and mirrors the existing registry-driven
-templates :class:`Trainforge.generators._assessment_provider.AssessmentGeneratorProvider`
+templates :class:`Trainforge.generators.providers._assessment_provider.AssessmentGeneratorProvider`
 and :func:`lib.objectives.objective_review._build_review_client`.
 
 Adding a future provider (a hosted Mistral row, a DGX Spark vLLM box,
@@ -54,7 +54,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
-from Trainforge.generators._synthesis_common import (  # noqa: F401
+from Trainforge.generators.providers._synthesis_common import (  # noqa: F401
     COMPLETION_MAX,
     COMPLETION_MIN,
     PROMPT_MAX,
@@ -62,13 +62,13 @@ from Trainforge.generators._synthesis_common import (  # noqa: F401
     SynthesisProviderError,
     _KIND_BOUNDS,
 )
-from Trainforge.generators._local_provider import (
+from Trainforge.generators.providers._local_provider import (
     DEFAULT_LOCAL_KIND_BOUNDS,
     DEFAULT_MIN_PRESERVE_RATE,
     _LOCAL_INSTRUCTION_SYSTEM_PROMPT,
     _LOCAL_PREFERENCE_SYSTEM_PROMPT,
 )
-from Trainforge.generators._together_provider import (
+from Trainforge.generators.providers._together_provider import (
     DEFAULT_TIMEOUT,
     MAX_PARSE_RETRIES,
     _INSTRUCTION_SYSTEM_PROMPT,
@@ -915,7 +915,7 @@ class SynthesisProvider:
         # ``ED4ALL_REASONING_THINKING_OFF`` injection lives). Apply it here so a
         # reasoning training-pair seat doesn't burn its ``max_tokens`` budget on
         # ``<think>`` tokens. No-op when the env is off (byte-identical).
-        from Trainforge.generators._openai_compatible_client import (
+        from Trainforge.generators.providers._openai_compatible_client import (
             apply_reasoning_thinking_off_payload,
         )
 
@@ -1019,7 +1019,7 @@ class SynthesisProvider:
         *,
         focus: Optional[Any] = None,
     ) -> str:
-        from Trainforge.generators._base_synthesis_provider import (
+        from Trainforge.generators.providers._base_synthesis_provider import (
             EVIDENCE_QUOTE_PROMPT_DIRECTIVE,
         )
         preserve = self._preserve_directive(
@@ -1114,7 +1114,7 @@ class SynthesisProvider:
         *,
         focus: Optional[Any] = None,
     ) -> str:
-        from Trainforge.generators._base_synthesis_provider import (
+        from Trainforge.generators.providers._base_synthesis_provider import (
             EVIDENCE_QUOTE_PROMPT_DIRECTIVE,
         )
         preserve = self._preserve_directive(
@@ -1299,7 +1299,7 @@ class SynthesisProvider:
         retry_count: int,
         parsed: Optional[Dict[str, Any]] = None,
     ) -> str:
-        from Trainforge.generators._base_synthesis_provider import (
+        from Trainforge.generators.providers._base_synthesis_provider import (
             render_evidence_quote_rationale_fragment,
         )
         tags_repr = ",".join(concept_tags) if concept_tags else "<none>"
@@ -1367,7 +1367,7 @@ def build_synthesis_provider(
 
     The ONE construction the agnostic cutover uses at all 6 dispatch sites
     (mirroring :func:`lib.llm.endpoints.build_openai_compatible_client` and
-    :class:`Trainforge.generators._assessment_provider.AssessmentGeneratorProvider`).
+    :class:`Trainforge.generators.providers._assessment_provider.AssessmentGeneratorProvider`).
     It pins the three per-leaf parity knobs so the flag-ON default path
     reproduces the legacy ``LocalSynthesisProvider`` / ``TogetherSynthesisProvider``
     behavior byte-for-byte:

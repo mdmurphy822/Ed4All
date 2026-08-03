@@ -32,9 +32,9 @@ Public surface:
   dict, searches the keys named in ``in_keys`` (default ``("body",)``).
 
 Direct port of the
-:func:`Trainforge.generators._local_provider.LocalSynthesisProvider._missing_preserve_tokens`
+:func:`Trainforge.generators.providers._local_provider.LocalSynthesisProvider._missing_preserve_tokens`
 + ``_append_preserve_remediation`` precedent
-(`Trainforge/generators/_local_provider.py:548-583`), generalised to
+(`Trainforge/generators/providers/_local_provider.py:548-583`), generalised to
 accept the rewrite tier's HTML-string outputs as well as the legacy
 dict shape.
 """
@@ -511,8 +511,8 @@ def _missing_preserve_tokens(
     """Return the subset of ``tokens`` that don't appear in ``content``.
 
     Direct port of
-    :func:`Trainforge.generators._local_provider.LocalSynthesisProvider._missing_preserve_tokens`
-    (`Trainforge/generators/_local_provider.py:548-564`), generalised
+    :func:`Trainforge.generators.providers._local_provider.LocalSynthesisProvider._missing_preserve_tokens`
+    (`Trainforge/generators/providers/_local_provider.py:548-564`), generalised
     to accept ``content: Any`` per the Subtask 3 contract:
 
     - When ``content`` is a string, searches the full string for each
@@ -562,8 +562,8 @@ def _append_preserve_remediation(
     """Append a remediation directive naming the missing tokens.
 
     Direct port of
-    :func:`Trainforge.generators._local_provider.LocalSynthesisProvider._append_preserve_remediation`
-    (`Trainforge/generators/_local_provider.py:566-583`), generalised
+    :func:`Trainforge.generators.providers._local_provider.LocalSynthesisProvider._append_preserve_remediation`
+    (`Trainforge/generators/providers/_local_provider.py:566-583`), generalised
     to operate on a string prompt (the Courseforge rewrite-tier shape)
     rather than a list-of-dict messages payload (the Trainforge shape).
     The wording deliberately preserves the canonical

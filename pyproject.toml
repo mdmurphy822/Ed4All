@@ -23,7 +23,7 @@ dependencies = [
     "pyld>=2.0.0,<4.0.0",
     "pyshacl>=0.25.0,<1.0.0",
     # httpx is a RUNTIME dependency of the turnkey local-provider lattice
-    # (Trainforge/generators/_openai_compatible_client.py + _local_provider +
+    # (Trainforge/generators/providers/_openai_compatible_client.py + _local_provider +
     # _together_provider) and the local-openai embedding provider
     # (lib/embedding/providers.py). No base dependency pulls it in, so
     # without this explicit pin a bare install collected 33 import errors on

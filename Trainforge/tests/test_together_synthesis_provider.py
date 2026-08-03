@@ -32,14 +32,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.generators._together_provider import (  # noqa: E402
+from Trainforge.generators.providers._together_provider import (  # noqa: E402
     DEFAULT_SYNTHESIS_MODEL,
     MAX_HTTP_RETRIES,
     TOGETHER_API_URL,
     SynthesisProviderError,
     TogetherSynthesisProvider,
 )
-from Trainforge.generators._synthesis_common import (  # noqa: E402
+from Trainforge.generators.providers._synthesis_common import (  # noqa: E402
     COMPLETION_MIN,
 )
 
@@ -338,7 +338,7 @@ def test_http_429_then_200_succeeds_after_retry():
     )
     p = TogetherSynthesisProvider(api_key="tg-test", client=client)
     # Patch sleep so the test doesn't actually wait.
-    with patch("Trainforge.generators._together_provider.time.sleep"):
+    with patch("Trainforge.generators.providers._together_provider.time.sleep"):
         out = p.paraphrase_instruction(_instruction_draft(), _chunk())
     assert "foundational concept" in out["prompt"]
 
@@ -348,7 +348,7 @@ def test_http_500_three_times_raises_with_status_code():
         *[httpx.Response(500, json={"error": "boom"})] * MAX_HTTP_RETRIES
     )
     p = TogetherSynthesisProvider(api_key="tg-test", client=client)
-    with patch("Trainforge.generators._together_provider.time.sleep"):
+    with patch("Trainforge.generators.providers._together_provider.time.sleep"):
         with pytest.raises(SynthesisProviderError) as excinfo:
             p.paraphrase_instruction(_instruction_draft(), _chunk())
     assert excinfo.value.code == "500"

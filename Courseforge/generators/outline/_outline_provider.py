@@ -72,7 +72,7 @@ from Courseforge.generators._base import (  # noqa: E402
     _BaseLLMProvider,
     _default_supported_providers,
 )
-from Trainforge.generators._openai_compatible_client import (  # noqa: E402
+from Trainforge.generators.providers._openai_compatible_client import (  # noqa: E402
     ENV_REQUEST_TIMEOUT as _OA_ENV_REQUEST_TIMEOUT,
 )
 from MCP.hardening.error_classifier import (  # noqa: E402
@@ -307,7 +307,7 @@ def _touch_provenance(provider: str) -> str:
 
 # Maximum parse / remediation retries when the outline JSON fails
 # Schema validation. Mirrors the analogous knob on the synthesis
-# providers in :mod:`Trainforge.generators._local_provider`.
+# providers in :mod:`Trainforge.generators.providers._local_provider`.
 MAX_PARSE_RETRIES = 3
 
 # Worker W6: per-block transient-retry budget for dispatch-side
@@ -366,7 +366,7 @@ class OutlineProviderError(RuntimeError):
 #                         decompose into sections.
 # - ``summary_chars``  — character count for a one-paragraph summary
 #                         of the block's content. Mirrors the shape
-#                         of ``Trainforge/generators/_local_provider.py
+#                         of ``Trainforge/generators/providers/_local_provider.py
 #                         ::DEFAULT_LOCAL_KIND_BOUNDS``.
 #
 # These values are starting points subject to Phase 4 calibration —
@@ -617,7 +617,7 @@ _OUTLINE_KIND_BOUNDS: Dict[str, Dict[str, Tuple[int, int]]] = {
 # Terse outline-tier system prompt. Kept ≤80 words on purpose — the
 # 7B-class default model has a small effective instruction-following
 # window. Mirrors the terseness of
-# ``Trainforge/generators/_local_provider.py
+# ``Trainforge/generators/providers/_local_provider.py
 # ::_LOCAL_INSTRUCTION_SYSTEM_PROMPT``.
 _OUTLINE_SYSTEM_PROMPT: str = (
     "You are an outline-tier draft generator for Courseforge blocks. "
@@ -2499,7 +2499,7 @@ class OutlineProvider(_BaseLLMProvider):
         # OpenAICompatibleClient in test environments that stub the
         # base class. ``_extract_json_lenient`` is a staticmethod so we
         # don't need a client instance.
-        from Trainforge.generators._openai_compatible_client import (
+        from Trainforge.generators.providers._openai_compatible_client import (
             OpenAICompatibleClient,
         )
         import jsonschema  # type: ignore[import-untyped]
@@ -3054,7 +3054,7 @@ class OutlineProvider(_BaseLLMProvider):
 
         # Truncate per-chunk body at 1200 chars; mirrors the
         # ``_LOCAL_INSTRUCTION_SYSTEM_PROMPT`` chunk-window heuristic
-        # used in :mod:`Trainforge.generators._local_provider`.
+        # used in :mod:`Trainforge.generators.providers._local_provider`.
         chunk_lines: List[str] = []
         for chunk in capped_chunks:
             cid = str(chunk.get("id") or chunk.get("chunk_id") or "")

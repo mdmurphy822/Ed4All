@@ -55,8 +55,8 @@ On exhaustion the call raises :class:`RewriteProviderError` with
 than silently shipping CURIE-stripped HTML.
 
 Direct port of the
-:meth:`Trainforge.generators._local_provider.LocalSynthesisProvider._missing_preserve_tokens`
-+ ``_append_preserve_remediation`` pattern (`Trainforge/generators/_local_provider.py:548-583`),
+:meth:`Trainforge.generators.providers._local_provider.LocalSynthesisProvider._missing_preserve_tokens`
++ ``_append_preserve_remediation`` pattern (`Trainforge/generators/providers/_local_provider.py:548-583`),
 adapted to Block.content's outline-dict shape (the Trainforge precedent
 operates on flat instruction / preference dicts).
 """
@@ -98,7 +98,7 @@ from lib.retrieval.answer_backend import (  # noqa: E402
     PromptTruncatedError as _PromptTruncatedError,
 )
 from lib.retrieval._prompts import estimate_tokens as _estimate_tokens  # noqa: E402
-from Trainforge.generators._openai_compatible_client import (  # noqa: E402
+from Trainforge.generators.providers._openai_compatible_client import (  # noqa: E402
     ENV_REQUEST_TIMEOUT as _OA_ENV_REQUEST_TIMEOUT,
     _omit_ollama_format,
 )
@@ -316,7 +316,7 @@ _CLAUDE_SESSION_TASK_NAME = "rewrite_block"
 
 # Wave6: dispatcher prerequisite message. Standalone scripts that don't
 # run inside the workflow runner can't dispatch to a subagent — the
-# message mirrors ``Trainforge/generators/_claude_session_provider.py::_NO_DISPATCHER_MSG``.
+# message mirrors ``Trainforge/generators/providers/_claude_session_provider.py::_NO_DISPATCHER_MSG``.
 _NO_DISPATCHER_MSG = (
     "RewriteProvider(provider='claude_session') requires a LocalDispatcher; "
     "CourseforgeRouter must run inside the workflow runner or MCP tool "
@@ -2169,7 +2169,7 @@ def _extract_outline_curies(content: Any) -> List[str]:
 # :meth:`RewriteProvider.generate_rewrite` and the existing
 # ``test_rewrite_provider.py`` regression suite remain byte-stable
 # across the move. The Trainforge precedent
-# (``Trainforge/generators/_local_provider.py:548-583``) is the same
+# (``Trainforge/generators/providers/_local_provider.py:548-583``) is the same
 # function the new module ports; the rewrite tier consumes the
 # string-content branch of the generalised signature.
 
@@ -3067,7 +3067,7 @@ class RewriteProviderError(RuntimeError):
     The ``code`` discriminates the failure mode so the router and
     decision-capture rationale can branch on it without parsing the
     message string. Mirrors
-    :class:`Trainforge.generators._anthropic_provider.SynthesisProviderError`.
+    :class:`Trainforge.generators.providers._anthropic_provider.SynthesisProviderError`.
 
     Codes:
 
@@ -3350,7 +3350,7 @@ class RewriteProvider(_BaseLLMProvider):
         Strict-OpenAI opt-out (``ED4ALL_LLM_OMIT_OLLAMA_FORMAT``): the
         Ollama-style ``options`` wrapper (like the top-level ``format:
         "json"`` field the same flag suppresses in
-        ``Trainforge/generators/_openai_compatible_client.py``) is an
+        ``Trainforge/generators/providers/_openai_compatible_client.py``) is an
         Ollama-ism. A strict-OpenAI local server (vLLM / TRT-LLM) does NOT
         ignore an unknown top-level ``options`` field — it REJECTS the
         request with HTTP 400 ``extra_forbidden`` (``loc: ('body',
@@ -3536,7 +3536,7 @@ class RewriteProvider(_BaseLLMProvider):
         HTTP / Anthropic-SDK plumbing.
 
         Mirrors the Trainforge precedent at
-        ``Trainforge/generators/_claude_session_provider.py::_dispatch``
+        ``Trainforge/generators/providers/_claude_session_provider.py::_dispatch``
         (`:326-394`). The async dispatcher is run synchronously via
         ``asyncio.run`` so the rewrite tier's parse-retry loop in
         :meth:`generate_rewrite` stays unchanged across backends.
@@ -3904,7 +3904,7 @@ class RewriteProvider(_BaseLLMProvider):
         ``missing_curies`` so the router can escalate or fail-loud.
 
         Direct port of
-        :func:`Trainforge.generators._local_provider.LocalSynthesisProvider._missing_preserve_tokens`
+        :func:`Trainforge.generators.providers._local_provider.LocalSynthesisProvider._missing_preserve_tokens`
         + ``_append_preserve_remediation`` (`:548-583`), adapted to
         Block.content's outline-dict shape: the Trainforge precedent
         operates on a flat ``parsed`` dict (instruction or preference

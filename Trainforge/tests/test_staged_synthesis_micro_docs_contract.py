@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from Trainforge.generators._synthesis_provider import (
+from Trainforge.generators.providers._synthesis_provider import (
     SynthesisProvider,
     build_synthesis_provider,
 )

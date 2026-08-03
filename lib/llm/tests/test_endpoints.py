@@ -196,7 +196,7 @@ def test_provider_label_defaults_to_name(monkeypatch):
 def test_nvidia_identity_module_matches_registry(monkeypatch):
     for v in ("NVIDIA_BASE_URL", "NVIDIA_LARGE_MODEL"):
         monkeypatch.delenv(v, raising=False)
-    from Trainforge.generators import _nvidia_provider as nv
+    from Trainforge.generators.providers import _nvidia_provider as nv
 
     r = ep.resolve_endpoint("nvidia", api_key_override="k")
     assert nv.DEFAULT_SYNTHESIS_MODEL == r.model

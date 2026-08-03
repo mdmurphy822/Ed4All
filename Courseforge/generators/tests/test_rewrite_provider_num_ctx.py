@@ -8,7 +8,7 @@ strict-OpenAI local server (vLLM / TRT-LLM) does NOT ignore it — it rejects
 the request with HTTP 400 ``extra_forbidden`` (``loc: ('body','options')``),
 400-ing EVERY rewrite-tier dispatch. This payload bypasses the client-level
 ``format`` guard that ``ED4ALL_LLM_OMIT_OLLAMA_FORMAT`` already governs in
-``Trainforge/generators/_openai_compatible_client.py``, so the resolver must
+``Trainforge/generators/providers/_openai_compatible_client.py``, so the resolver must
 be honored here too.
 
 Fix: when ``ED4ALL_LLM_OMIT_OLLAMA_FORMAT`` is truthy, the method returns

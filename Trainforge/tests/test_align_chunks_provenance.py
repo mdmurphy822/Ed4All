@@ -99,7 +99,7 @@ def test_curriculum_helper_handles_invalid_role_response():
     ``SynthesisProviderError(code='invalid_role_response')`` on bad
     output. The helper's blanket ``except Exception`` catches it and
     must label the chunk mock_fallback, not llm."""
-    from Trainforge.generators._curriculum_provider import (
+    from Trainforge.generators.providers._curriculum_provider import (
         SynthesisProviderError,
     )
 

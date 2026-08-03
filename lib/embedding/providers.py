@@ -30,7 +30,7 @@ Three execution kinds:
   wire shape) against a LOCAL server (Ollama ``:11434/v1``, vLLM
   ``:8000/v1``, llama.cpp ``:8080/v1``). A thin httpx client with the
   retry policy mirrored from
-  ``Trainforge/generators/_openai_compatible_client.py::DEFAULT_RETRY_STATUS_CODES``;
+  ``Trainforge/generators/providers/_openai_compatible_client.py::DEFAULT_RETRY_STATUS_CODES``;
   the chat client there is NOT reused (it owns ``/chat/completions``
   only) — this module cross-references it as the pattern source.
 - ``"fake"`` — deterministic test provider (``sha256(text)`` → seeded
@@ -1005,7 +1005,7 @@ class EmbeddingClient:
         """POST {base_url}/embeddings (OpenAI wire shape) against a local server.
 
         Retry policy mirrors
-        ``Trainforge/generators/_openai_compatible_client.DEFAULT_RETRY_STATUS_CODES``
+        ``Trainforge/generators/providers/_openai_compatible_client.DEFAULT_RETRY_STATUS_CODES``
         (429 + 5xx) with bounded exponential backoff. Any unrecoverable
         failure (transport error, non-retryable status, malformed body)
         raises :class:`EmbeddingBackendUnavailable`.

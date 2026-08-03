@@ -35,7 +35,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.generators._base_synthesis_provider import (  # noqa: E402
+from Trainforge.generators.providers._base_synthesis_provider import (  # noqa: E402
     _BaseSynthesisProvider,
     _Usage,
     _validate_lengths,
@@ -395,12 +395,12 @@ def test_anthropic_module_constants_preserved():
     # The slim ``_anthropic_provider`` retains ONLY the anthropic-identity
     # constants (consumed by the out-of-scope curriculum / assessment anthropic
     # backends); the shared synthesis symbols moved to ``_synthesis_common``.
-    from Trainforge.generators._anthropic_provider import (
+    from Trainforge.generators.providers._anthropic_provider import (
         DEFAULT_SYNTHESIS_MODEL,
         ENV_API_KEY,
         ENV_MODEL,
     )
-    from Trainforge.generators._synthesis_common import (
+    from Trainforge.generators.providers._synthesis_common import (
         PROMPT_MIN,
         PROMPT_MAX,
         COMPLETION_MIN,
@@ -418,7 +418,7 @@ def test_anthropic_module_constants_preserved():
 
 
 def test_together_module_constants_preserved():
-    from Trainforge.generators._together_provider import (
+    from Trainforge.generators.providers._together_provider import (
         DEFAULT_SYNTHESIS_MODEL,
         DEFAULT_BASE_URL,
         TOGETHER_API_URL,
@@ -439,7 +439,7 @@ def test_together_module_constants_preserved():
 
 
 def test_local_module_constants_preserved():
-    from Trainforge.generators._local_provider import (
+    from Trainforge.generators.providers._local_provider import (
         DEFAULT_BASE_URL,
         DEFAULT_SYNTHESIS_MODEL,
         ENV_BASE_URL,
@@ -454,7 +454,7 @@ def test_local_module_constants_preserved():
 
 
 def test_curriculum_module_constants_preserved():
-    from Trainforge.generators._curriculum_provider import (
+    from Trainforge.generators.providers._curriculum_provider import (
         CurriculumAlignmentProvider,
         VALID_ROLES,
         ENV_PROVIDER,
@@ -469,7 +469,7 @@ def test_curriculum_module_constants_preserved():
 
 
 def test_claude_session_module_constants_preserved():
-    from Trainforge.generators._claude_session_provider import (
+    from Trainforge.generators.providers._claude_session_provider import (
         ClaudeSessionProvider,
         _validate_lengths as _vl,
     )
@@ -480,7 +480,7 @@ def test_claude_session_module_constants_preserved():
 def test_courseforge_base_imports_still_work():
     """Smoke: Courseforge `_BaseLLMProvider` imports the Trainforge
     defaults at module load time. Importing the class verifies every
-    name in `Trainforge.generators._anthropic_provider` /
+    name in `Trainforge.generators.providers._anthropic_provider` /
     `_local_provider` / `_together_provider` that Courseforge depends
     on is still importable from its legacy path.
     """

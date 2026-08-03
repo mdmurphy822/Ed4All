@@ -50,7 +50,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import httpx
 
-from Trainforge.generators._synthesis_common import (  # noqa: F401
+from Trainforge.generators.providers._synthesis_common import (  # noqa: F401
     SynthesisProviderError,
 )
 
@@ -547,7 +547,7 @@ class OpenAICompatibleClient:
         )
         # ``sleep_fn`` lets composing providers route the retry-backoff
         # sleep through their own module so fixtures patching e.g.
-        # ``Trainforge.generators._together_provider.time.sleep`` keep
+        # ``Trainforge.generators.providers._together_provider.time.sleep`` keep
         # working post-refactor. Default is the stdlib ``time.sleep``.
         self._sleep_fn = sleep_fn or time.sleep
         # ``monotonic_fn`` lets a test inject a deterministic clock so the TTFT
@@ -1871,7 +1871,7 @@ def apply_reasoning_thinking_off_payload(
     where the reasoning-off dual-injection normally lives. Two such bypass
     sites exist: ``Courseforge/generators/_base.py::_dispatch_call_with_usage``
     (every Courseforge / textbook-synthesis / outline / rewrite tier) and
-    ``Trainforge/generators/_synthesis_provider.py::_chat_completion_raw`` (the
+    ``Trainforge/generators/providers/_synthesis_provider.py::_chat_completion_raw`` (the
     training-pair seat). Without this helper those paths silently ignore
     ``ED4ALL_REASONING_THINKING_OFF``, so a REASONING model (nemotron_v3) burns
     its ``max_tokens`` budget on ``<think>`` tokens and trips the

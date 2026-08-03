@@ -45,7 +45,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.generators._base_synthesis_provider import (  # noqa: E402
+from Trainforge.generators.providers._base_synthesis_provider import (  # noqa: E402
     EVIDENCE_QUOTE_PROMPT_DIRECTIVE,
     EVIDENCE_QUOTE_SCHEMA_FRAGMENT,
     compute_evidence_quote_emit_rate,
@@ -198,7 +198,7 @@ def test_emit_rate_legacy_list_str_key_claims_skipped() -> None:
 
 
 def test_together_prompt_carries_evidence_quote_directive() -> None:
-    from Trainforge.generators._together_provider import (
+    from Trainforge.generators.providers._together_provider import (
         TogetherSynthesisProvider,
     )
     inst = TogetherSynthesisProvider._render_instruction_user(
@@ -218,7 +218,7 @@ def test_local_prompt_carries_evidence_quote_directive() -> None:
     sits between the per-call directives and the strict-JSON shape
     directive — must be present in BOTH instruction + preference
     paths."""
-    from Trainforge.generators._local_provider import (
+    from Trainforge.generators.providers._local_provider import (
         LocalSynthesisProvider,
     )
     inst = LocalSynthesisProvider._render_instruction_user(
@@ -236,10 +236,10 @@ def test_canonical_directive_constant_used_uniformly() -> None:
     """Together / Local must both import the SAME directive text (single
     source of truth) — a future edit to ``EVIDENCE_QUOTE_PROMPT_DIRECTIVE``
     updates every provider in lockstep without per-provider drift."""
-    from Trainforge.generators._together_provider import (
+    from Trainforge.generators.providers._together_provider import (
         TogetherSynthesisProvider,
     )
-    from Trainforge.generators._local_provider import (
+    from Trainforge.generators.providers._local_provider import (
         LocalSynthesisProvider,
     )
     t = TogetherSynthesisProvider._render_instruction_user(
@@ -267,7 +267,7 @@ def test_claude_session_dispatch_threads_evidence_quote_directive() -> None:
     contract as the prompt-string providers."""
     import asyncio
 
-    from Trainforge.generators._claude_session_provider import (
+    from Trainforge.generators.providers._claude_session_provider import (
         ClaudeSessionProvider,
     )
 

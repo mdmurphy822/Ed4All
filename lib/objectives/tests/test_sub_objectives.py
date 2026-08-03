@@ -93,7 +93,7 @@ def _patch_dispatch(monkeypatch, response: str, counter: Dict[str, int]):
         counter["calls"] = counter.get("calls", 0) + 1
         return response
 
-    import Trainforge.generators._openai_compatible_client as _oac
+    import Trainforge.generators.providers._openai_compatible_client as _oac
 
     monkeypatch.setattr(
         _oac.OpenAICompatibleClient, "chat_completion", _fake_chat
@@ -106,7 +106,7 @@ def _patch_dispatch_raises(monkeypatch):
     def _boom(self, messages, *, max_tokens=0, temperature=0.0, **kw):
         raise RuntimeError("provider down")
 
-    import Trainforge.generators._openai_compatible_client as _oac
+    import Trainforge.generators.providers._openai_compatible_client as _oac
 
     monkeypatch.setattr(
         _oac.OpenAICompatibleClient, "chat_completion", _boom

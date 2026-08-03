@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 
 from Trainforge import synthesize_training as st
-from Trainforge.generators._synthesis_provider import build_synthesis_provider
+from Trainforge.generators.providers._synthesis_provider import build_synthesis_provider
 from Trainforge.generators.staged_synthesis_micro import (
     MicroStagedSynthesisProvider,
     staged_synthesis_micro_v1_enabled,

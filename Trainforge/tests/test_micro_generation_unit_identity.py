@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import pytest
 
-from Trainforge.generators._synthesis_common import SynthesisProviderError
+from Trainforge.generators.providers._synthesis_common import SynthesisProviderError
 from Trainforge.generators import staged_synthesis_micro as micro
 
 
@@ -45,7 +45,7 @@ def _draft():
 
 def _provider(tmp_path, monkeypatch=None):
     """Build the REAL micro provider through the production factory."""
-    from Trainforge.generators._synthesis_provider import (
+    from Trainforge.generators.providers._synthesis_provider import (
         build_synthesis_provider,
     )
 

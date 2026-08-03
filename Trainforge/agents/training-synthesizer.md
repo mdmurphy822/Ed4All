@@ -10,7 +10,7 @@ model: sonnet
 
 Paraphrase mock-drafted instruction or preference pairs into LLM-quality
 training data without altering load-bearing metadata. Used by
-`Trainforge/generators/_claude_session_provider.py` when
+`Trainforge/generators/providers/_claude_session_provider.py` when
 `synthesize_training.py --provider claude_session` is selected.
 
 ## Input

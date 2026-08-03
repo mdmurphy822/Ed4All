@@ -28,7 +28,7 @@ Design constraints (mirrors ``lib/testing/no_network.py``):
   ``httpx`` import, so this stays importable in the slimmest CPU-only install.
 * **Resolution matches production.** ``resolve_local_synthesis_base_url`` reads
   the same ``LOCAL_SYNTHESIS_BASE_URL`` env var + ``http://localhost:11434/v1``
-  default that ``Trainforge/generators/_local_provider.py`` uses, so the probe
+  default that ``Trainforge/generators/providers/_local_provider.py`` uses, so the probe
   targets the host:port the provider would actually dial.
 * **Cheap + side-effect-free.** A single TCP connect, default 0.5s timeout,
   closed immediately. No DNS-less assumptions: hostnames resolve normally.
@@ -53,7 +53,7 @@ __all__ = [
     "make_local_synthesis_skip_hook",
 ]
 
-# Kept in sync with Trainforge/generators/_local_provider.py (DEFAULT_BASE_URL,
+# Kept in sync with Trainforge/generators/providers/_local_provider.py (DEFAULT_BASE_URL,
 # ENV_BASE_URL) and Trainforge/synthesize_training.py (the
 # TRAINFORGE_SYNTHESIS_PROVIDER override). Duplicated here rather than imported
 # so the helper stays importable without pulling the generator stack.

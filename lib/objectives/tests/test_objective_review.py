@@ -739,7 +739,7 @@ def _patch_dispatch(monkeypatch, response_json: str) -> None:
     def _fake_chat(self, messages, *, max_tokens=0, temperature=0.0, **kw):
         return response_json
 
-    import Trainforge.generators._openai_compatible_client as _oac
+    import Trainforge.generators.providers._openai_compatible_client as _oac
 
     monkeypatch.setattr(
         _oac.OpenAICompatibleClient, "chat_completion", _fake_chat
@@ -825,7 +825,7 @@ def _patch_dispatch_per_chunk(monkeypatch, route_fn) -> None:
         review_ids = tuple(item.get("id") for item in review)
         return route_fn(review_ids)
 
-    import Trainforge.generators._openai_compatible_client as _oac
+    import Trainforge.generators.providers._openai_compatible_client as _oac
 
     monkeypatch.setattr(
         _oac.OpenAICompatibleClient, "chat_completion", _fake_chat
@@ -1010,7 +1010,7 @@ def test_default_off_is_noop(monkeypatch):
     def _explode(self, *a, **k):  # pragma: no cover — must never be called
         raise AssertionError("network dispatch must not happen when off")
 
-    import Trainforge.generators._openai_compatible_client as _oac
+    import Trainforge.generators.providers._openai_compatible_client as _oac
 
     monkeypatch.setattr(_oac.OpenAICompatibleClient, "chat_completion", _explode)
 

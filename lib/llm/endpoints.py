@@ -469,7 +469,7 @@ def build_openai_compatible_client(
         )
 
     # Lazy import keeps a bare `import lib.llm.endpoints` transport-free.
-    from Trainforge.generators._openai_compatible_client import (
+    from Trainforge.generators.providers._openai_compatible_client import (
         OpenAICompatibleClient,
     )
 

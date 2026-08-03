@@ -54,7 +54,7 @@ from typing import Any, Callable, Dict, List, Optional
 import lib.vllm_container_lifecycle as _lifecycle
 from lib.retrieval.answer_backend import _is_loopback_host
 from lib.vllm_container_lifecycle import _probe_ready, start_seat_coherent
-from Trainforge.generators._openai_compatible_client import (
+from Trainforge.generators.providers._openai_compatible_client import (
     _REASONING_THINKING_OFF_DIRECTIVE,
     resolve_reasoning_thinking_off,
 )

@@ -202,8 +202,8 @@ def test_terminal_rejection_replay_ablation_is_scoped() -> None:
 
 
 def test_modeled_old_leakage_policy_budget_is_scoped() -> None:
-    from Trainforge.generators import _synthesis_provider
-    from Trainforge.generators._synthesis_common import SynthesisProviderError
+    from Trainforge.generators.providers import _synthesis_provider
+    from Trainforge.generators.providers._synthesis_common import SynthesisProviderError
 
     current = _synthesis_provider.MAX_LEAKAGE_REWRITE_RETRIES
     assert current == 2

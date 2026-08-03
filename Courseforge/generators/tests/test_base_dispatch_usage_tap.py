@@ -9,7 +9,7 @@ two-pass Courseforge surface while ``BuildCostAggregator`` undercounted.
 
 The fix mirrors the tap at the ``_base`` seam through the SHARED
 module-level helper
-``Trainforge.generators._openai_compatible_client.maybe_append_usage_row``.
+``Trainforge.generators.providers._openai_compatible_client.maybe_append_usage_row``.
 Contract under test (identical to the ``chat_completion`` tap):
 
 - gated on ``ED4ALL_RUN_ID`` — no run id, no row, no runs-dir mutation;
@@ -38,7 +38,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from Courseforge.generators._base import _BaseLLMProvider  # noqa: E402
-from Trainforge.generators._synthesis_common import (  # noqa: E402
+from Trainforge.generators.providers._synthesis_common import (  # noqa: E402
     SynthesisProviderError,
 )
 

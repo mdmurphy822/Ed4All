@@ -234,7 +234,7 @@ class DurableHttpAttemptLedger:
             self._hard_deadline - float(self._monotonic()) - self._cleanup_seconds
         )
         if remaining <= 0:
-            from Trainforge.generators._synthesis_common import (
+            from Trainforge.generators.providers._synthesis_common import (
                 SynthesisProviderError,
             )
             raise SynthesisProviderError(

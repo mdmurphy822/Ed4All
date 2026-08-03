@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from Trainforge.generators._session_budget import (
+from Trainforge.generators.providers._session_budget import (
     SynthesisBudgetExceeded,
     _BudgetTracker,
 )
@@ -66,7 +66,7 @@ def test_summary_dict_for_reporting() -> None:
 
 
 def test_circuit_breaker_opens_after_threshold() -> None:
-    from Trainforge.generators._session_budget import (
+    from Trainforge.generators.providers._session_budget import (
         SynthesisCircuitOpen, _CircuitBreaker,
     )
     cb = _CircuitBreaker(failures_to_open=3, window_seconds=60.0)
@@ -81,7 +81,7 @@ def test_circuit_breaker_opens_after_threshold() -> None:
 
 
 def test_circuit_breaker_resets_on_success() -> None:
-    from Trainforge.generators._session_budget import _CircuitBreaker
+    from Trainforge.generators.providers._session_budget import _CircuitBreaker
     cb = _CircuitBreaker(failures_to_open=2, window_seconds=60.0)
     cb.record_failure(error_code="MAILBOX_TIMEOUT")
     cb.record_success()
@@ -91,7 +91,7 @@ def test_circuit_breaker_resets_on_success() -> None:
 
 def test_circuit_breaker_window_expires_old_failures() -> None:
     """Failures outside the window don't count toward opening."""
-    from Trainforge.generators._session_budget import _CircuitBreaker
+    from Trainforge.generators.providers._session_budget import _CircuitBreaker
     cb = _CircuitBreaker(failures_to_open=2, window_seconds=0.05)
     cb.record_failure(error_code="MAILBOX_TIMEOUT")
     import time

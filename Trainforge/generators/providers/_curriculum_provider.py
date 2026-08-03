@@ -7,7 +7,7 @@ provider that can route through Anthropic, Together AI, or a local
 OpenAI-compatible server (Ollama / vLLM / llama.cpp / LM Studio /
 Fireworks / Groq / etc.). The HTTP machinery for the OpenAI-compatible
 backends is composed from
-:class:`Trainforge.generators._openai_compatible_client.OpenAICompatibleClient`
+:class:`Trainforge.generators.providers._openai_compatible_client.OpenAICompatibleClient`
 so this provider only owns the task semantics: the classification
 prompt, the four-role validation, and the per-call decision-capture
 emit.
@@ -38,43 +38,43 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
-from Trainforge.generators._synthesis_common import (
+from Trainforge.generators.providers._synthesis_common import (
     SynthesisProviderError,
 )
-from Trainforge.generators._anthropic_provider import (
+from Trainforge.generators.providers._anthropic_provider import (
     DEFAULT_SYNTHESIS_MODEL as ANTHROPIC_DEFAULT_MODEL,
 )
-from Trainforge.generators._anthropic_provider import (
+from Trainforge.generators.providers._anthropic_provider import (
     ENV_API_KEY as ANTHROPIC_ENV_API_KEY,
 )
-from Trainforge.generators._local_provider import (
+from Trainforge.generators.providers._local_provider import (
     DEFAULT_BASE_URL as LOCAL_DEFAULT_BASE_URL,
 )
-from Trainforge.generators._local_provider import (
+from Trainforge.generators.providers._local_provider import (
     DEFAULT_SYNTHESIS_MODEL as LOCAL_DEFAULT_MODEL,
 )
-from Trainforge.generators._local_provider import (
+from Trainforge.generators.providers._local_provider import (
     ENV_API_KEY as LOCAL_ENV_API_KEY,
 )
-from Trainforge.generators._local_provider import (
+from Trainforge.generators.providers._local_provider import (
     ENV_BASE_URL as LOCAL_ENV_BASE_URL,
 )
-from Trainforge.generators._local_provider import (
+from Trainforge.generators.providers._local_provider import (
     ENV_MODEL as LOCAL_ENV_MODEL,
 )
-from Trainforge.generators._openai_compatible_client import (
+from Trainforge.generators.providers._openai_compatible_client import (
     OpenAICompatibleClient,
 )
-from Trainforge.generators._together_provider import (
+from Trainforge.generators.providers._together_provider import (
     DEFAULT_BASE_URL as TOGETHER_DEFAULT_BASE_URL,
 )
-from Trainforge.generators._together_provider import (
+from Trainforge.generators.providers._together_provider import (
     DEFAULT_SYNTHESIS_MODEL as TOGETHER_DEFAULT_MODEL,
 )
-from Trainforge.generators._together_provider import (
+from Trainforge.generators.providers._together_provider import (
     ENV_API_KEY as TOGETHER_ENV_API_KEY,
 )
-from Trainforge.generators._together_provider import (
+from Trainforge.generators.providers._together_provider import (
     ENV_MODEL as TOGETHER_ENV_MODEL,
 )
 

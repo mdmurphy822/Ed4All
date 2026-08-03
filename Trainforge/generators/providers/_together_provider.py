@@ -16,7 +16,7 @@ Default model: ``meta-llama/Llama-3.3-70B-Instruct-Turbo``. Override via
 Architecture (LLM-agnostic refactor): the OpenAI ``/v1/chat/completions``
 HTTP machinery — retries, timeouts, JSON parse, error mapping, decision-
 capture rationale construction — lives once in
-:class:`Trainforge.generators._openai_compatible_client.OpenAICompatibleClient`.
+:class:`Trainforge.generators.providers._openai_compatible_client.OpenAICompatibleClient`.
 This provider composes one such client and concentrates on the
 task-specific surface: instruction / preference paraphrase prompts,
 length clamping, JSON parsing of the rendered draft envelope.
@@ -54,7 +54,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
-from Trainforge.generators._synthesis_common import (  # noqa: F401
+from Trainforge.generators.providers._synthesis_common import (  # noqa: F401
     COMPLETION_MAX,
     COMPLETION_MIN,
     PROMPT_MAX,
@@ -62,7 +62,7 @@ from Trainforge.generators._synthesis_common import (  # noqa: F401
     SynthesisProviderError,
     _KIND_BOUNDS,
 )
-from Trainforge.generators._openai_compatible_client import (
+from Trainforge.generators.providers._openai_compatible_client import (
     OpenAICompatibleClient,
 )
 
@@ -149,7 +149,7 @@ class TogetherSynthesisProvider:
     only own the prompt construction + length clamping + parse-retry.
 
     Subclass hooks (Wave 113 prep — used by
-    :class:`Trainforge.generators._local_provider.LocalSynthesisProvider`):
+    :class:`Trainforge.generators.providers._local_provider.LocalSynthesisProvider`):
 
     - ``_default_base_url``: provider-specific OpenAI-compatible base URL
       (the ``/chat/completions`` suffix is appended at request time).
@@ -262,7 +262,7 @@ class TogetherSynthesisProvider:
             client=client,
             # Route the retry-backoff sleep through this module's
             # ``time`` so existing tests that patch
-            # ``Trainforge.generators._together_provider.time.sleep``
+            # ``Trainforge.generators.providers._together_provider.time.sleep``
             # (and the equivalent local-provider patch) keep working
             # after the refactor.
             sleep_fn=lambda s: time.sleep(s),
@@ -518,7 +518,7 @@ class TogetherSynthesisProvider:
     def _render_instruction_user(
         cls, draft: Dict[str, Any], chunk_id: str
     ) -> str:
-        from Trainforge.generators._base_synthesis_provider import (
+        from Trainforge.generators.providers._base_synthesis_provider import (
             EVIDENCE_QUOTE_PROMPT_DIRECTIVE,
         )
         return (
@@ -541,7 +541,7 @@ class TogetherSynthesisProvider:
     def _render_preference_user(
         cls, draft: Dict[str, Any], chunk_id: str
     ) -> str:
-        from Trainforge.generators._base_synthesis_provider import (
+        from Trainforge.generators.providers._base_synthesis_provider import (
             EVIDENCE_QUOTE_PROMPT_DIRECTIVE,
         )
         return (
@@ -702,7 +702,7 @@ class TogetherSynthesisProvider:
         # into the rationale. Mirrors the W5.D pattern (extend an
         # existing decision_type's rationale with a new dynamic
         # signal; no new enum value).
-        from Trainforge.generators._base_synthesis_provider import (
+        from Trainforge.generators.providers._base_synthesis_provider import (
             render_evidence_quote_rationale_fragment,
         )
         evidence_fragment = render_evidence_quote_rationale_fragment(parsed)

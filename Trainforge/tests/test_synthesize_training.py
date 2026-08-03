@@ -603,7 +603,7 @@ def test_property_bearing_chunk_falls_back_to_deterministic_when_paraphrase_stri
 
     # Provider that always raises surface_form_preservation_failed so
     # every property-bearing chunk hits the fallback path.
-    from Trainforge.generators._local_provider import SynthesisProviderError
+    from Trainforge.generators.providers._local_provider import SynthesisProviderError
 
     class _AlwaysFailsProvider:
         def __init__(self, *args, **kwargs):
@@ -630,7 +630,7 @@ def test_property_bearing_chunk_falls_back_to_deterministic_when_paraphrase_stri
     # constructs the provider internally, we monkeypatch the construction
     # symbol. Phase 3: with TRAINFORGE_AGNOSTIC_SYNTHESIS ON (default),
     # run_synthesis builds the agnostic SynthesisProvider, so patch that.
-    from Trainforge.generators import _synthesis_provider as sp_mod
+    from Trainforge.generators.providers import _synthesis_provider as sp_mod
     monkeypatch.setattr(sp_mod, "SynthesisProvider", _AlwaysFailsProvider)
 
     from lib.decision_capture import DecisionCapture
@@ -684,7 +684,7 @@ def test_paraphrase_invalid_after_retry_without_preservation_fails_loud(
         lambda *a, **kw: _synthetic_manifest(),
     )
 
-    from Trainforge.generators._local_provider import SynthesisProviderError
+    from Trainforge.generators.providers._local_provider import SynthesisProviderError
 
     class _AlwaysExhaustsProvider:
         def __init__(self, *args, **kwargs):
@@ -703,7 +703,7 @@ def test_paraphrase_invalid_after_retry_without_preservation_fails_loud(
             )
 
     # Phase 3: patch the agnostic construction symbol (default-ON path).
-    from Trainforge.generators import _synthesis_provider as sp_mod
+    from Trainforge.generators.providers import _synthesis_provider as sp_mod
     monkeypatch.setattr(sp_mod, "SynthesisProvider", _AlwaysExhaustsProvider)
 
     from lib.decision_capture import DecisionCapture
@@ -761,8 +761,8 @@ def test_run_synthesis_flag_off_constructs_legacy_local_leaf(
                 "rollback path"
             )
 
-    from Trainforge.generators import _local_provider as lp_mod
-    from Trainforge.generators import _synthesis_provider as sp_mod
+    from Trainforge.generators.providers import _local_provider as lp_mod
+    from Trainforge.generators.providers import _synthesis_provider as sp_mod
     monkeypatch.setattr(lp_mod, "LocalSynthesisProvider", _LegacyLeafStub)
     monkeypatch.setattr(sp_mod, "SynthesisProvider", _AgnosticTripwire)
 
@@ -785,7 +785,7 @@ def test_local_provider_definition_chunk_directive_is_injected() -> None:
     content_type or bloom_level indicates a definition-style chunk.
     Shapes the model's first attempt so the retry path isn't burdened
     with coaxing the model out of bare 'Define X.' prompts."""
-    from Trainforge.generators._local_provider import LocalSynthesisProvider
+    from Trainforge.generators.providers._local_provider import LocalSynthesisProvider
 
     definition_draft = {
         "prompt": "Define IRI.",
@@ -890,7 +890,7 @@ def test_smoke_paraphrase_uses_provider_path_with_floor_2(
             return draft
 
     # Phase 3: patch the agnostic construction symbol (default-ON path).
-    from Trainforge.generators import _synthesis_provider as sp_mod
+    from Trainforge.generators.providers import _synthesis_provider as sp_mod
     monkeypatch.setattr(sp_mod, "SynthesisProvider", _PassThroughProvider)
 
     stats = run_synthesis(
@@ -1293,7 +1293,7 @@ def test_run_synthesis_dedupes_duplicate_instruction_prompts(
             return draft
 
     # Phase 3: patch the agnostic construction symbol (default-ON path).
-    from Trainforge.generators import _synthesis_provider as sp_mod
+    from Trainforge.generators.providers import _synthesis_provider as sp_mod
     monkeypatch.setattr(sp_mod, "SynthesisProvider", _CollidingProvider)
 
     stats = run_synthesis(
@@ -1346,7 +1346,7 @@ def test_run_synthesis_dedupes_duplicate_preference_prompts(
             }
 
     # Phase 3: patch the agnostic construction symbol (default-ON path).
-    from Trainforge.generators import _synthesis_provider as sp_mod
+    from Trainforge.generators.providers import _synthesis_provider as sp_mod
     monkeypatch.setattr(sp_mod, "SynthesisProvider", _CollidingPrefProvider)
 
     stats = run_synthesis(

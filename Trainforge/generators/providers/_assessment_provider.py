@@ -650,7 +650,7 @@ class AssessmentGeneratorProvider(_BaseLLMProvider):
 
         # ``evidence_quote`` directive — mirrors the canonical
         # ``EVIDENCE_QUOTE_PROMPT_DIRECTIVE`` from
-        # ``Trainforge/generators/_base_synthesis_provider.py`` adapted
+        # ``Trainforge/generators/providers/_base_synthesis_provider.py`` adapted
         # to the per-question shape (no per_claim_support array on
         # this surface — the quote attaches directly to the question
         # object). The directive lands in the user prompt so the

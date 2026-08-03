@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from Trainforge.generators._synthesis_common import SynthesisProviderError
+from Trainforge.generators.providers._synthesis_common import SynthesisProviderError
 from Trainforge.generators.staged_synthesis_micro import (
     MicroResumeStore,
     micro_contract_fingerprint,

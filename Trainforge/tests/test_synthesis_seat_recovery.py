@@ -100,7 +100,7 @@ def test_engine_recovery_retries_same_semantic_attempt(tmp_path: Path) -> None:
         nonlocal calls
         calls += 1
         if calls == 1:
-            from Trainforge.generators._synthesis_provider import (
+            from Trainforge.generators.providers._synthesis_provider import (
                 SynthesisProviderError,
             )
             raise SynthesisProviderError(_TIMEOUT, code="max_retries_exceeded")
@@ -198,7 +198,7 @@ def test_failed_engine_recovery_pauses_without_spending_attempt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from Trainforge.generators._synthesis_provider import SynthesisProviderError
+    from Trainforge.generators.providers._synthesis_provider import SynthesisProviderError
     from lib.generation.stop_control import GracefulStopRequested
 
     path = tmp_path / "generation.jsonl"
