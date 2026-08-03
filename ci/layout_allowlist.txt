@@ -44,8 +44,6 @@ dir:runtime
 dir:tests
 dir:Trainforge
 
-script:code_index.py  # hybrid code-search harness (post-snapshot; -> scripts/harness/ in Phase 2)
-
 # --- root-level files (seeded from the tracked tree, 2026-07-29) -----------
 file:.dockerignore
 file:.gitignore

@@ -14,7 +14,7 @@ one campaign-specific root wrapper remains temporarily ratcheted pending its
 separate public-release disposition. The
 import-root moves stay **rejected** (§5). Phase 4 extended the schema
 *inward* on 2026-08-01 — the subsystem interiors now carry a declared shape
-and a flat-file cap (§7); its reorgs are pending. This document is the
+and a flat-file cap (§7); the selected reorganization waves are complete. This document is the
 placement authority at every level: when a new file or directory doesn't
 obviously fit a rule below, that is a design question, not a formatting one.
 
@@ -262,7 +262,7 @@ reality (slack the ratchet could never recover) fails the suite.
 cap is a real exception and must be justified in the same PR. The intended
 motion is downward — every reorg below tightens the number it frees.
 
-### 7.3 Reorg backlog (not yet executed)
+### 7.3 Reorganization status
 
 The cap freezes the problem; it does not fix it. Ordered by ratio of pain to
 risk. Completed items are marked below.
@@ -280,9 +280,13 @@ risk. Completed items are marked below.
    shims preserve the documented CLI/import surface and MCP dotted dispatch,
    so the exact loose-module cap remains 19 until those legacy paths complete
    their deprecation window; new code imports the canonical package paths.
-3. **`Trainforge/eval/` — 39 loose**, three subdirs already exist; the flat
-   remainder should join them.
-4. **`SemantiK/data/` — 25 loose** dataset builders, several unreferenced.
+3. **`Trainforge/eval/` — DONE.** Metrics, retrieval checks, and runners now
+   live in named subpackages. Two documented compatibility aliases remain at
+   the package root, alongside 17 cohesive orchestration/configuration peers;
+   the exact flat cap is 19.
+4. **`SemantiK/data/` — DONE.** Dataset utilities now live under `alignment/`,
+   `augmentation/`, `builders/`, `common/`, and `sources/`; two package-level
+   entry modules remain flat and the exact cap is 2.
 5. **`lib/validators/` — 115 loose.** Largest number in the tree but the
    *weakest* case: it is a genuine package whose flat module list is the
    registry `docs/validation/gates.md` maps onto. Listed for completeness;

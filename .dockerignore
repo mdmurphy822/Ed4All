@@ -15,6 +15,7 @@ htmlcov/
 
 # Planning / scratch — not shipped in the image.
 plans/
+plan/
 
 # Local data dirs — these are /data volumes at runtime, not image content.
 runtime/

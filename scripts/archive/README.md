@@ -7,11 +7,14 @@ the chunk / concept-graph / pedagogy-graph emit pipeline evolved. The
 behaviors they performed are now part of the emit pipeline itself, so a
 fresh run no longer needs them.
 
-They are **no longer maintained** and are not wired into any workflow,
-CLI, or CI job. They live here only so the migration history is
-auditable. Do not extend them; if a new migration is needed, write a new
-script rather than reviving one of these.
+They are not wired into production workflows or the CLI. Their behavior is
+frozen, but focused regression tests remain in CI so the historical migrations
+stay reproducible and auditable. Do not extend them; if a new migration is
+needed, write a new script rather than reviving one of these.
 
 `test_wave76_clean_concept_graph.py` is the companion regression test for
 `wave76_clean_concept_graph.py` and is kept alongside its script. It runs
 against a synthetic stub graph and pulls in no real course data.
+
+`Trainforge/tests/test_concept_graph_classification.py` likewise preserves the
+classification contract exercised by `wave75_classify_concept_graph.py`.

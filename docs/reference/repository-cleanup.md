@@ -23,6 +23,16 @@ Installation and dependency acquisition live in
 | Historical migrations | Git history, tests, and operator documentation | Retained in archive directories when replay or provenance value remains |
 | One-off SemantiK diagnostics | Imports, entry points, configuration, tests, docs, and history | Removed only where every reviewed surface showed no live or compatibility use |
 
+The verified SemantiK removals were
+`SemantiK/scripts/analysis/_diag_merge_structure.py`,
+`SemantiK/scripts/eval/_compare_semantic_adapter_on_test.py`,
+`SemantiK/scripts/eval/_compare_structure_adapter_on_test.py`,
+`SemantiK/scripts/eval/_compare_table_adapter_on_test.py`, and
+`SemantiK/scripts/eval/_eval_legal_fragments.py`. Static and dynamic imports, command
+and subprocess entry points, workflow configuration, package exports, tests,
+documentation, and Git history showed no live or compatibility use. Their
+removal is recorded in commit `91728357`.
+
 ## Dependency boundary
 
 The public repository tracks declarations and instructions, not installed
@@ -52,4 +62,3 @@ points, workflow configuration, tests, user documentation, and Git history.
 Candidates are classified as live code, compatibility surface, reusable
 harness, historical campaign artifact, or dead code. Only the final category
 is deleted.
-

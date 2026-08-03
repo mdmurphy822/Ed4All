@@ -234,7 +234,7 @@ schemas/training/schema_translation_catalog.*.yaml
 # Plans directory — local-only working notes, never committed
 # =============================================================================
 plans/
-/plan/
+plan/
 
 # Third-party IMS Common Cartridge / W3C XML schemas are operator-installed
 # dependencies, not Ed4All source. Keep the first-party installation README.
