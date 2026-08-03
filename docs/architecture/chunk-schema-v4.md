@@ -1,66 +1,150 @@
 # Chunk schema v4
 
-This document records the durable chunk-v4 contract declared by
-`CHUNK_SCHEMA_VERSION = "v4"` in `Trainforge/process_course.py`. See
-[`ADR-001` chunk-schema contract](ADR-001-pipeline-shape.md#chunk-schema)
-for the versioning boundary.
+Chunk v4 is Ed4All’s shared retrieval record. It preserves readable course
+content, its source trail, accessibility state, and its links to the learning
+model in one JSON object. Trainforge writes these objects to `chunks.jsonl` and
+records the same contract version in the adjacent manifest.
 
-## Compatibility contract
+The machine-readable source of truth is
+[`schemas/knowledge/chunk_v4.schema.json`](../../schemas/knowledge/chunk_v4.schema.json).
+This guide explains how its major surfaces fit together; it does not duplicate
+the schema’s complete property catalog.
 
-Chunk schema v4 adds retrieval enrichment and source provenance without
-removing or renaming earlier fields. Every v4 chunk carries:
+## Data flow
 
-- `schema_version: "v4"` (string, stamped on every chunk by
-  `CourseProcessor._create_chunk`)
+```mermaid
+flowchart LR
+    source["Private source material"] --> semantik["SemantiK accessible HTML"]
+    semantik --> chunker["Trainforge chunking"]
+    course["Course structure and objectives"] --> chunker
+    chunker --> records["Chunk v4 JSONL"]
+    records --> retrieval["Retrieval and grounded generation"]
+    records --> validation["Quality and provenance validation"]
+    records --> graph["Concept and objective graph"]
+```
 
-and every `manifest.json` at v4 carries:
+Text equivalent: private source material is converted to accessible HTML by
+SemantiK. Trainforge combines that HTML with course structure and objectives to
+emit chunk-v4 records. Retrieval, validation, and graph-building consumers read
+the same records.
 
-- `chunk_schema_version: "v4"` (string, stamped by
-  `CourseProcessor._generate_manifest`).
+SemantiK supplies accessible structure and block metadata; Trainforge owns the
+chunk boundary and materializes the final record. The live emission path is
+[`Trainforge/process_course.py`](../../Trainforge/process_course.py), with
+boundary logic under [`Trainforge/chunker`](../../Trainforge/chunker).
 
-Readers checking schema compatibility MUST read `chunk_schema_version` from
-`manifest.json` and/or `schema_version` from individual chunks. v3 consumers
-MUST be updated to handle v4's new fields as optional — they are additive;
-none of v1–v3's fields have been removed or renamed.
+## Identity and sequence
 
-## Retrieval enrichment
+Every record has an `id`, `schema_version`, `chunk_type`, and `follows_chunk`.
+The identifier is opaque to consumers: use it for joins and citations, but do
+not parse it to recover course metadata. `follows_chunk` preserves local reading
+order without requiring array position to remain stable.
 
-| Field | Type | Required? | Semantics |
-|---|---|---|---|
-| `summary` | string | yes | 2–3 sentences, 40–400 characters, never exceeding `len(text)`. Deterministic extractive generation lives in `Trainforge/generators/postprocessing/summary_factory.py`; retrieval benchmarks measure its recall effect. |
-| `retrieval_text` | string | no | When present, composed as `summary + " " + key_terms_joined`. Enable it only after the held-out retrieval benchmark demonstrates a positive recall delta. |
+`schema_version` is the literal `v4`. The chunkset manifest carries a matching
+`chunk_schema_version`, allowing a reader to reject an unsupported collection
+before streaming every row. Run provenance may also be present, but it is not a
+substitute for content identity or source provenance.
 
-Summary writer: `Trainforge/generators/postprocessing/summary_factory.py::generate`.
-Benchmark: `Trainforge/rag/retrieval_benchmark.py::run_benchmark`.
-Benchmark artifact location: `<output>/quality/retrieval_benchmark.json`.
-Activated via the `--benchmark-retrieval` CLI flag on `Trainforge/process_course.py`.
+## Text and content
 
-## Field-level invariants
+The required content pair serves two different needs:
 
-The following invariants are enforced by `Trainforge/tests/`:
+- `text` is the canonical plain-text retrieval and synthesis surface.
+- `html` preserves the source fragment for rendering and structural review.
 
-- `summary` length ∈ [40, 400]. Asserted by
-  `test_summary_factory.test_extractive_length_bounded`.
-- `summary` is deterministic under identical inputs. Asserted by
-  `test_summary_factory.test_extractive_deterministic`.
-- `len(summary) <= len(text)` on real chunks (the pure-function guard in
-  `summary_factory._clamp_length` handles near-empty edge cases
-  defensively by padding). Asserted by
-  `test_summary_factory.test_summary_not_longer_than_text`.
-- `schema_version` equals `CHUNK_SCHEMA_VERSION` on every chunk after
-  regeneration. Asserted by
-  `test_summary_factory.test_schema_version_stamped`.
-- `manifest.json::chunk_schema_version` equals `CHUNK_SCHEMA_VERSION`.
-  Asserted by `test_summary_factory.test_manifest_schema_version`.
+Consumers should not silently substitute HTML, summaries, or legacy aliases
+when `text` is missing. Classification and sizing fields describe the record’s
+content type, difficulty, Bloom level, word count, and estimated token count.
+Optional enrichment can add summaries, retrieval text, key terms, claims,
+misconceptions, or cognitive-task metadata without changing the canonical prose.
 
-## Migration path
+## Source provenance
 
-v3 → v4 is additive-only. A v3 corpus can be regenerated into v4 by
-re-running `python -m Trainforge.process_course ...` against the same
-`--imscc`. LibV2 importers reading chunk metadata must treat
-`schema_version`, `summary`, and `retrieval_text` as optional; see
-`LibV2/tools/libv2/retriever.py::RetrievalResult` for the reader contract.
+The required `source` object locates the chunk within the course structure. It
+can carry document hashes, structural locations, and typed source references.
+Each source reference uses the shared
+[`source_reference.schema.json`](../../schemas/knowledge/source_reference.schema.json)
+contract so a consumer can trace a chunk back to the evidence that supports it.
 
-## Versioning policy
+Top-level `source_pages` may preserve a normalized page span when page evidence
+is available. A missing optional locator means the producer could not provide
+that locator; it must not be replaced with a guessed path or page number.
+Provenance-sensitive consumers should use the structured source object rather
+than extracting identifiers from HTML or display text.
 
-One coordinated bump per release train. See `ADR-001` Contract 1.
+## Accessibility state
+
+Chunks may carry SemantiK’s block role and confidence, WCAG block status,
+figure alternative text, semantic-preservation score, and document
+certification state. These fields preserve upstream evidence for later gates;
+they do not independently certify the final course.
+
+A flagged status remains a flagged status downstream. Consumers must not treat
+an absent accessibility field as a pass. The authoritative gate behavior is
+described in [Validation architecture](validation-architecture.md), and the
+SemantiK stage is described in
+[`SemantiK/architecture.md`](../../SemantiK/architecture.md).
+
+## Objective and concept links
+
+`learning_outcome_refs` links a chunk to the outcomes it supports, while
+`concept_tags` provides normalized concept labels for retrieval and graph
+construction. Optional targeted-concept and objective-alignment records add the
+Bloom demand and delivery evidence needed for more precise audits.
+
+These links are references, not embedded copies of the full objective or graph.
+Writers should preserve canonical identifiers, deduplicate repeated links, and
+keep source-backed claims attached to their evidence. Consumers should tolerate
+an empty required reference array where the schema permits one, then apply the
+appropriate completeness or grounding gate for their use case.
+
+Ontology helpers and graph-building code live under
+[`lib/ontology`](../../lib/ontology). Canonical validation behavior is indexed
+in [Validators](../validation/validators.md).
+
+## JSON-LD view
+
+[`schemas/context/chunk_v4_v1.jsonld`](../../schemas/context/chunk_v4_v1.jsonld)
+maps the JSON record to RDF terms for graph export and semantic queries. It is a
+consumer-side context: the normal JSONL emitter does not inject `@context` into
+each row.
+
+Use the context when an RDF representation is needed, and retain the original
+JSON record for schema validation and byte-oriented artifact checks. Round-trip
+tests protect the fields that have defined RDF mappings; an extension without a
+context term remains JSON metadata until its semantic meaning is standardized.
+
+## Versioning and validation
+
+The version boundary and compatibility policy are defined in
+[ADR-001](ADR-001-pipeline-shape.md#chunk-schema). Producers stamp both each
+record and its manifest. Readers should branch on those explicit versions, not
+on the presence of a recently added optional field.
+
+Chunk validation uses JSON Schema Draft 2020-12 with the repository’s offline
+schema registry so shared taxonomy references resolve without network access.
+The production validation switch is documented in
+[Trainforge behavior flags](../operations/behavior-flags-trainforge.md). When
+strict validation is enabled, malformed emitted records fail the chunking stage;
+validation should not coerce or discard fields to make a record pass.
+
+The root record intentionally admits additive enrichment fields, while the
+structural `source` object and several nested shapes are closed. This supports
+experimentation without weakening the provenance core.
+
+## Extending the contract
+
+For a new interoperable field:
+
+1. Define its purpose, ownership, type, absence semantics, and privacy impact.
+2. Add it to the canonical schema and update the producer that owns the value.
+3. Update the JSON-LD context when the field needs a stable RDF meaning.
+4. Add focused tests for schema validity, emitter propagation, consumer
+   behavior, and JSON-LD round trips where applicable.
+5. Update the chunkset version only when the compatibility rules in ADR-001
+   require it; do not infer a version bump from field count.
+
+Extensions must not include source text, local paths, course names, hostnames,
+or other private run details in public fixtures or documentation. Use synthetic
+identifiers and generated examples. Actual chunksets and manifests remain
+private runtime artifacts and must stay out of source control.
