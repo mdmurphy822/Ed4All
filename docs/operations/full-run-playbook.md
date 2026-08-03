@@ -4,6 +4,10 @@ This playbook turns private learning material into accessible HTML, a course
 package, a private LibV2 archive, and retrieval artifacts. Training-pair
 synthesis and adapter training are separate, explicit decisions.
 
+SemantiK's preferred conversion path combines GLM-OCR with SDK normalization,
+content enrichment, and the super heading judge before Courseforge begins
+course authoring.
+
 Use these references for details owned elsewhere:
 
 - [Installation and dependencies](installation.md)
@@ -20,8 +24,9 @@ Use these references for details owned elsewhere:
 Source material, course names and identifiers, converted HTML, generated
 course content, packages, indexes, training pairs, adapters, run identifiers,
 logs, captures, endpoints, credentials, and model caches are always private.
-Keep them in operator-controlled, ignored locations. Never copy their values
-into tracked documentation, code comments, fixtures, or configuration.
+Keep them in operator-controlled, ignored locations and do not commit them.
+Never copy their values into tracked documentation, code comments, fixtures,
+or configuration.
 
 Prepare an ignored environment file containing the private source path, course
 name, data roots, provider endpoints, and model identifiers required by the
