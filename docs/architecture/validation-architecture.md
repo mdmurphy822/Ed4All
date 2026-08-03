@@ -1,315 +1,241 @@
 # Validation Architecture
 
-Ed4All validates artifacts at four boundaries: inside tools, after workflow
-phases, after the phase loop, and after model training. This guide explains how
-those boundaries connect, how failures propagate, and where to inspect the live
-contract.
+Ed4All treats validation as an execution boundary, not a reporting afterthought.
+Tools may validate their own units, workflow phases run configured gates, and
+post-training checks protect adapter promotion. A failed required gate is an
+artifact failure: fix the artifact or record an authorized waiver; do not lower
+the standard to make a run appear healthy.
 
-For the current validator catalog, see
-[`validators.md`](../validation/validators.md). For phase-to-gate wiring and
-gate-specific rationale, see [`gates.md`](../validation/gates.md).
+The live catalog and wiring are maintained separately:
 
-## 1. Four validation layers
+- [Validation gates](../validation/gates.md) explains configured gate behavior
+  and workflow attachment.
+- [Validator reference](../validation/validators.md) documents validator input
+  and output contracts.
+- [ADR-005: gate severity and blocking](ADR-005-gate-severity-blocking.md)
+  records the governing severity decision.
 
-| Layer | Boundary | Responsibility | Effect on the run |
-|---|---|---|---|
-| **Tool self-checks** | Inside a phase tool | Validate or retry the unit being produced | Defined by that tool |
-| **Phase gates** | After a phase's tasks complete | Apply the gates declared on that phase | A failed `critical` gate fails the phase |
-| **Post-loop aggregators** | After the workflow phase loop | Compose gate results and artifacts into operator-facing reports | Best-effort; aggregation errors do not change `final_status` |
-| **Post-training gates** | During and after adapter training | Decide whether evaluation permits promotion | Blocking unless the dedicated advisory override applies |
+## 1. Boundaries and ownership
 
-Phase gates are the primary meaning of “validation gate” in project
-documentation. They attach to `validation_gates` arrays under workflow phases
-in `config/workflows.yaml`.
+| Boundary | Owner | Contract |
+|---|---|---|
+| Tool self-check | Producing tool | Reject, repair, or retry an invalid unit before publishing it as a phase artifact. |
+| Workflow gate | Executor and `ValidationGateManager` | Route declared inputs, run the validator, apply policy, and persist a structured result. |
+| Aggregate report | Read-only aggregator | Summarize persisted evidence without rewriting the underlying verdicts. |
+| Post-training evaluation | Training runner and evaluation validators | Hold an adapter unless evaluation and operator review permit promotion. |
 
-```mermaid
-flowchart LR
-    classDef work fill:#E8F1FF,stroke:#2457A6,color:#102A43,stroke-width:2px
-    classDef gate fill:#FFF4CC,stroke:#946200,color:#3D2A00,stroke-width:2px
-    classDef report fill:#E5F7ED,stroke:#247A45,color:#123622,stroke-width:2px
-    classDef train fill:#F2E8FF,stroke:#6941A5,color:#2E174D,stroke-width:2px
+Gate declarations live under each workflow phase's `validation_gates` entry in
+`config/workflows.yaml`. The workflow configuration is authoritative for gate
+identity, validator path, severity, thresholds, gate-specific configuration,
+and error behavior. Do not copy the current inventory or counts into
+architecture prose.
 
-    T["Tool produces and self-checks an artifact"]:::work
-    P["Phase validation gates"]:::gate
-    A["Post-loop aggregate reports"]:::report
-    M["Post-training evaluation gates"]:::train
-
-    T --> P --> A
-    P -->|"training workflow"| M
-```
-
-The accessible labels carry the meaning; color is supplementary.
-
-## 2. Phase-gate attachment and lifecycle
-
-Each YAML gate row becomes a `GateConfig`. The executor routes phase outputs to
-the validator's input contract, runs the validator, applies thresholds and any
-waiver, persists one result, and decides whether the phase can complete.
+## 2. Gate lifecycle
 
 ```mermaid
 flowchart TD
-    classDef config fill:#E8F1FF,stroke:#2457A6,color:#102A43,stroke-width:2px
-    classDef action fill:#E5F7ED,stroke:#247A45,color:#123622,stroke-width:2px
-    classDef decision fill:#FFF4CC,stroke:#946200,color:#3D2A00,stroke-width:2px
-    classDef failure fill:#FFE5E5,stroke:#A61B1B,color:#4A1111,stroke-width:2px
-    classDef record fill:#F2E8FF,stroke:#6941A5,color:#2E174D,stroke-width:2px
-
-    Y["Workflow phase validation_gates row"]:::config
-    C["Parse GateConfig"]:::action
-    R["GateInputRouter builds validator inputs"]:::action
-    I{"Required inputs resolved?"}:::decision
-    S["Record GATE_SKIPPED_MISSING_INPUTS"]:::record
-    V["Load allowlisted validator and validate"]:::action
-    X{"Validator returned or raised?"}:::decision
-    E["Apply exception policy"]:::failure
-    H["Apply configured thresholds"]:::action
-    W["Apply valid registered waiver"]:::action
-    G{"Result passed?"}:::decision
-    B{"Declared severity is critical?"}:::decision
-    F["Fail phase checkpoint"]:::failure
-    N["Continue gate chain"]:::action
-    P["Persist complete gate chain"]:::record
-
-    Y --> C --> R --> I
-    I -->|"no"| S --> N
-    I -->|"yes"| V --> X
-    X -->|"returned"| H --> W --> G
-    X -->|"raised"| E --> W
-    E --> G
-    G -->|"yes"| N
-    G -->|"no"| B
-    B -->|"yes"| F --> P
-    B -->|"no"| N
-    N --> P
+    A[Workflow declares a gate] --> B[Executor resolves current and prior artifacts]
+    B --> C{Required inputs available?}
+    C -- No --> D[Persist a structured missing-input result]
+    C -- Yes --> E[Load an allowlisted validator]
+    E --> F[Run validator with thresholds, config, and DecisionCapture]
+    F --> G{Returned normally?}
+    G -- No --> H[Convert the exception using error and resource policy]
+    G -- Yes --> I[Apply result-level thresholds]
+    H --> J[Evaluate an active registered waiver]
+    I --> J
+    J --> K[Stamp declared severity and persist the gate result]
+    D --> K
+    K --> L{Failed and declared critical?}
+    L -- Yes --> M[Fail the phase]
+    L -- No --> N[Continue the gate chain]
 ```
 
-The executor evaluates the full parsed chain; it does not truncate the result
-list after the first failure. Each parsed gate therefore contributes a run,
-waiver, or structured-skip record to the phase checkpoint.
+Reading order: declaration → input routing → validation or structured skip →
+exception and threshold policy → waiver evaluation → persistence → phase
+decision. The labels carry the full meaning; the diagram does not depend on
+color.
 
-### 2.1 Input routing
+The executor evaluates the complete parsed gate chain and returns one result
+for every enabled gate, including structured skips. A critical failure changes
+the phase outcome, but it does not erase later diagnostic results.
 
-`MCP/hardening/gate_input_routing.py::GateInputRouter` maps the validator's
-dotted import path to a builder. A builder returns validator-specific inputs
-and a list of missing requirements. The router also converts a missing builder
-or builder exception into a missing-input result.
+### 2.1 Input routing and missing inputs
 
-Missing requirements produce a `GATE_SKIPPED_MISSING_INPUTS` issue and
-`waiver_info.skipped="true"`. This is an auditable skip, not evidence that the
-validator passed. Ordinarily the result has `passed=True`; required training
-synthesis is stricter when `with_training` is enabled and `skip_training` is
-false, so a missing gate input clears the phase's gate status.
+`MCP/hardening/gate_input_routing.py::GateInputRouter` maps each shipping
+validator to a small input builder. Builders receive accumulated workflow
+outputs, current-phase outputs, and workflow parameters. The executor merges
+that routed data with its generic artifact mapping and forwards configured
+threshold and validator-specific configuration values.
 
-Router inputs are merged with the executor's fallback artifact mapping.
-Configured threshold values are also exposed to validators, while the generic
-manager independently enforces result-level thresholds such as
-`max_critical_issues`, `max_issues`, `min_score`, and `required_score`.
+A missing builder, builder exception, or unresolved required artifact produces
+`GATE_SKIPPED_MISSING_INPUTS` with `waiver_info.skipped="true"`. This is an
+auditable skip, never a successful validation. The ordinary compatibility path
+records it as non-blocking; a workflow contract that explicitly requires the
+missing artifact—such as required training synthesis—may clear the phase gate
+status. Consumers must distinguish `passed`, `failed`, `waived`, `skipped`, and
+`errored` results.
 
-### 2.2 Severity, `on_fail`, and `on_error`
+Adding a validator requires both a permitted validator import and an input
+route. Tests verify that configured shipping validators have routing coverage;
+do not add validator-specific routing branches to the executor.
 
-These controls are independent:
+### 2.2 Severity, issue level, and error behavior
 
-| Control | Values | Default | Runtime meaning |
-|---|---|---|---|
-| `severity` | `critical`, `warning`, `info` | `critical` | A failed result clears the executor's phase status only when this is `critical` |
-| `behavior.on_fail` | `block`, `warn` | `block` | Controls short-circuit behavior in `ValidationGateManager.run_phase_gates`; the workflow executor calls `run_gate` directly and still evaluates the full chain |
-| `behavior.on_error` | `fail_closed`, `warn` | `fail_closed` | Determines whether an ordinary validator exception fails or is retained as a passing warning result |
+Three controls answer different questions:
 
-The YAML-declared `severity` is authoritative for phase blocking. A warning
-gate can return `passed=False` and remain non-blocking even if its `on_fail`
-value is `block`. Conversely, omitting severity selects the critical default;
-the executor logs that omission.
+| Control | Question answered |
+|---|---|
+| Declared gate `severity` | Does a failed result block this workflow phase? |
+| `GateIssue.severity` | How serious is this individual finding inside the result? |
+| `behavior.on_error` | How is a validator exception converted into a gate result? |
 
-`GateResult` does not own the configuration severity. Before persistence, the
-executor stamps the declared severity when a result does not already contain
-one. Diagnose phase blocking from the YAML row and the result together.
+The declared gate severity is authoritative for executor blocking. A warning
+gate may retain `passed=false` for an honest report while allowing the phase to
+continue. A critical gate blocks when its effective result fails. Individual
+issue severity does not override that workflow declaration.
 
-### 2.3 Fail-closed and dependency failures
+Ordinary validator exceptions fail closed by default and produce a
+`VALIDATOR_ERROR` issue. `on_error: warn` preserves the error evidence while
+making that particular result non-blocking. `behavior.on_fail` controls the
+manager's phase-gate convenience API; the workflow executor invokes gates
+individually, evaluates the complete chain, and applies declared severity.
 
-For an ordinary exception, `on_error: fail_closed` creates a failed result with
-a critical `VALIDATOR_ERROR` issue. `on_error: warn` retains the issue but sets
-the result to passed.
+## 3. Fail-loud dependency and resource policy
 
-Three dependency or resource conditions have more specific behavior:
+Validation must never claim success because a required model or device failed
+to run.
 
-```mermaid
-flowchart LR
-    classDef event fill:#E8F1FF,stroke:#2457A6,color:#102A43,stroke-width:2px
-    classDef block fill:#FFE5E5,stroke:#A61B1B,color:#4A1111,stroke-width:2px
-    classDef policy fill:#FFF4CC,stroke:#946200,color:#3D2A00,stroke-width:2px
-    classDef warn fill:#E5F7ED,stroke:#247A45,color:#123622,stroke-width:2px
+- Missing optional embedding dependencies produce
+  `EMBEDDING_DEPS_MISSING`. Permissive mode follows the configured error policy;
+  `TRAINFORGE_REQUIRE_EMBEDDINGS=true` fails closed.
+- `EmbeddingModelUnavailable` means the embedding stack is installed but the
+  explicitly requested device could not start. It always produces
+  `EMBEDDING_MODEL_UNAVAILABLE` and fails closed, regardless of `on_error`.
+  There is no silent CUDA-to-CPU embedding fallback; operators select CPU
+  explicitly with `ED4ALL_EMBEDDING_DEVICE=cpu`.
+- Validator CUDA out-of-memory produces `VALIDATOR_OOM`, includes available
+  resource evidence, and emits a validation decision event. It follows
+  `on_error` unless `ED4ALL_VALIDATOR_FAIL_CLOSED_ON_OOM` is enabled, which
+  forces a blocking result.
+- NLI device policy is separate. NLI loading may use its documented CPU
+  degradation path with an explicit warning; that behavior does not authorize
+  embedding fallback.
+- Optional RDF or SHACL dependencies surface explicit results according to the
+  owning validator contract; they do not make the gate disappear.
 
-    D["Embedding dependencies absent"]:::event --> DS{"Strict embedding mode?"}:::policy
-    DS -->|"yes"| DB["Fail: EMBEDDING_DEPS_MISSING"]:::block
-    DS -->|"no"| DP["Honor on_error policy"]:::warn
+Validator imports are restricted to the allowlisted namespaces in
+`MCP/hardening/validation_gates.py`. Configuration cannot load arbitrary Python
+modules.
 
-    U["Requested embedding device unavailable"]:::event --> UB["Always fail: EMBEDDING_MODEL_UNAVAILABLE"]:::block
+### 3.1 Bloom classifier availability
 
-    O["Validator CUDA OOM"]:::event --> OS{"Fail-closed-on-OOM enabled?"}:::policy
-    OS -->|"yes"| OB["Fail: VALIDATOR_OOM"]:::block
-    OS -->|"no"| OP["Honor on_error policy"]:::warn
-```
+Bloom structure checks do not imply that a trained text classifier is
+available. Ed4All does not ship or provision a trained Bloom classifier;
+`BloomBertEnsemble` therefore abstains unless a usable implementation is
+provided. `TRAINFORGE_REQUIRE_BERT_ENSEMBLE` is the strict switch: it turns an
+unprovisioned ensemble into an error rather than inventing a classification.
 
-- Missing optional embedding extras use `EMBEDDING_DEPS_MISSING`. With
-  `TRAINFORGE_REQUIRE_EMBEDDINGS=true`, the result fails regardless of
-  `on_error`; otherwise `on_error` remains authoritative.
-- An installed embedding stack that cannot start on the explicitly requested
-  device raises `EmbeddingModelUnavailable`. It always fails closed, does not
-  silently fall back from CUDA to CPU, and ignores `on_error`.
-- CUDA OOM produces `VALIDATOR_OOM`. It follows `on_error` unless
-  `ED4ALL_VALIDATOR_FAIL_CLOSED_ON_OOM` is enabled, which forces failure.
+`ED4ALL_BLOOM_TRIVOTE` enables a heuristic vote from asserted metadata,
+deterministic verb evidence, and an available zero-shot signal. It is not a
+trained or provisioned Bloom model, and insufficient evidence produces an
+abstention or warning. `ED4ALL_BLOOM_TRIVOTE_HEADS` may load an explicitly
+supplied local artifact; Ed4All does not ship that artifact. If it is absent or
+unusable, permissive mode abstains and continues with the available heuristic
+evidence, while strict mode fails.
 
-Embedding device policy is distinct from NLI device policy. NLI loading may
-degrade from CUDA to CPU with a warning; embedding loading does not. Validators
-that depend on optional RDF/SHACL packages likewise return explicit warning
-results when those extras are unavailable rather than disappearing from the
-gate chain.
+The active DeBERTa service is an NLI entailment model used by grounding and
+contradiction checks. It is distinct from, and is not evidence of, a trained
+Bloom classifier.
 
-Validator imports are restricted to the allowlisted namespaces enforced by
-`MCP/hardening/validation_gates.py::load_validator`.
+## 4. Decision capture
 
-### 2.4 Waivers
+The executor supplies the active `DecisionCapture` to validation inputs under
+the established `decision_capture` and `capture` keys. The gate manager also
+injects those keys for direct callers while preserving an explicit per-call
+override.
 
-`ValidationGateManager` accepts a `GateWaiver` keyed by `gate_id`. A valid
-waiver requires an operator identity, a reason of at least 20 characters, and
-a remediation plan; it may also expire. An active waiver changes the result to
-`passed=True`, sets `waived=True`, and persists `waiver_info`. Expired waivers
-are ignored.
+Validators that make a substantive selection, remediation, classification, or
+resource-policy decision emit a schema-valid event with dynamic evidence.
+Resource failures such as validator OOM are captured as decisions so a
+non-blocking configuration cannot turn them into invisible passes. Capture
+failure must not change the validator result; the gate result remains the
+source of truth for blocking and persistence. See
+[Decision capture](decision-capture.md) for the event contract.
 
-There is no phase-gate waiver declaration in workflow YAML and no pipeline CLI
-surface that registers one. Editing checkpoint state is not a waiver and does
-not create the required audit record.
+## 5. Waiver governance
 
-## 3. Bloom classification status
+A waiver is an operator-approved exception attached to a `gate_id`, not an edit
+to the artifact or checkpoint. `GateWaiver` requires:
 
-Bloom metadata checks and Bloom text classification are separate concerns.
-Structural validators can compare declared levels, allowed ranges, ladders,
-verbs, and distributions without a trained text classifier.
+- the approving identity;
+- a substantive reason;
+- a remediation plan; and
+- an optional expiration time.
 
-Ed4All currently ships **no trained or provisioned Bloom classifier**:
+The manager validates a waiver before registration. An active, unexpired waiver
+sets `waived=true`, changes the effective result to passing, and persists the
+waiver metadata with the original findings. Expired waivers are ignored.
 
-- `BloomBertEnsemble` is a compatibility scaffold. Its default behavior is to
-  load no members and return the explicit `unknown` abstention result.
-- `TRAINFORGE_REQUIRE_BERT_ENSEMBLE=true` makes that unavailable classifier a
-  strict error instead of accepting abstention.
-- `ED4ALL_BLOOM_TRIVOTE` enables the heuristic trivote path. It combines the
-  asserted level, a zero-shot NLI heuristic, and deterministic verb evidence;
-  insufficient voters produce a structured warning rather than a fabricated
-  classification.
-- No fine-tuned Bloom heads or validated weights ship with the repository.
-  `ED4ALL_BLOOM_TRIVOTE_HEADS` enables the optional heads voter, and
-  `BloomDebertaHeads` can then load explicitly supplied local artifacts. The
-  flag does not provide weights, and the loader does not make local artifacts
-  trained, validated, or provisioned by Ed4All. Strict mode fails when no
-  usable NLI or heads backend is available. Without strict mode, a missing or
-  unloadable heads voter abstains and the heuristic trivote continues with its
-  active zero-shot NLI signal and the remaining available evidence.
+Workflow YAML does not declare waivers, and the standard pipeline command does
+not provide an ad hoc waiver flag. Editing persisted state, weakening a
+threshold, changing severity, or suppressing an issue code is not a waiver.
+Any future waiver surface must preserve identity, reason, remediation,
+expiration, DecisionCapture, and immutable auditability.
 
-The active DeBERTa NLI classifier is a distinct entailment service used by
-grounding and contradiction checks. Its availability does not imply that a
-trained Bloom classifier exists, and its zero-shot use in trivote remains a
-heuristic.
+## 6. Persistence and reporting
 
-## 4. Calibration policy
+The executor persists the complete gate chain in the phase checkpoint beneath
+`runtime/state/runs/<run-id>/checkpoints/`. The workflow runner also stores
+phase outputs, including `_gate_results`, in its workflow state beneath
+`runtime/state/workflows/`. These files have different purposes:
 
-A validator should move from advisory to blocking only after its false-positive
-behavior and threshold signal have been reviewed on approved calibration data.
-Do not promote a gate by lowering thresholds, suppressing issue codes, or
-turning an exception into a pass.
+- phase checkpoints preserve task and gate evidence for diagnosis and resume;
+- workflow state records how orchestration proceeded and supplies accumulated
+  outputs to later routing; and
+- generated validation reports present stable, operator-facing views.
 
-`lib/governance/calibration_gate.py::resolve_severity_flip` supports validators
-that read a named finite numeric signal from an approved quality report. A
-missing, unreadable, non-numeric, or below-threshold signal defers the flip. The
-helper returns an audit payload for the caller's `DecisionCapture`; it does not
-rewrite workflow YAML. Gates without a mechanized flip remain governed by
-their declared YAML severity and the policy recorded in
-[`gates.md`](../validation/gates.md).
+Persistence failure is logged loudly. A later report must not reinterpret
+absence as success.
 
-## 5. Post-training gates
+Post-loop aggregators read persisted gate chains and generated artifacts. They
+are best-effort reporting views: an aggregator exception does not retroactively
+change the workflow's final execution status. Missing required report inputs
+remain explicit failed or missing rows in governance reports rather than being
+defaulted to pass. Aggregated course status never replaces the underlying gate
+results. See [Aggregator architecture](aggregators.md) for report composition.
 
-Post-training validation appears in the training workflow and in the optional
-training tail of the end-to-end workflow. Its phase gates use the same
-`GateConfig`, routing, severity, exception, threshold, and persistence rules as
-other phase gates.
+## 7. Post-training and promotion boundary
 
-The training runner also enforces `EvalGatingValidator` inline through
-`Trainforge/training/runner.py::_enforce_eval_gate`. That check blocks adapter
-promotion when it fails. `ED4ALL_GATE_ADVISORY=1` (or `true`) makes this inline
-check advisory; it does not change ordinary phase-gate behavior.
+Configured post-training gates use the same input routing, severity,
+exception, waiver, capture, and persistence contracts as other workflow gates.
+The training runner additionally applies `EvalGatingValidator` before adapter
+promotion. A failed inline evaluation holds promotion unless the dedicated
+`ED4ALL_GATE_ADVISORY` operator setting makes that inline check advisory; it
+does not weaken ordinary workflow gates.
 
-Training remains operator-directed. Gate output supports a promotion decision;
-it does not replace the required evaluation review or promotion ledger update.
+Validation produces evidence and a machine-readable hold/pass result. It does
+not promote an adapter by itself. Training and promotion remain operator
+decisions that require review of the evaluation matrix and an update to the
+promotion ledger. Missing evaluation evidence is a hold, not permission to
+ship.
 
-## 6. Aggregator boundary and course status
+## 8. Changing the validation contract
 
-After the phase loop, `WorkflowRunner.run_workflow` invokes report aggregators
-over persisted gate chains and generated artifacts. These aggregators are
-read-only views and are best-effort: an aggregator exception is logged and does
-not alter the workflow's `final_status`.
+For a gate or validator change:
 
-```mermaid
-flowchart LR
-    classDef source fill:#E8F1FF,stroke:#2457A6,color:#102A43,stroke-width:2px
-    classDef aggregate fill:#E5F7ED,stroke:#247A45,color:#123622,stroke-width:2px
-    classDef status fill:#F2E8FF,stroke:#6941A5,color:#2E174D,stroke-width:2px
+1. Update `config/workflows.yaml` and the validator implementation without
+   lowering an established threshold or severity to obtain a pass.
+2. Update the input builder and verify missing-input behavior.
+3. Add regression coverage for pass, finding, exception, and relevant resource
+   paths; include waiver and persistence behavior when affected.
+4. Wire `DecisionCapture` for every new decision-making call site.
+5. Update [gates.md](../validation/gates.md) and
+   [validators.md](../validation/validators.md) instead of copying inventories
+   here.
+6. Run gate-manager, input-routing, workflow-schema, persistence, aggregator,
+   post-training, documentation-contract, privacy, and repository-policy tests.
 
-    G["Persisted phase gate chains"]:::source
-    A["Generated workflow artifacts"]:::source
-    R["Post-loop quality and governance reports"]:::aggregate
-    P["Promotion chain report"]:::aggregate
-    S["Derived course_status"]:::status
-
-    G --> R
-    A --> R
-    G --> P
-    A --> P
-    P --> S
-```
-
-The promotion-chain aggregator preserves missing stage reports as explicit
-failed rows rather than treating absence as success. `derive_course_status`
-then produces one of:
-
-- `failed`
-- `non_certified_archive`
-- `certified_accessible`
-- `certified_instructional`
-- `certified_trainable`
-
-The status calculation accounts for whether training was expected, so an
-intentional non-training run is judged against the stages it was asked to
-produce. Aggregated status never replaces the underlying per-phase gate chain.
-For report schemas, outputs, and feature flags, see
-[`aggregators.md`](aggregators.md).
-
-## 7. Reading and verifying the live contract
-
-Do not copy gate counts into architecture prose. The live declaration is:
-
-```text
-config/workflows.yaml
-  workflows.<workflow>.phases[].validation_gates[]
-```
-
-For any review or release:
-
-1. Parse `config/workflows.yaml` and enumerate every workflow, phase,
-   `gate_id`, validator path, severity, behavior, and threshold.
-2. Confirm each validator path has the intended input builder in
-   `MCP/hardening/gate_input_routing.py`.
-3. Confirm the validator is listed in [`validators.md`](../validation/validators.md)
-   and its phase attachment is listed in [`gates.md`](../validation/gates.md).
-4. Run the validation-gate, input-routing, workflow-schema, and documentation
-   consistency tests before changing severity or thresholds.
-
-Runtime evidence is split across two surfaces:
-
-- `runtime/state/runs/<run-id>/checkpoints/<phase>_checkpoint.json` contains the
-  phase's complete persisted gate chain.
-- `runtime/state/workflows/<workflow-id>.json` contains workflow phase outputs
-  and is the state used by resume logic.
-
-Use the checkpoint to understand what each gate reported and the workflow state
-to understand how the runner proceeded. Treat a structured skip, waiver,
-warning failure, critical failure, and successful validation as distinct
-outcomes.
+Stop at the first failed required gate and report its evidence verbatim. The
+correct response to a failing gate is to repair the artifact or obtain a
+governed waiver—not to hide, downgrade, or reinterpret the failure.
