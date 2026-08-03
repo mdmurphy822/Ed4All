@@ -365,12 +365,12 @@ Trainforge/tests/test_synthesize_training_stratified.py
 # source-id parse, the dart_chunks/ read path, the stage_dart_outputs tool
 # name, and the 'dart_conversion' phase-key note for pre-migration runs.
 scripts/archive/wave81_reclassify_chunks.py
-scripts/calibration_harness.py
+scripts/harness/calibration_harness.py
 scripts/integration/run_local_generation_smoke.py
-scripts/mailbox_servicer.py
-scripts/repair_partial_resume_state.py
-scripts/semantik_rerender.py
-scripts/structure_scorecard.py
+scripts/ops/mailbox_servicer.py
+scripts/ops/repair_partial_resume_state.py
+scripts/ops/semantik_rerender.py
+scripts/harness/structure_scorecard.py
 
 # ── SCRIPT LEGACY-COMPAT TESTS + FIXTURES (WHAT-MUST-STAY) ───────────────────────
 # Build / assert on dart:<doc># source-ids, data-dart-* HTML, .dart-* styling

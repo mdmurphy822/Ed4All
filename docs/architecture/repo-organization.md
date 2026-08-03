@@ -6,7 +6,9 @@ same day (owner decision): `state/`, `training-captures/`, `seats/`, `demo/`,
 `extracted/`, `testruns/`, `scratchpad/`, and `shots/` all live under the
 single gitignored `runtime/` root, with compat symlinks at `state`,
 `training-captures`, and `seats` until the paused run finishes and operator
-env files are updated. Phase 2 (`scripts/` re-taxonomy) is pending; the
+env files are updated. Phase 2 (`scripts/` re-taxonomy) landed 2026-08-02;
+one campaign-specific root wrapper remains temporarily ratcheted pending its
+separate public-release disposition. The
 import-root moves stay **rejected** (§5). Phase 4 extended the schema
 *inward* on 2026-08-01 — the subsystem interiors now carry a declared shape
 and a flat-file cap (§7); its reorgs are pending. This document is the
@@ -99,7 +101,7 @@ unchanged. One-off scripts: date- or wave-stamped and born in
 `scripts/archive/` or `runtime/` — a script whose name contains `pilot`/`ab`/
 `wave` does not belong at `scripts/` root.
 
-## 3. `scripts/` taxonomy (Phase 2)
+## 3. `scripts/` taxonomy (Phase 2 — DONE)
 
 ```
 scripts/
@@ -109,21 +111,18 @@ scripts/
   harness/    # reusable measurement/QA harnesses (re-runnable, versioned)
               # (calibration_harness.py, gold_compare.py, structure_scorecard.py,
               #  code_index.py, ocr_recall_ab.py, ...)
-  integration/  # (exists, unchanged)
-  codegen/      # (exists, unchanged)
-  archive/      # (exists) one-shots after their campaign ends; pilots retire here
-  tests/        # (exists) tests move only when their subject moves
+  integration/  # cross-subsystem integration tools
+  codegen/      # generated-contract maintenance
+  archive/      # one-shots after their campaign ends; pilots retire here
+  tests/        # tests move only when their subject moves
 ```
 
 Placement question for any new script: *documented operator procedure* →
 `ops/`; *produces a measurement you'll want again* → `harness/`; *one
-campaign* → `archive/` (or `runtime/` if truly scratch). Known references to sweep
-when Phase 2 executes: `MCP/tests/test_mailbox_servicer_stop.py` /
-`test_repair_partial_resume_state.py` (`scripts.` imports),
-`tests/test_prepare_fresh_training_synthesis.py`,
-`tests/test_stratified_synthesis_pilot.py`, `scripts/tests/*` imports,
-docs/CLAUDE.md mentions, assistant campaign-tool fixed argvs, (the shots
-output dir already moved to `runtime/shots/`).
+campaign* → `archive/` (or `runtime/` if truly scratch). The Phase 2 move
+updated imports, tests, documented commands, code comments, fixed argument
+vectors, and repo-root derivations together; the loose-file ratchet now retains
+only the wrapper awaiting separate disposition.
 
 ## 4. `docs/` taxonomy (Phase 1 — DONE)
 
@@ -265,4 +264,3 @@ risk. None of these are started.
 
 Per § 5, mass consolidation stays rejected — these land as-touched, each with
 its reference sweep, never as one big move.
-

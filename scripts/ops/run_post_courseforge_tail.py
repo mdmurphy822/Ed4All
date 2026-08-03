@@ -31,7 +31,7 @@ fail the Trainforge-gated criticals on a Courseforge-only export; useful
 only after a full pipeline run that produced trainforge outputs).
 
 Usage:
-    python scripts/run_post_courseforge_tail.py \
+    python scripts/ops/run_post_courseforge_tail.py \
         --project-id PROJ-<course-slug>-<timestamp> \
         --course-name <course-name> \
         --libv2-root /tmp/libv2-pkgtest
@@ -45,7 +45,7 @@ import shutil
 import sys
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 

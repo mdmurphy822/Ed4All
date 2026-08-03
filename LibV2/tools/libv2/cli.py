@@ -1653,7 +1653,7 @@ def _run_ed4all_bench_eval(
     (``model_eval_bridge.run_fresh_eval``): rebuild the saved adapter into
     an :class:`AdapterCallable` and score it with :class:`SLMEvalHarness`,
     writing a fresh ``eval_report.json`` under the model dir. Real runs
-    need the ``[training]`` ML stack + the ``scripts/gpu_guard.sh`` wrap
+    need the ``[training]`` ML stack + the ``scripts/ops/gpu_guard.sh`` wrap
     on a shared-GPU box.
 
     The qualitative-judge arms (``--judge anthropic`` / ``--judge
@@ -2503,13 +2503,13 @@ def models_eval_cmd(ctx, slug: str, model_id: str, output: str,
     ``models/<model_id>/eval_report.fresh-<ts>.json`` unless ``--replace``
     is passed (then it overwrites the canonical report after a ``.bak``
     backup). A fresh run needs the ``[training]`` ML stack and, on a
-    shared-GPU box, the ``scripts/gpu_guard.sh`` wrap.
+    shared-GPU box, the ``scripts/ops/gpu_guard.sh`` wrap.
 
     \b
     Examples:
         libv2 models eval demo-course-1 qwen2-5-1-5b-demo-course-1-3a4f8c92
         libv2 models eval demo-course-1 <model_id> --fresh --smoke
-        scripts/gpu_guard.sh run --task libv2-fresh-eval -- \\
+        scripts/ops/gpu_guard.sh run --task libv2-fresh-eval -- \\
             libv2 models eval demo-course-1 <model_id> --fresh --replace
     """
     from .importer import get_model_eval_report

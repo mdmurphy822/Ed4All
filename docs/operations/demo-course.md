@@ -20,23 +20,23 @@ commit and distribute (unlike any real-textbook corpus, which stays gitignored).
 
 ## Minting the bundle
 
-The pinned, documented invocation is `scripts/build_demo_course.py`. It wraps
+The pinned, documented invocation is `scripts/ops/build_demo_course.py`. It wraps
 `ed4all run textbook-to-course` with the fixed course name + license +
 attribution, refuses to run when the fixture is missing, and refuses a `fake`
 embedding provider in `--full` mode.
 
 ```bash
 # Show the exact ed4all command without running it:
-python scripts/build_demo_course.py --full --print-only
+python scripts/ops/build_demo_course.py --full --print-only
 
 # Retrieval-ready slice (fast; stops after imscc_chunking):
 #   NOTE: this slice does NOT emit the license/attribution/NOTICE — those land
 #   at the libv2_archival phase, which this slice skips.
-python scripts/build_demo_course.py
+python scripts/ops/build_demo_course.py
 
 # Full shippable bundle (manifest license + attribution + NOTICE + real
 # vector index):
-python scripts/build_demo_course.py --full
+python scripts/ops/build_demo_course.py --full
 ```
 
 The full run mints the course under `LibV2/courses/demo-photosynthesis/` with:
@@ -71,7 +71,7 @@ Pin a real provider before a full build:
 ```bash
 export ED4ALL_EMBEDDING_PROVIDER=st          # in-process sentence-transformers (default)
 # export ED4ALL_EMBEDDING_MODEL=BAAI/bge-large-en-v1.5   # optional model pin
-python scripts/build_demo_course.py --full
+python scripts/ops/build_demo_course.py --full
 ```
 
 Determinism note: the same machine + venv + provider + model + `device=cpu` +

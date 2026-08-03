@@ -1,6 +1,6 @@
 r"""Math-span content sanitizer (round-9 — MathJax ``mjx-merror`` typeset errors).
 
-The headless render audit (``scripts/render_audit.py``) surfaced MathJax typeset
+The headless render audit (``scripts/harness/render_audit.py``) surfaced MathJax typeset
 failures that NO text audit caught — they only appear after the browser runs.
 Two OCR/VLM-emission families dominate, both INSIDE already-delimited math spans:
 

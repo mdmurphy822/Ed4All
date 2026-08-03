@@ -34,12 +34,12 @@ default.
 
 Example
 -------
-    python scripts/semantik_rerender.py \
+    python scripts/ops/semantik_rerender.py \
         --from-html SemantiK/output/foo-ch09_accessible.html \
         --synthesized SemantiK/output/foo-ch09_accessible_synthesized.json \
         --output /tmp/rerender/foo-ch09_accessible.html --diff
 
-    python scripts/semantik_rerender.py \
+    python scripts/ops/semantik_rerender.py \
         --ir SemantiK/output/foo-ch09_accessible.cascade_ir.json \
         --output /tmp/rerender/foo-ch09_accessible.html --diff
 """
@@ -54,8 +54,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 # Repo root on sys.path so ``lib.semantik`` imports resolve when the script is
-# invoked directly (``python scripts/semantik_rerender.py``).
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+# invoked directly (``python scripts/ops/semantik_rerender.py``).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 

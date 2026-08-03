@@ -20,10 +20,10 @@ Design constraints honored:
   on this project's own retrieval evals, so neither side runs alone.
 
 Usage:
-    python scripts/code_index.py build            # full (re)build, ~minutes on CPU
-    python scripts/code_index.py build --changed-only   # re-embed only changed files
-    python scripts/code_index.py query "where is DPO admissibility decided" -k 8
-    python scripts/code_index.py status           # index freshness vs git HEAD
+    python scripts/harness/code_index.py build            # full (re)build, ~minutes on CPU
+    python scripts/harness/code_index.py build --changed-only   # re-embed only changed files
+    python scripts/harness/code_index.py query "where is DPO admissibility decided" -k 8
+    python scripts/harness/code_index.py status           # index freshness vs git HEAD
 
 Re-embedding reuse: unchanged chunks (by content hash) reuse their prior
 vectors, so incremental rebuilds are cheap even in full ``build`` mode.
@@ -43,7 +43,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_INDEX_DIR = PROJECT_ROOT / "runtime" / "state" / "code_index"
 
 # Text/code files worth indexing. Everything else tracked (images, pdf
@@ -111,7 +111,7 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
 
 
-def _load_prior_vectors(index_dir: Path) -> Dict[str, "object"]:
+def _load_prior_vectors(index_dir: Path) -> Dict[str, object]:
     """content-sha -> prior embedding row, for re-embed reuse."""
     chunks_path = index_dir / "chunks.jsonl"
     emb_path = index_dir / "embeddings.npy"
@@ -232,7 +232,7 @@ def cmd_build(args: argparse.Namespace) -> int:
     return 0
 
 
-def _bm25_scores(query_terms: List[str], bm25: dict, n_docs: int) -> "object":
+def _bm25_scores(query_terms: List[str], bm25: dict, n_docs: int) -> object:
     import numpy as np
 
     k1, b = 1.5, 0.75
@@ -257,7 +257,7 @@ def cmd_query(args: argparse.Namespace) -> int:
     meta_path = index_dir / "meta.json"
     if not meta_path.exists():
         print(
-            "[code-index] no index found — run: python scripts/code_index.py build",
+            "[code-index] no index found — run: python scripts/harness/code_index.py build",
             file=sys.stderr,
         )
         return 2
@@ -269,7 +269,7 @@ def cmd_query(args: argparse.Namespace) -> int:
         print(
             f"[code-index] NOTE: index built at {meta.get('git_head', '?')[:10]}, "
             f"HEAD is {head[:10]} — results may be stale "
-            "(rebuild: python scripts/code_index.py build)",
+            "(rebuild: python scripts/harness/code_index.py build)",
             file=sys.stderr,
         )
     matrix = np.load(index_dir / "embeddings.npy")

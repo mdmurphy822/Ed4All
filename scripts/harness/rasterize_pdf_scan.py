@@ -10,11 +10,11 @@ NEW image-only PDF so a fresh output path sidesteps the extract disk-cache
 fresh files ⇒ a clean extraction). Point the SemantiK cascade at the 300-DPI
 output with ``SEMANTIK_OCR_RENDER_SCALE=4.2`` (render ≈ 300 DPI so the source
 resolution is actually sampled), and gate the change with
-``scripts/ocr_recall_ab.py`` (+3 pts or stop) before any full re-convert.
+``scripts/harness/ocr_recall_ab.py`` (+3 pts or stop) before any full re-convert.
 
 Arg-driven + generic: NO course paths are hardcoded. ``--out`` is REQUIRED so
 the script never writes next to a live conversion output by default (mirrors
-``scripts/semantik_rerender.py``).
+``scripts/ops/semantik_rerender.py``).
 
 Image encoding (why img2pdf is NOT a dependency):
   * ``--format jpeg`` (default): PIL JPEG at ``--quality`` (default 92 — avoid
@@ -35,7 +35,7 @@ invocation.
 
 Example
 -------
-    .venv/bin/python scripts/rasterize_pdf_scan.py \
+    .venv/bin/python scripts/harness/rasterize_pdf_scan.py \
         --pdf book.pdf --pages 12:41 --dpi 300 --format jpeg --quality 92 \
         --out scan_in-300/ch02.pdf
 """
@@ -68,7 +68,9 @@ def parse_page_range(spec: str, page_count: int) -> tuple[int, int]:
         else:
             start = end = int(raw)
     except (TypeError, ValueError):
-        raise ValueError(f"invalid --pages spec (want START:END or N): {spec!r}")
+        raise ValueError(
+            f"invalid --pages spec (want START:END or N): {spec!r}"
+        ) from None
     if not (1 <= start <= end <= page_count):
         raise ValueError(
             f"--pages {spec!r} out of range for a {page_count}-page PDF "

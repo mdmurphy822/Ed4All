@@ -289,7 +289,7 @@ class PrereqSequencingValidator:
         #
         # TODO(calibration): flip PREREQ_ORDER_VIOLATION to critical (severity:
         # critical + on_fail: block, set passed=n_violations==0) AFTER
-        # scripts/calibration_harness.py confirms the FP rate on >=2 corpora.
+        # scripts/harness/calibration_harness.py confirms the FP rate on >=2 corpora.
         return GateResult(
             gate_id=gate_id,
             validator_name=self.name,

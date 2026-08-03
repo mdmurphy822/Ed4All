@@ -8,14 +8,14 @@ only surface AFTER the browser runs — un-typeset math, literal LaTeX
 delimiters leaking as visible text, MathJax error nodes, duplicate ids,
 broken landmark structure, and images missing alt text.
 
-Usage (name=path pairs, like scripts/shoot_pages.py)::
+Usage (name=path pairs, like scripts/harness/shoot_pages.py)::
 
-    python scripts/render_audit.py ch02=state/qa/visual/ch02_conv.html \\
+    python scripts/harness/render_audit.py ch02=state/qa/visual/ch02_conv.html \\
         ch09=state/qa/visual/ch09_conv.html [--json-out report.json]
 
 Exit code is non-zero when any page has a failure-severity finding.
 
-RAM GUARD: mirrors scripts/shoot_pages.py — Chromium typesetting thousands
+RAM GUARD: mirrors scripts/harness/shoot_pages.py — Chromium typesetting thousands
 of MathJax equations can spike multiple GB, so this refuses to launch under
 6 GB MemAvailable and never runs alongside an ed4all synthesis.
 

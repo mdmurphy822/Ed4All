@@ -70,9 +70,9 @@ init config and uses a cached BERT-WordPiece tokenizer, and A0 reuses the
 already-cached ModernBERT-base, so smoke runs fully offline (no weight
 downloads) and exercises the real train+eval+realpdf+resume loop end to end.
 
-Usage (real GPU benchmark is wrapped by ``scripts/gpu_guard.sh`` — this script
+Usage (real GPU benchmark is wrapped by ``scripts/ops/gpu_guard.sh`` — this script
 does NOT self-flock):
-    cd SemantiK && ../scripts/gpu_guard.sh run --task bench-standard -- \
+    cd SemantiK && ../scripts/ops/gpu_guard.sh run --task bench-standard -- \
       ../.venv/bin/python -m scripts.benchmark_structure_backbones \
         --splits standard --license-partition both
 """

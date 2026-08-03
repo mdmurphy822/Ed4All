@@ -11,7 +11,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
-_SCRIPT = Path(__file__).resolve().parents[1] / "calibration_harness.py"
+_SCRIPT = Path(__file__).resolve().parents[1] / "harness" / "calibration_harness.py"
 _spec = importlib.util.spec_from_file_location("calibration_harness", _SCRIPT)
 ch = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = ch

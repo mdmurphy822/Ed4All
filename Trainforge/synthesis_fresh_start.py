@@ -1,6 +1,6 @@
 """Fresh-start identity contract for training-pair synthesis.
 
-The reset operation itself lives in ``scripts/prepare_fresh_training_synthesis``.
+The reset operation itself lives in ``scripts/ops/prepare_fresh_training_synthesis``.
 This module is intentionally importable by the synthesis runtime without
 depending on workflow-state implementation details.
 """

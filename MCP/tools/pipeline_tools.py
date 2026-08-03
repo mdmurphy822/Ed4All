@@ -11985,7 +11985,7 @@ def _run_semantik_v2_conversion(
     # cascade_ir write try-block, so an exception skipped the cascade_ir.json
     # write entirely. Swallowing it into `[]` here would instead PERSIST a
     # silently-empty region_provenance — a broken re-render source for
-    # `scripts/semantik_rerender.py --ir`, and an evidence-free (therefore
+    # `scripts/ops/semantik_rerender.py --ir`, and an evidence-free (therefore
     # not_evaluated) affordance verdict. So the exception is CAPTURED and
     # re-raised at the write seam below, preserving the original skip-the-write
     # behavior exactly.
@@ -12045,7 +12045,7 @@ def _run_semantik_v2_conversion(
     # (no chapter grouping, region_kind, cell grids, image src, or full page
     # sets), so it alone cannot drive build_chapters_ir → normalize_cascade. The
     # IR JSON is exactly the bridge shape _SemantikBridgeResult / from_bridge_json
-    # consume; scripts/semantik_rerender.py reads it back. Best-effort + non-fatal
+    # consume; scripts/ops/semantik_rerender.py reads it back. Best-effort + non-fatal
     # (a re-render convenience, never a conversion gate).
     try:
         from lib.semantik.cascade_ir import (

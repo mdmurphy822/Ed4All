@@ -8,7 +8,7 @@ description: Hybrid (BM25 + semantic) search over the tracked codebase via the l
 Query the local hybrid code index (`runtime/state/code_index/`, gitignored):
 
 ```bash
-python scripts/code_index.py query "<natural-language or symbol-ish query>" -k 8
+python scripts/harness/code_index.py query "<natural-language or symbol-ish query>" -k 8
 ```
 
 Useful flags: `--paths-only` (no snippets), `-k N` (result count),
@@ -19,12 +19,12 @@ Interpreting output: each hit is `path:start-end` with a semantic score
 low BM25 = conceptual neighbor. Follow up with Read/Grep on the hit — the
 index locates, it does not prove.
 
-Freshness: `python scripts/code_index.py status` (nonzero exit = stale vs git
+Freshness: `python scripts/harness/code_index.py status` (nonzero exit = stale vs git
 HEAD). If stale after significant changes, rebuild — cheap because unchanged
 chunks reuse their vectors:
 
 ```bash
-python scripts/code_index.py build          # CPU by default; --device cuda only when the card is free
+python scripts/harness/code_index.py build          # CPU by default; --device cuda only when the card is free
 ```
 
 Constraints baked in: offline (local `all-MiniLM-L6-v2` only), CPU by

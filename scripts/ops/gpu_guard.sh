@@ -11,12 +11,12 @@
 #     (e.g. SemantiK's training/train_structure.py, which does NOT take the flock).
 #
 # Primary entrypoint:
-#   scripts/gpu_guard.sh run --task LABEL -- <command...>
+#   scripts/ops/gpu_guard.sh run --task LABEL -- <command...>
 #       Block until (used <= MAX_USED) AND the shared flock is free, then hold
 #       the flock for the command's entire lifetime (auto-released on exit) and
 #       exec it. This is what the build launcher wraps `ed4all run` with.
-#   scripts/gpu_guard.sh status            # GPU + procs + lock + threshold
-#   scripts/gpu_guard.sh wait              # VRAM-gate only (no flock); for ad-hoc use
+#   scripts/ops/gpu_guard.sh status            # GPU + procs + lock + threshold
+#   scripts/ops/gpu_guard.sh wait              # VRAM-gate only (no flock); for ad-hoc use
 #
 # Env overrides (flags win):
 #   ED4ALL_GPU_LOCK         lock path     (default /tmp/semantik_qwen_train.lock — shared w/ Semantic)

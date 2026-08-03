@@ -821,15 +821,15 @@ ed4all run trainforge_train --course-name <course-slug> --base-model qwen2.5-1.5
 `--dry-run` produces a runner plan JSON dump without invoking the trainer (no GPU, no network).
 
 **Real fitting runs through the repository-managed training environment, not a
-bare `pip install`.** `scripts/bootstrap-training-env.sh` builds the qualified
-band offline-first from `$ED4ALL_TRAINING_WHEEL_DIR`, and `scripts/ed4all-training`
+bare `pip install`.** `scripts/ops/bootstrap-training-env.sh` builds the qualified
+band offline-first from `$ED4ALL_TRAINING_WHEEL_DIR`, and `scripts/ops/ed4all-training`
 is the launcher — it fails **before** any model weight loads if Torch,
 Transformers, TRL, PEFT, Accelerate or Datasets falls outside that band. Do not
 repair a band failure by editing the system Python environment. Full profile
 detail (the `gb10-cu130` aarch64 profile, wheel SHA-256 pins,
 `ED4ALL_TRAINING_OFFLINE_ONLY`, `ED4ALL_TRAINING_PROFILE`) and the **required
 Nemotron Nano canary preflight** — a copied override file carrying
-`max_steps: 1` + `dpo_learning_rate: 1.0e-6`, run through `scripts/ed4all-training`,
+`max_steps: 1` + `dpo_learning_rate: 1.0e-6`, run through `scripts/ops/ed4all-training`,
 inspected for SFT/DPO loss + peak GPU memory + wall time before the measured DPO
 rate is pinned for production — live in
 [`docs/operations/nemotron-lora-canary.md`](../docs/operations/nemotron-lora-canary.md).

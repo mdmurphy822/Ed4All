@@ -341,7 +341,7 @@ SemantiK/semantik_structure/arxiv_license.py
 SemantiK/semantik_structure/arxiv_sections.py
 SemantiK/scripts/_figure_fetch_lib.py
 
-# Calibration harness generated measurement artifact (scripts/calibration_harness.py)
+# Calibration harness generated measurement artifact (scripts/harness/calibration_harness.py)
 /calibration_report.json
 
 # QA harness artifacts (gold-compare reports, scorecards, rendered chapters,

@@ -3,7 +3,7 @@
 Repeatable procedure for eyeballing assembled end-user course pages and
 catching render-time defects that no schema or gate can see. Pairs the
 manual PNG review (Claude reads the screenshots) with the automated
-`scripts/render_audit.py` browser check (GAP 3) so the human sweep only
+`scripts/harness/render_audit.py` browser check (GAP 3) so the human sweep only
 has to adjudicate *look-and-feel*, not *is the math broken*.
 
 This is the productionized version of the round-8 browser check: instead
@@ -20,7 +20,7 @@ the PNGs against a fixed exemplar reference.
 
 ## RAM guard (mandatory)
 
-Both `scripts/shoot_pages.py` and `scripts/render_audit.py` refuse to
+Both `scripts/harness/shoot_pages.py` and `scripts/harness/render_audit.py` refuse to
 launch Chromium when `MemAvailable < 6 GB` or when an `ed4all run
 textbook` synthesis is in flight (typesetting thousands of MathJax
 equations can spike multiple GB and OOM the box). Check first:
@@ -45,12 +45,12 @@ Pick the review matrix — **chapters × schemes × scroll depths**. A good
 default is 2-3 representative chapters (one math-heavy, one table-heavy,
 one TOC/front-matter), both light + dark schemes, at several scroll
 depths so callouts, tables, and the TOC all land in frame.
-`scripts/shoot_pages.py` already sweeps light/dark and a fixed set of
+`scripts/harness/shoot_pages.py` already sweeps light/dark and a fixed set of
 scroll fractions per page:
 
 ```bash
 cd runtime/state/qa/visual
-python ../../../scripts/shoot_pages.py \
+python ../../../scripts/harness/shoot_pages.py \
   ch02=ch02_conv.html ch09=ch09_conv.html ch04=ch04_conv.html
 # → shots/<name>_<scheme>_<depth>.png
 ```
@@ -61,7 +61,7 @@ Before reading a single pixel, let the browser check the mechanical
 defects so the human sweep can focus on aesthetics:
 
 ```bash
-python scripts/render_audit.py \
+python scripts/harness/render_audit.py \
   ch02_conv=state/qa/visual/ch02_conv.html \
   ch09_conv=state/qa/visual/ch09_conv.html \
   --json-out runtime/state/qa/visual/render_audit.json
@@ -112,10 +112,10 @@ notes so the sweep is reproducible and diffable across runs.
 
 ## Related tooling
 
-- `scripts/shoot_pages.py` — the screenshot shooter (light/dark ×
+- `scripts/harness/shoot_pages.py` — the screenshot shooter (light/dark ×
   scroll-depth sweep, RAM-guarded).
-- `scripts/render_audit.py` — the automated DOM audit (GAP 3); pure
+- `scripts/harness/render_audit.py` — the automated DOM audit (GAP 3); pure
   scanners are unit-tested in `scripts/tests/test_render_audit.py`.
-- `scripts/retrieval_smoke.py` — the retrieval-side smoke harness (GAP 2)
+- `scripts/harness/retrieval_smoke.py` — the retrieval-side smoke harness (GAP 2)
   for the "is the built course askable" question, orthogonal to the
   visual sweep.

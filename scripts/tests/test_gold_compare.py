@@ -1,4 +1,4 @@
-"""Unit tests for scripts/gold_compare.py.
+"""Unit tests for scripts/harness/gold_compare.py.
 
 All fixtures are tiny synthetic chunk_v4 / HTML blobs built in-test -- no course
 data is read from disk (repo rule: tracked tests must not reference course data).
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "harness"))
 
 import gold_compare as gc  # noqa: E402
 

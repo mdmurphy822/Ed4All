@@ -34,7 +34,7 @@ so the script never writes next to a live conversion output by default.
 
 Example
 -------
-    python scripts/assemble_enduser_page.py \
+    python scripts/integration/assemble_enduser_page.py \
         --content /tmp/rerender/foo-ch09_accessible.html \
         --template Courseforge/templates/accessibility/accessible_content_template.html \
         --title "Roots and Radicals" --course-name "Intro Algebra" \
@@ -50,9 +50,9 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 # Repo root on sys.path so ``lib.semantik`` imports resolve when the script is
-# run directly from anywhere (mirrors scripts/semantik_rerender.py).
+# run directly from anywhere (mirrors scripts/ops/semantik_rerender.py).
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
@@ -240,7 +240,7 @@ def assemble(
     # Replace the template's <main> INNER with a single <h1> + the fragment.
     # The template's placeholder demo sections (objectives/content/concepts) are
     # dropped; the <main> open/close tags + landmark stay (single <main>).
-    def _inject(m: "re.Match[str]") -> str:
+    def _inject(m: re.Match[str]) -> str:
         open_tag, _old_inner, close_tag = m.group(1), m.group(2), m.group(3)
         h1 = f"<h1>{title}</h1>"
         return f"{open_tag}\n{h1}\n{fragment}\n{close_tag}"

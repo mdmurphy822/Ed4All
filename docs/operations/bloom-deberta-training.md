@@ -75,7 +75,7 @@ at all.
 
 This mirrors the "start cheap, escalate only if the cheap path falls
 short" posture the rest of this runbook already takes with the light venv
-(§3) vs. `scripts/bootstrap-training-env.sh`.
+(§3) vs. `scripts/ops/bootstrap-training-env.sh`.
 
 ---
 
@@ -83,7 +83,7 @@ Four stages, run in order:
 
 1. One-time weight pre-seed (§1)
 2. Idle-check every vLLM seat (§2)
-3. A light training venv — NOT `scripts/bootstrap-training-env.sh` (§3)
+3. A light training venv — NOT `scripts/ops/bootstrap-training-env.sh` (§3)
 4. The multiclass command above (recommended first — see Decision Protocol),
    OR the six per-level one-vs-rest training commands + reading
    `summary.json` (§4, §5)
@@ -168,9 +168,9 @@ proceeding.
 
 ---
 
-## §3 — Training venv (light path, NOT `scripts/bootstrap-training-env.sh`)
+## §3 — Training venv (light path, NOT `scripts/ops/bootstrap-training-env.sh`)
 
-`scripts/bootstrap-training-env.sh` exists for the strict, version-banded
+`scripts/ops/bootstrap-training-env.sh` exists for the strict, version-banded
 Nemotron/TRL/PEFT/Accelerate/Datasets fit (`docs/operations/nemotron-lora-canary.md`)
 — overkill here. `train_bloom_deberta.py`'s heavy imports are deferred inside
 `main()` precisely so it never needs that band: it imports only `torch`,

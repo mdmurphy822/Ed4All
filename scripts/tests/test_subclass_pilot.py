@@ -4,7 +4,7 @@ Exercises the pilot's real responsibilities — IR discovery, mock-client
 selection, the render + subclass pass, per-chapter + corpus report aggregation,
 distribution merge, bucket-collapse detection, and --apply HTML write. The
 well-tested IR→chapters bridge (``build_chapters_ir``, owned by
-``scripts/semantik_rerender``) is stubbed to a chapter carrying a worked-example
+``scripts/ops/semantik_rerender``) is stubbed to a chapter carrying a worked-example
 composite unit so the render seam has a real unit to subclass. No GPU / network.
 """
 from __future__ import annotations
@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from lib.semantik.adapter import _AdapterBlock, _AdapterChapter
-from scripts import subclass_pilot as pilot
+from scripts.archive import subclass_pilot as pilot
 
 
 def _worked_example_chapter():

@@ -49,7 +49,7 @@ def training_runtime_versions() -> dict[str, str]:
         raise RuntimeError(
             "Trainforge training runtime is incomplete; missing "
             f"{missing}. Build the repo-managed environment with "
-            "scripts/bootstrap-training-env.sh."
+            "scripts/ops/bootstrap-training-env.sh."
         )
     return out
 
@@ -85,7 +85,7 @@ def assert_supported_training_runtime(
             "unsupported Trainforge training runtime: "
             + "; ".join(incompatible)
             + ". Do not modify system Python; run through "
-            "scripts/ed4all-training using the repo-managed .venv-training."
+            "scripts/ops/ed4all-training using the repo-managed .venv-training."
         )
     return resolved
 
@@ -116,7 +116,7 @@ def assert_gb10_cu130_training_runtime(
     if missing:
         raise RuntimeError(
             "GB10 CUDA 13 training runtime is incomplete; missing "
-            f"{missing}. Run scripts/bootstrap-training-env.sh."
+            f"{missing}. Run scripts/ops/bootstrap-training-env.sh."
         )
 
     incompatible = [

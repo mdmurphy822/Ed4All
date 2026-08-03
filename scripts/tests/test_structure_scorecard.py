@@ -1,4 +1,4 @@
-"""Synthetic-fixture tests for scripts/structure_scorecard.py.
+"""Synthetic-fixture tests for scripts/harness/structure_scorecard.py.
 
 All fixtures are inline synthetic HTML strings -- NO reference to inputs/ or any
 course-data path (those are gitignored, internal-validation only). Each scored
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "harness"))
 
 import structure_scorecard as ss  # noqa: E402
 
@@ -539,7 +539,7 @@ def test_verdict_bands():
 
 def test_composite_excludes_report_only_dims():
     # math + meta-desc/author never enter the weighted composite denominator.
-    r = _score(_doc(GOOD_BODY))
+    _score(_doc(GOOD_BODY))
     weights = ss.CONFIG["weights"]
     assert "math" not in weights
     assert set(weights) <= {"deliver", "heading", "landmarks", "cleanliness", "image_a11y", "language"}

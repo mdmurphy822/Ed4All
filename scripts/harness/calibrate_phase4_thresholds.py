@@ -40,30 +40,27 @@ top-level keys to the same YAML file.
 
 CLI invocation::
 
-    python scripts/calibrate_phase4_thresholds.py \\
+    python scripts/harness/calibrate_phase4_thresholds.py \\
         --course-slug mini-101 \\
         --gate objective_assessment \\
         --sweep-from 0.30 \\
         --sweep-to 0.80 \\
         --steps 11
 
-Verification: ``python scripts/calibrate_phase4_thresholds.py --help`` exits 0.
+Verification: ``python scripts/harness/calibrate_phase4_thresholds.py --help`` exits 0.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import logging
-import math
-import os
-import statistics
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 # Ensure we can import lib.* + Courseforge.scripts.blocks regardless of cwd.
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
@@ -425,7 +422,7 @@ def _confusion(predicted: Iterable[str], expected: Iterable[str]) -> Tuple[int, 
     is "gate fired and the holdout said the row needed regeneration".
     """
     tp = fp = fn = tn = 0
-    for p, e in zip(predicted, expected):
+    for p, e in zip(predicted, expected, strict=False):
         p_pos = p in ("regenerate", "block")
         e_pos = e in ("regenerate", "block")
         if p_pos and e_pos:
@@ -709,14 +706,18 @@ def _expected_calibration_error(
     bin_lo = [i / n_bins for i in range(n_bins)]
     bin_hi = [(i + 1) / n_bins for i in range(n_bins)]
     ece = 0.0
-    for lo, hi in zip(bin_lo, bin_hi):
+    for lo, hi in zip(bin_lo, bin_hi, strict=False):
         if hi == 1.0:
             members = [
-                (c, k) for c, k in zip(confidences, correct) if lo <= c <= hi
+                (c, k)
+                for c, k in zip(confidences, correct, strict=False)
+                if lo <= c <= hi
             ]
         else:
             members = [
-                (c, k) for c, k in zip(confidences, correct) if lo <= c < hi
+                (c, k)
+                for c, k in zip(confidences, correct, strict=False)
+                if lo <= c < hi
             ]
         if not members:
             continue

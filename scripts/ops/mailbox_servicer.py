@@ -13,10 +13,10 @@ left claimed and printed as ``NEEDS_AGENT`` so the outer Claude session can
 dispatch a real subagent and complete them via ``--complete``.
 
 Usage:
-    python scripts/mailbox_servicer.py --run-id RID            # drain deterministic
-    python scripts/mailbox_servicer.py --run-id RID --watch 90 # keep draining for Ns
-    python scripts/mailbox_servicer.py --run-id RID --complete TASK_ID --result-file F
-    python scripts/mailbox_servicer.py --run-id RID --list     # just list, no execute
+    python scripts/ops/mailbox_servicer.py --run-id RID            # drain deterministic
+    python scripts/ops/mailbox_servicer.py --run-id RID --watch 90 # keep draining for Ns
+    python scripts/ops/mailbox_servicer.py --run-id RID --complete TASK_ID --result-file F
+    python scripts/ops/mailbox_servicer.py --run-id RID --list     # just list, no execute
 """
 from __future__ import annotations
 
@@ -27,16 +27,16 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from MCP.orchestrator.local_dispatcher import GRACEFUL_STOP_ERROR_CODE  # noqa: E402
-from MCP.orchestrator.task_mailbox import TaskMailbox  # noqa: E402
-from MCP.tools.pipeline_tools import _build_tool_registry  # noqa: E402
 from lib.generation.stop_control import (  # noqa: E402
     GracefulStopRequested,
     stop_requested,
 )
+from MCP.orchestrator.local_dispatcher import GRACEFUL_STOP_ERROR_CODE  # noqa: E402
+from MCP.orchestrator.task_mailbox import TaskMailbox  # noqa: E402
+from MCP.tools.pipeline_tools import _build_tool_registry  # noqa: E402
 
 # Tools that are pure deterministic transforms (no LLM completion needed).
 DETERMINISTIC_TOOLS = {

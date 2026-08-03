@@ -102,30 +102,8 @@ libflat:write_facade.py
 
 # --- docs/ single-file-dir escapes (none currently needed) -----------------
 
-# --- scripts/ loose-file snapshot (frozen, 2026-07-29 — Phase 2 shrinks this)
-script:assemble_enduser_page.py
-script:bootstrap-training-env.sh
-script:build_demo_course.py
-script:calibrate_phase4_thresholds.py
-script:calibration_harness.py
-script:ed4all-training
-script:gold_compare.py
-script:gpu_guard.sh
-script:mailbox_servicer.py
+# --- scripts/ loose-file snapshot (frozen; campaign wrapper pending disposition)
 script:nvidia_corpus_to_semantik.py
-script:ocr_recall_ab.py
-script:prepare_fresh_training_synthesis.py
-script:rasterize_pdf_scan.py
-script:reasoning_qc_calibration_ab.py
-script:render_audit.py
-script:repair_partial_resume_state.py
-script:retrieval_smoke.py
-script:run_post_courseforge_tail.py
-script:semantik_rerender.py
-script:shoot_pages.py
-script:stratified_synthesis_pilot.py
-script:structure_scorecard.py
-script:subclass_pilot.py
 
 # --- interior flat-file caps (check 5; seeded 2026-08-01) -----------------
 # Frozen loose-code-file count per interior directory. Growing past the cap

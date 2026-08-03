@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from scripts.prepare_fresh_training_synthesis import apply_plan, build_plan
+from scripts.ops.prepare_fresh_training_synthesis import apply_plan, build_plan
 from Trainforge.synthesis_fresh_start import (
-    FreshStartError,
     MARKER_NAME,
     SYNTHESIS_ARTIFACT_NAMES,
+    FreshStartError,
     require_fresh_start_marker,
 )
 

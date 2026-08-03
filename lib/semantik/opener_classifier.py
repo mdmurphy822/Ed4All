@@ -11,7 +11,7 @@ exercises and the next example.
 
 This module is a pure text predicate over an opener candidate's text, applied at
 the Ed4All adapter seam (:mod:`lib.semantik.adapter`) so BOTH the live-conversion
-render path AND the ``scripts/semantik_rerender.py`` re-render path promote the
+render path AND the ``scripts/ops/semantik_rerender.py`` re-render path promote the
 opener labels to real ``<h4>`` headings carrying a machine-readable
 ``data-semantik-opener`` role — no cascade re-run.
 

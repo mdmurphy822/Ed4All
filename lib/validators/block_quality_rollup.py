@@ -44,7 +44,7 @@ The critical-flip path (so a failing rollup blocks promotion, FR-07/13): flip
 ``severity: critical`` + ``behavior.on_fail: block`` at the gate's
 ``# TODO(calibration)`` marker in ``config/workflows.yaml`` AND set
 ``self.passed = course_pass`` to drive the block — once
-``scripts/calibration_harness.py`` confirms the eight-dimension rubric gates'
+``scripts/harness/calibration_harness.py`` confirms the eight-dimension rubric gates'
 false-positive rate is acceptable on >=2 corpora (the anchored 0-3 scale must
 be calibrated before the mean/min-floor hard gates can block early runs). Until
 then the gate returns ``passed=True`` unconditionally so it never alters
@@ -151,7 +151,7 @@ class BlockQualityRollupValidator:
         # alter ``final_status`` (the post_rewrite_validation phase gates are
         # warn-only) until the calibration-deferred critical-flip lands.
         #
-        # TODO(calibration): when scripts/calibration_harness.py confirms the
+        # TODO(calibration): when scripts/harness/calibration_harness.py confirms the
         # rubric gates' FP rate on >=2 corpora, flip the gate row to
         # ``severity: critical`` + ``behavior.on_fail: block`` in
         # config/workflows.yaml AND change the line below to

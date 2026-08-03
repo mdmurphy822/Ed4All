@@ -4,7 +4,7 @@
 Drives the model-assisted subclassifier (:mod:`lib.semantik.subclassifier`) over
 one or more SemantiK chapters WITHOUT re-running the cascade — it re-renders each
 chapter from its persisted ``{stem}_accessible.cascade_ir.json`` sidecar (same
-lossless path as ``scripts/semantik_rerender.py``) and runs the subclass pass
+lossless path as ``scripts/ops/semantik_rerender.py``) and runs the subclass pass
 WITHIN the render seam, so the output is the fully-rendered chapter PLUS the
 payload-only ``data-semantik-subclass`` / ``semantik-sub-<label>`` attributes.
 
@@ -31,12 +31,12 @@ Chapter selection (mirrors ``semantik_rerender`` conventions)
 Example
 -------
     # dry-run pilot on two chapters (report only, mocked, CPU)
-    python scripts/subclass_pilot.py --input-dir SemantiK/output \
+    python scripts/archive/subclass_pilot.py --input-dir SemantiK/output \
         --chapters ch06,ch09 --title-map titles.json \
         --dry-run --json-out /tmp/subclass_pilot.json
 
     # corpus-wide apply of all 10 chapters (LIVE local 7B seat)
-    python scripts/subclass_pilot.py --input-dir SemantiK/output \
+    python scripts/archive/subclass_pilot.py --input-dir SemantiK/output \
         --apply --output-dir /tmp/subclass_apply \
         --title-map titles.json --json-out /tmp/subclass_apply.json
 """
@@ -51,7 +51,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 

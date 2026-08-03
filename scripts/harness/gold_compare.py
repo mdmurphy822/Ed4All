@@ -65,7 +65,7 @@ Verdict thresholds (documented here = single source of truth):
   PASS otherwise.
 
 Usage:
-  .venv/bin/python scripts/gold_compare.py \\
+  .venv/bin/python scripts/harness/gold_compare.py \\
       --gold <gold_chunks.jsonl> \\
       [--candidate-html DIR | --candidate-chunks FILE] \\
       [--map ch01=/path/a.html --map ch02=...] \\
@@ -88,7 +88,7 @@ from typing import Iterable
 # Shared math-representation folding (LaTeX ↔ unicode ↔ plain). Lives in
 # lib/semantik/ so both this harness and the SemantiK cascade share one
 # implementation (mirrors vlm_fusion._strip_latex — see that module's docstring).
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 from lib.semantik.math_fold import (  # noqa: E402
@@ -830,7 +830,7 @@ def metric_structure(gch: GoldChapter, headings: list[tuple[int, str]]) -> dict:
         if not ct:
             continue
         hit = False
-        for slug, title in gold_sections.items():
+        for _slug, title in gold_sections.items():
             gt = _heading_tokens(title)
             if gt and (gt <= ct or len(gt & ct) / len(gt) >= 0.6):
                 hit = True

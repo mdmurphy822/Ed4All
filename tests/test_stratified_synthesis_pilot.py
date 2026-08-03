@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.stratified_synthesis_pilot import (
+from scripts.archive.stratified_synthesis_pilot import (
     compare_reports,
     fallback_provenance_summary,
     isolated_runtime_environment,
@@ -17,16 +17,35 @@ from scripts.stratified_synthesis_pilot import (
 
 
 def _chunk(index: int, kind: str, bloom: str) -> dict:
+    objective_id = f"co-{index:03d}"
+    claim = f"Every example of concept {index} follows the unsupported rule."
+    correction = (
+        f"The supported rule for concept {index} follows from the concrete "
+        "relationship shown in the source example."
+    )
     return {
         "id": f"chunk-{index:03d}",
         "chunk_type": kind,
         "bloom_level": bloom,
-        "learning_outcome_refs": [f"co-{index:03d}"],
-        "correct_answer": f"The supported rule for concept {index}.",
+        "learning_outcome_refs": [objective_id],
+        "key_terms": [f"concept {index}"],
+        "correct_answer": correction,
         "text": (
             f"Instructional source text {index} explains concept {index} and "
-            "a concrete relationship because learners can compare the correct "
-            "rule with a common misconception in an example."
+            "a concrete relationship through a worked comparison and its "
+            "supported rule."
+        ),
+        "html": (
+            f'<div data-cf-block-id="content_{index:03d}#explanation_1" '
+            f'data-cf-objective-id="{objective_id}">'
+            f"<p>Instructional source text {index} explains concept {index} "
+            "through a concrete worked relationship.</p></div>"
+            f'<div class="misconception-card" '
+            f'data-cf-block-id="content_{index:03d}#misconception_1" '
+            f'data-cf-objective-id="{objective_id}">'
+            f'<h2>Common Misconception</h2><p class="misconception-claim">'
+            f'{claim}</p><p class="misconception-correction">{correction}</p>'
+            "</div>"
         ),
     }
 

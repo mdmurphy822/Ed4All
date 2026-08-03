@@ -1,4 +1,4 @@
-"""Unit tests — semantik_rerender.py --title / --title-map override (fix d).
+"""Unit tests — ops/semantik_rerender.py --title / --title-map override (fix d).
 
 Exercises the title-resolution helper directly and an end-to-end --from-html
 re-render that pins the document <h1>/<title>. CPU-only, no models.
@@ -6,12 +6,11 @@ re-render that pins the document <h1>/<title>. CPU-only, no models.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 
-import importlib.util
-
-_SCRIPT = Path(__file__).resolve().parents[1] / "semantik_rerender.py"
+_SCRIPT = Path(__file__).resolve().parents[1] / "ops" / "semantik_rerender.py"
 _spec = importlib.util.spec_from_file_location("semantik_rerender", _SCRIPT)
 rr = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(rr)

@@ -1,4 +1,4 @@
-"""GAP 2 — tests for scripts/retrieval_smoke.py.
+"""GAP 2 — tests for scripts/harness/retrieval_smoke.py.
 
 Covers the pure logic with a mocked retriever + synthetic chunks (no
 LibV2 course on disk):
@@ -20,12 +20,11 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
-_SCRIPTS = _REPO_ROOT / "scripts"
+_SCRIPTS = _REPO_ROOT / "scripts" / "harness"
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
 import retrieval_smoke as rs  # noqa: E402
-
 
 # ------------------------------------------------------------------ #
 # Fixtures.

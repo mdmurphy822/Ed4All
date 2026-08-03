@@ -43,9 +43,9 @@ unless ``--apply`` is passed.
 
 Usage
 -----
-    python scripts/repair_partial_resume_state.py --workflow-id WF-XXXX            # dry-run
-    python scripts/repair_partial_resume_state.py --workflow-id WF-XXXX --apply     # write
-    python scripts/repair_partial_resume_state.py --workflow-id WF-XXXX \
+    python scripts/ops/repair_partial_resume_state.py --workflow-id WF-XXXX            # dry-run
+    python scripts/ops/repair_partial_resume_state.py --workflow-id WF-XXXX --apply     # write
+    python scripts/ops/repair_partial_resume_state.py --workflow-id WF-XXXX \
         --incomplete-phase semantik_conversion --reset-phases staging,course_planning
 """
 from __future__ import annotations
@@ -64,7 +64,7 @@ def _state_path(workflow_id: str) -> Path:
         from lib.paths import STATE_PATH  # noqa: PLC0415
         base = Path(STATE_PATH)
     except Exception:  # noqa: BLE001 — fall back to in-tree default
-        base = Path(__file__).resolve().parent.parent / "state"
+        base = Path(__file__).resolve().parents[2] / "state"
     return base / "workflows" / f"{workflow_id}.json"
 
 

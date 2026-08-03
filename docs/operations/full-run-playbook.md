@@ -487,7 +487,7 @@ chunks, objectives, and assessments. Use the generic fresh-start tool in
 dry-run mode first:
 
 ```bash
-python scripts/prepare_fresh_training_synthesis.py \
+python scripts/ops/prepare_fresh_training_synthesis.py \
   --workflow-state runtime/state/workflows/<WORKFLOW_ID>.json \
   --training-specs-dir <PROJECT_WORKSPACE>/trainforge/training_specs \
   --runs-dir runtime/state/runs
@@ -607,7 +607,7 @@ codes: `0` ok, `2` eval refused, `3` grounded-answer pipeline unavailable.
 A faster structural smoke over the index, before paying for a full eval:
 
 ```bash
-python scripts/retrieval_smoke.py \
+python scripts/harness/retrieval_smoke.py \
   --course-code <COURSE_SLUG> --sample 25 --k 5 --engine hybrid-rrf
 ```
 

@@ -71,11 +71,11 @@ human/adjudication step decides the flip.
 
 USAGE
 -----
-    python3 scripts/calibration_harness.py
-    python3 scripts/calibration_harness.py --course sample-alg-9-full7b
-    python3 scripts/calibration_harness.py --runs-dir Courseforge/exports
-    python3 scripts/calibration_harness.py --corpora /data/extra_lib --max-corpora 4
-    python3 scripts/calibration_harness.py --out /tmp/calibration_report.json
+    python3 scripts/harness/calibration_harness.py
+    python3 scripts/harness/calibration_harness.py --course <course-slug>
+    python3 scripts/harness/calibration_harness.py --runs-dir Courseforge/exports
+    python3 scripts/harness/calibration_harness.py --corpora /path/to/extra-corpora --max-corpora 4
+    python3 scripts/harness/calibration_harness.py --out /tmp/calibration_report.json
 """
 from __future__ import annotations
 
@@ -276,11 +276,11 @@ _CAL_MARKER = "TODO(calibration)"
 def _workflows_config_path() -> Path:
     """Resolve config/workflows.yaml relative to the repo root.
 
-    Computes the repo root inline (``scripts/`` is a direct child of the repo root)
+    Computes the repo root from this module's location.
     rather than calling ``_repo_root`` — this runs at import time, BEFORE that helper is
     defined further down the module.
     """
-    return Path(__file__).resolve().parent.parent / "config" / "workflows.yaml"
+    return Path(__file__).resolve().parents[2] / "config" / "workflows.yaml"
 
 
 def deferred_flip_gate_ids_from_config(
@@ -429,8 +429,7 @@ class CorpusResult:
 # Path resolution (relocatable; honors lib.paths if available, else repo-relative)
 # --------------------------------------------------------------------------------------
 def _repo_root() -> Path:
-    # scripts/ is a direct child of the repo root.
-    return Path(__file__).resolve().parent.parent
+    return Path(__file__).resolve().parents[2]
 
 
 def _libv2_courses_root() -> Path:
@@ -1622,7 +1621,7 @@ def aggregate(
 
     return {
         "report_version": "1.0",
-        "tool": "scripts/calibration_harness.py",
+        "tool": "scripts/harness/calibration_harness.py",
         "purpose": (
             "Per-gate-family fire-rate measurement across discovered corpora to inform the "
             "framework gate-family critical-flips (config/workflows.yaml # TODO(calibration) "
@@ -1706,9 +1705,9 @@ def print_summary(report: dict[str, Any]) -> None:
         print(f"  [OK] {c['corpus_id']}  key={c['corpus_key']}  {rep}")
     if distinct < 2:
         print(
-            "\n** Only %d distinct corpus available — EVERY gate family is "
+            f"\n** Only {distinct} distinct corpus available — EVERY gate family is "
             "flip_ready=false (needs >=2 DISTINCT corpora; runs of one corpus do not "
-            "count). A 2nd-corpus run unblocks the flips. **" % distinct
+            "count). A 2nd-corpus run unblocks the flips. **"
         )
     print("-" * 88)
     print(

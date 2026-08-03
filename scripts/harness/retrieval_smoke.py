@@ -53,7 +53,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 # Repo root on path so ``LibV2`` / ``lib`` import when run as a script.
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
@@ -477,7 +477,7 @@ def _resolve_libv2_root(cli_root: Optional[str]) -> Path:
     env = os.environ.get("ED4ALL_LIBV2_ROOT")
     if env:
         return Path(env).resolve()
-    return (Path(__file__).resolve().parents[1] / "LibV2").resolve()
+    return (Path(__file__).resolve().parents[2] / "LibV2").resolve()
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:

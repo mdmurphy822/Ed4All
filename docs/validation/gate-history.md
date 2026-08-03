@@ -255,7 +255,7 @@ focused on the current authoritative counts.
 > change `final_status`; the `# TODO(calibration)` critical-flip (flip the YAML
 > row to `severity: critical` + `behavior.on_fail: block` AND set
 > `passed=course_pass` in the validator so a failing rollup BLOCKS promotion,
-> FR-07/13) is DEFERRED until `scripts/calibration_harness.py` confirms the
+> FR-07/13) is DEFERRED until `scripts/harness/calibration_harness.py` confirms the
 > rubric gates' FP rate on ≥2 corpora (the anchored 0-3 scale must be calibrated
 > before the mean/min-floor hard gates can block early runs; standard multi-wave
 > deferred-flip — IB3 is the roadmap's single documented fastest-flip exception,
@@ -514,7 +514,7 @@ The count table is re-derived from `config/workflows.yaml` (+1 warning gate on t
 
 The second calibration flip wave (successor to the 17-gate wave that promoted
 `anatomy_slot_presence` / `callout_structure` et al.). The calibration harness
-(`scripts/calibration_harness.py`) was re-run against the recorded calibration
+(`scripts/harness/calibration_harness.py`) was re-run against the recorded calibration
 evidence — 5 distinct internal calibration corpora discovered dynamically (no
 slug pinned), 22 contributing runs, ≥2-corpora precondition satisfied. Seven
 gate families measured `flip_ready` (≥2 corpora, pooled AND worst-corpus

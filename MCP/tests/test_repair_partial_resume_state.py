@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from scripts.repair_partial_resume_state import apply_plan, build_plan
+from scripts.ops.repair_partial_resume_state import apply_plan, build_plan
 
 
 def test_rewind_clears_later_pause_and_exposes_incomplete_phase():

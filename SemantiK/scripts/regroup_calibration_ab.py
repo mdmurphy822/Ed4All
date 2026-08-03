@@ -2,7 +2,7 @@
 """Shadow A/B calibration harness for the Stage-5e pedagogical-unit REGROUP
 (``SEMANTIK_UNIT_REGROUP``).
 
-Measured-experiment arbiter (mirrors ``scripts/ocr_recall_ab.py``) for ITEM1 of
+Measured-experiment arbiter (mirrors ``scripts/harness/ocr_recall_ab.py``) for ITEM1 of
 the SemantiK restructuring campaign: it quantifies what flipping the regroup
 default ON does — over-merge rate (must be 0), the reduction in split
 label-only boxes, the per-doc box count delta, and the sourceId id-set shrink —

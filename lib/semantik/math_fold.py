@@ -1000,7 +1000,7 @@ def escape_math_angle_brackets(text: str) -> str:
 # ---------------------------------------------------------------------------
 # Math-span CONTENT sanitizer (2026-07-04 round-9 — MathJax typeset errors).
 # ---------------------------------------------------------------------------
-# The round-9 headless render audit (``scripts/render_audit.py``) surfaced
+# The round-9 headless render audit (``scripts/harness/render_audit.py``) surfaced
 # ``mjx-merror`` nodes that NO text audit caught — genuine MathJax *typeset*
 # failures that only appear after the browser runs. Two OCR/VLM-emission
 # families dominate, both INSIDE already-delimited math spans (so the bare-math

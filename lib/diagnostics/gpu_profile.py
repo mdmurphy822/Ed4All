@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
 ENV_BIG_MEMORY_MIN_MIB = "ED4ALL_BIG_MEMORY_MIN_MIB"
 _DEFAULT_BIG_MEMORY_MIN_MIB = 49152
 
-#: The gpu_guard busy-ceiling env (read by ``scripts/gpu_guard.sh``, default
+#: The gpu_guard busy-ceiling env (read by ``scripts/ops/gpu_guard.sh``, default
 #: 1500 MiB there). There is no Python resolver for it — the wrapper is a
 #: shell script — so this group reads the raw env directly and only warns
 #: when it is actually set to a value below half the detected total VRAM.
@@ -218,7 +218,7 @@ def _gpu_guard_warning(total_mib: int) -> List[CheckResult]:
                 "would block forever while a large model is resident"
             ),
             remediation=(
-                "do not wrap big-memory runs in scripts/gpu_guard.sh, or raise "
+                "do not wrap big-memory runs in scripts/ops/gpu_guard.sh, or raise "
                 "ED4ALL_GPU_MAX_USED_MB above the total VRAM"
             ),
             data={

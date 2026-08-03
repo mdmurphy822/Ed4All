@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 venv_dir="${repo_dir}/.venv-training"
 wheel_dir="${ED4ALL_TRAINING_WHEEL_DIR:-${HOME}/wheel-cache/training-band}"
 profile="${ED4ALL_TRAINING_PROFILE:-auto}"

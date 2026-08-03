@@ -1,4 +1,4 @@
-"""Unit tests for scripts/rasterize_pdf_scan.py.
+"""Unit tests for scripts/harness/rasterize_pdf_scan.py.
 
 The source PDF is a tiny synthetic blank-page PDF built in-test via pikepdf — no
 course data is read from disk (repo rule: tracked tests must not reference course
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "harness"))
 
 import rasterize_pdf_scan as rp  # noqa: E402
 

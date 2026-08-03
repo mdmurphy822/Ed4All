@@ -3,7 +3,7 @@
 SemantiK-converted (accessible) HTML.
 
 SemantiK converts *any* human-readable source (papers, reports, novels,
-manuals, textbooks) to accessible HTML. ``scripts/gold_compare.py`` measures
+manuals, textbooks) to accessible HTML. ``scripts/harness/gold_compare.py`` measures
 *text fidelity* against a gold chunkset; this harness measures the orthogonal
 axis: **structural and presentation quality of the emitted HTML itself**, with
 no reference document required. It is deterministic and CPU-only -- stdlib +
@@ -50,9 +50,9 @@ Dimensions (see DIMENSIONS below for the config):
 
 Usage::
 
-    python3 scripts/structure_scorecard.py --html path/to/accessible.html
-    python3 scripts/structure_scorecard.py --html some/dir/ --json-out report.json
-    python3 scripts/structure_scorecard.py --html gold_dir/ --baseline
+    python3 scripts/harness/structure_scorecard.py --html path/to/accessible.html
+    python3 scripts/harness/structure_scorecard.py --html some/dir/ --json-out report.json
+    python3 scripts/harness/structure_scorecard.py --html gold_dir/ --baseline
 
 ``--html`` accepts a single ``.html`` file or a directory (all ``*.html`` under
 it, recursively). ``--json-out`` writes the full machine-readable report.

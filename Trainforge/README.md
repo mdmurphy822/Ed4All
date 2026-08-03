@@ -30,7 +30,7 @@ Pipeline output lands under `LibV2/courses/<slug>/` — `imscc_chunks/`, `graph/
 
 - [`Trainforge/CLAUDE.md`](CLAUDE.md) — chunk shape, metadata extraction priority chain, Bloom's rubric, concept-graph edge taxonomy, decision-capture contract, and the behavior-flag table. Read **§ "Training-pair synthesis — what actually runs"** before touching synthesis: it documents which entry point reaches which pair program, and which capabilities exist but are currently unreachable.
 - [`Trainforge/architecture.md`](architecture.md) — module map.
-- [`docs/operations/nemotron-lora-canary.md`](../docs/operations/nemotron-lora-canary.md) — the qualified training environment (`scripts/bootstrap-training-env.sh` + `scripts/ed4all-training`) and the required canary preflight before a production fit.
+- [`docs/operations/nemotron-lora-canary.md`](../docs/operations/nemotron-lora-canary.md) — the qualified training environment (`scripts/ops/bootstrap-training-env.sh` + `scripts/ops/ed4all-training`) and the required canary preflight before a production fit.
 - [`docs/LICENSING.md`](../docs/LICENSING.md) — which teacher seats may author a shippable training corpus.
 
 ## License

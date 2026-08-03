@@ -237,7 +237,7 @@ unknown input fails closed).
 - `_dispatch_task_via_callable` — a directly injected callable.
 - `_dispatch_task_via_mailbox` / `_dispatch_via_mailbox` — writes a task spec to
   the file mailbox and waits for a completion envelope. This is how a Claude
-  Code session (or `scripts/mailbox_servicer.py`) services subagent work.
+  Code session (or `scripts/ops/mailbox_servicer.py`) services subagent work.
 
 `orchestrator/task_mailbox.py::TaskMailbox` is the file protocol. Root is
 `runtime/state/runs/{run_id}/mailbox/`, with the `runtime/state/runs` base overridable via

@@ -1,6 +1,6 @@
 r"""TikZ / pgfplots figure-code graceful fallback (round-10 — final).
 
-The round-10 headless render audit (``scripts/render_audit.py``) surfaced a NEW
+The round-10 headless render audit (``scripts/harness/render_audit.py``) surfaced a NEW
 MathJax ``mjx-merror`` family the round-9 span sanitizer does not touch: the VLM
 transcribed coordinate-plane FIGURES as raw TikZ picture code INSIDE math
 delimiters (``$$\begin{tikzpicture}…\end{tikzpicture}$$`` — MathJax reds it

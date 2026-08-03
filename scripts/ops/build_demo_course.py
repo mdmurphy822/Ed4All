@@ -31,13 +31,13 @@ Two build depths:
 Usage::
 
     # Retrieval-ready slice (fast; no license/NOTICE emit):
-    python scripts/build_demo_course.py
+    python scripts/ops/build_demo_course.py
 
     # Full shippable bundle (manifest license + NOTICE + real vector index):
-    python scripts/build_demo_course.py --full
+    python scripts/ops/build_demo_course.py --full
 
     # Show the exact ed4all command without running it:
-    python scripts/build_demo_course.py --full --print-only
+    python scripts/ops/build_demo_course.py --full --print-only
 
 Full mint/freeze/ship runbook: ``docs/operations/demo-course.md``.
 """
@@ -52,7 +52,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------- #
 # Pinned demo parameters (single source of truth for the bundle identity)
 # ---------------------------------------------------------------------- #
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_PDF = REPO_ROOT / "tests" / "fixtures" / "pipeline" / "fixture_corpus.pdf"
 
 # Course name → slug ``demo-photosynthesis`` via lib.ontology.slugs.libv2_course_slug.

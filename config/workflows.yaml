@@ -952,7 +952,7 @@ workflows:
           # TODO(calibration) — flip COURSE_QUALITY_ROLLUP_FAIL to critical
           # (severity: critical + on_fail: block, and set passed=course_pass in
           # the validator) so a failing rollup BLOCKS promotion (FR-07/13),
-          # AFTER scripts/calibration_harness.py confirms the rubric gates' FP
+          # AFTER scripts/harness/calibration_harness.py confirms the rubric gates' FP
           # rate on >=2 corpora (the anchored 0-3 scale must be calibrated
           # before the mean/min-floor hard gates can block early runs).
           - gate_id: block_quality_rollup
@@ -982,7 +982,7 @@ workflows:
           # the same flag).
           # TODO(calibration) — flip COURSE_INTERACTION_MIX_NARROW to critical
           # (severity: critical + on_fail: block, and set passed accordingly in
-          # the validator) AFTER scripts/calibration_harness.py confirms the
+          # the validator) AFTER scripts/harness/calibration_harness.py confirms the
           # course-level FP rate on >=2 corpora (WS3/W4 deferred-flip pattern;
           # IB3 is the single documented fastest-flip exception, this is NOT IB3).
           - gate_id: course_level_qa
@@ -1013,7 +1013,7 @@ workflows:
           # reads the flag itself).
           # TODO(calibration) — flip BLOOM_DISTRIBUTION_NO_HIGHER_ORDER to
           # critical (severity: critical + on_fail: block, and set passed
-          # accordingly in the validator) AFTER scripts/calibration_harness.py
+          # accordingly in the validator) AFTER scripts/harness/calibration_harness.py
           # confirms the course-level FP rate on >=2 corpora (WS3/W4 deferred-flip
           # pattern; IB3 is the single documented fastest-flip exception, this is
           # NOT IB3).
@@ -1040,7 +1040,7 @@ workflows:
           # course_level_qa).
           # TODO(calibration) — flip CONCEPT_MASSED_SINGLE_WEEK to critical
           # (severity: critical + on_fail: block, and set passed accordingly in
-          # the validator) AFTER scripts/calibration_harness.py confirms the
+          # the validator) AFTER scripts/harness/calibration_harness.py confirms the
           # course-level FP rate on >=2 corpora (WS3/W4 deferred-flip pattern;
           # IB3 is the single documented fastest-flip exception, this is NOT IB3).
           - gate_id: cross_week_spacing
@@ -2976,7 +2976,7 @@ workflows:
           # from real key_concepts + real prereq edges.
           # TODO(calibration) — flip PREREQ_ORDER_VIOLATION to critical
           # (severity: critical + on_fail: block, set passed=n_violations==0)
-          # AFTER scripts/calibration_harness.py confirms the FP rate on >=2
+          # AFTER scripts/harness/calibration_harness.py confirms the FP rate on >=2
           # corpora (WS3/W4 deferred-flip pattern; IB3 is the single documented
           # fastest-flip exception, this is NOT IB3).
           - gate_id: prerequisite_sequencing
@@ -4295,7 +4295,7 @@ workflows:
           # TODO(calibration) — flip COURSE_QUALITY_ROLLUP_FAIL to critical
           # (severity: critical + on_fail: block, and set passed=course_pass in
           # the validator) so a failing rollup BLOCKS promotion (FR-07/13),
-          # AFTER scripts/calibration_harness.py confirms the rubric gates' FP
+          # AFTER scripts/harness/calibration_harness.py confirms the rubric gates' FP
           # rate on >=2 corpora (the anchored 0-3 scale must be calibrated
           # before the mean/min-floor hard gates can block early runs).
           - gate_id: block_quality_rollup
@@ -4325,7 +4325,7 @@ workflows:
           # the same flag).
           # TODO(calibration) — flip COURSE_INTERACTION_MIX_NARROW to critical
           # (severity: critical + on_fail: block, and set passed accordingly in
-          # the validator) AFTER scripts/calibration_harness.py confirms the
+          # the validator) AFTER scripts/harness/calibration_harness.py confirms the
           # course-level FP rate on >=2 corpora (WS3/W4 deferred-flip pattern;
           # IB3 is the single documented fastest-flip exception, this is NOT IB3).
           - gate_id: course_level_qa
@@ -4356,7 +4356,7 @@ workflows:
           # reads the flag itself).
           # TODO(calibration) — flip BLOOM_DISTRIBUTION_NO_HIGHER_ORDER to
           # critical (severity: critical + on_fail: block, and set passed
-          # accordingly in the validator) AFTER scripts/calibration_harness.py
+          # accordingly in the validator) AFTER scripts/harness/calibration_harness.py
           # confirms the course-level FP rate on >=2 corpora (WS3/W4 deferred-flip
           # pattern; IB3 is the single documented fastest-flip exception, this is
           # NOT IB3).
@@ -4383,7 +4383,7 @@ workflows:
           # course_level_qa).
           # TODO(calibration) — flip CONCEPT_MASSED_SINGLE_WEEK to critical
           # (severity: critical + on_fail: block, and set passed accordingly in
-          # the validator) AFTER scripts/calibration_harness.py confirms the
+          # the validator) AFTER scripts/harness/calibration_harness.py confirms the
           # course-level FP rate on >=2 corpora (WS3/W4 deferred-flip pattern;
           # IB3 is the single documented fastest-flip exception, this is NOT IB3).
           - gate_id: cross_week_spacing

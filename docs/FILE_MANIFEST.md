@@ -110,8 +110,8 @@ and tool registry.
 | Kind | Paths |
 |------|-------|
 | ci/ | `integrity_check.py` + `validator_test_allowlist.txt` — the CI gate (referenced by `.github/` workflows; **USED**, do not flag) |
-| scripts/ core | `build_demo_course.py`, `calibration_harness.py`, `calibrate_phase4_thresholds.py`, `mailbox_servicer.py`, `gpu_guard.sh`, `render_audit.py`, `semantik_rerender.py`, `structure_scorecard.py`, `gold_compare.py`, `retrieval_smoke.py`, `repair_partial_resume_state.py`, `run_post_courseforge_tail.py`, OCR/raster probes, `codegen/sync_provenance_enum.py`, `scripts/integration/*`, `scripts/tests/*` |
-| Provenance-only (tracked, dead-by-design) | `scripts/archive/` (14 `wave*`/`test_wave*` one-shot LibV2 migration scripts + `README.md`) — kept for audit per documented rationale; **not** trash |
+| scripts/ durable surfaces | `scripts/ops/` (9 operator entry points), `scripts/harness/` (11 reusable measurement/QA tools), `scripts/integration/`, `scripts/codegen/`, and `scripts/tests/` |
+| Provenance-only (tracked, dead-by-design) | `scripts/archive/` (13 `wave*`/`test_wave*` migrations, 2 retired pilots, and `README.md`) — kept for audit per documented rationale; **not** trash |
 | **DATA / RUNTIME (gitignored)** | `runtime/shots/` (rendered PNGs from `shoot_pages.py`), `**/__pycache__/` |
 
 ## docs + plans + examples

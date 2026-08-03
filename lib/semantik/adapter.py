@@ -72,7 +72,7 @@ from lib.semantic_structure_extractor.semantic_structure_extractor import (
 )
 
 # Deterministic OCR heading-candidate classifier (2026-07-03 scan audit). Both
-# the live-conversion render and the ``scripts/semantik_rerender.py`` re-render
+# the live-conversion render and the ``scripts/ops/semantik_rerender.py`` re-render
 # path funnel through :func:`normalize_cascade_to_ed4all`, so demoting OCR
 # furniture / garbage headings HERE fixes both without a cascade re-run.
 # LaTeX control-sequence stripper (2026-07-04 scan audit — FIX 2). Reused so
@@ -2919,7 +2919,7 @@ def _escape_math_angle_brackets(chapters: Sequence[_AdapterChapter]) -> None:
 def _sanitize_math_spans(chapters: Sequence[_AdapterChapter]) -> None:
     r"""Fold misplaced ``&`` + dangling ``\sqrt`` out of math spans (round-9).
 
-    The headless render audit (``scripts/render_audit.py``) surfaced MathJax
+    The headless render audit (``scripts/harness/render_audit.py``) surfaced MathJax
     ``mjx-merror`` typeset failures that no text audit caught: a tabular ``&``
     the VLM pulled into a non-alignment ``$…$`` run ("Misplaced &") and an
     OCR-truncated ``\sqrt`` / ``\frac`` / ``\stackrel`` / trailing ``^``/``_``
@@ -3625,7 +3625,7 @@ def normalize_cascade_to_ed4all(
     title_override
         Optional explicit document ``<h1>`` / ``<title>`` string. When
         non-empty it bypasses :func:`_select_document_title` (used by
-        ``scripts/semantik_rerender.py`` ``--title`` / ``--title-map`` so a
+        ``scripts/ops/semantik_rerender.py`` ``--title`` / ``--title-map`` so a
         batch re-render can pin honest titles over OCR running-header noise).
 
     Returns

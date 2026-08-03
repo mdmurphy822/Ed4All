@@ -22,7 +22,7 @@ pass let through on scanned corpora:
 
 These are pure text predicates over a heading candidate's text, applied at the
 Ed4All adapter seam (:mod:`lib.semantik.adapter`) so BOTH the live-conversion
-render path AND the ``scripts/semantik_rerender.py`` re-render path (which
+render path AND the ``scripts/ops/semantik_rerender.py`` re-render path (which
 reconstructs heading blocks from already-emitted HTML/IR and never re-runs the
 Region-level ``clean_structure`` pass) benefit without a cascade re-run. The
 conversion path additionally mirrors (a)/(b) at the Region level in

@@ -1,4 +1,4 @@
-"""Unit tests for scripts/ocr_recall_ab.py.
+"""Unit tests for scripts/harness/ocr_recall_ab.py.
 
 All fixtures are tiny synthetic gold chunks / extraction dicts built in-test — no
 course data is read from disk (repo rule: tracked tests must not reference course
@@ -16,11 +16,10 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "harness"))
 
-import ocr_recall_ab as ab  # noqa: E402
 import gold_compare as gc  # noqa: E402
-
+import ocr_recall_ab as ab  # noqa: E402
 
 # ---- synthetic fixtures --------------------------------------------------
 

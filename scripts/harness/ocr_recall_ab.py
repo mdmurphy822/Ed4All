@@ -13,7 +13,7 @@ Each side is EITHER:
   * a cached-extraction ``.json`` (the ``extract_shared`` shape, loaded
     directly — a ``.json``-vs-``.json`` run needs NO SemantiK deps).
 
-The shingle math is REUSED from ``scripts/gold_compare.py`` by import (never
+The shingle math is REUSED from ``scripts/harness/gold_compare.py`` by import (never
 copied): ``gc.tokenize`` / ``gc.ngram_set`` / ``gc.SHINGLE_N`` / ``gc.load_gold``
 / ``gc.metric_recall`` — so the A/B and the harness measure recall identically.
 
@@ -29,7 +29,7 @@ restores it in ``finally`` — single-threaded CLI use only; never import-and-ca
 
 Example
 -------
-    .venv/bin/python scripts/ocr_recall_ab.py \
+    .venv/bin/python scripts/harness/ocr_recall_ab.py \
         --side-a extract_200.json --side-b scan_in-300/ch02.pdf \
         --gold gold_chunks.jsonl --chapter 2 \
         --tess-config-b "--oem 1 -c preserve_interword_spaces=1" \
@@ -44,10 +44,10 @@ import os
 import sys
 from pathlib import Path
 
-# sys.path: repo root + scripts/ + SemantiK/ so ``gold_compare`` and (lazily)
+# sys.path: repo root + scripts/harness/ + SemantiK/ so ``gold_compare`` and (lazily)
 # ``semantik_structure.extract_shared`` resolve when run directly (mirrors
 # semantik_rerender.py + test_gold_compare.py precedents).
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 _SEMANTIK_DIR = _REPO_ROOT / "SemantiK"
 for _p in (str(_REPO_ROOT), str(_SCRIPTS_DIR), str(_SEMANTIK_DIR)):
@@ -105,7 +105,7 @@ def side_cache_dir(
     if not cfg and not uw and cache_root is None:
         return None
     root = cache_root if cache_root is not None else (_SCRIPTS_DIR.parent / "state" / "ocr_ab_cache")
-    digest = hashlib.sha256(f"{cfg}|{uw}".encode("utf-8")).hexdigest()[:12]
+    digest = hashlib.sha256(f"{cfg}|{uw}".encode()).hexdigest()[:12]
     return root / f"ab_{digest}"
 
 
@@ -177,7 +177,7 @@ def _restore_env(name: str, prior: str | None) -> None:
         os.environ[name] = prior
 
 
-def score_side(gch: "gc.GoldChapter", text: str) -> dict:
+def score_side(gch: gc.GoldChapter, text: str) -> dict:
     """Recall (via ``gc.metric_recall``) + word coverage against a gold chapter."""
     rec = gc.metric_recall(gch, text)
     cand_vocab = set(gc.tokenize(text))

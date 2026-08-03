@@ -22,7 +22,7 @@ it. You report; you never edit, fix, or commit.
   `LibV2/courses/<slug>/semantik_chunks/chunks.jsonl`.
 - Optionally a GOLD reference chunkset of the same source text for
   differential scoring. When one exists, run
-  `.venv/bin/python scripts/gold_compare.py --gold <gold chunks.jsonl>
+  `.venv/bin/python scripts/harness/gold_compare.py --gold <gold chunks.jsonl>
   [--candidate-html DIR | --candidate-chunks FILE] --json-out <scratch>` and
   fold its per-chapter metrics + verdicts into your report instead of
   re-implementing recall/precision yourself.

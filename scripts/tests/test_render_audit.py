@@ -1,4 +1,4 @@
-"""GAP 3 — tests for scripts/render_audit.py.
+"""GAP 3 — tests for scripts/harness/render_audit.py.
 
 Pure-function coverage (no browser): the delimiter scanner, duplicate-id
 finder, and the assess_page findings mapper. Plus one live smoke test
@@ -14,12 +14,11 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
-_SCRIPTS = _REPO_ROOT / "scripts"
+_SCRIPTS = _REPO_ROOT / "scripts" / "harness"
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
 import render_audit as ra  # noqa: E402
-
 
 # ------------------------------------------------------------------ #
 # scan_literal_delimiters

@@ -3,8 +3,8 @@
 Real SFT/DPO fitting must use the repository-managed training environment:
 
 ```bash
-scripts/bootstrap-training-env.sh
-scripts/ed4all-training --help
+scripts/ops/bootstrap-training-env.sh
+scripts/ops/ed4all-training --help
 ```
 
 The bootstrap is offline-first and consumes
@@ -42,7 +42,7 @@ dpo_learning_rate: 1.0e-6
 ```
 
 `max_steps: 1` is a canary-only bound. Run the normal `trainforge_train`
-invocation through `scripts/ed4all-training`, inspect the SFT and DPO loss,
+invocation through `scripts/ops/ed4all-training`, inspect the SFT and DPO loss,
 peak allocated/reserved GPU memory, host available memory, and wall time, then
 repeat with the candidate DPO rates selected by the operator. Remove
 `max_steps` and pin the measured DPO rate before production. The Nano recipe

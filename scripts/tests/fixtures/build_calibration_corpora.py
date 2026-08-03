@@ -5,7 +5,7 @@ Everything emitted here is INVENTED — generic ``synthetic-corpus-alpha`` /
 ``synthetic-corpus-beta`` strings. NO real course slug, path, corpus prose, or
 textbook byte is referenced or reproduced (the operator's local courses are
 CC BY-NC-SA / internal-only). The fixture exists solely to give
-``scripts/calibration_harness.py``'s >=2-DISTINCT-corpora aggregation path a
+``scripts/harness/calibration_harness.py``'s >=2-DISTINCT-corpora aggregation path a
 deterministic, licensing-clean test target so the W8.3 across-corpora aggregate
 can be exercised without discovering (or copying) any real corpus.
 

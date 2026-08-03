@@ -1,4 +1,4 @@
-"""Unit tests for scripts/calibration_harness.py.
+"""Unit tests for scripts/harness/calibration_harness.py.
 
 All fixtures are SYNTHESIZED at fixture-load time (a hand-built validation-report dict
 and a hand-built block_quality_rollup dict) — NO real course slug / path is referenced,
@@ -12,7 +12,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
-_SCRIPT = Path(__file__).resolve().parents[1] / "calibration_harness.py"
+_SCRIPT = Path(__file__).resolve().parents[1] / "harness" / "calibration_harness.py"
 _spec = importlib.util.spec_from_file_location("calibration_harness", _SCRIPT)
 ch = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = ch
@@ -466,7 +466,7 @@ def test_uncurated_deferred_gate_is_auto_synthesized():
 # NOT the phase-level ``passed`` flag — that flag is smeared onto every block,
 # so reading it would drive every gate's fire rate toward 100%.
 # --------------------------------------------------------------------------------------
-def _read_report_dict(report_dict: dict) -> "ch.CorpusResult":
+def _read_report_dict(report_dict: dict) -> ch.CorpusResult:
     import json
     import tempfile
 

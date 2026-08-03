@@ -23,7 +23,7 @@ from typing import Any, Dict
 
 import pytest
 
-import scripts.mailbox_servicer as servicer
+import scripts.ops.mailbox_servicer as servicer
 from lib.generation import stop_control
 from lib.generation.stop_control import GracefulStopRequested
 from MCP.orchestrator.local_dispatcher import (

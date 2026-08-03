@@ -3444,7 +3444,7 @@ class WorkflowRunner:
     # guardrail steps aside.
     _SESSION_SERVICED_ENVS = (
         # Operator is running inside a Claude Code session (or an
-        # external servicer, e.g. scripts/mailbox_servicer.py) that will
+        # external servicer, e.g. scripts/ops/mailbox_servicer.py) that will
         # drain the mailbox. Set this when a servicer is attached.
         "ED4ALL_MAILBOX_SERVICED",
     )

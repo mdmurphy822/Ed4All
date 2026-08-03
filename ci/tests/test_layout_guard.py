@@ -143,7 +143,7 @@ def test_docs_taxonomy_ignores_depth_one_root_docs_files():
 
 
 def test_scripts_snapshot_catches_new_loose_file():
-    tracked = ["scripts/gold_compare.py", "scripts/new_pilot.py"]
+    tracked = ["scripts/harness/gold_compare.py", "scripts/new_pilot.py"]
     violations = guard.check_scripts_snapshot(
         tracked, allowed_scripts={"gold_compare.py"}
     )
@@ -154,7 +154,7 @@ def test_scripts_snapshot_catches_new_loose_file():
 
 def test_scripts_snapshot_ignores_subdir_contents():
     tracked = [
-        "scripts/gold_compare.py",
+        "scripts/harness/gold_compare.py",
         "scripts/archive/anything_goes_here.py",
         "scripts/tests/test_whatever.py",
     ]

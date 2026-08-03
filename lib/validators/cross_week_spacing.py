@@ -287,7 +287,7 @@ class CrossWeekSpacingValidator:
         # Warning-day-1: never blocks. ``passed`` stays True so the gate cannot
         # alter ``final_status`` until the calibration-deferred critical-flip.
         #
-        # TODO(calibration): when scripts/calibration_harness.py confirms the
+        # TODO(calibration): when scripts/harness/calibration_harness.py confirms the
         # course-level FP rate of CONCEPT_MASSED_SINGLE_WEEK on >=2 corpora,
         # flip the gate row to ``severity: critical`` + ``behavior.on_fail:
         # block`` in config/workflows.yaml AND set ``passed`` to

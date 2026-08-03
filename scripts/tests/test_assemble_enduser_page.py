@@ -16,7 +16,7 @@ _TEMPLATE = (
 # Import the arg-driven script module by path (scripts/ is not a package).
 _spec = importlib.util.spec_from_file_location(
     "assemble_enduser_page",
-    _REPO_ROOT / "scripts/assemble_enduser_page.py",
+    _REPO_ROOT / "scripts/integration/assemble_enduser_page.py",
 )
 assemble_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(assemble_mod)

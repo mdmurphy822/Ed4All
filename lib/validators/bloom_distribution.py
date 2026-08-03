@@ -52,7 +52,7 @@ Posture
 -------
 Warning-day-1 (``passed=True`` unconditionally) with a ``# TODO(calibration)``
 deferred critical-flip — the generic curve is an opinion, not a measured
-constant; do NOT flip critical until scripts/calibration_harness.py confirms the
+constant; do NOT flip critical until scripts/harness/calibration_harness.py confirms the
 FP rate on >=2 corpora. Byte-stable no-op when ``ED4ALL_BLOOM_DISTRIBUTION`` is
 unset (returns a ``BLOOM_DISTRIBUTION_DISABLED`` info issue, writes nothing,
 fires no decision event). Structurally cloned from
@@ -558,7 +558,7 @@ class BloomDistributionValidator:
 
         # Warning-day-1: ``passed`` stays True.
         #
-        # TODO(calibration): when scripts/calibration_harness.py confirms the
+        # TODO(calibration): when scripts/harness/calibration_harness.py confirms the
         # FP rate on >=2 corpora, flip the gate row to ``severity: critical`` +
         # ``behavior.on_fail: block`` in config/workflows.yaml AND set ``passed``
         # to ``"BLOOM_DISTRIBUTION_NO_HIGHER_ORDER" not in {i.code for i in issues}``

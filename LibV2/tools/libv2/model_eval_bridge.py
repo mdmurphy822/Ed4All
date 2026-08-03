@@ -35,7 +35,7 @@ Design constraints:
   gen-config drift), so the canonical report stays training-time unless
   the operator deliberately replaces it.
 
-Real GPU runs must be wrapped in ``scripts/gpu_guard.sh`` on the shared
+Real GPU runs must be wrapped in ``scripts/ops/gpu_guard.sh`` on the shared
 box (``ED4ALL_GPU_LIFECYCLE`` only sweeps inside ``ed4all run``, not a
 standalone CLI call). See ``LibV2/CLAUDE.md`` § models.
 """
@@ -60,7 +60,7 @@ TRAINING_DEPS_GUIDANCE = (
     "Install it with:\n"
     "    pip install -e '.[training]'\n"
     "from the project root, then re-run behind the shared-GPU guard:\n"
-    "    scripts/gpu_guard.sh run --task libv2-fresh-eval -- \\\n"
+    "    scripts/ops/gpu_guard.sh run --task libv2-fresh-eval -- \\\n"
     "        libv2 models eval <slug> <model_id> --fresh\n"
     "(ED4ALL_GPU_LIFECYCLE only sweeps the card inside `ed4all run`, not a "
     "standalone CLI call, so the gpu_guard wrap is mandatory on a box that "

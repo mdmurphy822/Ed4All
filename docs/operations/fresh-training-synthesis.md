@@ -8,7 +8,7 @@ workflow.
 The default invocation is read-only:
 
 ```bash
-python3 scripts/prepare_fresh_training_synthesis.py \
+python3 scripts/ops/prepare_fresh_training_synthesis.py \
   --workflow-state <workflow-state.json> \
   --training-specs-dir <training-specs> \
   --runs-dir <run-state-root>/runs \
