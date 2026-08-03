@@ -13,7 +13,7 @@ from Trainforge.synthesize_training import (
     _call_with_seat_recovery,
     _run_generation_unit,
 )
-from Trainforge.seat_recovery import SynthesisSeatRecoveryCoordinator
+from Trainforge.synthesis.seat_recovery import SynthesisSeatRecoveryCoordinator
 
 
 _TIMEOUT = (

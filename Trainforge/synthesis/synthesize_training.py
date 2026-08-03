@@ -90,7 +90,7 @@ from Trainforge.synthesis.synthesis_journal import (  # noqa: E402
     load_generation_journal,
     summarize_generation_journal,
 )
-from Trainforge.curriculum import (  # noqa: E402
+from Trainforge.synthesis.curriculum import (  # noqa: E402
     DEFAULT_PREREQ_CONTEXT_TOKENS,
     build_curriculum_context,
     build_curriculum_manifest,
@@ -2711,7 +2711,7 @@ def _run_generation_unit(
     except Exception as exc:
         recovery_eligible = False
         if recovery_coordinator is not None:
-            from Trainforge.seat_recovery import (
+            from Trainforge.synthesis.seat_recovery import (
                 eligible_engine_transport_failure,
             )
             recovery_eligible = eligible_engine_transport_failure(exc)
@@ -2729,7 +2729,7 @@ def _run_generation_unit(
             try:
                 result = call()
             except Exception as retry_exc:
-                from Trainforge.seat_recovery import (
+                from Trainforge.synthesis.seat_recovery import (
                     eligible_engine_transport_failure,
                 )
                 if eligible_engine_transport_failure(retry_exc):
@@ -2845,7 +2845,7 @@ def _call_with_seat_recovery(
     except Exception as exc:
         if recovery_coordinator is None:
             raise
-        from Trainforge.seat_recovery import eligible_engine_transport_failure
+        from Trainforge.synthesis.seat_recovery import eligible_engine_transport_failure
 
         if not eligible_engine_transport_failure(exc):
             raise
@@ -3523,7 +3523,7 @@ def run_synthesis(
         from lib.vllm_container_lifecycle import resolve_seat_schedule_mode
 
         if resolve_seat_schedule_mode():
-            from Trainforge.seat_recovery import (
+            from Trainforge.synthesis.seat_recovery import (
                 SynthesisSeatRecoveryCoordinator,
             )
             from lib.paths import get_state_runs_dir

@@ -27,7 +27,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.curriculum import (  # noqa: E402
+from Trainforge.synthesis.curriculum import (  # noqa: E402
     build_concept_topo_order,
     build_curriculum_context,
     build_curriculum_manifest,
@@ -624,7 +624,7 @@ def test_build_prereq_recap_truncates_to_token_budget():
 
 
 def test_build_curriculum_manifest_shape_function():
-    from Trainforge.curriculum import TopoResult
+    from Trainforge.synthesis.curriculum import TopoResult
     topo = TopoResult(
         order=["concept:a", "concept:b"],
         method="kahn",

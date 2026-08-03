@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from Trainforge.decision_audit_verifier import (
+from Trainforge.synthesis.verification.decision_audit_verifier import (
     verify_decision_audit,
     write_decision_audit_report,
 )

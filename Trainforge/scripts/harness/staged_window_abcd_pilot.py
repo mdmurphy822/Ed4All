@@ -23,11 +23,11 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional
 
-from Trainforge.decision_audit_verifier import (
+from Trainforge.synthesis.verification.decision_audit_verifier import (
     verify_decision_audit,
     write_decision_audit_report,
 )
-from Trainforge.benchmark_artifact_verifier import (
+from Trainforge.synthesis.verification.benchmark_artifact_verifier import (
     RECONCILIATION_REPORT_SCHEMA,
     TELEMETRY_REPORT_SCHEMA,
     read_call_intents,
@@ -2840,8 +2840,8 @@ def build_preflight_artifact(
         "Trainforge/scripts/harness/staged_window_abcd_pilot.py",
         "Trainforge/generators/http_attempt_ledger.py",
         "Trainforge/generators/trtllm_benchmark_telemetry.py",
-        "Trainforge/benchmark_artifact_verifier.py",
-        "Trainforge/decision_audit_verifier.py",
+        "Trainforge/synthesis/verification/benchmark_artifact_verifier.py",
+        "Trainforge/synthesis/verification/decision_audit_verifier.py",
     )
     resolved_contract = resolve_synthesis_contract(synthesis_contract)
     if resolved_contract == MICRO_SYNTHESIS_CONTRACT:

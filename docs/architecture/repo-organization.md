@@ -278,8 +278,9 @@ risk. Completed items are marked below.
 2. **`Trainforge/` synthesis cluster — DONE.** The nine implementation
    modules now live in `Trainforge/synthesis/`. Root-level compatibility
    shims preserve the documented CLI/import surface and MCP dotted dispatch,
-   so the exact loose-module cap remains 19 until those legacy paths complete
-   their deprecation window; new code imports the canonical package paths.
+   so those legacy paths remain through their deprecation window; new code
+   imports the canonical package paths. Four internal synthesis helpers moved
+   inward in the follow-up pass, reducing the exact root cap from 19 to 15.
 3. **`Trainforge/eval/` — DONE.** Metrics, retrieval checks, and runners now
    live in named subpackages. Two documented compatibility aliases remain at
    the package root, alongside 17 cohesive orchestration/configuration peers;

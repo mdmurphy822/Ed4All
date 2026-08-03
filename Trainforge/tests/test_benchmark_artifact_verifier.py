@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 
-from Trainforge.benchmark_artifact_verifier import (
+from Trainforge.synthesis.verification.benchmark_artifact_verifier import (
     RECONCILIATION_REPORT_SCHEMA,
     TELEMETRY_REPORT_SCHEMA,
     verified_report,

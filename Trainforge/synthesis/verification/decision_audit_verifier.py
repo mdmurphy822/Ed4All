@@ -16,7 +16,9 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from Trainforge.benchmark_artifact_verifier import read_call_intents
+from Trainforge.synthesis.verification.benchmark_artifact_verifier import (
+    read_call_intents,
+)
 
 _SHA256_LEN = 64
 _PROVIDER_DECISION_TYPE = "synthesis_provider_call"

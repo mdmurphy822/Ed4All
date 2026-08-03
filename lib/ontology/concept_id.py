@@ -12,7 +12,7 @@ The Ed4All pipeline carries concepts in two ID conventions:
 
 Cross-graph joins (e.g. "for each pedagogy concept, look up its
 co-occurrence frequency") need to bridge the two forms. Pre-Wave-82
-this happened ad-hoc: ``Trainforge/curriculum.py`` strips the prefix
+this happened ad-hoc: ``Trainforge/synthesis/curriculum.py`` strips the prefix
 inline at four call sites; other consumers copied the pattern. This
 helper centralizes the rule so callers don't reinvent it.
 
