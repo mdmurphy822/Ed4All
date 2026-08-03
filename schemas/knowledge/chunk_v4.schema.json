@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ed4all.dev/ns/knowledge/v4/chunk.schema.json",
   "title": "Trainforge Chunk v4",
-  "description": "Schematizes the per-chunk record emitted by Trainforge's process_course.py pipeline (chunks.jsonl and chunks.json). Each chunk is a retrieval-layer node in the course knowledge graph, carrying text + HTML + source provenance + Bloom's level + content-type metadata. Per REC-CTR-01 this is the first time chunk_v4 is schematized; validation is opt-in via TRAINFORGE_VALIDATE_CHUNKS=true to preserve backward-compat during rollout.",
-  "$comment": "Shape lifted from Trainforge/process_course.py::_create_chunk at L1038-1240 and _write_chunks at L1667-1682. Verified live against a LibV2 course archive's chunks.jsonl (post-Phase-7c imscc_chunks/ layout, formerly corpus/chunks.jsonl) (100% conformant). Root additionalProperties=true preserves Worker M1's _metadata_trace diagnostic (L1219-1228) and leaves room for forward-compat additions. source.additionalProperties=false keeps the structural core strict. Taxonomy $refs target Worker F's schemas (merged in PR #20).",
+  "description": "Defines the per-chunk record emitted by Trainforge in chunks.jsonl and chunks.json. Each chunk is a retrieval-layer node in the course knowledge graph and carries text, HTML, source provenance, Bloom's level, and content-type metadata. Validation is enabled with TRAINFORGE_VALIDATE_CHUNKS=true.",
+  "$comment": "The root permits additional properties so enrichment metadata can evolve without invalidating otherwise conformant chunks. The source object remains strict because it defines the structural provenance core. Shared taxonomy references keep classification values consistent across schemas.",
   "type": "object",
   "required": [
     "id",
@@ -25,7 +25,7 @@
     "id": {
       "type": "string",
       "pattern": "^[a-z][a-z0-9_]*_chunk_(\\d{5}|[0-9a-f]{16})$",
-      "description": "Globally unique chunk identifier. Default form: '<course_slug>_chunk_<5-digit position>'. When TRAINFORGE_CONTENT_HASH_IDS=true (Worker N, REC-ID-01), form is '<course_slug>_chunk_<16-hex-char sha256 of text|source_locator|schema_version>'; IDs are then stable across re-chunks. Example: access_201_chunk_00001 (legacy) or access_201_chunk_a3f2b9c8d1e4f567 (content-hash)."
+      "description": "Globally unique chunk identifier. Default form: '<course_slug>_chunk_<5-digit position>'. When TRAINFORGE_CONTENT_HASH_IDS=true, the suffix is the first 16 hexadecimal characters of the SHA-256 digest over text, source locator, and schema version, making IDs stable across re-chunks. Examples: example_course_chunk_00001 and example_course_chunk_a3f2b9c8d1e4f567."
     },
     "schema_version": {
       "const": "v4",
@@ -33,7 +33,7 @@
     },
     "chunk_type": {
       "$ref": "https://ed4all.dev/ns/taxonomies/v1/content_type.schema.json#/$defs/ChunkType",
-      "description": "Chunk content classification: assessment_item, overview, summary, exercise, explanation, or example. Lifted from Worker F's content_type taxonomy."
+      "description": "Chunk content classification constrained by the shared content-type taxonomy."
     },
     "text": {
       "type": "string",
@@ -62,7 +62,7 @@
       "type": "array",
       "items": { "type": "string" },
       "minItems": 0,
-      "description": "IDs of learning outcomes this chunk supports. minItems:0 permits chunks without LO refs (common in non-Courseforge IMSCC imports); REC-CTR-01's 'at least 1' aspiration deferred to an LO-backfill wave."
+      "description": "IDs of learning outcomes this chunk supports. Empty arrays permit content imported without learning-outcome references."
     },
     "difficulty": {
       "type": "string",
@@ -102,60 +102,60 @@
         { "$ref": "https://ed4all.dev/ns/taxonomies/v1/bloom_verbs.schema.json#/$defs/BloomLevel" },
         { "type": "null" }
       ],
-      "description": "GPT Feedback v2 Wave 1 / W1.A: observed (BERT-classified) Bloom level for the chunk. Mirrors bloom_level's enum shape. Optional; null when the BERT-ensemble classifier didn't run (legacy / pre-Wave-2 corpora). Populated at corpus emit time when the chunk's source block carries a populated observedBloomLevel JSON-LD field."
+      "description": "Observed Bloom level classified for the chunk. It uses the same taxonomy as bloom_level and is populated when the source block supplies observedBloomLevel JSON-LD; null indicates that no observation is available."
     },
     "bloom_alignment": {
       "type": ["boolean", "null"],
-      "description": "GPT Feedback v2 Wave 1 / W1.A: boolean alignment signal — true iff observed_bloom_level == bloom_level. Optional; null when the classifier didn't run. Carried alongside observed_bloom_level so downstream consumers don't recompute the comparison."
+      "description": "Boolean alignment signal that is true when observed_bloom_level equals bloom_level. Null indicates that no classifier observation is available."
     },
     "source_block_role": {
       "type": "string",
-      "description": "The council/Qwen role label of the source SemantiK region this chunk derives from (e.g. 'body' / 'figure' / 'heading'). Harvested from the data-semantik-block-role HTML attribute on the same opening tag as data-semantik-block-id. Optional; absent on non-SemantiK corpora whose HTML carries no data-semantik-block-role attribute — those chunks validate unchanged (mirrors observed_bloom_level)."
+      "description": "Semantic role of the source SemantiK region, such as 'body', 'figure', or 'heading'. Harvested from the data-semantik-block-role HTML attribute on the same opening tag as data-semantik-block-id. Optional when the source HTML provides no block role."
     },
     "source_block_confidence": {
       "type": "number",
       "minimum": 0,
       "maximum": 1,
-      "description": "SemantiK migration §4: the cascade per-region classification confidence (pinned 5-point band 0.2/0.4/0.6/0.8; 1.0 is omitted by the adapter) of the source SemantiK region. Harvested from the data-semantik-confidence HTML attribute. Optional float in [0,1]; absent on legacy corpora and on blocks the adapter emitted at confidence 1.0."
+      "description": "Classification confidence for the source SemantiK region, harvested from the data-semantik-confidence HTML attribute. Optional float in [0,1]; omission represents an unavailable value or the adapter's implicit full-confidence value."
     },
     "wcag_block_status": {
       "type": "string",
       "enum": ["passed", "flagged", "skipped"],
-      "description": "SemantiK migration §4: the Stage-7 per-region WCAG gate verdict for the source SemantiK region. Harvested from the data-semantik-wcag HTML attribute. Optional; absent on legacy corpora whose HTML carries no per-block WCAG status."
+      "description": "Per-region WCAG gate verdict for the source SemantiK region, harvested from the data-semantik-wcag HTML attribute. Optional when the source HTML carries no block-level WCAG status."
     },
     "figure_alt": {
       "type": "string",
-      "description": "SemantiK migration §4: the SmolVLM2-generated alt-text / figcaption for a figure chunk, lifted DOM-side from the chunk's <figcaption>/<img alt> for retrieval-text augmentation + accessibility audit. Optional; emitted only for figure chunks that carried recoverable alt text."
+      "description": "Alt text or figcaption recovered from a figure chunk's <figcaption> or <img alt> element for retrieval augmentation and accessibility auditing. Optional when no figure text is recoverable."
     },
     "semantic_preservation_score": {
       "type": "number",
       "minimum": 0,
       "maximum": 1,
-      "description": "SemantiK migration §4: the document-level theta semantic-preservation score from the SemantiK Stage-13 exit. Doc-level signal — the SAME value is stamped on every chunk of a document (mirrors source.source_document_sha256), recovered from the doc-level sidecar / PipelineV2Result, not from the chunk HTML. Optional float in [0,1]; absent on legacy / non-SemantiK corpora."
+      "description": "Document-level semantic-preservation score from the SemantiK result. The same value is attached to every chunk from a document and is recovered from the document sidecar rather than chunk HTML. Optional float in [0,1]."
     },
     "certification_status": {
       "type": "string",
       "enum": ["certified", "flagged", "non_certified"],
-      "description": "SemantiK migration §4: the SemantiK Stage-13 exit certification mode (ship_with_confidence -> certified, ship_with_flag -> flagged, non_certified_stamp -> non_certified). Doc-level signal — same value across every chunk of a document, recovered from the doc-level sidecar / PipelineV2Result. Optional; absent on legacy corpora. Used for corpus-admission gating + WCAG audit."
+      "description": "SemantiK document certification status used for corpus-admission gating and WCAG auditing. The same value applies to every chunk from a document and is recovered from the document sidecar."
     },
     "composite_unit": {
       "oneOf": [
         { "type": "string", "minLength": 1 },
         { "type": "null" }
       ],
-      "description": "Wave #22 quick-wins: the composite pedagogical-unit type of this chunk's constituent section(s), harvested from the SemantiK data-semantik-unit attribute (e.g. 'worked_example' / 'section_opener' / 'exercise_set'). A chunk whose sections all belong to one unit carries that type; a chunk straddling multiple units carries the plurality winner, or null on a tie (no fabricated unit — Trainforge/chunker/chunker.py::aggregate_composite_unit). Values are drawn from the SemantiK lexicon unit vocabulary (schemas/taxonomies/semantik_lexicon.json), which is profile-extensible, so no fixed enum is imposed. Optional; null/absent on legacy / non-SemantiK corpora whose HTML carries no data-semantik-unit attribute (byte-identical, mirrors source_block_role)."
+      "description": "Composite pedagogical-unit type of the chunk's constituent sections, harvested from the SemantiK data-semantik-unit attribute. Uniform sections carry their shared type; mixed sections use the plurality type or null on a tie. Values come from the profile-extensible SemantiK lexicon, so the schema imposes no fixed enum."
     },
     "unit_roles": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 },
-      "description": "Wave #22 quick-wins: distinct pedagogical flow/opener role slugs present across this chunk's constituent section(s) — the union of SemantiK data-semantik-flow values (statement / solution-steps / procedure-steps) and data-semantik-opener role slugs (objectives / worked_example / try_it / how_to / solution / …). Sorted for deterministic diffs. Drawn from the SemantiK lexicon role vocabulary + the flow vocabulary; profile-extensible, so no fixed enum. Optional; absent on legacy / non-SemantiK corpora (byte-identical)."
+      "description": "Sorted, distinct pedagogical flow and opener role slugs present across the chunk's constituent sections. Values combine data-semantik-flow and data-semantik-opener roles from the profile-extensible SemantiK lexicon."
     },
     "unit_subclass": {
       "oneOf": [
         { "type": "string", "minLength": 1 },
         { "type": "null" }
       ],
-      "description": "Build #23 Tier-3: the finer SUBCLASS of this chunk's composite pedagogical unit (e.g. a worked_example that is an 'application-problem' vs 'symbolic-manipulation'; an exercise_set that is a 'drill' vs 'mixed-review'), harvested from the SemantiK data-semantik-subclass attribute the model-assisted subclassifier (lib/semantik/subclassifier.py, gated by SEMANTIK_SEMANTIC_SUBCLASS) stamps on the unit <section> wrapper. The subclass RIDES the composite unit — a chunk carries unit_subclass ONLY when its composite_unit resolved (Trainforge/chunker/chunker.py::aggregate_unit_subclass pairs the subclass with the resolved unit); a chunk straddling multiple units (composite_unit null) carries no subclass. Values are kebab-case labels drawn from the SemantiK lexicon subclass seed vocabulary (schemas/taxonomies/semantik_lexicon.json), profile-extensible plus model-proposed new labels, so no fixed enum is imposed. Adding data-semantik-subclass attributes NEVER changes chunk text or chunk ids (payload-only). Optional; null/absent on legacy / non-SemantiK / un-subclassed corpora (byte-identical, mirrors composite_unit)."
+      "description": "Finer subclass of the resolved composite pedagogical unit, harvested from data-semantik-subclass on the unit section. A subclass is carried only when composite_unit resolves; chunks spanning tied unit types carry neither value. Labels are kebab-case and profile-extensible, so the schema imposes no fixed enum. Subclass metadata does not affect chunk text or identifiers."
     },
     "bloom_level_source": {
       "type": "string",
@@ -164,15 +164,15 @@
     },
     "bloom_level_secondary": {
       "$ref": "https://ed4all.dev/ns/taxonomies/v1/bloom_verbs.schema.json#/$defs/BloomLevel",
-      "description": "Wave 76: secondary (lower) Bloom level when the source declared a compound bloom_level (e.g. 'remember-apply'). Compound values are split with the higher level becoming the canonical bloom_level and the lower stored here, so the taxonomy enum stays canonical without losing source information. Optional; absent when bloom_level was already a single canonical level."
+      "description": "Secondary, lower Bloom level when the source declares a compound bloom_level such as 'remember-apply'. The higher level becomes bloom_level while this field preserves the lower level without expanding the canonical taxonomy."
     },
     "cognitive_task_type": {
       "$ref": "https://ed4all.dev/ns/taxonomies/v1/cognitive_task_type.schema.json#/$defs/CognitiveTaskType",
-      "description": "GPT Feedback (May 12) item 5: observable cognitive task verb (classify / compute / debug / critique / explain / compare / construct / ...). Axis orthogonal to bloom_level — captures WHAT the learner is asked to do rather than the cognitive tier or the assessment instrument. Inferred at chunk emit time from the chunk's text via lib.ontology.cognitive_task.detect_cognitive_task_type; upstream-supplied values (JSON-LD or data-cf-*) override detection. Optional; absent when no canonical task verb matches (legacy / pre-Wave-cognitive-task corpora)."
+      "description": "Observable cognitive task such as classify, compute, debug, critique, explain, compare, or construct. This axis captures what the learner does independently of Bloom level or assessment format. Source-supplied values override text-based detection; the field is absent when no canonical task matches."
     },
     "content_type_label": {
       "type": "string",
-      "description": "Section/content classification label from JSON-LD or data-cf-content-type. Freeform today; future enum reconciliation is Wave 2 scope."
+      "description": "Free-form section or content classification label from JSON-LD or data-cf-content-type."
     },
     "key_terms": {
       "type": "array",
@@ -181,7 +181,7 @@
     "curies": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 },
-      "description": "CURIE tokens associated with this chunk's source block, harvested from data-cf-curie spans by the chunker BEFORE the synthetic-token text is dropped (376b64f), unioned with CURIEs already present in `text`. Authoritative source-CURIE set for the curie_anchoring gate. Absent on legacy / pre-this-wave corpora and on chunks whose source HTML carried no data-cf-curie span; consumers fall back to text-regex extraction."
+      "description": "CURIE tokens associated with the source block, combining data-cf-curie spans harvested before synthetic span text is removed with CURIEs already present in text. This is the authoritative source set for the curie_anchoring gate; consumers use text extraction when the field is absent."
     },
     "forced_curies": {
       "type": "array",
@@ -200,7 +200,7 @@
     },
     "targeted_concepts": {
       "type": "array",
-      "description": "Wave 69: Bloom-qualified LO→concept bindings propagated from the chunk's cited LOs (via learning_outcome_refs). Each entry binds a canonical concept slug to the Bloom cognitive demand at which one of the chunk's LOs targets it. Sourced from Courseforge Wave 57 JSON-LD learningObjectives[].targetedConcepts[]; translated camelCase → snake_case at parse time (html_content_parser.LearningObjective.targeted_concepts) and merged onto chunks during _create_chunk. Deduplicated by (concept, bloom_level). Present only when at least one referenced LO carried targetedConcepts[]; elided for legacy / pre-Wave-57 corpora.",
+      "description": "Bloom-qualified learning-outcome-to-concept bindings propagated from the chunk's cited learning outcomes. Each entry binds a canonical concept slug to the Bloom demand at which an outcome targets it. Values originate in learningObjectives[].targetedConcepts[], are normalized to snake_case, and are deduplicated by concept and bloom_level.",
       "items": {
         "type": "object",
         "required": ["concept", "bloom_level"],
@@ -221,7 +221,7 @@
               "evaluate",
               "create"
             ],
-            "$comment": "Inlined canonical BloomLevel enum mirrors concept_graph_semantic.schema.json $defs/TargetsConceptEvidence. Wave 69 keeps the enum local so validators don't chase a cross-schema $ref for a single-field validation."
+            "$comment": "The inlined canonical BloomLevel enum mirrors concept_graph_semantic.schema.json $defs/TargetsConceptEvidence and avoids a cross-schema reference for this single field."
           }
         }
       }
@@ -236,10 +236,10 @@
     },
     "_metadata_trace": {
       "type": "object",
-      "description": "Worker M1 (VERSIONING.md §4.4a) diagnostic — records the source path for each enrichment field. Removed by a later fix PR; schema permits its presence to keep diagnostic runs valid."
+      "description": "Diagnostic mapping from each enrichment field to its source path. The schema permits this optional metadata so diagnostic chunk records remain valid."
     },
     "key_claims": {
-      "description": "GPT Feedback v2 Wave 5 / W5.C — per-block per-claim attribution carried from Courseforge outline-tier emit (Wave 1.5 / W1.5.A migration contract). One entry per factual claim the originating block declared, with optional source_chunk_ids[] mapping each claim to specific SemantiK/Courseforge chunk-ID(s). Legacy List[str] shape preserved as oneOf back-compat (Wave 1.5 W1.5.A migration contract — same shape declared at Courseforge/generators/outline/_outline_provider.py per-block-type schema). Optional; absent on chunks built from sections without an emitting block (legacy / pre-Wave-1.5 corpora). Carried through merge_small_sections via concatenation (per-claim entries are independent).",
+      "description": "Per-block factual claims carried from Courseforge outline output. Structured entries may map each claim to specific SemantiK or Courseforge chunk IDs; the string-array form remains valid for compatibility. Independent claim entries are concatenated when small sections merge.",
       "oneOf": [
         {
           "type": "array",
@@ -263,14 +263,14 @@
                 "type": ["string", "null"],
                 "minLength": 1,
                 "maxLength": 240,
-                "description": "W-D11 — verbatim substring of one of the cited chunks' text field that supports `claim`. Validator (W-D11 T11.2) enforces evidence_quote ∈ chunk.text for at least one chunk in source_chunk_ids[]. Null when the synthesis provider did not emit a quote (legacy / pre-W-D11 corpora) or when graceful-degrade fired. 240-char cap mitigates LO-leakage risk."
+                "description": "Verbatim substring from a cited chunk's text that supports claim. Validation requires the quote to occur in at least one chunk named by source_chunk_ids. Null indicates that no grounded quote was emitted; the 240-character cap limits learning-outcome leakage."
               },
               "evidence_char_span": {
                 "type": ["array", "null"],
                 "minItems": 2,
                 "maxItems": 2,
                 "items": {"type": "integer", "minimum": 0},
-                "description": "W-D11 — [start, end) char offset of evidence_quote within the matched cited chunk's text field. Validator (W-D11 T11.2) enforces chunk.text[start:end] == evidence_quote. Null with the same graceful-degrade arms as evidence_quote."
+                "description": "Half-open [start, end) character offset of evidence_quote within the matched cited chunk's text. Validation requires chunk.text[start:end] to equal evidence_quote. Null when no grounded quote is available."
               }
             }
           }
@@ -278,12 +278,12 @@
       ]
     },
     "objective_alignment": {
-      "description": "GPT Feedback v2 Wave 5 / W5.C — per-block per-objective tri-axis delivery alignment carried from Courseforge inter-tier / post-rewrite validators (Wave 1.7 / W1.7.A). One entry per objective_id the originating block claimed to teach / assess. Mirrors $defs.ObjectiveAlignment from courseforge_jsonld_v1.schema.json. Optional; absent on legacy / pre-Wave-1.7 corpora. Merge-aware: dedupes by objective_id across merged sections with first-seen-wins (mirrors merge_section_source_ids).",
+      "description": "Per-block, per-objective tri-axis delivery alignment carried from Courseforge validators. Each entry represents an objective the originating block claims to teach or assess. Merged sections deduplicate entries by objective_id using first-seen precedence.",
       "type": "array",
       "items": {"$ref": "https://ed4all.dev/ns/courseforge/v1/CourseModule.schema.json#/$defs/ObjectiveAlignment"}
     },
     "learning_outcome_source_refs": {
-      "description": "GPT Feedback v2 Wave 5 W5.G — per-chunk reverse map from learning_outcome_refs[] to the SemantiK/Courseforge chunk-IDs that source each LO. Built from item.courseforge_metadata.learningObjectives[].sourceReferences[] at chunk-emit time. Optional; absent on chunks where the page-level JSON-LD doesn't declare sourceReferences for any of the chunk's claimed LOs (legacy / pre-Wave-1.6 corpora). Keys preserve emit case (e.g. 'TO-05' not 'to-05').",
+      "description": "Per-chunk reverse map from learning_outcome_refs to the SemantiK or Courseforge chunk IDs that source each learning outcome. Built from learningObjectives[].sourceReferences at emission time and omitted when the page-level JSON-LD declares no applicable references. Keys preserve their emitted case.",
       "type": "object",
       "additionalProperties": {
         "type": "array",
@@ -292,18 +292,18 @@
     },
     "run_id": {
       "type": "string",
-      "description": "Pipeline run that produced this chunk (REC-PRV-01, Worker P Wave 4.1). Matches decision_event.schema.json run_id format — sourced from the active DecisionCapture instance's run_id. Always populated on new runs; legacy chunks without this field still validate."
+      "description": "Identifier of the pipeline run that produced this chunk. It matches the decision-event run_id format and comes from the active DecisionCapture instance. Optional so existing chunk records remain valid."
     },
     "created_at": {
       "type": "string",
       "format": "date-time",
-      "description": "ISO 8601 UTC timestamp when the chunk was emitted (REC-PRV-01, Worker P Wave 4.1). Produced by datetime.now(timezone.utc).isoformat(). Always populated on new runs; legacy chunks without this field still validate."
+      "description": "ISO 8601 UTC timestamp recorded when the chunk is emitted. Optional so existing chunk records remain valid."
     },
     "source_pages": {
       "type": "array",
       "items": { "type": "integer", "minimum": 1 },
       "minItems": 1,
-      "description": "Task #26: sorted, deduped union of source page numbers (data-semantik-pages block attrs) across the SemantiK blocks composing this chunk. Emitted top-level (NOT inside source, whose $defs.Source is additionalProperties:false) by MCP/tools/pipeline_tools.py::_run_semantik_chunking via Trainforge.chunker.union_source_pages. Omitted when no composing block carries a page attr (legacy corpora → byte-identical). For retrieval-citation display; the per-block pages remain on source.source_references[].pages. Derived from the RAW harvested source refs, not the minted source_references[] — so a chunk whose block_id failed sourceId minting can carry source_pages while source.source_references is absent."
+      "description": "Sorted, deduplicated union of page numbers across the SemantiK blocks composing this chunk. It is top-level because Source is strict, and is omitted when no composing block supplies data-semantik-pages. It supports retrieval citations independently of minted source_references, while per-block pages remain available within source references."
     }
   },
   "$defs": {
@@ -311,7 +311,7 @@
       "type": "object",
       "required": ["course_id", "module_id", "lesson_id"],
       "additionalProperties": false,
-      "description": "Chunk provenance block. Per REC-CTR-01 course_id/module_id/lesson_id are the structural core and strictly required; additionalProperties=false prevents silent drift. Audit-trail fields (html_xpath, char_span, item_path) support the Section 508 / ADA Title II round-trip contract documented at docs/reference/audit-trail.md. Wave 10 adds optional source_references[] threading SemantiK/Courseforge provenance end-to-end; see schemas/knowledge/source_reference.schema.json for the canonical shape.",
+      "description": "Chunk provenance block. course_id, module_id, and lesson_id form the required structural core; additionalProperties=false prevents silent drift. Audit fields support the Section 508 and ADA Title II round-trip contract, while source_references carries SemantiK and Courseforge provenance in the canonical source-reference shape.",
       "properties": {
         "course_id": {
           "type": "string",
@@ -363,12 +363,12 @@
         "source_document_sha256": {
           "type": "string",
           "pattern": "^[a-f0-9]{64}$",
-          "description": "GPT Feedback v2 (May 12 / item 3): SHA-256 of the upstream source document (the SemantiK HTML aggregate or the IMSCC zip) the chunk was produced from. For SemantiK-emitted chunks, value matches the sidecar manifest's source_semantik_html_sha256; for IMSCC-emitted chunks, matches source_imscc_sha256. Same value across every chunk from the same chunking run — provides a byte-stable join key from chunk → source-document without a sidecar lookup. Optional: legacy chunks (pre-May-2026) lack this field and continue to validate. Threaded forward into concept-graph and LibV2 manifest lineage fields per `plans/gptfeedback-may12-item3-version-lineage-2026-05.md`."
+          "description": "SHA-256 digest of the upstream source document, either the SemantiK HTML aggregate or IMSCC archive. The value matches the corresponding sidecar manifest digest and is constant across chunks from the same source, providing a byte-stable lineage join key. It is optional for compatibility and propagates into concept-graph and LibV2 manifest lineage fields."
         },
         "source_references": {
           "type": "array",
           "items": { "$ref": "https://ed4all.dev/schemas/knowledge/source_reference.schema.json" },
-          "description": "Wave 10: optional array of SemantiK/Courseforge source references threaded from Courseforge JSON-LD sourceReferences[] and data-cf-source-ids HTML attributes. Always an array because _merge_small_sections may collapse 2+ sections into one chunk, each potentially carrying its own refs. Absence = 'unknown' (pre-Wave-9 corpora) — never an error. Populated by process_course.py::_create_chunk; unioned with role-precedence (primary > contributing > corroborating) when sections merge."
+          "description": "SemantiK and Courseforge source references collected from JSON-LD sourceReferences and data-cf-source-ids attributes. The array supports chunks merged from multiple sections. Absence means provenance is unknown; merged references use primary, contributing, then corroborating role precedence."
         }
       }
     },
@@ -385,14 +385,14 @@
       "type": "object",
       "required": ["correction"],
       "additionalProperties": false,
-      "description": "Per REC-JSL-01: 'correction' is required and at least one of 'misconception' or 'statement' must be present (Wave 74+ content-generator subagents emit 'statement' as a synonym for 'misconception'). Wave 60 / Wave 69 retain optional bloom_level + cognitive_domain fields. Trainforge normalizes JSON-LD camelCase (bloomLevel / cognitiveDomain) to snake_case in html_content_parser.",
+      "description": "A correction is required, together with at least one of misconception or its statement alias. Optional Bloom and cognitive-domain metadata is normalized from JSON-LD camelCase to snake_case by the HTML content parser.",
       "anyOf": [
         {"required": ["misconception"]},
         {"required": ["statement"]}
       ],
       "properties": {
         "misconception": {"type": "string", "minLength": 1},
-        "statement": {"type": "string", "minLength": 1, "description": "Wave 74+ alias for misconception. Equivalent semantics; emitted by content-generator subagents."},
+        "statement": {"type": "string", "minLength": 1, "description": "Alias for misconception with equivalent semantics."},
         "correction": { "type": "string", "minLength": 1 },
         "bloom_level": {
           "type": "string",
@@ -404,15 +404,15 @@
             "evaluate",
             "create"
           ],
-          "description": "Wave 60 / Wave 69: Bloom's taxonomy level targeted by this misconception. Inferred at Courseforge emit time from the correction statement (or misconception statement as fallback) via lib.ontology.bloom.detect_bloom_level; upstream-supplied values override detection. Elided on legacy / pre-Wave-60 misconceptions."
+          "description": "Bloom's taxonomy level targeted by this misconception. Courseforge infers it from the correction or misconception statement, while source-supplied values take precedence."
         },
         "cognitive_domain": {
           "type": "string",
-          "description": "Wave 60 / Wave 69: Cognitive domain derived from bloom_level via lib.ontology.bloom.bloom_to_cognitive_domain. Emitted iff bloom_level is populated."
+          "description": "Cognitive domain derived from bloom_level and emitted only when bloom_level is populated."
         },
         "cognitive_task_type": {
           "$ref": "https://ed4all.dev/ns/taxonomies/v1/cognitive_task_type.schema.json#/$defs/CognitiveTaskType",
-          "description": "GPT Feedback (May 12) item 5: observable cognitive task verb (classify / compute / debug / critique / ...). Axis orthogonal to bloom_level — captures WHAT the learner is asked to do. Optional; populated when the misconception's correction or statement carries a canonical task verb. Trainforge normalizes JSON-LD camelCase (cognitiveTaskType) to snake_case in html_content_parser."
+          "description": "Observable cognitive task such as classify, compute, debug, or critique. This axis captures what the learner does independently of Bloom level. It is populated when the correction or statement contains a canonical task verb, with JSON-LD camelCase normalized to snake_case."
         },
         "id": {
           "type": "string",

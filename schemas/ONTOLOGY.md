@@ -115,7 +115,7 @@ Per-class subsections follow a fixed template (definition path, production site,
 | ----- | ---- | ----- |
 | `@context` | const | `https://ed4all.dev/ns/courseforge/v1` |
 | `@type` | const | `CourseModule` |
-| `courseCode` | string | e.g. `ACCESS_201` |
+| `courseCode` | string | e.g. `TST_201` |
 | `weekNumber` | int | week position |
 | `moduleType` | enum | `{overview, content, application, assessment, summary}` |
 | `pageId` | string | slug, e.g. `week_01_content_02_accessibility_basics` |
@@ -127,7 +127,7 @@ Per-class subsections follow a fixed template (definition path, production site,
 **Instance example:**
 ```json
 {"@context":"https://ed4all.dev/ns/courseforge/v1","@type":"CourseModule",
- "courseCode":"ACCESS_201","weekNumber":1,"moduleType":"content",
+ "courseCode":"TST_201","weekNumber":1,"moduleType":"content",
  "pageId":"week_01_content_01_introduction",
  "learningObjectives":[{"id":"TO-01","statement":"...","bloomLevel":"understand"}]}
 ```
@@ -921,7 +921,7 @@ Shape (trimmed):
 {
   "@context": "https://ed4all.dev/ns/courseforge/v1",
   "@type": "CourseModule",
-  "courseCode": "ACCESS_201",
+  "courseCode": "TST_201",
   "weekNumber": 1,
   "moduleType": "content",
   "pageId": "week_01_content_01_intro",
@@ -993,7 +993,7 @@ Sizes (file count + total lines per subfolder, regenerated 2026-05-07):
 Append-only newline-delimited JSON files — one record per decision event. Example paths:
 ```
 training-captures/courseforge/TST_908/phase_content-generator/decisions_20260419_101530.jsonl
-training-captures/trainforge/ACCESS_201/phase_question-generation/decisions_20260419_101530.jsonl
+training-captures/trainforge/TST_201/phase_question-generation/decisions_20260419_101530.jsonl
 training-captures/semantik/TST_907/decisions_textbook.pdf_20260419_101530.jsonl
 ```
 

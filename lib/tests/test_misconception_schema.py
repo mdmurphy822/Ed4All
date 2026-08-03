@@ -98,7 +98,7 @@ def test_valid_misconception_with_optional_links_validates():
     validator = _validator()
     mc = _valid_misconception(
         concept_id="accessibility",
-        lo_id="ACCESS_201_D1_1.1",
+        lo_id="TST_201_D1_1.1",
     )
     errors = list(validator.iter_errors(mc))
     assert errors == [], [e.message for e in errors]
