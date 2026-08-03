@@ -1,137 +1,203 @@
-# ADR-002 — Retrieval scope for LibV2 (reference-implementation line)
+# ADR-002: LibV2 reference-retrieval scope
 
 ## Status
 
-**Proposed (2026-04-17) — partially superseded; not superseded by another ADR.**
-
-The core claim (LibV2 stores packages and exposes *reference* retrieval; production serving belongs
-downstream) still holds. One boundary moved: dense embeddings shipped. See § Subsequent developments
-(2026-07-20) at the end of this file.
-
-The sections below are preserved as the historical record. The "explicitly out of scope" list in particular
-no longer describes the tree — read it as the state of the decision in April, not as current fact.
+Accepted.
 
 ## Context
 
-Downstream consumers of Ed4All packages (decision engines, orchestration layers, rule-based execution, tutor systems, council workflows) all need some form of retrieval against the chunks LibV2 stores. Before this ADR the line between "what LibV2 ships" and "what downstream consumers build" was informal: LibV2 shipped a BM25 retriever (`LibV2/tools/libv2/retriever.py`) that production callers in Trainforge used directly, but there was no written contract about how rich that retriever should become, where it stopped, or what consumers could assume.
+LibV2 stores validated course packages and their chunk, graph, and vector-index
+artifacts. Package consumers need a reliable way to demonstrate that these
+artifacts can be queried, compare retrieval configurations, and diagnose recall
+or ranking problems.
 
-Two failure modes resulted:
-1. Scope creep pressure on LibV2 retrieval (reranker? dense embeddings? online query API?). Each pull expands the LibV2 surface area and couples LibV2's lifecycle to anyone who depends on a specific retrieval feature.
-2. Ambient confusion about where retrieval quality issues belong — "Ed4All, I tried it, the retrieval was slow" vs. "my retrieval implementation using Ed4All's chunks as input was slow" become indistinguishable without a clear scope line.
+That need does not make LibV2 a hosted retrieval service. Authentication,
+multi-tenancy, availability, latency objectives, learner-answer composition,
+and deployment-specific ranking policy have different lifecycles from the
+course-package format.
 
-Worker J's work closes the gap between what the retriever does today (BM25 + n-gram) and what a *reference implementation* of retrieval should do (rationale payload, metadata-aware scoring, gold-standard evaluation, architectural boundary documentation). This ADR names the line.
+The boundary must also be explicit about dense retrieval. LibV2 now ships
+lexical, semantic, and hybrid Reciprocal Rank Fusion (RRF) engines. Dense
+retrieval is therefore part of the reference surface; production serving is
+still outside LibV2.
 
 ## Decision
 
-**Ed4All produces structured, validated knowledge packages. LibV2 stores them and exposes reference retrieval. What you do with retrieved knowledge is your problem.**
+LibV2 provides a local reference-retrieval library and CLI over private course
+packages. It demonstrates supported package-reading patterns, exposes
+diagnostic rationale, and provides a small evaluation harness. It does not
+promise a production retrieval service or production service-level objective.
 
-LibV2's reference retrieval is intentionally bounded. Anything more sophisticated belongs downstream.
+The public engine selector is:
 
-## Rationale
+- `lexical` — BM25 with structured tokenization, optional metadata-aware
+  scoring, filters, and rationale;
+- `semantic` — exact cosine search over the course's verified vector index;
+  and
+- `hybrid-rrf` — rank-domain RRF over independently ranked lexical and semantic
+  result lists.
 
-1. **Reference implementations are documentation.** A working `libv2 retrieve` + `libv2 retrieval-eval` that demonstrates the intended query patterns against the package format means no downstream consumer has to reverse-engineer how to use chunks. That is a documentation deliverable with teeth — gold-standard queries, rationale payloads, tests.
-2. **Coupling boundaries matter.** A full retrieval system (vector index, reranker, online query API, eval infrastructure with ablation) is a separate product. Merging it into LibV2 would couple two different lifecycles — an Ed4All package-format bump would force every retrieval consumer to rev too, and vice versa.
-3. **Quality signals stay honest.** By owning only a reference implementation, LibV2 can state numbers diagnostically (gold-standard MRR, recall@k) without committing to production SLA. Consumers can measure their own retrieval quality against the same gold set and compare.
-4. **Metadata-aware scoring is the natural differentiator.** Generic RAG can't weight chunks by concept-graph overlap, LO match, or prereq coverage because generic RAG doesn't have those metadata fields. LibV2's reference retriever does. The three boost functions in `retrieval_scoring.py` demonstrate that metadata lift without closing the door on consumers doing more.
+The default remains `lexical` for compatibility. Semantic and hybrid retrieval
+are single-course operations and require a course identifier. Lexical scoring
+presets do not apply to the semantic engine.
+
+```mermaid
+flowchart LR
+    Q["Private query"] --> S{"Selected engine"}
+    S -->|lexical| L["BM25 and metadata scoring"]
+    S -->|semantic| V["Verified vector index and cosine search"]
+    S -->|hybrid-rrf| H["Lexical and semantic rankings"]
+    H --> R["Reciprocal Rank Fusion"]
+    L --> O["Reference retrieval results"]
+    V --> O
+    R --> O
+    O --> D["Local diagnostics and evaluation"]
+    O --> P["Downstream production serving"]
+```
+
+Every branch is labeled in text. The diagram distinguishes LibV2's result
+contract from downstream serving rather than using color as the distinction.
+
+## Reference-retrieval contract
+
+### Common API
+
+`LibV2.tools.libv2.retriever.retrieve_chunks` is the engine-dispatch surface.
+All engines return `RetrievalResult` records. The default lexical call retains
+the established result shape when rationale is not requested.
+
+Filters are applied through the shared `ChunkFilter` contract. Lexical
+retrieval may search a selected course or an eligible catalog scope. Semantic
+and hybrid retrieval require an explicit course because their vector index and
+manifest are course-scoped.
+
+### Lexical engine
+
+The lexical engine indexes chunk text or the chunk's `retrieval_text` when
+present. It provides structured tokenization, BM25 ranking, character n-gram
+support, metadata filters, and optional scoring contributions derived from
+course metadata.
+
+When rationale is requested, results can report lexical score components,
+matched metadata, applied filters, and boost contributions. Rationale is for
+inspection and debugging; it is not a guarantee that a retrieved passage
+answers a learner's question.
+
+### Semantic engine
+
+The semantic engine embeds the query with a client compatible with the vector
+index manifest, searches the verified local index, and hydrates matching chunk
+records from the indexed chunkset. Its scores are cosine similarities and are
+not comparable to BM25 or RRF scores.
+
+The vector-index manifest binds the index to its embedding model and source
+chunkset. A caller-supplied embedding client must match that identity.
+
+### Hybrid-RRF engine
+
+The hybrid engine runs semantic retrieval and lexical retrieval as separate
+arms, then fuses their ranks with RRF. It does not add cosine and BM25 scores;
+those values occupy different score domains. Deterministic tie-breaking keeps
+the fused ordering reproducible for identical inputs.
+
+## No silent fallback
+
+Engine selection is an operator-visible contract. LibV2 must never make a
+semantic or hybrid request appear successful by quietly returning lexical
+results.
+
+Semantic-index, chunkset, model-identity, fake-index, and embedding-backend
+failures propagate as typed errors. Hybrid retrieval fails when its semantic
+arm fails. An operator who wants lexical retrieval selects `lexical`
+explicitly after resolving or accepting the semantic limitation.
+
+The same rule applies to invalid combinations: an unknown engine, a semantic
+request without a course identifier, or a lexical-only scoring preset supplied
+to a semantic engine fails loudly.
+
+## Diagnostics are not a production SLA
+
+LibV2's evaluation harness supports hand-curated relevance judgments and
+reports retrieval measures such as mean reciprocal rank and recall at selected
+cutoffs. These results answer a local diagnostic question: whether a specific
+package, query set, engine, index, and configuration retrieve the passages that
+curators marked relevant.
+
+They do not establish cross-course comparability, availability, latency,
+throughput, or learner-answer quality. A downstream serving product defines and
+tests its own objectives using its deployment, traffic, security model,
+reranking policy, refusal behavior, and answer-composition path.
+
+The production grounded-answer architecture is documented separately in
+[Retrieval and serving](retrieval-and-serving.md).
+
+## Private gold-query boundary
+
+Gold queries, relevance judgments, evaluation reports, and retrieved course
+text are course-derived artifacts. They remain in the private course archive
+or another ignored operator-controlled location. The public repository ships
+the schema, harness, and synthetic tests, not populated gold queries for a real
+course.
+
+A gold record identifies a query and the chunk identifiers that a curator
+confirmed as relevant. Curators must read the candidate passages; automatically
+expanding learning-objective labels is not equivalent to a human relevance
+judgment. Evaluation output is meaningful only with the private query set and
+configuration that produced it.
+
+The record shape and local curation workflow are described in
+[LibV2 reference retrieval](../reference/reference-retrieval.md).
+
+## Consequences
+
+- Package consumers have an executable example for lexical, semantic, and
+  hybrid retrieval without reverse-engineering LibV2 storage.
+- Dense-index creation and verification are part of LibV2's package-reading
+  surface.
+- Retrieval failures remain distinguishable from deliberate lexical engine
+  selection.
+- Diagnostic rationale and evaluation results help locate package or ranking
+  defects without becoming public benchmark claims.
+- Production services can evolve their API, reranking, caching, refusal,
+  security, and scaling policies without changing the LibV2 package contract.
+- Cross-encoder reranking may be used by a downstream answer path, but it is
+  not folded into LibV2 reference retrieval.
 
 ## Rejected alternatives
 
-- **"LibV2 ships a production retrieval API."** Rejected — couples LibV2's lifecycle to every consumer's retrieval SLA. Retrieval engines evolve fast (new embedding models, new rerankers); the chunk schema should not.
-- **"LibV2 ships only BM25, no rationale, no metadata boosts."** Rejected — this is what the repo had before Worker J, and the gap it leaves (no diagnostic output for debugging; no explanation of how metadata fields matter) is exactly what forces downstream consumers to reinvent the wheel.
-- **"Ship no retrieval at all; consumers write their own."** Rejected — guarantees every consumer's retrieval implementation is slightly different and the project's reputation absorbs their quality issues. The essay framing ("Oh Ed4All, I tried it, the retrieval was slow") anticipates this.
+### Ship a production retrieval service from LibV2
 
-## What's in scope for LibV2 reference retrieval
+Rejected. HTTP serving, authentication, tenant isolation, rate limiting,
+availability, and latency commitments would couple the package library to a
+deployment product. The GUI and grounded-answer path remain downstream
+consumers rather than a LibV2 service contract.
 
-- **BM25 index over chunks.** Hand-rolled Okapi BM25 with k1=1.5, b=0.75, character-trigram n-gram boosting (`LibV2/tools/libv2/retriever.py::LazyBM25`).
-- **Metadata filters.** `ChunkFilter` supports `chunk_type`, `difficulty`, `concept_tags`, `min_tokens`, `max_tokens`, `learning_outcome_refs`, `bloom_level`, `teaching_role`, `content_type_label`, `module_id`, `week_num`. Filter-first, rank-second.
-- **Structured tokenization** that preserves hyphenated slugs (`aria-labelledby`, `skip-link`) and WCAG SC references (`sc-1.4.3`, `wcag-2.2`) as single tokens.
-- **`retrieval_text`-aware indexing.** When a chunk carries v4's `retrieval_text` (summary + key terms), the index uses it instead of the full chunk body.
-- **Rationale payload.** With `include_rationale=True`, every result carries `{bm25_score, ngram_score, metadata_boost, final_score, matched_concept_tags, matched_lo_refs, matched_key_terms, applied_filters, boost_contributions}`.
-- **Metadata-aware score boosts.** Three pure functions in `retrieval_scoring.py`: concept-graph overlap, LO match (explicit + implicit), prereq coverage. Multiplicative blend capped at `MAX_TOTAL_BOOST = 0.5`.
-- **Gold-standard query sets.** Hand-curated per-course queries at `LibV2/courses/<slug>/retrieval/gold_queries.jsonl` (users curate their own against the courses they load locally; this repo's tree does not ship populated query files for any specific course). See `docs/reference/reference-retrieval.md` for the per-record shape and the "Adding gold queries to your own corpus" workflow.
-- **Evaluation harness.** `evaluate_retrieval()` computes MRR + recall@1/5/10 + per-query rationale. `libv2 retrieval-eval` CLI.
-- **Multi-query decomposition** (pre-existing, `multi_retriever.py`) — kept, documented as advanced API.
+### Keep reference retrieval lexical-only
 
-## What's explicitly out of scope
+Rejected. Course-scoped vector indexes and semantic retrieval are supported
+package artifacts, and hybrid RRF provides an honest way to combine lexical and
+semantic rankings without combining incompatible scores.
 
-- **Dense embeddings.** No embedding model, no vector index, no hybrid (dense+sparse) fusion. A downstream consumer adding these picks the model, handles the cache, owns the upgrade cadence.
-- **Cross-encoder rerankers.** The inference cost, model-version churn, and hyperparameter surface (how many candidates to rerank) belong downstream.
-- **Full eval infrastructure.** No ablation testing, no index-version regression harness, no MRR/NDCG beyond the recall@k + MRR shipped. Gold queries are a reference *shape* for consumers' own eval (users curate them locally against their own courses), not a benchmark LibV2 optimizes against.
-- **Online query APIs.** No HTTP server, no auth, no rate-limiting, no multi-tenant concerns. LibV2 is a library + CLI; online-retrieval-as-a-service belongs downstream.
-- **Domain-specific scoring beyond the three metadata boosts.** Custom reranking by user profile, recency, author authority, etc., are all out of scope.
+### Fall back from semantic or hybrid to lexical
 
-## Contracts
+Rejected. Silent substitution hides stale or missing indexes and makes results
+misrepresent the requested engine. Explicit engine selection and typed failures
+are required.
 
-1. **Back-compat for `retrieve_chunks` callers.** When `include_rationale=False` (the default), `RetrievalResult.to_dict()` output is byte-identical to the pre-Worker-J schema. Production callers in `Trainforge/rag/libv2_bridge.py` are unaffected. Pinned by `Trainforge/tests/test_retrieval_improvements.py::TestWorkerJBackCompat`.
-2. **Metadata-aware scoring default on, escape hatch per boost.** Pure BM25 is one flag away: `--no-metadata-scoring`, or any of `--no-concept-graph-boost` / `--no-lo-boost`. Callers who need determinism against changing per-course graphs can switch it off.
-3. **Gold queries are hand-curated, not LO-derived.** Each `relevant_chunk_ids` entry must be a chunk whose text a human read. `kind: "lo-derived"` is reserved for explicit, tagged LO-expansion — retrieved numbers against LO-derived queries are NOT comparable to hand-curated numbers. The "Adding gold queries to your own corpus" section of `docs/reference/reference-retrieval.md` documents the curation rule for per-course gold query files users build locally.
-4. **Evaluation numbers are diagnostic, not gates.** Absolute MRR/recall@k numbers depend on the corpus they're computed against and on any corpus-specific curation; they are meant for sanity-checking a local pipeline, not for cross-package comparisons. Downstream consumers build their own gates on their own retrieval.
+### Ship no retrieval implementation
 
-## Decision log (append-only)
+Rejected. Without an executable reference, every consumer must independently
+interpret chunksets, filters, metadata, and index manifests. That weakens the
+package contract and makes defects harder to localize.
 
-| Date | PR | What | Owner |
-|---|---|---|---|
-| 2026-04-17 | Worker J PR | Reference retrieval scope established. Rationale payload, metadata-aware scoring, `retrieval-eval` CLI. Per-course `gold_queries.jsonl` is a user-curated artifact that stays local to the user's checkout (not shipped in this repo). | Worker J |
+### Publish populated gold-query sets
 
-## Open questions / known issues not addressed
+Rejected. Real queries and relevance judgments disclose course-derived
+material and can reveal private identifiers or content. Only neutral shapes,
+synthetic fixtures, and tooling belong in the public repository.
 
-- `FOLLOWUP-ADR002-1` — The WCAG SC ref tokenization (`sc-1.4.3`) currently relies on a normalization pre-pass in `_canonicalize_query`; longer-term, `Trainforge/rag/wcag_canonical_names.canonicalize_sc_references` should emit the hyphenated form directly so the pre-pass is redundant.
-- `FOLLOWUP-ADR002-2` — Metadata-aware scoring weight tuning. The default 0.3/0.3/0.2 split is reasonable but unvalidated against a large gold set. When more courses carry gold queries, run a small sweep and commit the resulting weights.
-- `FOLLOWUP-ADR002-3` — Cross-course rationale. When `retrieve_chunks` is called without `course_slug`, the rationale's per-course metadata (graph, pedagogy) is loaded per candidate, which is fine but inefficient for very large catalogs. A `MultiCourseScorer` cache would help at scale; not needed today.
-- `FOLLOWUP-ADR002-4` — Dense-embedding optional module. Deliberately out of scope for this ADR; if the project ever decides to ship one it should go in `LibV2/tools/libv2/retriever_dense.py` as a *separate* module, with its own opt-in flag — not folded into `retriever.py`.
+### Add cross-encoder reranking to the reference engine
 
----
-
-## Subsequent developments (2026-07-20)
-
-> This section is an **annotation**, not part of the decision. Nothing above this line has been altered.
-> Every claim below was re-checked against the working tree on 2026-07-20.
-
-**The dense-embedding scope line was crossed deliberately, and the ADR's own separation discipline was
-honored.** `FOLLOWUP-ADR002-4` anticipated this and prescribed "a *separate* module, its own opt-in flag, not
-folded into `retriever.py`". That is what shipped, under different filenames than the follow-up guessed:
-
-- `LibV2/tools/libv2/vector_index.py` — per-course on-device vector index (exact cosine over L2-normalized
-  float32 in numpy; no FAISS, no sqlite-vec). Artifacts live at `LibV2/courses/<slug>/vector_index/`
-  (`embeddings.npy`, `id_map.json`, `manifest.json`).
-- `LibV2/tools/libv2/semantic_retriever.py` — query-side semantic retrieval, hydrating results back into the
-  same `RetrievalResult` shape the lexical retriever emits.
-- `LibV2/tools/libv2/result_fusion.py` — Reciprocal Rank Fusion, backing the `hybrid-rrf` engine.
-
-Both `retriever.py::retrieve_chunks` and `MultiQueryRetriever.__init__` (`multi_retriever.py:111`) now take an
-`engine` argument with three values: `"lexical"` (the default), `"semantic"`, and `"hybrid-rrf"`. Backend
-selection is env-driven (`ED4ALL_EMBEDDING_PROVIDER` and its satellites — see the root `CLAUDE.md`
-cross-cutting flag index).
-
-Note precisely what "not folded into `retriever.py`" means here, because the follow-up's wording invites an
-overclaim: the dense *implementation* is entirely in the three new modules above, but `retriever.py` was
-modified — `retrieve_chunks` gained the `engine` parameter and a dispatch block that, for a non-lexical
-engine, validates arguments (`course_slug` required; `method=` rejected) and delegates to
-`semantic_retriever.semantic_retrieve_chunks` / `hybrid_rrf_retrieve` via a function-local import
-(parameter at `retriever.py:819`, dispatch block `:848-901`). The dispatch is additive and returns before the BM25 body, so a default
-(`engine="lexical"`, `include_rationale=False`) caller still traverses the unchanged path and Contract 1
-(byte-identical `to_dict()`) holds — but it holds because the new branch is a guarded early return, not
-because `retriever.py` is untouched.
-
-Two properties of the landed design are worth naming because they are stronger than what the ADR asked for:
-
-1. **Anti-silent-degradation.** `semantic_retriever` has no BM25 fallback anywhere. Every failure mode is a
-   typed exception that propagates. Four subclasses of `SemanticIndexError` live in `vector_index.py`
-   (`SemanticIndexMissing`, `SemanticIndexStale`, `FakeIndexRefused`, `SemanticModelMismatch`); the backend
-   raises `EmbeddingBackendUnavailable` from `lib/embedding/providers.py`. A missing, stale, or
-   wrong-model index is an operator error, never a quiet downgrade to lexical results the caller cannot
-   distinguish from a real semantic hit.
-2. **Determinism contract.** Same machine, venv, provider, model, `device=cpu`, and batch size produce
-   byte-identical `embeddings.npy` and `id_map.json`; `manifest.json` is identical modulo `generated_at`,
-   which is excluded from every content hash.
-
-**Scope lines that did hold.** Cross-encoder reranking stayed out of LibV2: it lives at
-`lib/retrieval/reranker.py` behind `ED4ALL_RERANK_PROVIDER`, on the Ed4All grounded-answer path, not in the
-LibV2 package surface. Likewise there is still no HTTP retrieval service in LibV2 — the control-plane GUI is a
-separate opt-in extra, not a LibV2 API. The ADR's core claim ("LibV2 stores packages and exposes reference
-retrieval; production serving belongs downstream") survives; only the "reference retrieval is sparse-only"
-boundary moved.
-
-**What this means for the ADR text above.** In § "What's explicitly out of scope", the *Dense embeddings*
-bullet is obsolete — read it as history. The *Cross-encoder rerankers*, *Online query APIs*, and
-*Domain-specific scoring* bullets remain accurate.
+Rejected. Reranker model selection, latency, candidate depth, and operational
+failure policy belong to downstream serving. Keeping reranking separate also
+preserves the reference engines as direct demonstrations of package retrieval.
