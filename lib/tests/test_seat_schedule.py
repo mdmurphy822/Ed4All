@@ -456,6 +456,12 @@ def test_recreate_seat_emits_decision_capture(
     assert "spark-super" in rationale
     assert "http://localhost:8001" in rationale  # base_url interpolated
     assert len(rationale) >= 20  # project law: rationale ≥ 20 chars
+    alternatives = call["alternatives_considered"]
+    assert len(alternatives) == 2
+    assert all(
+        set(item) == {"option", "reason_rejected"} for item in alternatives
+    )
+    assert all("spark-super" in item["reason_rejected"] for item in alternatives)
 
 
 def test_recreate_seat_no_launch_spec_returns_none(monkeypatch, _seat_env, _fake_capture):

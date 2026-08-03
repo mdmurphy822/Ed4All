@@ -509,13 +509,31 @@ def _emit_decision_capture(
         f"Shape {result.source_shape} fired {rule_label} on focus node "
         f"{result.focus_node}: {result.message[:240]}"
     )
-    alternatives = []
+    alternatives: List[Dict[str, str]] = []
     if result.shape_file is not None and result.shape_line is not None:
         alternatives.append(
-            f"Edit shape at {result.shape_file}:{result.shape_line}"
+            {
+                "option": f"Edit shape at {result.shape_file}:{result.shape_line}",
+                "reason_rejected": (
+                    f"The active constraint {rule_label} from "
+                    f"{result.source_shape} defines the expected data shape; "
+                    f"the violation is reported for focus node {result.focus_node} "
+                    "without mutating the governing rule."
+                ),
+            }
         )
     if result.data_file is not None:
-        alternatives.append(f"Edit data file {result.data_file}")
+        alternatives.append(
+            {
+                "option": f"Edit data file {result.data_file}",
+                "reason_rejected": (
+                    f"Validation reports {rule_label} for focus node "
+                    f"{result.focus_node}; automatic mutation of "
+                    f"{result.data_file} is outside the enricher's reporting "
+                    "responsibility."
+                ),
+            }
+        )
 
     decision_capture.log_decision(
         decision_type=DECISION_TYPE_SHACL,

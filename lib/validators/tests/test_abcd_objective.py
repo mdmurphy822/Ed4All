@@ -65,6 +65,7 @@ from lib.ontology.learning_objectives import (  # noqa: E402
 )
 from lib.validators.abcd_objective import (  # noqa: E402
     AbcdObjectiveValidator,
+    _emit_decision,
 )
 
 
@@ -105,6 +106,32 @@ class _StubDecisionCapture:
                 **kwargs,
             }
         )
+
+
+def test_emit_decision_forwards_canonical_alternatives():
+    capture = _StubDecisionCapture()
+    alternatives = [
+        {
+            "option": "Regenerate objective OBJ-7",
+            "reason_rejected": (
+                "Objective OBJ-7 uses verb 'list' at Bloom level 'create', so "
+                "the validator reports the mismatch before regeneration."
+            ),
+        }
+    ]
+
+    _emit_decision(
+        capture,
+        decision_type="abcd_verb_bloom_mismatch",
+        decision="Flagged objective OBJ-7",
+        rationale=(
+            "Objective OBJ-7 uses verb 'list' outside the configured create-level "
+            "verb set."
+        ),
+        alternatives=alternatives,
+    )
+
+    assert capture.events[0]["alternatives_considered"] == alternatives
 
 
 # --------------------------------------------------------------------- #

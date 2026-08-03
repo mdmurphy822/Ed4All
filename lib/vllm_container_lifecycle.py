@@ -1020,8 +1020,22 @@ def _emit_recreate_capture(
                 f"Automatic self-heal replacing the manual cold-restart."
             ),
             alternatives_considered=[
-                "warm docker start only (already failed the coherence probe)",
-                "raise SeatScheduleProbeError without any recovery attempt",
+                {
+                    "option": "Keep the warm-started container",
+                    "reason_rejected": (
+                        f"Seat {seat_name!r} at {base_url} failed the coherence "
+                        f"probe with reason={reason!r}, so the warm container "
+                        f"{container!r} cannot serve the scheduled workload."
+                    ),
+                },
+                {
+                    "option": "Raise without attempting recovery",
+                    "reason_rejected": (
+                        f"Seat {seat_name!r} has a configured cold-recreate path; "
+                        f"the relaunch result was launched={launched} with "
+                        f"reload_seconds={load_seconds}."
+                    ),
+                },
             ],
         )
         try:

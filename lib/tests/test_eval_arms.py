@@ -430,6 +430,18 @@ def test_base_arm_emits_decision_capture_per_question():
         assert len(e["rationale"]) >= 20
         assert "course-x" in e["rationale"]
         assert "fake-qwen-7b" in e["rationale"]
+        alternatives = e["alternatives_considered"]
+        assert len(alternatives) == 2
+        assert all(
+            set(item) == {"option", "reason_rejected"} for item in alternatives
+        )
+        assert all(
+            any(
+                question_id in item["reason_rejected"]
+                for question_id in ("gq-0001", "gq-0002")
+            )
+            for item in alternatives
+        )
     # Each question id appears in exactly one decision string.
     decided = " ".join(e["decision"] for e in base_events)
     assert "gq-0001" in decided and "gq-0002" in decided

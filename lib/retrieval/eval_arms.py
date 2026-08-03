@@ -955,10 +955,23 @@ def _emit_base_decision(
                 f"comparison; {groundedness_signal}; {probe_signal}."
             ),
             alternatives_considered=[
-                "grounded arm (retrieval + refusal): measures the combined "
-                "system, not unaided knowledge",
-                "retrieval-only arm: measures the extractive ceiling, no model "
-                "knowledge",
+                {
+                    "option": "Use the grounded retrieval-and-refusal arm",
+                    "reason_rejected": (
+                        f"Question {question_id!r} is assigned to the BASE arm "
+                        f"for course {course_slug!r}, so adding retrieval would "
+                        "measure the combined system instead of unaided model "
+                        f"knowledge from {model_id}."
+                    ),
+                },
+                {
+                    "option": "Use the retrieval-only extractive arm",
+                    "reason_rejected": (
+                        f"Question {question_id!r} requires a model response "
+                        f"bounded by max_tokens={max_tokens}; an extractive-only "
+                        f"arm would not measure {model_id}'s unaided knowledge."
+                    ),
+                },
             ],
         )
     except Exception:  # noqa: BLE001 — capture must never abort the eval

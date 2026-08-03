@@ -398,7 +398,7 @@ def _emit_decision(
     decision: str,
     rationale: str,
     context: Optional[str] = None,
-    alternatives: Optional[List[str]] = None,
+    alternatives: Optional[List[Dict[str, str]]] = None,
 ) -> None:
     """Emit one DecisionCapture event, swallowing any capture-side errors.
 
@@ -806,10 +806,6 @@ class AbcdObjectiveValidator:
                         f"{len(valid_verbs)})."
                     ),
                     rationale=(
-                        # Dynamic signals FIRST (lo_id / verb / level) so the
-                        # first-80-char prefix is distinct per objective — the
-                        # DecisionCapture boilerplate scanner keys on that
-                        # prefix (DUPLICATE_BOILERPLATE_RATIONALE, Wave4-I5).
                         f"LO {lo_id} verb {verb_raw!r} (normalized {verb!r}) "
                         f"is outside BLOOMS_VERBS[{level!r}] "
                         f"({len(valid_verbs)} canonical verbs; e.g. "

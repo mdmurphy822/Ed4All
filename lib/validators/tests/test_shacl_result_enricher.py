@@ -530,6 +530,15 @@ def test_decision_capture_one_event_per_violation(isolated_decision_capture):
         f"{len(shacl_events)}; decisions: "
         f"{[d.get('decision_type') for d in isolated_decision_capture.decisions]}"
     )
+    for event in shacl_events:
+        alternatives = event.get("alternatives_considered") or []
+        assert all(
+            set(item) == {"option", "reason_rejected"} for item in alternatives
+        )
+        focus_node = event["decision"].split(" on focusNode ")[1]
+        assert all(
+            focus_node in item["reason_rejected"] for item in alternatives
+        )
 
 
 def test_decision_capture_rationale_meets_minimum_length(
