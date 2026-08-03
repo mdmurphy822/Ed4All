@@ -832,7 +832,7 @@ Per-flag rows live in per-subsystem reference docs under `docs/operations/` (one
 | `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` | [`docs/operations/behavior-flags-trainforge.md`](docs/operations/behavior-flags-trainforge.md) | 77 |
 | `NVIDIA_*` (vendor endpoint-registry row for the hosted large-model seat — `NVIDIA_API_KEY` / `NVIDIA_BASE_URL` / `NVIDIA_LARGE_MODEL`) | [`docs/operations/behavior-flags-trainforge.md`](docs/operations/behavior-flags-trainforge.md) | 3 |
 | `SEMANTIK_*` (SemantiK converter; also honors the single legacy `DART_THETA_DEVICE` compatibility alias for `SEMANTIK_THETA_DEVICE`) <!-- legacy-token: allow --> | [`docs/operations/behavior-flags-semantik.md`](docs/operations/behavior-flags-semantik.md) | 96 |
-| `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`docs/operations/behavior-flags-courseforge.md`](docs/operations/behavior-flags-courseforge.md) | 45 |
+| `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`docs/operations/behavior-flags-courseforge.md`](docs/operations/behavior-flags-courseforge.md) | 52 |
 | `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 272 |
 
 ### Cross-cutting flags (root-owned)
