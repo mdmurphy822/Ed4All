@@ -243,7 +243,7 @@ def _esc_attr(value: str) -> str:
 
 # Honest type-level accessible name for a figure with no resolvable caption /
 # model alt. Byte-frozen to the assembler's
-# ``figure_captioner.TYPE_LEVEL_ALT`` so the cascade_ir adapter path and the
+# ``figures.captioner.TYPE_LEVEL_ALT`` so the cascade_ir adapter path and the
 # Stage-9 assembler path agree on the screen-reader name.
 _TYPE_LEVEL_ALT = "Figure."
 
@@ -256,7 +256,7 @@ def _render_figure_html(
 ) -> str:
     """Render a council ``figure``-kind region.
 
-    Part F — when ``image_src`` is present (the Stage-F sidecar PNG was
+    When ``image_src`` is present (the figure sidecar PNG was
     written), emit a real ``<figure><img src=… alt=…>`` with the SmolVLM2
     caption (or honest type-level alt) as the accessible name, plus a
     ``<figcaption>`` when a caption resolved. When NO ``image_src`` resolved
@@ -600,7 +600,7 @@ def _block_from_provenance(prov: Mapping[str, Any]) -> _AdapterBlock:
     wcag_status = str(wcag_status) if wcag_status else None
     figure_alt = prov.get("figure_alt")
     figure_alt = str(figure_alt) if figure_alt else None
-    # Part F — relative sidecar PNG path (present only on figure regions
+    # Relative sidecar PNG path, present only on figure regions
     # with a written sidecar). Absent → text-only figure (byte-stable).
     image_src = prov.get("image_src")
     image_src = str(image_src) if image_src else None

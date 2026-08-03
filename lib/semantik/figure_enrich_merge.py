@@ -48,7 +48,7 @@ from bisect import bisect_right
 from typing import Dict, List, Optional, Tuple
 
 # Byte-frozen mirror of ``lib/semantik/cascade_ir._TYPE_LEVEL_ALT`` /
-# ``figure_captioner.TYPE_LEVEL_ALT`` — the honest type-level accessible name
+# ``figures.captioner.TYPE_LEVEL_ALT`` — the honest type-level accessible name
 # a caption-less figure ships with.
 TYPE_LEVEL_ALT = "Figure."
 

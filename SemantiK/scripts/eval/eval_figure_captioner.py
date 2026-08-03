@@ -1,16 +1,14 @@
-"""Acceptance eval for the Stage 6b figure captioner (SmolVLM2-256M).
+"""Evaluate the Stage 6b SmolVLM2 figure-captioning contract.
 
-Plans/09 §5 / §8 step 4. Mirror of ``scripts/eval/eval_qwen_table_adapter.py``
-(structure, CLI, report shape, axe-gate invocation) retargeted to the
-**figure captioner** — the component under eval is
-``semantik_structure.figure_captioner.caption_figure_regions`` /
+The component under evaluation is
+``semantik_structure.figures.captioner.caption_figure_regions`` /
 ``_run_smolvlm_caption`` (Stage 6b), feeding the assembler figure emitter
 ``semantik_structure.assembler.fallbacks.fallback_figure`` (which now emits
 ``alt`` + ``aria-describedby``). The eval data is
 ``data/figure_alt_dataset/test.jsonl`` (figure image path + ground-truth
 ``caption``, joined to the rendered PNG under ``data/figure_images/``).
 
-This harness scores the four Plans/09 §5 acceptance gates — it is NOT a
+This harness scores four acceptance gates. It is not a
 similarity-to-gold harness (there is no "gold alt"; the caption is the
 ground truth a good alt must derive from):
 
@@ -48,15 +46,15 @@ subtype-tagged build lights it up without a code change).
 Model seam (so this runs WITHOUT a GPU):
   The captioner call is injected as ``caption_fn(image_bytes, *, kind) ->
   CaptionResult``. The default real-run seam loads SmolVLM2 and calls
-  ``figure_captioner._run_smolvlm_caption``. ``--self-test`` swaps in a
+  ``figures.captioner._run_smolvlm_caption``. ``--self-test`` swaps in a
   canned stub over synthetic rows so the gate logic is exercisable on CPU
   with no model and no network. A captioner FAILURE is surfaced as
-  ``FigureCaptionError`` (``feedback_no_silent_fallbacks``), never silently
-  skipped — a failed row is recorded with ``caption_error`` and fails its
+  ``FigureCaptionError``, never silently skipped — a failed row is recorded
+  with ``caption_error`` and fails its
   gates rather than vanishing.
 
-Token caps (``feedback_qwen_runtime_output_caps``): the alt / extended caps
-mirror the production Stage 6b values (``_ALT_MAX_NEW_TOKENS`` = 64,
+The alt and extended token caps mirror the production Stage 6b values
+(``_ALT_MAX_NEW_TOKENS`` = 64,
 ``_EXTENDED_MAX_NEW_TOKENS`` = 256). The dataset caption tail is p99=337,
 max=741 tokens, so the 256-token extended cap will truncate the longest
 captions — but the EXTENDED description is the model's own summary, not a
@@ -88,27 +86,25 @@ from typing import Any, Callable
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-# Shared no-hallucination guard — the SAME function production's
-# fallback_figure applies, so the eval measures the shipped behaviour.
-from semantik_structure.figure_captioner import (  # noqa: E402
+# Use the production numeric guard so evaluation measures emitted behavior.
+from semantik_structure.figures.captioner import (  # noqa: E402
     alt_from_caption,
     guard_figure_alt,
     strip_numeric_hallucinations,
 )
 
-# Caption-first derivation is shared verbatim with the production emitter
-# (assembler.fallbacks.fallback_figure) so the gate measures the shipped path.
+# Use the production caption trim so the evaluator and emitter cannot drift.
 _alt_from_caption = alt_from_caption
 
 DEFAULT_TEST = REPO_ROOT / "data/figure_alt_dataset/test.jsonl"
 DEFAULT_IMAGE_ROOT = REPO_ROOT  # image_path in rows is repo-relative
 DEFAULT_REPORT_DIR = REPO_ROOT / "data/eval_reports"
 
-# Mirror the production Stage 6b caps (feedback_qwen_runtime_output_caps).
+# Match the production Stage-6b output limits.
 ALT_MAX_NEW_TOKENS = 64
 EXTENDED_MAX_NEW_TOKENS = 256
 
-# Ship/iterate verdict thresholds (Plans/09 §5). All must clear to ship.
+# Require every acceptance threshold for a ship verdict.
 SHIP_THRESHOLDS = {
     "axe_pass": 0.98,            # fragments must be accessible
     "axe_regression": 0.02,     # <= : captioner must not introduce defects
@@ -121,9 +117,6 @@ _NUM_RE = re.compile(r"\d+(?:[.,]\d+)*")
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
-# ---------------------------------------------------------------------------
-# Caption result + the injectable model seam
-# ---------------------------------------------------------------------------
 @dataclass
 class CaptionResult:
     """What a captioner returns for one figure (or what routing decided)."""
@@ -133,16 +126,16 @@ class CaptionResult:
     error: str | None = None
 
 
-# A captioner is any callable (image_bytes, *, kind) -> CaptionResult.
+# Model seams accept image bytes and a figure kind, then return both descriptions.
 CaptionFn = Callable[..., CaptionResult]
 
 
 def make_smolvlm_caption_fn(run_extended: bool = True) -> CaptionFn:
-    """Real-run seam: wrap ``figure_captioner._run_smolvlm_caption`` (loads
-    SmolVLM2-256M on first call). Honours ``feedback_no_silent_fallbacks`` —
-    a generation failure raises ``FigureCaptionError``, which the caller
-    records as a failed row rather than swallowing."""
-    from semantik_structure.figure_captioner import (  # local import: avoids torch at import time
+    """Real-run seam: wrap ``figures.captioner._run_smolvlm_caption`` (loads
+    SmolVLM2-256M on first call). A generation failure raises
+    ``FigureCaptionError``, which the caller records as a failed row rather
+    than swallowing."""
+    from semantik_structure.figures.captioner import (  # local import: avoids torch at import time
         _ALT_PROMPT,
         _EXTENDED_PROMPT,
         FigureCaptionError,
@@ -170,9 +163,6 @@ def make_smolvlm_caption_fn(run_extended: bool = True) -> CaptionFn:
     return _fn
 
 
-# ---------------------------------------------------------------------------
-# Decorative routing (gate 2)
-# ---------------------------------------------------------------------------
 def is_decorative(row: dict) -> bool:
     """Decorative-figure routing decision (gate on this, not the model).
 
@@ -196,7 +186,7 @@ def route_figure(row: dict, caption_fn: CaptionFn, image_bytes: bytes) -> Captio
       * decorative      -> alt="" , no model call.
       * caption present -> alt derives from the caption (caption-first); the
         model produces only the EXTENDED description, never the alt.
-      * no caption      -> the model produces the alt (the gap Plans/09 fills).
+      * no caption      -> the model produces the alt.
 
     The model seam is only invoked for the extended description (caption
     present) or the alt (no caption) — a decorative figure never reaches it.
@@ -206,10 +196,8 @@ def route_figure(row: dict, caption_fn: CaptionFn, image_bytes: bytes) -> Captio
 
     cap = (row.get("caption") or "").strip()
     if cap:
-        # caption-first: alt is the caption (trimmed to a one-liner); the
-        # model only fills the longer extended description. The extended text
-        # still passes the no-hallucination guard against the caption (Plans/09
-        # §2.4) — it must not introduce numbers absent from the caption.
+        # Use the source caption for alt text and guard the model's longer
+        # description against unsupported numeric claims.
         res = caption_fn(image_bytes, kind="figure")
         return CaptionResult(
             alt=_alt_from_caption(cap),
@@ -217,9 +205,8 @@ def route_figure(row: dict, caption_fn: CaptionFn, image_bytes: bytes) -> Captio
             source="caption",
             error=res.error,
         )
-    # no caption: model owns the alt. Guard both alt and extended — without a
-    # caption to verify against, any model number is unverifiable and stripped
-    # (production's fallback_figure does the same against the resolved caption).
+    # Without a source caption, strip unverifiable numeric claims from both
+    # model-generated descriptions.
     res = caption_fn(image_bytes, kind="figure")
     return CaptionResult(
         alt=guard_figure_alt(res.alt, cap),
@@ -443,8 +430,7 @@ def run_axe(fragments: list[str]) -> list[dict]:
 
 def baseline_fragment(row: dict, region_idx: int) -> str:
     """Empty-alt baseline: the SAME figure with alt="" and no extended desc
-    (the prior Stage 6b behaviour). axe_regression measures the captioner
-    breaking a fragment this baseline passed."""
+    so ``axe_regression`` detects defects introduced by generated text."""
     return emit_figure_html(
         CaptionResult(alt="", extended="", source="decorative"),
         row, region_idx,
@@ -545,7 +531,7 @@ def run_eval(
     base_fragments, axe_summary). ``axe_summary`` is None when
     ``run_axe_pass`` is False. ``load_image_bytes`` is injectable for the
     self-test (synthetic rows carry inline bytes instead of a file path)."""
-    from semantik_structure.figure_captioner import FigureCaptionError
+    from semantik_structure.figures.captioner import FigureCaptionError
 
     per_row: list[dict] = []
     gen_fragments: list[str] = []
@@ -568,8 +554,8 @@ def run_eval(
         try:
             result = route_figure(row, caption_fn, img_bytes)
         except FigureCaptionError as exc:
-            # feedback_no_silent_fallbacks: record the failure, fail the row's
-            # gates, but keep the row visible — never silently skip.
+            # Record the failure and fail the row's gates while keeping the row
+            # visible in the evaluation report.
             result = CaptionResult(
                 alt="", extended="", source="error", error=str(exc))
         scores = score_one(row, result)
@@ -651,9 +637,6 @@ def _verdict(overall: dict, run_axe_pass: bool) -> dict:
             "checks": checks}
 
 
-# ---------------------------------------------------------------------------
-# Self-test (no GPU, no model, no network) — exercises all four gates
-# ---------------------------------------------------------------------------
 def _tiny_png_bytes() -> bytes:
     """A 2x2 white PNG — valid bytes the stub never actually decodes."""
     import base64
@@ -773,7 +756,7 @@ def _print_report(report: dict) -> None:
               f"  <- a11y defects introduced")
     if report.get("error_rows"):
         print(f"  captioner errors        : {len(report['error_rows'])} row(s) "
-              f"(surfaced, gates failed) <- feedback_no_silent_fallbacks")
+              f"(surfaced; gates failed)")
     print(f"\n  VERDICT: {v['decision'].upper()}"
           f"  (ship={v['ship']})")
     for k, c in v["checks"].items():

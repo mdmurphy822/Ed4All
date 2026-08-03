@@ -24,7 +24,7 @@ call path.
   Regression test:
   `SemantiK/semantik_structure/tests/test_vlm_extract_capture.py`.
 - **SemantiK figure captioner** —
-  `SemantiK/semantik_structure/figure_captioner.py` emits one
+  `SemantiK/semantik_structure/figures/captioner.py` emits one
   `alt_text_generation` capture per figure (`log_decision` near line 294).
   Regression test:
   `SemantiK/semantik_structure/tests/test_figure_captioner_capture.py`.

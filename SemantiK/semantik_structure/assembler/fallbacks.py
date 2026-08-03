@@ -1,4 +1,4 @@
-"""Per-region-kind fallback emitters (Plans/04 §1, all 11 RegionKinds).
+"""Per-region-kind fallback emitters for all supported RegionKinds.
 
 Used when Stage 7 dropped all K candidates for a region (the
 ``top_per_region[i] is None`` case). Output must conform to
@@ -352,9 +352,8 @@ def fallback_figure(region: Region, feature_blocks: Sequence[FeatureBlock]) -> s
     # (alt_from_caption below reads ``cap``). Flag off / no caption edge -> legacy.
     suppress_caption = bool(payload.get("caption_nested")) and _containment_on()
     figcap = "" if suppress_caption else (f"<figcaption>{escape(cap)}</figcaption>" if cap else "")
-    # alt_text from Stage 6b (figure_captioner) when present; otherwise empty
-    # alt (the prior behaviour, which axe SC 1.1.1 flags for figure-bearing
-    # docs — the gap Plans/09 closes).
+    # alt_text from Stage 6b (figures.captioner) when present; otherwise empty
+    # alt, which axe SC 1.1.1 flags for figure-bearing documents.
     alt = (payload.get("alt_text") or "").strip()
     # extended_description from Stage 6b: a longer accessible description that
     # doesn't belong in the short `alt`. Mirror the form-field `help` idiom in
@@ -363,8 +362,8 @@ def fallback_figure(region: Region, feature_blocks: Sequence[FeatureBlock]) -> s
     # before (no extra element, no aria-describedby attribute). SC 1.1.1 /
     # WCAG 2.2 AA.
     ext = (payload.get("extended_description") or "").strip()
-    # Caption-first + no-hallucination numeric guard (Plans/09 §5 gate 3 / §2.4).
-    from ..figure_captioner import (
+    # Prefer source captions and reject unsupported numeric claims.
+    from ..figures.captioner import (
         alt_from_caption,
         guard_figure_alt,
         strip_numeric_hallucinations,
@@ -381,11 +380,11 @@ def fallback_figure(region: Region, feature_blocks: Sequence[FeatureBlock]) -> s
         # No caption to verify against: the model owns the alt. Strip any sentence
         # carrying a number absent from the (empty) caption — a wrong number is
         # worse than none for a screen-reader user — falling back to a type-level
-        # alt only when nothing survives (see figure_captioner.guard_figure_alt).
+        # alt only when nothing survives (see figures.captioner.guard_figure_alt).
         alt = guard_figure_alt(alt, cap)
     # The extended description is always numeric-guarded against the caption.
     ext = strip_numeric_hallucinations(ext, cap)
-    # Part F — the Stage-F sidecar-write pass stamps ``image_src`` (relative
+    # The sidecar-write pass stamps ``image_src`` (relative
     # path to the written figure PNG) on the payload. Fill the previously-
     # empty ``src=""``. When no src resolved (figure path off, deferred, or
     # write failed), keep the historic empty-src behaviour byte-for-byte.

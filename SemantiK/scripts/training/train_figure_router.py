@@ -1,23 +1,24 @@
-"""Phase P2 — train the 5-class figure-router head on frozen SigLIP embeddings.
+"""Train the five-class figure-router head on frozen SigLIP embeddings.
 
-The P2 fine-plan (2026-06-09) measured the winning recipe on the 300-label
-bootstrap: ``LogisticRegression(C=10, class_weight="balanced")`` on frozen
-SigLIP-2 embeddings — 0.857 acc / 0.801 macro-F1 at 5-fold CV.
+The validated recipe uses ``LogisticRegression(C=10,
+class_weight="balanced")`` on frozen SigLIP-2 embeddings; its reference
+five-fold cross-validation measured 0.857 accuracy and 0.801 macro-F1.
 ``class_weight="balanced"`` is mandatory (+0.18 macro-F1); an MLP buys
-nothing; self-training was falsified. This script is that recipe, plus:
+nothing and self-training did not improve the reference evaluation. The
+training contract also includes:
 
   * ``CalibratedClassifierCV`` wrapping, because the runtime contract
-    (``figure_router.classify_subtype``) abstains to ``other`` below a
+    (``figures.router.classify_subtype``) abstains to ``other`` below a
     CALIBRATED p<0.55 — raw logreg scores are not calibrated enough to
     threshold;
-  * a 150-row per-class cap ([[feedback-balance-dominant-category]]) so no
-    class out-volumes the starved ones;
+  * a 150-row per-class cap so no dominant class overwhelms underrepresented
+    classes;
   * fail-closed input guards: refuses to train when the labels are missing,
     unparseable, below ``--min-labels``, or reference images absent from the
     embedding npz files (no silent row drops).
 
-Inputs are label jsonl files (default: the mined-then-labeled
-``labels_train.jsonl`` plus the salvaged ``seed_labels.jsonl``), each row::
+Inputs are label JSONL files (default: ``labels_train.jsonl`` plus
+``seed_labels.jsonl``), each row::
 
     {"image_path": "data/figure_images/...", "visual_label": "<subtype>", ...}
 
@@ -51,7 +52,7 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-from semantik_structure.figure_router import SUBTYPES  # noqa: E402 — torch-free import
+from semantik_structure.figures.router import SUBTYPES  # noqa: E402 — torch-free import
 
 EMB_DIR = REPO_ROOT / "data/figure_embeddings"
 EMB_SPLITS = ("train", "val", "test")
@@ -185,8 +186,8 @@ def main(argv: list[str] | None = None) -> int:
     X = np.stack([index[r["image_path"]] for r in rows], axis=0)
     y = np.array([r["visual_label"] for r in rows], dtype=object)
 
-    # The measured P2 recipe. max_iter raised so lbfgs always converges on
-    # 768-dim embeddings; saga/liblinear were not part of the measurement.
+    # The higher iteration ceiling lets LBFGS converge on 768-dimensional
+    # embeddings while preserving the validated solver and regularization.
     base = LogisticRegression(C=10, class_weight="balanced", max_iter=5000)
 
     n_folds = min(5, min(class_counts.values()))

@@ -1,9 +1,8 @@
 """Stage 1..13 cascade driver — the v2 pipeline body.
 
 This module owns the end-to-end Stage 1..13 flow described in
-``architecture.md`` §2. It is the canonical home of :func:`run_full_cascade`
-(previously embedded in ``scripts/smoke/run_stage12_smoke.py``); the smoke
-harness and the corpus-level eval driver both import it from here, and
+``architecture.md`` §2. It is the canonical home of :func:`run_full_cascade`;
+the smoke harness and corpus-level eval driver both import it here, and
 :mod:`semantik_structure.pipeline_v2` calls :func:`run_pipeline_v2` to expose
 the cascade as the v2 pipeline entry point.
 
@@ -23,9 +22,8 @@ Stage map (matches ``run_full_cascade`` body):
     Stage 12   ThetaEvaluator               (evaluate)
     Stage 13   exit decider + offline retry (maybe_offline_retry/decide_exit)
 
-Single process, single GPU. No PDF-level parallelism — the shared
-validator (one Chromium context) and the 8 GB GPU are both single
-resources; see ``feedback_qwen_build_serial``.
+Single process, single GPU. No PDF-level parallelism: the shared validator
+owns one Chromium context and the conversion stages share one accelerator.
 """
 
 from __future__ import annotations
@@ -91,9 +89,7 @@ def _gpu_lifecycle_release(
         pass
 
 
-# ---------------------------------------------------------------------------
-# Part F — figure-detection flags
-# ---------------------------------------------------------------------------
+# Figure-detection and caption-routing flags.
 
 _DETECT_FIGURES_ENV = "SEMANTIK_DETECT_FIGURES"
 _FIGURE_CAPTION_ENV = "SEMANTIK_FIGURE_CAPTION"
@@ -102,11 +98,11 @@ _FIG_FALSEY = {"0", "false", "no", "off"}
 
 
 def resolve_detect_figures() -> bool:
-    """Whether the Part F figure-detection path (Stages A-D) runs.
+    """Return whether figure detection and its supporting stages run.
 
     Reads ``SEMANTIK_DETECT_FIGURES`` OR the bundled ``SEMANTIK_DEPLOY_PROFILE``
-    (W7.1 — the deploy profile turns figure detection AND column reading-order
-    on together). DEFAULT OFF (byte-stable). Parse-with-fallback: truthy
+    (the deploy profile turns figure detection and column reading order on
+    together). Default off. Parse-with-fallback: truthy
     (``1``/``true``/``yes``/``on``) on EITHER flag → on; unset / falsey /
     garbage → off. Resolver of record; the extract-side mirror
     ``extract_shared._detect_figures_enabled`` reads the same envs (extract
@@ -176,9 +172,8 @@ def _cap_regions_per_kind(
 ) -> list[Region]:
     """Cap the region list to ``cap`` survivors PER KIND (lossy ``continue``).
 
-    ``stage5d_metadata_drop_ids`` (C2 cap-exemption): the set of STABLE
-    ``min(feature_block_indices)`` KEYS (Phase 5 re-key — previously POSITIONAL
-    region indices) of the regions the Stage-5d reviewer NEWLY re-tagged to
+    ``stage5d_metadata_drop_ids`` contains the stable
+    ``min(feature_block_indices)`` keys of regions the Stage-5d reviewer re-tagged to
     ``metadata_drop`` this run. A re-tagged-this-stage ``metadata_drop`` region
     is exempt from counting against ANY bucket's running cap — it emits empty
     HTML and is filtered out of ``body_html`` downstream, so counting it against
@@ -191,12 +186,11 @@ def _cap_regions_per_kind(
     N->1 region merge that shifts every downstream position — the misaligned
     positional exemption could otherwise let the cap evict a real surviving
     region and trip the fail-closed cap-safety revert (silently discarding the
-    whole regroup). Byte-stable when no merge fires: with positions unchanged
-    each region's min-FB equals its old positional index, so the SET of exempt
-    regions is identical to the historical per-kind cap.
+    whole regroup). When no merge fires, each region's min-FB equals its
+    positional index and preserves the ordinary exemption set.
 
     When ``stage5d_metadata_drop_ids`` is None/empty (flag OFF, or no drops),
-    this is byte-identical to the historical per-kind cap.
+    the ordinary per-kind cap applies unchanged.
     """
     if cap <= 0:
         return list(regions)
@@ -206,7 +200,7 @@ def _cap_regions_per_kind(
     for r in regions:
         # A Stage-5d metadata_drop re-tag is cap-exempt: keep it (empty-emit,
         # dropped from body_html) but never let it consume a bucket slot.
-        # Resolve the exemption by the region's STABLE min-FB key (Phase 5).
+        # Resolve the exemption by stable feature-block identity.
         min_fb = _region_min_fb(r)
         if min_fb is not None and min_fb in exempt:
             out.append(r)
@@ -411,18 +405,7 @@ def _stage10_axe_summary(gate_result: Any) -> dict[str, Any]:
     return out
 
 
-# ---------------------------------------------------------------------------
-# P3a — per-region provenance distillation (SemantiK migration §3.3a/§3.5).
-#
-# ``run_full_cascade`` computes everything the Ed4All adapter IR needs
-# (regions = ``capped``, ``feature_blocks``, per-region Stage-7 gate
-# results) but historically dropped it from the result. This helper
-# distills a STABLE, in-memory per-region provenance list in DOCUMENT
-# order so the in-process seam (``lib/semantik/cascade_ir.py``) can build
-# the adapter's chapters IR without re-running models. No cascade LOGIC
-# changes — capture-and-expose only. Every field guards for absence so a
-# mock run (empty payloads / partial feature blocks) never raises.
-# ---------------------------------------------------------------------------
+# Distill stable per-region provenance for the adapter without rerunning models.
 
 
 def _fb_page(feature_blocks: list[Any], fb_idx: int) -> int | None:
@@ -478,13 +461,12 @@ def _review_by_region_index(
     Empty dict when ``verdicts`` is None (flag OFF) so the provenance dict
     stays byte-stable.
 
-    Join key (Phase 5): when ``review_regions`` (the pre-Stage-5e region list
+    When ``review_regions`` (the pre-Stage-5e region list
     the verdict ``block_id``s index into) is provided, the dict is keyed by the
     STABLE ``min(feature_block_indices)`` of ``review_regions[block_id]`` so the
     join survives a Stage-5e N->1 region merge that shifts every post-5e
-    position. When ``review_regions`` is None (legacy / direct callers) the dict
-    is keyed by ``block_id`` (the pre-5e positional region index) EXACTLY as
-    before — byte-identical for callers that don't opt into the re-key.
+    position. When ``review_regions`` is ``None``, direct callers retain the
+    positional ``block_id`` join key.
     """
     out: dict[int, dict[str, Any]] = {}
     n_review = len(review_regions) if review_regions is not None else 0
@@ -507,10 +489,8 @@ def _review_by_region_index(
         bid = getattr(v, "block_id", None)
         if not isinstance(bid, int):
             continue
-        # Phase 5: re-key the verdict by the pre-5e region's stable min-FB so
-        # the join survives a Stage-5e N->1 merge. Falls back to the positional
-        # block_id (byte-identical legacy path) when no review_regions / the
-        # block has no resolvable min-FB.
+        # Prefer stable feature-block identity across Stage-5e merges and use
+        # the positional block ID when no stable key is available.
         key = bid
         if review_regions is not None and 0 <= bid < n_review:
             min_fb = _region_min_fb(review_regions[bid])
@@ -625,10 +605,8 @@ def _build_region_provenance(
     """
     provenance: list[dict[str, Any]] = []
     n = len(regions)
-    # Phase 5: when ``review_regions`` (the pre-5e region list the verdict
-    # block_ids index into) is supplied, the verdict join is keyed by stable
-    # min-FB so it survives a Stage-5e N->1 merge; otherwise the legacy
-    # positional (region_index == block_id) join is used (byte-identical).
+    # Use stable feature-block review keys when the pre-Stage-5e regions are
+    # available; direct callers retain positional keys.
     review_index = _review_by_region_index(review_verdicts, review_regions)
     for region_index in region_order:
         if not (0 <= region_index < n):
@@ -657,7 +635,7 @@ def _build_region_provenance(
 
         heading_text = payload.get("text") if kind in {"heading", "figure"} else None
         figure_alt = (payload.get("alt_text") or None) if kind == "figure" else None
-        # Part F — relative ``<img src>`` to the figure sidecar PNG. Set by
+        # Carry the relative figure-sidecar path used by the emitted image.
         # the Stage-6b/F sidecar-write pass on the region payload; absent
         # (None) for every non-figure region and byte-stable when the
         # figure path is off.
@@ -706,28 +684,26 @@ def _build_region_provenance(
         # ``confidence`` above rides the existing key — no new confidence field.
         if payload.get("vlm_corroborated"):
             entry["vlm_corroborated"] = True
-        # OPTIONAL ``typing_authority`` key (task #43, additive). Stamped ONLY
+        # Stamp ``typing_authority`` only when deterministic scan-lane routing
         # when SEMANTIK_SCAN_LANE_DEBERT is ACTIVE for this document (flag on AND
         # the OCR/scan lane) — then every region's kind derives from the
         # deterministic/geometric arm (``"deterministic"``) or a VLM/router
         # heading promotion (``"vlm"``), never the masked BERT. Absent (the key
         # omitted, byte-stable to baseline) when the gate is off / born-digital
-        # lane; absence = the legacy council-authoritative (``"bert"``) default.
+        # is active; absence identifies the council-authoritative default.
         if typing_authority_active:
             from .scan_lane import typing_authority_for_payload
 
-            # Payload-first (task #43): the page-arranger route stamps
+            # Prefer authority stamped by the page-arranger route.
             # ``payload['typing_authority']='vlm-arranger'`` on every Region it
             # builds, so honour that when present; otherwise fall back to the
-            # scan-lane de-BERT deterministic/vlm classifier. Agent (a)'s
-            # scan-lane path never sets the payload key → its behaviour is
-            # byte-identical (the ``or`` degrades to the historic call).
+            # otherwise use the scan-lane deterministic/VLM classifier.
             entry["typing_authority"] = payload.get(
                 "typing_authority"
             ) or typing_authority_for_payload(payload)
-        # OPTIONAL ``role_top_k`` key (additive, ITEM6). Present only when the
+        # Include ``role_top_k`` only when the council exposes a distribution.
         # Stage-5 stamp ran (a real council state); byte-stable to baseline
-        # (key simply absent) for mock/legacy runs. Deliberately NOT lifting
+        # Omit it for mock or distribution-free runs. Do not lift
         # ``pedagogical_top_k`` — no named wire consumer; it stays on
         # Region.provenance for in-run consumers only.
         role_top_k = (getattr(region, "provenance", {}) or {}).get("role_top_k")
@@ -761,9 +737,7 @@ def _build_region_provenance(
         # when the reviewer ran AND corrected/reverted this region; absent
         # when the stage is off (review_verdicts is None) or the region was
         # a pure no-op — keeping the provenance dict byte-stable to baseline.
-        # Phase 5 join key: stable min-FB when re-keyed, else positional index
-        # (byte-identical legacy path). first_raw already resolves the same
-        # min-FB-with-region_index-fallback, so reuse it under the re-key.
+        # Join reviews by stable min-FB when available, else positional index.
         review_key = first_raw if review_regions is not None else region_index
         review = review_index.get(review_key)
         if review is not None:
@@ -790,7 +764,7 @@ def _build_region_provenance(
             if isinstance(repair, dict) and repair.get("repaired_text"):
                 entry["repaired_text"] = repair["repaired_text"]
                 entry["ocr_repair"] = repair["ocr_repair"]
-        # OPTIONAL ITEM4 containment key (additive; present only when the
+        # Include containment only when the derived hierarchy covers the region.
         # SEMANTIK_CONTAINMENT tree was built AND covers this region index).
         # Exposes the derived forest as a flat parent-pointer column
         # (``parent_region_index`` / ``edge_kind``) downstream consumers can
@@ -1203,7 +1177,11 @@ def _verify_refine_loop(
                 prior_report=current_report,
                 new_report=merged_report,
             )
-            row.update(merge_reverify_passed=True, merge_better=merge_better, merge_reasons=merge_reasons)
+            row.update(
+                merge_reverify_passed=True,
+                merge_better=merge_better,
+                merge_reasons=merge_reasons,
+            )
 
             if merge_better:
                 # ADOPT the merge. The count SHRANK, so the prior verdict list no
@@ -1407,7 +1385,7 @@ def run_full_cascade(
     t_total = time.perf_counter()
 
     # ------------------------------------------------------------------
-    # SEMANTIK_PAGE_ARRANGER (task #43) — scan-lane page-arranger structure path.
+    # SEMANTIK_PAGE_ARRANGER selects the scan-lane page-arranger structure path.
     #
     # When the flag is on AND the document is on the OCR/scan lane,
     # ``resolve_page_arranger_route`` returns a route that OWNS structure: the
@@ -1441,7 +1419,7 @@ def run_full_cascade(
         state, council_regions, feature_blocks = run_council(pdf_path)
 
     # ------------------------------------------------------------------
-    # SEMANTIK_SCAN_LANE_DEBERT (task #43) — OCR/scan-lane BERT de-poisoning.
+    # SEMANTIK_SCAN_LANE_DEBERT masks unreliable council signals on OCR scans.
     #
     # On the OCR/scan lane (feature blocks predominantly tesseract-provenance)
     # the textbook-tuned council heads COLLAPSE, so — when the gate is truthy —
@@ -1827,7 +1805,7 @@ def run_full_cascade(
             f"[cascade] Stage 5b enriched {stage5b_glm_ocr_count} table region(s) with GLM-OCR text"
         )
 
-    # Stage 5c — render figure Region bboxes to PNG bytes (Plans/09 §1).
+    # Stage 5c renders figure Region bboxes to PNG bytes.
     # Auto no-op when no figure Regions are present. Without pixels, Stage 6's
     # captioner has nothing to look at, so unlike Stage 5b this isn't opt-in.
     detect_figures = resolve_detect_figures()
@@ -1835,9 +1813,9 @@ def run_full_cascade(
     if n_figs_before:
         log(f"[cascade] running Stage 5c (figure-bbox PNG rendering, n_figures={n_figs_before})")
         t = time.perf_counter()
-        from .image_extract import render_figure_regions_to_bytes
+        from .figures.render import render_figure_regions_to_bytes
 
-        # Part F — fail-soft per-region when the figure path is on (one
+        # Fail soft per region when the figure path is on: one
         # bad bbox on a 39-image page must not abort the doc); the legacy
         # demote path stays loud (fail_soft=False).
         structure_regions = render_figure_regions_to_bytes(
@@ -1882,21 +1860,21 @@ def run_full_cascade(
     region_kinds = dict(Counter(r.kind for r in capped))
     log(f"[cascade] capped region count by kind: {region_kinds}")
 
-    # Stage 6b — figure captioner (SmolVLM2, Plans/09 §2). Runs ONCE before
+    # Stage 6b runs captioning once before lane-specific authoring.
     # the lanes since alt_text is lane-independent; reads payload['image_png_bytes']
     # from Stage 5c and attaches alt_text + extended_description for the
     # assembler. Auto no-op when no figure Regions are present.
     n_figs_capped = sum(1 for r in capped if r.kind == "figure")
-    # Part F — caption deferral. When the figure path is on and captioning
+    # Defer captioning when the figure path explicitly or automatically disables it.
     # is deferred (auto with no CUDA, or explicit off), SKIP Stage 6b so
     # the figure ships the honest type-level ``"Figure."`` alt (via the
-    # assembler's guard_figure_alt) instead of loading SmolVLM2. The legacy
-    # demote-figure path (figure flag off) always captions, as before.
+    # assembler's guard_figure_alt) instead of loading SmolVLM2. The
+    # figure-demotion path always captions.
     caption_figures = (not detect_figures) or _figure_captioning_active()
     if n_figs_capped and caption_figures:
         log(f"[cascade] running Stage 6b (figure captioner, n_figures={n_figs_capped})")
         t = time.perf_counter()
-        from .figure_captioner import caption_figure_regions
+        from .figures.captioner import caption_figure_regions
 
         capped = caption_figure_regions(capped)
         stages["stage6b"] = time.perf_counter() - t
@@ -1910,17 +1888,15 @@ def run_full_cascade(
             f"n_figures={n_figs_capped} ship type-level alt)"
         )
 
-    # ------------------------------------------------------------------
-    # Stage F — figure sidecar write + ``image_src`` wiring (Part F).
+    # Write rendered figures to deterministic sidecars and expose ``image_src``.
     # After captioning, write each figure region's ``image_png_bytes`` to
     # a deterministic sidecar PNG (``{stem}_figures/fig-{first_fb}.png``)
     # and stamp ``payload["image_src"]`` = ``./{stem}_figures/fig-N.png``
-    # so the emitters fill the previously-empty ``<img src="">``. Only the
+    # so emitters receive a concrete ``<img src>``. Only the
     # ``image_src`` + ``figure_alt`` travel onward; the raw PNG bytes are
     # written to disk and STRIPPED before the JSON bridge. Per-region
     # fail-soft (a write failure degrades that one figure to no src).
-    # No-op when the figure path is off (byte-stable).
-    # ------------------------------------------------------------------
+    # No-op when the figure path is off.
     if detect_figures and n_figs_capped:
         t = time.perf_counter()
         capped = _write_figure_sidecars(capped, pdf_path, log=log)
@@ -1984,9 +1960,8 @@ def run_full_cascade(
         re-assemble the unchanged pass-1 regions against a re-typed list.
         """
         suffix = "" if lane == "fast" else "_offline"
-        # Phase 6 closure-rebind: default to the enclosing post-cap ``capped``
-        # (byte-identical legacy behaviour) or the explicitly-passed re-reviewed
-        # list. Bound ONCE here so every read below is the same list.
+        # Bind either the enclosing post-cap regions or the explicitly reviewed
+        # list once so every stage reads the same collection.
         regions = capped if regions is None else regions
 
         log(
@@ -2335,7 +2310,7 @@ def run_full_cascade(
         ocr_repair_edits=(
             ocr_repair_result.edits_by_region if ocr_repair_result else None
         ),
-        # task #43 — stamp per-region ``typing_authority`` when the scan-lane
+        # Stamp per-region ``typing_authority`` when the scan-lane
         # BERT de-poisoning gate masked the council OR the page-arranger owns
         # structure (its Regions carry payload['typing_authority']='vlm-arranger',
         # honoured payload-first in _build_region_provenance). Byte-stable off.
@@ -2441,9 +2416,7 @@ def run_full_cascade(
         "wcag_status_under_mock": wcag_status,
         "heading_tree": [list(t) for t in assembled.heading_tree],
         "landmarks": dict(assembled.landmarks),
-        # P3a — distilled per-region provenance in document order (the
-        # adapter-IR source). Stable, JSON-safe; consumed in-process by
-        # ``lib/semantik/cascade_ir.py::build_chapters_ir``.
+        # Provide stable JSON-safe input to ``cascade_ir.build_chapters_ir``.
         "region_provenance": region_provenance,
         "html_length": len(assembled.html),
         "theta": theta_payload,
@@ -2463,19 +2436,11 @@ def run_full_cascade(
     # to a no-Stage-5e run). Parallel to the structure_review audit.
     if resegment_ops_audit is not None:
         result["block_resegment"] = resegment_ops_audit
-    # task #43 — SEMANTIK_PAGE_ARRANGER audit arm. Additive, present ONLY when
-    # the scan-lane page-arranger owned structure (default OFF / born-digital ->
-    # key absent, byte-stable). Parallel to block_resegment; the run_cascade_json
-    # bridge forwarding of this arm is a documented follow-up (out of territory).
+    # Emit page-arranger audit data only when that route owns structure.
     if arranger_audit is not None:
         result["page_arranger"] = arranger_audit
-    # ITEM5 — Stage-5 geometric region-order divergence audit. Populated
-    # whenever SEMANTIK_REGION_ORDER != off (default fb -> the SHADOW
-    # measurement; the order is NOT changed in fb mode). Additive
-    # operator/tooling-facing key (parallel to block_resegment); the
-    # region_provenance ORDER + HTML are byte-identical to a pre-ITEM5 run in
-    # fb/off modes (the audit dict is the only new surface). ``None`` in off
-    # mode (the pass never ran).
+    # Record geometric region-order divergence without changing output in
+    # measurement-only or disabled modes.
     result["geom_order"] = order_audit or None
     # Stage 9-verify (Phase 6) audit section — emitted ONLY when the verify-
     # refine loop actually ran (SEMANTIK_SECOND_PASS on AND a Pass-1 reviewer
@@ -2499,8 +2464,8 @@ def run_full_cascade(
     if reasoning_qc_audit is not None:
         result["reasoning_qc"] = reasoning_qc_audit
 
-    # SEMANTIK_UNIT_COVERAGE_GATE (task #43) — deterministic content-loss gate,
-    # the fidelity guardrail that supersedes stub-collapsed theta. Default OFF →
+    # The deterministic unit-coverage gate detects page-level content loss and
+    # supplements unavailable model-based fidelity signals. Default OFF →
     # the key is absent (byte-stable). When on, it compares the extraction-side
     # per-page text universe (the fused FB texts that entered structure
     # detection) against the emitted HTML and fail-closes any page below the hard
@@ -2648,8 +2613,7 @@ def run_pipeline_v2(
     StageThirteenStubRequired
         When the Stage 13 decision table routes to an offline-Qwen lane
         that v1 doesn't implement. This is a deliberate loud failure —
-        it is NOT degraded to a flagged result here (see
-        ``feedback_no_silent_fallbacks``).
+        it is NOT degraded to a flagged result here.
     """
     pdf_path = Path(pdf_path)
 

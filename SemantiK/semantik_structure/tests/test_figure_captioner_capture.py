@@ -1,4 +1,4 @@
-"""W7.6 — DecisionCapture on the figure-captioner VLM call site.
+"""DecisionCapture coverage for the figure-captioner VLM call site.
 
 The SmolVLM2 caption call site must emit one ``alt_text_generation`` decision
 per captioned figure with a dynamic, replayable rationale (image hash /
@@ -19,12 +19,9 @@ from typing import Any
 
 import pytest
 
-from semantik_structure import figure_captioner
+from semantik_structure.figures import captioner as figure_captioner
 
 
-# ---------------------------------------------------------------------------
-# Minimal figure-Region stand-in (avoids importing the council / torch stack).
-# ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class _Region:
     kind: str
@@ -60,9 +57,6 @@ def _mock_vlm(monkeypatch):
     monkeypatch.setattr(figure_captioner, "_run_smolvlm_caption", _fake)
 
 
-# ---------------------------------------------------------------------------
-# (a)+(b)+(c) — capture fires with a dynamic rationale; captioning still works.
-# ---------------------------------------------------------------------------
 def test_capture_fires_per_figure(monkeypatch, _mock_vlm):
     spy = _SpyCapture()
     monkeypatch.setattr(figure_captioner, "_build_caption_capture", lambda: spy)
@@ -74,17 +68,17 @@ def test_capture_fires_per_figure(monkeypatch, _mock_vlm):
     ]
     out = figure_captioner.caption_figure_regions(regions, run_extended=True)
 
-    # (c) captioning still produced alt_text on both figures.
+    # Capture instrumentation must not alter generated figure payloads.
     assert out[1].payload["alt_text"] == "a bar chart"
     assert out[2].payload["alt_text"] == "a bar chart"
-    assert out[0].payload == {"text": "x"}  # non-figure untouched
+    assert out[0].payload == {"text": "x"}
 
-    # (a) exactly one decision per FIGURE region (paragraph excluded).
+    # Emit exactly one decision for each figure region.
     assert len(spy.calls) == 2
     for call in spy.calls:
         assert call["decision_type"] == "alt_text_generation"
         rationale = call["rationale"]
-        # (b) dynamic + replayable rationale (contract: >= 20 chars).
+        # The rationale carries enough dynamic context for replay.
         assert len(rationale) >= 20
         assert "img_sha256=" in rationale
         assert "alt_len=" in rationale
@@ -96,9 +90,6 @@ def test_capture_fires_per_figure(monkeypatch, _mock_vlm):
     assert len(hashes) == 2
 
 
-# ---------------------------------------------------------------------------
-# (d) — a None / unavailable capture never breaks captioning.
-# ---------------------------------------------------------------------------
 def test_none_capture_does_not_break_caption(monkeypatch, _mock_vlm):
     monkeypatch.setattr(figure_captioner, "_build_caption_capture", lambda: None)
     out = figure_captioner.caption_figure_regions([_figure_region(1)])
@@ -106,12 +97,10 @@ def test_none_capture_does_not_break_caption(monkeypatch, _mock_vlm):
 
 
 def test_capture_construction_failure_is_non_fatal(monkeypatch, _mock_vlm):
-    # Simulate lib.decision_capture unavailable — _build_caption_capture must
-    # swallow and return None, and captioning must still run.
+    # Caption generation remains available when its capture sink cannot load.
     def _boom():
         raise ImportError("no lib on path")
 
-    # Patch the real builder's dependency by making DecisionCapture import fail.
     monkeypatch.setattr(figure_captioner, "_build_caption_capture", _build_or_none(_boom))
     out = figure_captioner.caption_figure_regions([_figure_region(3)])
     assert out[0].payload["alt_text"] == "a bar chart"
@@ -126,15 +115,11 @@ def _build_or_none(fn):
     return _inner
 
 
-# ---------------------------------------------------------------------------
-# (e) — the real builder constructs a working DecisionCapture (isolated tmp via
-# the repo-root autouse ED4ALL_TRAINING_CAPTURES_DIR fixture).
-# ---------------------------------------------------------------------------
 def test_real_build_caption_capture_returns_working_capture():
     cap = figure_captioner._build_caption_capture()
     if cap is None:
         pytest.skip("lib.decision_capture not importable in this environment")
-    # A real DecisionCapture accepts a log_decision with a dynamic rationale.
+    # The production capture accepts the captioner's decision contract.
     cap.log_decision(
         decision_type="alt_text_generation",
         decision="smoke",
@@ -144,7 +129,7 @@ def test_real_build_caption_capture_returns_working_capture():
 
 
 def test_no_figures_no_capture(monkeypatch, _mock_vlm):
-    # No figure regions -> no model load, no capture built (early return).
+    # A figure-free call avoids both model and capture initialization.
     called = {"built": False}
 
     def _spy_build():

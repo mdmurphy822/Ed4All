@@ -1,17 +1,15 @@
-"""Phase P1 — SigLIP-2 figure-router embedding pass + zero-shot subtype labels.
+"""Build SigLIP-2 figure embeddings and zero-shot subtype labels.
 
 Embeds every figure image in ``data/figure_alt_dataset/`` (train/val/test) AND
-the 437 empty-figcaption rows of ``data/figure_catalog/catalog.jsonl``, runs the
-zero-shot subtype router (``semantik_structure.figure_router``), and writes per-split
+the captionless rows of ``data/figure_catalog/catalog.jsonl``, runs the
+zero-shot subtype router (``semantik_structure.figures.router``), and writes per-split
 ``.npz`` files plus:
 
-  * an agreement report (zero-shot vs caption-keyword weak labels) — the P1
-    done-criterion is >=80% agreement overall on the keyword-matchable overlap;
-  * a stratified 300-row spot-check sample (``spotcheck_sample.jsonl``) for the
-    later (P2) human-labeling phase.
+  * an agreement report comparing zero-shot and caption-keyword weak labels;
+  * a stratified review sample (``spotcheck_sample.jsonl``) for human labeling.
 
-CPU fp32 by default (the 8GB GPU is reserved for the Qwen specialists / SmolVLM2
-captioner). Pass ``--device cuda`` ONLY when the GPU is free.
+CPU fp32 is the default so embedding does not contend with GPU-heavy authoring
+or captioning stages. Pass ``--device cuda`` only when the GPU is available.
 
 Missing image files are skipped-and-counted (a data-quality count, NOT a silent
 fallback). Individually-corrupt images are logged and skipped so one bad PNG
@@ -49,22 +47,18 @@ CATALOG_SPLIT = "catalog_nocaption"
 
 
 # ---------------------------------------------------------------------------
-# Caption-keyword weak labels (re-derived here per the P1 brief)
+# Caption-keyword weak labels
 # ---------------------------------------------------------------------------
-# The investigation found ~4,967 / 20,416 captions keyword-matchable. These
-# patterns map a caption to ONE weak subtype (the taxonomy's first five classes;
+# These patterns map a caption to one weak subtype (the taxonomy's first five classes;
 # "other" has no keyword and is never weak-labeled). A caption matching multiple
 # families is assigned by the priority order below (most-specific first). They
-# match the caption text only.
-#
-# Deliberately SPECIFIC, not loose: requiring phrasings like "map of",
+# match the caption text only. Deliberately specific phrasings such as "map of",
 # "plot of", "diagram", "photograph" (rather than bare tokens like "graph",
-# "curve", "table", "image of", "versus") keeps the matchable set near the
-# investigation's ~4,967 and keeps the weak label trustworthy. Loose tokens
-# inflate the matchable count to ~8k and pull in false positives ("graph
+# "curve", "table", "image of", "versus") keep weak labels trustworthy. Loose
+# tokens pull in false positives ("graph
 # theory", "map of the quantum speed limit" — a chart, not a geographic map),
-# which would make the agreement number meaningless. These weak labels are
-# themselves NOISY (P2 human-labels the spot-check to settle disagreements).
+# which would make the agreement number meaningless. Human review resolves
+# disagreements because keyword labels remain noisy.
 _KEYWORD_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     # map — geographic
     (
@@ -455,10 +449,8 @@ def write_spotcheck(sample: list[dict]) -> Path:
 def prune_stale_split(split: str) -> dict | None:
     """Drop npz rows whose image_path is absent from the split's CURRENT jsonl.
 
-    Dataset membership can shrink without any image changing — e.g. the
-    2026-06-11 license correction removed 27 rows (20,416 -> 20,389) from
-    rows of license-rejected docs. The embeddings of the surviving rows are
-    still valid, so a multi-hour re-embed is wasted work; this re-saves the
+    Dataset membership can shrink without any image changing. The embeddings
+    of surviving rows remain valid, so this re-saves the
     npz filtered to current membership instead. Rows are matched on the
     resolved absolute ``image_path`` (the npz join key downstream consumers
     use). Never ADDS rows — a row in the jsonl but not the npz is reported
@@ -525,9 +517,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.prune_stale:
         for split in args.splits:
             if split == CATALOG_SPLIT:
-                # The catalog stratum's source-of-truth is the catalog file,
-                # not a dataset jsonl; it predates (and is superseded by) the
-                # captionless_* splits. Nothing to prune against.
+                # The catalog file, rather than a dataset JSONL split, defines
+                # this stratum, so there is no split membership to prune against.
                 print(f"[{split}] skipped (catalog stratum, not dataset-backed)")
                 continue
             summary = prune_stale_split(split)
@@ -547,7 +538,7 @@ def main(argv: list[str] | None = None) -> int:
 
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
-    from semantik_structure.figure_router import (
+    from semantik_structure.figures.router import (
         embed_images,
         subtype_prototype_embeddings,
         zero_shot_subtype,

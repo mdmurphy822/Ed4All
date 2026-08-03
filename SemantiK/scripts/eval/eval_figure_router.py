@@ -1,18 +1,17 @@
-"""Phase P2 — gate the trained figure-router head on the FROZEN eval labels.
+"""Gate the trained figure-router head on frozen evaluation labels.
 
 Evaluates ``models/figure_router/v1/head.joblib`` against the doc-disjoint
 eval labels (``data/figure_labels/labels_eval.jsonl`` — the labeled
 ``eval_candidates.jsonl``), reporting two views:
 
-  * **raw** — the head's argmax predictions (the fine-plan's measurement
-    axis);
-  * **runtime** — what ``figure_router.classify_subtype`` actually emits:
+  * **raw** — the head's argmax predictions;
+  * **runtime** — what ``figures.router.classify_subtype`` emits:
     abstain to ``other`` whenever the calibrated top-class probability is
     below the abstain threshold (0.55). This is the view the GATES apply to,
-    because it is what ships.
+    because it represents production behavior.
 
-Gates (P2 fine-plan): accuracy >= 0.85 AND macro-F1 >= 0.80 on the runtime
-view. Writes ``data/eval_reports/figure_router_head_v1.json``; prints the
+The runtime view must reach accuracy >= 0.85 and macro-F1 >= 0.80. The script
+writes ``data/eval_reports/figure_router_head_v1.json`` and prints the
 verdict. Exit code 1 on FAIL so a queue script can stop on a bad head.
 
 CPU, seconds, no torch.
@@ -39,7 +38,7 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-from semantik_structure.figure_router import (  # noqa: E402 — torch-free import
+from semantik_structure.figures.router import (  # noqa: E402 — torch-free import
     SUBTYPE_ABSTAIN_THRESHOLD,
     SUBTYPES,
 )

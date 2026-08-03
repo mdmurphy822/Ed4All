@@ -1,4 +1,4 @@
-"""VLM figure-DETECTION lane (task #56) — the last WCAG 1.1.1 blocker.
+"""Detect sub-page figures in page-raster scans for WCAG 1.1.1 coverage.
 
 WHY THIS EXISTS
 ---------------
@@ -29,12 +29,11 @@ completely unchanged**::
       -> page_arranger.build_figure_regions
            -> structure_graph.is_page_raster_candidate     (THE GUARD, still fires)
            -> structure_graph.build_figure_region_from_candidate  (SHARED builder)
-      -> Stage 5c  image_extract.render_figure_regions_to_bytes   (PNG sidecar)
+      -> Stage 5c  figures.render.render_figure_regions_to_bytes  (PNG sidecar)
       -> Stage 6b  figure_captioner.caption_figure_regions        (alt text)
       -> <img src> + alt + <figcaption>
 
-Not one line of that chain changes. This module supplies the bboxes it was
-already waiting for.
+This module supplies the bbox proposals consumed by that established chain.
 
 WHY A SIBLING CALL, NOT A RIDER ON THE ARRANGE CALL
 ---------------------------------------------------
@@ -77,7 +76,7 @@ single most valuable figure class in a math corpus — is all digits and must no
 be penalised for its axis labels. The direct consequence is that a purely
 NUMERIC table (a "squares of 1..15" grid) reads as ~0 words and sails through.
 
-**The fix is NOT to count digits.** A digit-count threshold provably cannot
+**Digits must not be counted.** A digit-count threshold cannot
 separate "number line" from "numeric table" — both are dense in digits and
 sparse in words — and reaching for one would kill the number lines, i.e. destroy
 the very thing this lane exists to recover.
@@ -87,7 +86,7 @@ The separating signal is **GRID STRUCTURE**, which is orthogonal to word count:
 * a **table** is a lattice — it has ruled COLUMN separators;
 * a **number line** is a single horizontal axis — it has none.
 
-Regression crops establish the useful signal by counting *thin* ruling lines
+Representative crops establish the useful signal by counting *thin* ruling lines
 inside the proposed box (a solid fill / photograph is excluded by the thinness
 test, so a dark photo cannot masquerade as a grid):
 
@@ -212,7 +211,7 @@ _COVERAGE_MIN_AREA = 0.05
 # whitespace, so its AREA coverage measures BELOW a genuine figure's and no
 # coverage threshold can order the two. Word COUNT does.
 #
-# Measured regression signal — words whose
+# Measured guard signal — words whose
 # text-block centre falls inside the proposed box):
 #     GENUINE chart / counters figure ....  1,  3 words   (coverage 0.08 / 0.22)
 #     GENUINE chapter photo .............. 15 words       (coverage 0.02)
@@ -271,7 +270,7 @@ def resolve_grid_reject() -> bool:
     """``SEMANTIK_VLM_FIGURE_DETECT_GRID_REJECT`` — default ON.
 
     The escape hatch / calibration lever for the grid rejector (arm 3). Default
-    ON because it is a CORRECTNESS fix, not a feature: without it the lane ships
+    ON because it enforces the images-of-text contract: without it the lane ships
     images of numeric tables (a WCAG 1.4.5 regression). It is a no-op unless
     ``SEMANTIK_VLM_FIGURE_DETECT`` is on — which is itself default OFF — so
     default-ON here changes no global default behaviour.
@@ -1321,7 +1320,7 @@ def _fan_out_detect(
 
 
 # ---------------------------------------------------------------------------
-# DecisionCapture (REQUIRED — this is a NEW LLM call site).
+# DecisionCapture for the lane's multimodal detection calls.
 # ---------------------------------------------------------------------------
 def _detect_course_code() -> str:
     """Course code for the capture — the ``vlm_extract`` / ``figure_captioner``

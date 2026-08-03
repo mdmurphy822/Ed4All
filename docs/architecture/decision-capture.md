@@ -96,7 +96,7 @@ Each row below was verified: the emitting module exists, emits the named `decisi
 | Call site | `decision_type` | Regression coverage |
 |---|---|---|
 | `lib/decision_capture.py::SemantiKDecisionCapture` (factory `create_semantik_capture`) | `structure_detection` (per structure decision), `alt_text_generation` (per figure) | — (base helper) |
-| `SemantiK/semantik_structure/figure_captioner.py` — the omni cascade's Stage-6b SmolVLM2 captioner | `alt_text_generation` | `SemantiK/semantik_structure/tests/test_figure_captioner_capture.py` |
+| `SemantiK/semantik_structure/figures/captioner.py` — the omni cascade's Stage-6b SmolVLM2 captioner | `alt_text_generation` | `SemantiK/semantik_structure/tests/test_figure_captioner_capture.py` |
 | `SemantiK/semantik_structure/glmocr/heading_judge.py` — the GLM-OCR lane's heading-level judge | `structure_review` with a `heading_level_judge=True` discriminator | `SemantiK/semantik_structure/tests/test_heading_judge.py::test_decision_capture_fires_with_dynamic_rationale`, `::test_capture_failure_never_breaks_judge` |
 | `MCP/tools/pipeline_tools.py::_emit_structure_review_capture` (conversion seam, called at the `_run_semantik_v2_conversion` site) | `structure_review`, one per converted doc | `lib/semantik/tests/test_structure_review_bridge.py` |
 | `MCP/tools/pipeline_tools.py::_emit_block_resegment_capture` (same seam) | `block_resegment`, one per converted doc when the re-partition pass fired | `lib/semantik/tests/test_structure_review_bridge.py` |
@@ -125,4 +125,4 @@ Each row below was verified: the emitting module exists, emits the named `decisi
 
 ## Known instrumentation gap
 
-`SemantiK/semantik_structure/glmocr/alttext.py` — the GLM-OCR lane's Qwen3-VL alt-text seat — is an LLM call site that wires **no** `DecisionCapture`. `heading_judge.py` is the only module in `SemantiK/semantik_structure/glmocr/` that references `DecisionCapture`. The equivalent call site on the legacy omni cascade (`figure_captioner.py`) *is* instrumented and has a regression test, so the contract is satisfied on that path but not on the lane. This is a real gap against the instrumentation law, recorded here rather than papered over.
+`SemantiK/semantik_structure/glmocr/alttext.py` — the GLM-OCR lane's Qwen3-VL alt-text seat — is an LLM call site that wires **no** `DecisionCapture`. `heading_judge.py` is the only module in `SemantiK/semantik_structure/glmocr/` that references `DecisionCapture`. The equivalent call site on the legacy omni cascade (`figures/captioner.py`) *is* instrumented and has regression coverage, so the contract is satisfied on that path but not on the lane. This remains a concrete instrumentation gap.

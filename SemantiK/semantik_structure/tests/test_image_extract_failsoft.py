@@ -1,23 +1,10 @@
-"""Regression — the Stage-5c figure renderer FAIL-SOFTs a bad/empty crop AND
-the degrade is REAL end-to-end (Stage 6b never fails closed on it).
+"""Verify Stage-5c render degradation through the Stage-6b caption boundary.
 
-Live-fire defect pair (full-cascade ch09 scan, VLM fusion on):
-
-1. A figure Region minted over VLM-fused tesseract blocks carries a bbox in
-   tesseract IMAGE-PIXEL space (page ~1836x2376 at OCR scale 3.0). The
-   renderer assumes PDF-POINT space, so ``bbox * scale`` overshoots the
-   smaller PDF-point-rendered page and the page-clamp INVERTS the crop box
-   (``y0 > y1``) → the original code raised a chapter-fatal
-   ``FigureRenderError``.
-2. SECOND-ORDER: a skip that merely omitted ``image_png_bytes`` left the
-   region ``kind="figure"``, and Stage 6b's captioner fails closed on a
-   payload-less figure (``FigureCaptionError``) — also chapter-fatal.
-
-The degrade must therefore be REAL: a text-bearing source FB → the region is
-RE-TYPED to ``kind="paragraph"`` (prose track end-to-end); a synthetic image
-FB (no prose form) → stays a figure but stamped ``figure_render_skipped`` so
-the captioner skips it with a warning. A payload-less figure WITHOUT a skip
-marker still raises (genuine "Stage 5c didn't run" stays loud).
+Image-pixel-space OCR boxes can fall outside the PDF-point render. Text-bearing
+regions with unusable geometry must join the prose track; synthetic image
+regions must retain their figure type with ``figure_render_skipped`` so the
+captioner can skip them explicitly. An unmarked payload-less figure remains a
+loud contract failure.
 
 The pypdfium2 render + SmolVLM2 boundary are mocked; no real PDF, no GPU.
 """
@@ -28,12 +15,13 @@ from pathlib import Path
 
 import pytest
 
-from semantik_structure import figure_captioner, image_extract
-from semantik_structure.figure_captioner import (
+from semantik_structure.figures import captioner as figure_captioner
+from semantik_structure.figures import render as render_module
+from semantik_structure.figures.captioner import (
     FigureCaptionError,
     caption_figure_regions,
 )
-from semantik_structure.image_extract import (
+from semantik_structure.figures.render import (
     FigureRenderError,
     render_figure_regions_to_bytes,
 )
@@ -105,7 +93,7 @@ def _fig_region(fb_index):
     return Region(kind="figure", feature_block_indices=(fb_index,), payload={})
 
 
-# The live-fire tesseract-pixel bbox: valid IN ITS OWN SPACE (y 1971..1994 on
+# A Tesseract-pixel bbox valid in its own space (y 1971..1994 on
 # a 2376px page) but ×2 = 3942 overshoots the 1584px PDF-point render →
 # inverted clamp → empty crop.
 _TESS_SPACE_BBOX = (409.0, 1971.0, 515.0, 1994.0)
@@ -113,7 +101,7 @@ _TESS_SPACE_BBOX = (409.0, 1971.0, 515.0, 1994.0)
 
 @pytest.fixture(autouse=True)
 def _mock_pdfium(monkeypatch):
-    monkeypatch.setattr(image_extract.pdfium, "PdfDocument", _FakeDoc)
+    monkeypatch.setattr(render_module.pdfium, "PdfDocument", _FakeDoc)
 
 
 # --------------------------------------------------------------------------
@@ -122,7 +110,7 @@ def _mock_pdfium(monkeypatch):
 
 
 def test_tesseract_space_bbox_degrades_to_paragraph_not_raises():
-    # fail_soft=False is the legacy demote path that used to abort the chapter.
+    # Geometry degradation applies even when rasterizer failures remain loud.
     fbs = [_fb(_TESS_SPACE_BBOX)]
     regions = [_fig_region(0)]
     out = render_figure_regions_to_bytes(
@@ -147,7 +135,7 @@ def test_degenerate_bbox_degrades_not_raises():
 
 
 def test_synthetic_image_fb_stays_figure_with_skip_marker():
-    # A Part-F synthetic image FB (is_image=True, empty text) has no prose
+    # A synthetic image FB (is_image=True, empty text) has no prose
     # form — the region stays a figure but carries the skip marker the
     # captioner honours (assembler ships the type-level alt).
     fbs = [_fb(_TESS_SPACE_BBOX, text="", is_image=True)]
@@ -195,7 +183,7 @@ def test_genuine_rasterizer_failure_still_honors_fail_soft():
         def __getitem__(self, i):
             raise RuntimeError("pypdfium2 decode exploded")
 
-    import semantik_structure.image_extract as ie
+    import semantik_structure.figures.render as ie
 
     orig = ie.pdfium.PdfDocument
     ie.pdfium.PdfDocument = _BoomDoc
@@ -270,15 +258,14 @@ def test_caption_stage_captions_good_figures_around_a_skipped_one(_mock_vlm):
 
 
 # --------------------------------------------------------------------------
-# end-to-end-ish: Stage 5c skip → Stage 6b caption, the exact live-fire chain
-# (the prior test stopped at the renderer boundary — this is why it leaked)
+# Stage 5c skip → Stage 6b caption integration contract.
 # --------------------------------------------------------------------------
 
 
 def test_render_skip_flows_through_caption_stage_without_raising(_mock_vlm):
     fbs = [
         _fb((100.0, 100.0, 300.0, 400.0)),               # renders fine
-        _fb(_TESS_SPACE_BBOX),                           # live-fire degrade
+        _fb(_TESS_SPACE_BBOX),                           # prose-track degrade
         _fb(_TESS_SPACE_BBOX, text="", is_image=True),   # skip, stays figure
     ]
     regions = [_fig_region(0), _fig_region(1), _fig_region(2)]

@@ -1203,7 +1203,8 @@ page_order_verify = order_verify
 
 
 # ---------------------------------------------------------------------------
-# DecisionCapture wiring (best-effort, lazy — mirrors figure_captioner).
+# DecisionCapture wiring is best-effort and lazy so capture failures cannot
+# interrupt structure verification.
 # One decision per QC unit (window), decision_type 'structure_detection'.
 # ---------------------------------------------------------------------------
 def _qc_course_code() -> str:

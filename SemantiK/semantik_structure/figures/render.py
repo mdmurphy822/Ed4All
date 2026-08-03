@@ -1,27 +1,24 @@
-"""Stage 5c — render figure Region bboxes to PNG bytes (no model, CPU only).
+"""Render Stage-5 figure-region bounding boxes to PNG bytes on the CPU.
 
-Plans/09 §1. Image pixels never reach Stage 6 because ``extract.py`` is
-text-only. This module bridges the gap. After Stage 5
-(:func:`build_structure_graph`) emits figure Regions from the Stage-4
-``image_block_demoted`` flags, render each region's source FeatureBlock bbox
-from the PDF page via ``pypdfium2`` and attach the PNG bytes to the Region
-payload under ``"image_png_bytes"``.
+After structure detection emits figure Regions, this module renders each
+region's source FeatureBlock bbox from the PDF page through ``pypdfium2`` and
+attaches the PNG bytes to the Region payload under ``"image_png_bytes"``.
 
 Stage 5c sits between Stage 5b (GLM-OCR table enrichment) and Stage 6
 (``run_qwen_specialists`` / ``enrich``). Unlike Stage 5b it is NOT opt-in:
 without pixels, the alt-text path can't function. The function is a no-op
 when no figure Regions are present (no PDF open, no overhead).
 
-PDF backend: ``pypdfium2`` (Apache-2 / BSD-3, ``feedback_license_policy``) —
-a permissively-licensed, commercial-safe rasterizer.
+PDF backend: ``pypdfium2`` uses Apache-2/BSD-3 licensing and is suitable for
+commercial redistribution.
 
-No silent fallback (``feedback_no_silent_fallbacks``): a bbox that fails to
-render raises :class:`FigureRenderError` so the cascade surfaces the failure
-rather than producing an unalt'd figure downstream.
+A bbox that fails to render raises :class:`FigureRenderError` unless the caller
+explicitly enables per-region degradation, preventing an unalt'd figure from
+silently reaching downstream stages.
 
 Bbox unit assumption: PDF-point coordinates with top-left origin (pdfplumber
-convention), as carried in ``FeatureBlock.raw.bbox``. Tesseract-OCR-sourced
-pixels would need pre-conversion before this stage (not yet wired).
+convention), as carried in ``FeatureBlock.raw.bbox``. Incompatible image-pixel
+coordinates are degraded according to the contract below.
 """
 from __future__ import annotations
 
@@ -43,28 +40,25 @@ class FigureRenderError(RuntimeError):
 class _EmptyCropError(ValueError):
     """A figure Region's bbox produced a degenerate / out-of-page crop.
 
-    A distinct class so the render loop can treat a BAD-GEOMETRY crop (an
+    A distinct class lets the render loop treat a bad-geometry crop (an
     inverted or out-of-range bbox — e.g. a tesseract IMAGE-PIXEL-space bbox
     fed to the PDF-point render, or a VLM-fusion-interpolated insert) as a
-    per-region SKIP that is NEVER chapter-fatal, while a genuine rasterizer
-    failure still honours ``fail_soft``. Mirrors the per-page extraction
-    fail-soft idiom (a bad input degrades that unit, it never aborts the doc).
+    per-region skip that is never chapter-fatal, while a genuine rasterizer
+    failure still honours ``fail_soft``.
     """
 
 
 def _degrade_unrenderable_figure(
     region: Any, feature_blocks: list[Any], *, reason: str
 ) -> Any:
-    """Degrade a figure Region whose bbox cannot produce a crop — FOR REAL.
+    """Return a downstream-safe Region when its bbox cannot produce a crop.
 
     Downstream consumers must never see the result as a render-expecting
     figure (Stage 6b's captioner fails closed on a payload-less figure):
 
-    * Source FB carries prose text (the live case: a VLM-fused OCR text block
-      the ``is_image_block`` head demoted) → RE-TYPE to ``kind="paragraph"``
+    * A source FB carrying prose text is retyped to ``kind="paragraph"``
       so it rides the prose track end-to-end; ``figure_render_degraded``
-      records the reason for audit. FB partition untouched (re-tag only, the
-      deterministic_structure idiom).
+      records the reason for audit while leaving the FB partition untouched.
     * No prose form (a synthetic image FB — ``is_image=True``, empty text) →
       keep ``kind="figure"`` but stamp ``figure_render_skipped``; the
       captioner skips it with a warning and the assembler ships the honest
@@ -126,12 +120,11 @@ def render_figure_regions_to_bytes(
         Render resolution. 144 trades off chart legibility vs payload size
         (~1.5× a 96 DPI screen capture).
     fail_soft
-        Part F — when True, a per-region render failure (bad bbox, decode
+        When True, a per-region render failure (bad bbox, decode
         error) is SKIPPED (the region passes through without
         ``image_png_bytes``) instead of aborting the whole document, so
         one bad bbox on a 39-image page does not lose the other 38. The
-        legacy default (False) keeps the loud no-silent-fallback path for
-        the legacy ``image_block_demoted`` figures.
+        default ``False`` keeps rasterizer failures loud.
 
     Returns
     -------
@@ -198,19 +191,15 @@ def render_figure_regions_to_bytes(
                 if not png_bytes:
                     raise _EmptyCropError("empty PNG bytes")
             except _EmptyCropError as exc:
-                # BAD-GEOMETRY crop → per-region degrade, ALWAYS (independent
-                # of ``fail_soft``). A degenerate / out-of-page bbox (a
+                # Bad geometry always degrades per region, independent of
+                # ``fail_soft``. A degenerate / out-of-page bbox (a
                 # tesseract-pixel-space or VLM-fusion-interpolated bbox that
                 # the PDF-point render can't crop) must never be chapter-fatal.
-                # The degrade must be REAL: a region left ``kind="figure"``
-                # without ``image_png_bytes`` is chapter-fatal ONE STAGE LATER
-                # (Stage 6b's captioner fails closed on the missing payload —
-                # the live ch09 second-order defect). A region whose source FB
-                # carries prose text is RE-TYPED to the prose track
-                # (``kind="paragraph"`` via ``dataclasses.replace`` — the
-                # deterministic_structure re-tag idiom; FB partition
-                # untouched); a region with no prose form (synthetic image FB
-                # / empty text) stays a figure but is stamped
+                # A region left ``kind="figure"`` without ``image_png_bytes``
+                # would fail closed in Stage 6b. A region whose source FB
+                # carries prose text is retyped to the prose track while
+                # preserving the FB partition; a region with no prose form
+                # (synthetic image FB / empty text) stays a figure but is stamped
                 # ``figure_render_skipped`` so Stage 6b skips it and the
                 # assembler ships the honest type-level alt.
                 logger.warning(
@@ -223,8 +212,8 @@ def render_figure_regions_to_bytes(
                 continue
             except Exception as exc:  # noqa: BLE001 — surface, don't swallow
                 if fail_soft:
-                    # Part F — degrade this ONE region; keep the rest. Stamp
-                    # the skip marker so Stage 6b's captioner (when active)
+                    # Degrade this region while preserving the remaining renders.
+                    # Stamp the skip marker so Stage 6b's captioner (when active)
                     # skips it instead of failing closed on the missing
                     # ``image_png_bytes`` (the same second-order trap the
                     # _EmptyCropError arm closes).

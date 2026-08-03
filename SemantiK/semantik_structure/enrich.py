@@ -55,7 +55,7 @@ def enrich(blocks: list[ResolvedBlock]) -> list[ResolvedBlock]:
         role = b.classified.role
         if role == Role.FIGURE.value:
             # Figure alt-text is produced by the Stage-6b cascade path
-            # (`figure_captioner.caption_figure_regions` →
+            # (`figures.captioner.caption_figure_regions` →
             # `assembler/fallbacks.fallback_figure`), which has the image
             # bytes. The v1 `pipeline.py` path does not caption figures by
             # design, so it records a warning here instead.

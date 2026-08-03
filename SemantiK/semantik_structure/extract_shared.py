@@ -82,7 +82,7 @@ from .region_detection import CID_RE
 logger = logging.getLogger(__name__)
 
 
-# ---------- figure detection gate (Part F) ----------
+# ---------- figure detection gate ----------
 
 # Default OFF — byte-stable. When on, every extracted page gains an
 # ``images`` list (PDF IMAGE page-objects, top-left bbox + px_size) that
@@ -122,7 +122,7 @@ REPLACEMENT_CHAR = "�"
 REPLACEMENT_MAX_FRAC = 0.10
 # pdfplumber word-break gap threshold as a fraction of font size. 0.15 (≈1.5pt
 # at 10pt) recovers spaces on tight-kerned LaTeX PDFs without over-splitting
-# large-font titles. See _pdfplumber_page / Plans/11 Stage 3.
+# large-font titles. Shared with the pdfplumber page extractor.
 _X_TOLERANCE_RATIO = 0.15
 
 # Max horizontal gap (pt) under which a single-character leading word is
@@ -220,12 +220,11 @@ def extract_shared(pdf_path: Path) -> dict:
     # session so the end-of-document unload fires exactly once (and only when
     # >=1 LIVE POST was actually made).
     vlm_on = resolve_vlm_extract_mode()
-    # Defect 1 — when the VLM DP fusion is on we DEFER per-page fusion + merge
+    # VLM DP fusion defers per-page fusion and merge
     # until AFTER the whole document is extracted, so a document-level repeated
     # page-furniture strip (``vlm_furniture``) can run over every page's VLM
     # lines BEFORE any page is fused (furniture detection is inherently
-    # cross-page). Flag-off / no-fusion → ``defer`` is False → the historic
-    # single-loop fuse-and-merge-inline path (byte-identical).
+    # cross-page). Flag-off / no-fusion uses the inline finalize path.
     defer_finalize = vlm_on and resolve_vlm_fusion_mode()
     if vlm_on:
         _vlm_extract.begin_document_session()
@@ -439,16 +438,11 @@ def _finalize_page(page: dict) -> None:
 
 
 # Bump whenever the extraction *output* changes for the same input PDF
-# (new extractor settings, parser fixes, schema changes). Entries written
+# (extractor settings, parser behavior, schema changes). Entries written
 # under an older salt become unreachable, so stale extractions can never
-# be served after a behavior change. v2: the 2026-06-08 pdfplumber
-# x_tolerance_ratio=0.15 fix (Plans/11 Stage 3) — pre-fix caches glued
-# sub-3pt LaTeX inter-word gaps into single words. v3: the 2026-06-17
-# pypdfium2 line-segment re-extraction fix — pre-fix caches garbled
-# letter-spaced small-caps ("M ARKWAYNE", "Before S YKES L EE").
-# v4: the styled-drop-cap first-letter rejoin in _pdfplumber_page
-# (_merge_split_first_letters) — pre-fix caches split a bold/colored first
-# letter off its word body ("S ubtraction", "P arentheses", "m ultiplication").
+# be served after a behavior change. Version 2 salts the pdfplumber
+# x-tolerance ratio, version 3 salts pypdfium2 line-segment extraction, and
+# version 4 salts styled first-letter rejoining in ``_pdfplumber_page``.
 EXTRACT_CACHE_VERSION = 4
 
 
@@ -462,7 +456,7 @@ def _compute_extract_cache_key(pdf_path: Path) -> str:
     * ``vlm_key`` — SEMANTIK_VLM_EXTRACT (asymmetric, append-only-when-on): the
       P0 VLM source adds a per-page ``vlm`` key, so flipping the flag ON must
       never serve a stale non-VLM extraction — but the flag-OFF key MUST stay
-      byte-identical to the historic ``v{VER}|{fig_key}|...`` key (no ``vlm0``
+      byte-identical to the established ``v{VER}|{fig_key}|...`` key (no ``vlm0``
       salt), so every existing extract cache survives untouched when the
       feature is off (the house byte-identical-when-unset rule). Mirrors the
       sibling ``fuse_key``'s append-only shape.
@@ -539,7 +533,7 @@ def _compute_extract_cache_key(pdf_path: Path) -> str:
       byte-identical to the plain ``fuse_key`` (no salt) as before.
     * ``ordmark_key`` — SEMANTIK_FUSION_KEEP_ORDERED_MARKERS (asymmetric,
       append-only-when-fusion-on-AND-mode-on): the default-ON keep-ordered-markers
-      mode (Fix A for the silent exercise/answer-number drop) KEEPS a single-marker
+      mode keeps a single-marker
       line-leading ``N.`` as content, so the fused block text — and which FBs /
       sourceIds exist — differs from a warm non-``ordmark`` cache. Same posture as
       ``gtail_key`` / ``colrep_key``: a ``=0`` run keys back to the plain ``fuse_key``
@@ -547,7 +541,7 @@ def _compute_extract_cache_key(pdf_path: Path) -> str:
       the no-fusion key stays byte-identical (no ``fuse_key`` → no ``ordmark_key``).
     * ``fgran_key`` — SEMANTIK_FUSION_LINE_UNITS (asymmetric,
       append-only-when-fusion-on-AND-mode-on): the default-ON per-VLM-line block
-      granularity (Fix B for the mega-block unit-boundary destruction) emits a
+      granularity emits a
       SPLIT unit / gap-rescue run / no-tesseract page as one fused block per VLM
       line, so the merged block list — which FBs / sourceIds exist — differs from a
       warm non-``fgran`` cache. Same posture as ``ordmark_key``: a ``=0`` run keys
@@ -567,7 +561,7 @@ def _compute_extract_cache_key(pdf_path: Path) -> str:
       ``|col1`` → ``|col2`` when the Tesseract path became column-aware (prong 1
       changed the extracted shape for OCR pages under the same flag, so a
       ``|col1``-warmed cache must NOT be served). Append-only ``|col2`` when on
-      keeps the flag-OFF key byte-identical to the historic key (no ``col0``
+      keeps the flag-OFF key byte-identical to the established key (no ``col0``
       salt), so every existing extract cache survives untouched when off.
     * ``ord_key`` — SEMANTIK_COLUMN_ORDER (asymmetric, append-only-when-on AND
       extract-off): the column-major merged-block re-sort in ``_merge_page``
@@ -608,7 +602,7 @@ def _compute_extract_cache_key(pdf_path: Path) -> str:
         if resolve_vlm_fusion_mode() and _resolve_collapse_repetition_mode()
         else ""
     )
-    # ordmark_key: Fix A (SEMANTIK_FUSION_KEEP_ORDERED_MARKERS, default-ON within
+    # ordmark_key: ordered-marker preservation (default ON within
     # fusion) KEEPS a single-marker line-leading "N." exercise/answer number as
     # content instead of stripping it, so the fused block text — and thus which
     # FBs / sourceIds exist — differs from a warm non-``ordmark`` cache. Same
@@ -622,7 +616,7 @@ def _compute_extract_cache_key(pdf_path: Path) -> str:
         if resolve_vlm_fusion_mode() and _resolve_keep_ordered_markers_mode()
         else ""
     )
-    # fgran_key: Fix B (SEMANTIK_FUSION_LINE_UNITS, default-ON within fusion)
+    # fgran_key: line-unit emission (default ON within fusion)
     # emits a SPLIT unit / gap-rescue run / no-tesseract page as one fused block
     # PER VLM line instead of one space-joined mega-block, so the merged block
     # list — which FBs / sourceIds exist — differs from a warm non-``fgran``
@@ -674,9 +668,10 @@ def extract_shared_cached(pdf_path: Path, cache_dir: Path | str | None = None) -
 
     pdf_path = Path(pdf_path)
     # Default cache_dir resolves under the SemantiK cache root (CWD-independent)
-    # instead of the legacy CWD-relative ``data/extract_cache`` literal; an
+    # instead of a CWD-relative ``data/extract_cache`` literal; an
     # explicit caller-supplied dir is honored unchanged. Byte-stable to the
-    # historic ``<root>/data/extract_cache`` layout when no SEMANTIK_* env is set.
+    # established ``<root>/data/extract_cache`` layout when no SEMANTIK_* env
+    # is set.
     cache_dir = (
         _semantik_paths.resolve_cache("extract_cache")
         if cache_dir is None
@@ -944,7 +939,7 @@ def _image_bbox_top_left(
 
     Y-flip: ``y0 = H - T`` (top edge), ``y1 = H - B`` (bottom edge),
     matching ``_pypdfium2_page_blocks`` (``page_h - T`` / ``page_h - B``)
-    and what ``image_extract.py`` consumes. Pure (no PDF IO) so the Y-flip
+    and what ``figures.render`` consumes. Pure (no PDF IO) so the Y-flip
     is unit-testable without pypdfium2.
     """
     left, bottom, right, top = (float(x) for x in bounds_bl)
@@ -955,7 +950,7 @@ def _pypdfium2_page_images(pdf_path: Path, page_num: int) -> list[dict]:
     """Return IMAGE page-objects on this page as
     ``[{bbox:[x0,y0,x1,y1] top-left, px_size:[w,h], index:int}, ...]``.
 
-    Part F Stage A — mirrors :func:`_pypdfium2_page_blocks`. Enumerates
+    Mirrors :func:`_pypdfium2_page_blocks` and enumerates
     every IMAGE page-object via ``page.get_objects`` filtered to
     ``raw.FPDF_PAGEOBJ_IMAGE`` and reads each one's bounds. pypdfium2's
     ``PdfImage.get_bounds()`` returns PDF bottom-left ``(L, B, R, T)``; we
@@ -1049,10 +1044,10 @@ def _word_in_table(w: dict, table_bboxes: list) -> bool:
 def _finalize_line_block(line: list, table_bboxes: list) -> dict | None:
     """Turn one bucketed physical line into a text-block dict (or None to skip).
 
-    Byte-identical to the historic per-line body of :func:`_pdfplumber_page`:
+    Implements the per-line body of :func:`_pdfplumber_page`:
     x-sort, styled-drop-cap first-letter rejoin, bbox/text/font computation, and
-    the in-table line skip. Factored out so the single-width (legacy) and
-    column-aware assembly paths share one emitter.
+    the in-table line skip. The single-width and column-aware assembly paths
+    share this emitter.
     """
     if not line:
         return None
@@ -1095,8 +1090,8 @@ def _bucket_lines_by_top(words: list) -> list[list[dict]]:
     """Bucket words (already sorted by ``(round(top), x0)``) into physical lines.
 
     A word joins the current line when its ``top`` is within 3pt of the line's
-    first word; otherwise it starts a new line. Byte-identical to the historic
-    inline bucketing in :func:`_pdfplumber_page`.
+    first word; otherwise it starts a new line. Matches the default bucketing
+    in :func:`_pdfplumber_page`.
     """
     lines: list[list[dict]] = []
     for w in words:
@@ -1175,7 +1170,7 @@ def _assemble_text_blocks_columnaware(
     # (reading_order.column_edges_from_lines — one engine, two callers; D2). The
     # seed_masks arm excludes table-cell words from SEEDING while the helper
     # still advances the previous-word x1 chain through them, keeping the
-    # gap-to-previous seeding byte-identical to the historic inline loop. ---
+    # gap-to-previous seeding consistent with the single-width loop. ---
     lines_xs: list[list[tuple[float, float]]] = []
     seed_masks: list[list[bool]] = []
     for line in phys_lines:
@@ -1390,8 +1385,7 @@ def _pdfplumber_page(pdf_path: Path, page_num: int) -> dict:
         # ``extract_words`` returns whole lines as one token
         # ("frameworkforderivingvariousEPIs…"), which then poisons every
         # text feature downstream (heading detection, prose, tables). The
-        # ratio (vs a fixed x_tolerance) avoids over-splitting large-font
-        # titles. See Plans/11 Stage 3.
+        # ratio (vs a fixed x_tolerance) avoids over-splitting large-font titles.
         words = []
         _word_kwargs = dict(
             keep_blank_chars=False,
@@ -1542,7 +1536,7 @@ def _tesseract_page_blocks(pdf_path: Path, page_num: int) -> dict:
 
     # Optional operator-tunable Tesseract config (SEMANTIK_TESSERACT_CONFIG) +
     # a domain-vocabulary user-words file (SEMANTIK_TESSERACT_USER_WORDS). When
-    # BOTH are unset the call shape is byte-identical to the historic
+    # BOTH are unset the call shape matches the default
     # ``image_to_data(image, output_type=…)`` — no ``config=`` kwarg is passed.
     config = resolve_tesseract_config()
     user_words = resolve_tesseract_user_words()
@@ -1727,7 +1721,7 @@ def _extract_page(
                     raise
                 page["vlm"] = {"markdown": "", "text_blocks": [], "error": str(exc)}
 
-    # Image page-objects (Part F) — only when SEMANTIK_DETECT_FIGURES is on.
+    # Image page objects are extracted only when SEMANTIK_DETECT_FIGURES is on.
     # Fail-soft: a per-page extraction failure leaves an empty list so a
     # figure-bearing document never aborts conversion. Absent / empty when
     # the flag is off → byte-stable (no ``images`` key downstream consumers
@@ -1757,10 +1751,10 @@ def _extract_page(
     # unless SEMANTIK_VLM_FUSION is on AND both a tesseract source and a P0
     # ``page["vlm"]`` source exist (P0 = SEMANTIK_VLM_EXTRACT).
     # Defer fusion + merge to the document-level second loop when the caller
-    # asked (Defect 1 — the cross-page furniture strip must run over every
+    # asked because the cross-page furniture strip must run over every
     # page's VLM lines BEFORE any page is fused). Stash the merge's is_text_ok
-    # for ``_finalize_page``. Non-deferred (default) → the historic inline
-    # fuse-and-merge, byte-identical.
+    # for ``_finalize_page``. The default non-deferred path fuses and merges
+    # inline.
     if defer_finalize:
         page["_is_text_ok"] = is_text_ok
         return page
@@ -1814,9 +1808,9 @@ def _apply_vlm_fusion(page: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# P2 — VLM extraction source + NON-AUTHORITATIVE structural hints.
+# VLM extraction source plus non-authoritative structural hints.
 #
-# Phase-4 (plan scan-conversion-improvements-2026-07.md) fuses a Qwen2.5-VL
+# The extraction lane fuses a Qwen2.5-VL
 # per-page markdown transcription as a FOURTH extraction source (P0/P1 — the
 # DP aligner in ``data/structure_align`` binds VLM lines onto Tesseract
 # bboxes). THIS module owns the P2 hint side-channel: the merged block dict
@@ -1828,7 +1822,8 @@ def _apply_vlm_fusion(page: dict) -> None:
 #
 # Seat is PROVIDER-AGNOSTIC (OpenAI-compatible), mirroring the
 # ``SEMANTIK_SPECIALIST_*`` env-resolution chain in ``endpoint_runtime.py`` —
-# a new provider is env config, never a subclass. Default model
+# provider selection is environment configuration, never a subclass. Default
+# model
 # ``qwen2.5vl:7b`` on the local ollama endpoint (Apache-2.0; see
 # ``docs/LICENSING.md``).
 # ---------------------------------------------------------------------------
@@ -1883,7 +1878,7 @@ def resolve_vlm_provider() -> str:
 
     Reads ``SEMANTIK_VLM_PROVIDER``. Blank / ``local`` / GGUF / ``ollama``
     aliases → ``"local"``; any other non-empty value is the lower-cased,
-    stripped provider name (a new provider is env config, never a subclass —
+    stripped provider name (provider selection is env config, never a subclass —
     the seat serves any OpenAI-compatible endpoint incl. Spark later).
     Parse-with-fallback (garbage → treated as a provider name; a non-local
     provider without a credential fails loud at dispatch, not here)."""
@@ -1952,7 +1947,7 @@ def _is_loopback_base_url(base_url: str) -> bool:
     which would match ``https://localhost.evil.example`` or a query string
     containing ``0.0.0.0`` and let a non-local provider skip the fail-loud
     credential gate. Mirrors ``lib/retrieval/answer_backend._is_loopback_host``.
-    ``0.0.0.0`` is treated as loopback for local-bind parity with the historic
+    ``0.0.0.0`` is treated as loopback for local-bind compatibility with the
     check (it is not routable off-box)."""
     try:
         parsed = urlparse(base_url)
@@ -2136,7 +2131,7 @@ def _merge_page(page: dict, text_layer_ok: bool) -> dict:
         for b in page.get("tesseract", {}).get("text_blocks", []):
             merged_blocks.append({**b, "provenance": ["tesseract"]})
 
-    # Sort the page's blocks. Column-major (Fix A) when SEMANTIK_COLUMN_ORDER
+    # Sort the page's blocks column-major when SEMANTIK_COLUMN_ORDER
     # is on — cluster into columns by left-edge gutter and order
     # (column, y0, x0), with pdfplumber tables as float bboxes excluded from
     # seeding the gutter detection so a table's internal cells don't spawn a

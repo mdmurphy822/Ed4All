@@ -311,10 +311,12 @@ risk. Completed items are marked below.
    `augmentation/`, `builders/`, `common/`, and `sources/`; two package-level
    entry modules remain flat and the exact cap is 2.
 5. **`SemantiK/semantik_structure/` — IN PROGRESS.** Region-targeted legacy
-   GLM enrichment now lives under `glmocr/region_enrichment/`, reducing the
-   core package's exact loose-module cap from 52 to 49. Extraction and figure
-   families remain candidates for later bounded moves; the current GLM-OCR SDK
-   lane and the legacy region-enrichment lane stay explicitly distinct.
+   GLM enrichment lives under `glmocr/region_enrichment/`. Figure rendering,
+   captioning, and subtype routing live under `figures/`; their former private
+   implementation paths had no compatibility obligation. These moves reduce
+   the core package's exact loose-module cap from 52 to 46. Extraction remains
+   a candidate for a later bounded move; the current GLM-OCR SDK lane and the
+   legacy region-enrichment lane stay explicitly distinct.
 6. **`Courseforge/generators/` — DONE.** Outline planning and textbook
    synthesis now live under `outline/`; rewrite generation, batching, and
    context-window helpers live under `rewrite/`. The package root retains only

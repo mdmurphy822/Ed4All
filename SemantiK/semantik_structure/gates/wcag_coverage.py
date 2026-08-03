@@ -53,7 +53,7 @@ COVERAGE: list[dict] = [
     {"sc": "1.1.1", "name": "Non-text Content", "level": "A",
      "status": "partial",
      "enforced_by": ["axe:image-alt", "gates/mathml_check.py (alttext)",
-                     "figure_captioner numeric guard + caption-first eval"],
+                     "figures.captioner numeric guard + caption-first eval"],
      "notes": "Alt presence and MathML alttext are hard-gated; figure "
               "alt quality is bounded by the captioner's no-hallucination "
               "guard but semantic adequacy of any alt text is not "

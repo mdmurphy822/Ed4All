@@ -1,32 +1,21 @@
-"""Stage 6b — figure captioner via SmolVLM2-256M (Apache-2.0, HF-maintained).
+"""Generate accessible figure descriptions with SmolVLM2-256M.
 
-Plans/09 §2-4. After Stage 6 (``run_qwen_specialists``) and before Stage 7
-(gates), iterate figure Regions whose payload carries ``image_png_bytes``
-(from Stage 5c, ``image_extract.py``) and attach two captions to the payload:
+Stage 6b runs after specialist authoring and before the accessibility gates.
+It processes figure regions whose payload carries ``image_png_bytes`` from
+Stage 5c and attaches two descriptions:
 
   * ``alt_text``               : short caption — WCAG SC 1.1.1 target.
   * ``extended_description``   : longer caption for the extended description.
 
-The assembler's figure HTML emitter reads ``alt_text`` (and falls back to an
-empty alt when absent, preserving the prior behaviour).
+The assembler's figure emitter reads ``alt_text`` and uses an empty alt when
+the field is absent.
 
-Model choice rationale (Plans/09 §7 update, 2026-05-30):
-  - User's first pick was **Qwen2.5-VL-3B**, but its license is the
-    Qwen Research License (non-commercial only) — verified, rejected.
-  - User's second pick was **Florence-2 + DePlot** — verified two
-    transformers-5.x compatibility issues in Microsoft's checkpoint
-    (config + processor), both confirmed and would require fragile
-    monkey-patches.
-  - **SmolVLM2-256M-Video-Instruct** picked (the §7 option C): HF-maintained
-    (so transformers-native and tracked with our transformers 5.x), Apache-2.0,
-    256M params (~512MB fp16, fits 8GB easily alongside the Qwen specialists),
-    handles images (the "-Video-" variant also accepts single images cleanly).
-  - DePlot chart-tier is still a planned follow-up once a chart-vs-photo
-    router exists and we want to compare against the 19,357-pair dataset.
+SmolVLM2-256M-Video-Instruct is Apache-2.0, transformers-native, and supports
+single-image prompts. Its compact footprint allows the caption stage to share
+the SemantiK runtime with the region specialists.
 
-No silent fallback (``feedback_no_silent_fallbacks``): a model-load or
-generation failure raises :class:`FigureCaptionError` so the cascade surfaces
-the failure rather than producing empty alt downstream.
+A model-load or generation failure raises :class:`FigureCaptionError` so the
+cascade surfaces the failure rather than producing empty alt downstream.
 """
 from __future__ import annotations
 
@@ -46,22 +35,12 @@ class FigureCaptionError(RuntimeError):
     """SmolVLM2 captioning failed for a figure Region."""
 
 
-# ---------------------------------------------------------------------------
-# No-hallucination numeric guard (Plans/09 §2.4)
-# ---------------------------------------------------------------------------
-# SmolVLM2-256M invents chart numbers absent from the caption ~57% of the time
-# (R6 eval: no_hallucination 0.43 vs 0.95 gate — see project_figure_captioner_
-# verdict). A wrong number is worse than none for a screen-reader user, so any
-# generated sentence carrying a number NOT present in the caption (the only
-# trustworthy ground truth at emission time) is dropped before the figure ships.
-# The number regex mirrors ``scripts/eval_figure_captioner._NUM_RE`` so the
-# guard and the acceptance metric measure the same thing.
+# Remove generated numeric claims that the source caption does not support.
+# The evaluator uses the same token pattern so acceptance and emission agree.
 _NUM_RE = re.compile(r"\d+(?:[.,]\d+)*")
 _SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
-# Type-level fallback alt for a figure whose model alt was fully stripped AND
-# that has no caption to carry its accessible name. Non-empty (axe SC 1.1.1)
-# and number-free. Intentionally generic — an honest "there is a figure here"
-# beats a fabricated description.
+# Supply a number-free accessible name when both guarded alt text and the
+# source caption are unavailable.
 TYPE_LEVEL_ALT = "Figure."
 
 
@@ -111,12 +90,8 @@ def guard_figure_alt(alt: str, caption: str) -> str:
     return "" if (caption or "").strip() else TYPE_LEVEL_ALT
 
 
-# Caption-first label/sentence trim. ``Figure N:`` / ``Fig. N.`` prefix + first
-# sentence. Shared verbatim by the production emitter
-# (``assembler.fallbacks.fallback_figure``) and the acceptance eval
-# (``scripts.eval.eval_figure_captioner.route_figure``) so the shipped behaviour and
-# the gate that scores it CANNOT drift — the whole point of wiring caption-first
-# into production (Plans/09 §5 gate 3).
+# Keep caption-first accessible names consistent between the production emitter
+# and the acceptance evaluator by sharing this label and sentence trim.
 _FIG_LABEL_RE = re.compile(
     r"^\s*(?:figure|fig\.?)\s*\d+\s*[:.\)]\s*", re.IGNORECASE
 )
@@ -212,15 +187,8 @@ def _run_smolvlm_caption(image_bytes: bytes, prompt: str,
     return text
 
 
-# ---------------------------------------------------------------------------
-# Decision capture for the VLM call site (W7.6)
-# ---------------------------------------------------------------------------
-# Every LLM/VLM call site must wire up a DecisionCapture and emit at least one
-# decision per call (per-figure here) with a DYNAMIC, replayable rationale (root
-# /CLAUDE.md § LLM call-site instrumentation). Best-effort: a capture failure
-# (lib not on path in the SemantiK subprocess venv, disk error, …) must NEVER
-# break captioning — mirrors the "structure_review DecisionCapture failed
-# (non-fatal)" posture in MCP/tools/pipeline_tools.py.
+# Emit one replayable decision per figure without making telemetry availability
+# a prerequisite for caption generation.
 
 
 def _figure_caption_course_code() -> str:
@@ -236,10 +204,9 @@ def _figure_caption_course_code() -> str:
 def _build_caption_capture():
     """Construct a best-effort DecisionCapture for the VLM caption call site.
 
-    Returns ``None`` (captioning proceeds unaffected) when ``lib.decision_capture``
-    is unavailable or construction fails. Lands under the ratified ``semantik``
-    tool / ``semantik_conversion`` phase (task #19), matching the Stage-5d
-    ``structure_review`` capture in ``MCP/tools/pipeline_tools.py``.
+    Returns ``None`` when ``lib.decision_capture`` is unavailable or capture
+    construction fails. Events use the ``semantik`` tool and
+    ``semantik_conversion`` phase shared by conversion-stage decisions.
     """
     try:
         from lib.decision_capture import DecisionCapture
@@ -268,10 +235,9 @@ def _log_caption_decision(
 ) -> None:
     """Emit ONE ``alt_text_generation`` decision for a captioned figure.
 
-    Rationale is dynamic + replayable (image content hash, figure geometry /
-    stable FB id, model + per-prompt max_tokens, produced caption lengths) so a
-    post-hoc replay can attribute the alt/extended text to its exact input.
-    Best-effort: never raises into the caption path.
+    The dynamic rationale records the image hash, figure geometry, stable
+    feature-block ID, model, token limits, and output lengths. Capture failures
+    never propagate into the caption path.
     """
     if capture is None:
         return
@@ -313,19 +279,11 @@ def caption_figure_regions(regions: list[Any], *,
     Non-figure Regions pass through unchanged. If no figure Regions are
     present, this is a no-op (no model load).
 
-    Decorative-figure scope (Plans/09 §5 gate 2 — DECISION 2026-06-09): every
-    figure Region reaching Stage 6b is captioned + guarded; there is NO runtime
-    decorative-vs-content routing. Rationale: (1) ``data/figure_alt_dataset`` has
-    zero decorative rows (every figure carries a caption), so there is no
-    train/eval signal; (2) distinguishing decorative needs a chart/photo/decor
-    router we don't have (same blocker as the deferred DePlot chart-tier, N2);
-    (3) the failure mode is benign — a decorative figure ships either a
-    caption-derived alt, a guarded model alt, or the honest ``TYPE_LEVEL_ALT``,
-    all non-empty and axe-conformant; the only cost is mild screen-reader
-    verbosity, never a WCAG failure or a wrong claim. The ``is_decorative`` /
-    ``route_figure`` logic stays in ``scripts.eval.eval_figure_captioner`` as a
-    forward-looking gate that lights up the moment a subtype-tagged build (or the
-    N2 router) can flag decorative figures. Revisit with N2.
+    Every figure reaching Stage 6b is captioned and guarded because the runtime
+    has no decorative-vs-content classifier. A figure therefore ships with a
+    caption-derived alt, a guarded model alt, or ``TYPE_LEVEL_ALT``. The
+    evaluator retains ``is_decorative`` and ``route_figure`` so subtype-tagged
+    inputs can measure decorative handling without changing production routing.
 
     Raises
     ------
@@ -339,19 +297,15 @@ def caption_figure_regions(regions: list[Any], *,
         return regions
 
     out = list(regions)
-    # One capture per Stage-6b invocation; one decision per captioned figure.
+    # Reuse one capture sink while recording each captioned figure separately.
     capture = _build_caption_capture()
     for i in fig_idxs:
         region = out[i]
         payload = region.payload or {}
         img_bytes = payload.get("image_png_bytes")
         if not img_bytes:
-            # A figure Stage 5c DELIBERATELY skipped (bad-geometry crop /
-            # Part F per-region render failure) carries a skip marker — it
-            # must never be chapter-fatal here: skip with a warning; the
-            # assembler ships the honest type-level alt. A payload-less
-            # figure WITHOUT the marker still fails closed (genuine
-            # "Stage 5c didn't run" — the no-silent-fallback discipline).
+            # Honor explicit render-skip markers while failing closed when a
+            # figure unexpectedly lacks Stage-5c image data.
             skip_reason = payload.get("figure_render_skipped") or payload.get(
                 "figure_render_degraded"
             )

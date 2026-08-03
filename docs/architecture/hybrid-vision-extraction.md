@@ -192,7 +192,7 @@ no model call and correctly wires no capture.
 
 **Gap:** `alttext.py` is an LLM call site with **no** `DecisionCapture` — `heading_judge.py` is the only
 module under `glmocr/` that references one. The equivalent legacy call site
-(`SemantiK/semantik_structure/figure_captioner.py`, the omni cascade's SmolVLM2 captioner) *is*
+(`SemantiK/semantik_structure/figures/captioner.py`, the omni cascade's SmolVLM2 captioner) *is*
 instrumented and tested. See `docs/architecture/decision-capture.md § Known instrumentation gap`.
 
 ### 3.3 Licensing — honored, and better than the rejected design feared

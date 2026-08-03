@@ -32,6 +32,8 @@ validation. That is what lets SemantiK make a WCAG conformance claim — the
 rules that produce conformance are auditable code, not weights.
 
 Code layout: the cascade + models live under `SemantiK/semantik_structure/`; the
+figure rendering, captioning, and subtype-routing family lives under
+`SemantiK/semantik_structure/figures/`; the
 Ed4All-facing adapter seam (output-contract normalizer + deterministic
 front-matter filter) lives under `lib/semantik/`; the MCP bridge wiring lives
 in `MCP/tools/pipeline_tools.py`.
@@ -353,7 +355,7 @@ asserts the JSONL row fires with a dynamic rationale. See root `/CLAUDE.md`
 § Decision Capture for the contract.
 
 The Stage-6b figure captioner (the SmolVLM2 VLM call site,
-`semantik_structure/figure_captioner.py::caption_figure_regions`) emits one
+`semantik_structure/figures/captioner.py::caption_figure_regions`) emits one
 **`alt_text_generation`** DecisionCapture event per captioned figure (W7.6),
 constructed best-effort under the `semantik` capture tool / `semantik_conversion`
 phase (`_build_caption_capture`). Rationale is dynamic + replayable — image
@@ -432,7 +434,8 @@ construction: the PDF stack is pypdfium2 (Apache-2/BSD-3) + pdfplumber (MIT) +
 pikepdf (MPL-2.0) + pytesseract/Tesseract (Apache-2); the ML stack is
 transformers/peft/llama-cpp-python — **every dependency on the path is
 permissively licensed** (see the licensing inventory in
-`semantik_structure/extract_shared.py` and `image_extract.py`). Model weights
+`semantik_structure/extract_shared.py` and
+`semantik_structure/figures/render.py`). Model weights
 (council BERTs, Qwen GGUFs, theta head) are separate artifacts, not shipped in
 this tree. The provider/model licensing for the opt-in hosted large-model endpoint seat
 lives in `docs/LICENSING.md`.

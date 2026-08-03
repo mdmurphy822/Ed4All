@@ -1,28 +1,26 @@
 """Figure subtype router via SigLIP-2 (Apache-2.0, ungated).
 
-Phase P1 of the figure-router plan. A frozen SigLIP-2 image/text encoder used
-two ways:
+The frozen SigLIP-2 image/text encoder serves two figure-quality contracts:
 
   1. **Zero-shot subtype classification** — tag each figure with one of a small
      accessibility-relevant taxonomy (``chart``, ``diagram``,
      ``photo_micrograph``, ``map``, ``equation_or_table_image``, ``other``) by
      comparing its image embedding against averaged text-prompt embeddings per
-     class. This is the routing signal the figure-alt path will use to pick a
-     captioning strategy (e.g. a future DePlot chart-tier) and to gate
-     decorative-vs-content.
+     class. This routing signal selects the captioning strategy and helps
+     distinguish decorative figures from content-bearing figures.
   2. **Image/caption consistency primitive** — :func:`similarity` exposes the
      SigLIP sigmoid agreement score between a figure image and a candidate
-     caption, the building block for a future no-hallucination consistency gate.
+     caption for consistency validation.
 
-Design (mirrors ``figure_captioner.py``):
-  * frozen encoder, **CPU fp32** at runtime (the 8GB GPU is reserved for the
-    Qwen specialists / SmolVLM2 captioner);
+Runtime design:
+  * frozen encoder in **CPU fp32**, isolating routing from GPU-heavy captioning
+    and authoring stages;
   * heavy imports (torch / transformers / PIL) are LAZY — inside functions, so
     importing this module never pulls in torch (asserted by a test);
   * a single cached loader (``lru_cache(maxsize=1)``);
-  * NO silent fallbacks (``feedback_no_silent_fallbacks``): a model-load or
-    inference failure raises :class:`FigureRouterError`, never a benign-looking
-    empty embedding or a guessed label.
+  * no silent fallbacks: model-load and inference failures raise
+    :class:`FigureRouterError`, never a benign-looking empty embedding or a
+    guessed label.
 
 Encoder: ``google/siglip2-base-patch16-224`` — Apache-2.0, ungated, the
 fixed-resolution (non-NaFlex) base SigLIP-2 checkpoint, so the standard
@@ -56,14 +54,14 @@ class FigureRouterHeadMissing(FigureRouterError):
     """The trained 5-class head is not on disk.
 
     :func:`classify_subtype` is the TRAINED-head contract; falling back to
-    the zero-shot path here would silently ship the 0.59-accuracy classifier
-    the P1 spot-check rejected (``feedback_no_silent_fallbacks``). Callers
-    that want zero-shot must call :func:`zero_shot_subtype` explicitly.
+    the zero-shot path would silently substitute a lower-accuracy classifier.
+    Callers that want zero-shot behavior must call
+    :func:`zero_shot_subtype` explicitly.
     """
 
 
 # ---------------------------------------------------------------------------
-# Taxonomy + zero-shot prompt templates (approved P1 taxonomy)
+# Taxonomy and zero-shot prompt templates
 # ---------------------------------------------------------------------------
 # Six accessibility-relevant subtypes. Order is canonical (used as the class
 # axis of the averaged prompt-embedding matrix and for argmax label lookup).
@@ -112,15 +110,13 @@ SUBTYPE_PROMPTS: dict[str, tuple[str, ...]] = {
 
 
 # ---------------------------------------------------------------------------
-# Binary chart-vs-rest gate (P2 spot-check verdict: ship binary, defer 5-class)
+# Binary chart-vs-rest gate
 # ---------------------------------------------------------------------------
-# The P2 visual spot-check (data/eval_reports/figure_router_spotcheck_v1.json)
-# found the raw zero-shot 'chart' label is precision-strong (~0.90) but
-# recall-weak (~0.69): scatter/t-SNE embedding plots drift to 'map' and
-# fan-charts / confidence-band plots drift to 'other'/'diagram'. The cheap,
-# deterministic mitigation it recommends is folding those phrasings into the
-# CHART side of the prompt ensemble — done here. :data:`SUBTYPE_PROMPTS` (the
-# 5-class path) is intentionally left untouched for downstream consumers.
+# Visual validation found the raw zero-shot ``chart`` label precision-strong
+# (~0.90) but recall-weak (~0.69): scatter/t-SNE embedding plots can drift to
+# ``map`` and fan charts or confidence-band plots to ``other``/``diagram``.
+# Folding those phrasings into the chart prototype improves binary-gate recall
+# while leaving :data:`SUBTYPE_PROMPTS` unchanged for five-class consumers.
 CHART_BINARY_EXTRA_PROMPTS: tuple[str, ...] = (
     "a scatter plot of data points",
     "a 2D embedding visualization of scattered colored points with cluster labels",
@@ -128,8 +124,8 @@ CHART_BINARY_EXTRA_PROMPTS: tuple[str, ...] = (
     "a line chart with shaded confidence bands",
 )
 
-# Full chart-side prompt set for the binary gate: the approved 5-class chart
-# templates plus the recall-leak variants above.
+# Full chart-side prompt set: canonical five-class templates plus known
+# recall-leak variants.
 CHART_BINARY_PROMPTS: tuple[str, ...] = SUBTYPE_PROMPTS["chart"] + CHART_BINARY_EXTRA_PROMPTS
 
 # The non-chart side of the binary gate competes with ALL five non-chart
@@ -145,8 +141,8 @@ NONCHART_SUBTYPES: tuple[str, ...] = tuple(s for s in SUBTYPES if s != "chart")
 # is_chart=False, which a strictly positive margin guarantees. SigLIP cosine
 # spreads are flat (the 5-class softmax uses temperature 100, i.e. ~0.01
 # cosine ≈ 1 logit); 0.005 is half a logit at that scale. Validated offline
-# against the spot-check's 60 visual labels (embeddings from the cached
-# figure_embeddings npz, prototypes from the real text tower): at 0.005 the
+# against 60 visually labeled examples (cached image embeddings and prototypes
+# from the real text tower): at 0.005 the
 # gate scores precision 1.000 / recall 0.769 vs the raw-argmax baseline's
 # 0.90 / 0.69, and the hardest observed non-chart row (a physics
 # vector diagram, raw margin -0.0038 — the baseline's one false positive)
@@ -388,18 +384,18 @@ def route_chart_binary(
     nonchart_protos: np.ndarray | None = None,
     margin: float = CHART_BINARY_MARGIN,
 ) -> dict[str, Any]:
-    """Binary chart-vs-rest routing decision — the shipped P2 figure gate.
+    """Return a precision-first binary chart-vs-rest routing decision.
 
     **Precision-first contract.** This gate decides whether a figure goes to
-    the chart-description tier (future DePlot) or stays on the generic
-    figure-caption tier. A FALSE POSITIVE here is the expensive error: a
+    the chart-description tier or stays on the generic figure-caption tier. A
+    FALSE POSITIVE here is the expensive error: a
     chart-tier description of a non-chart figure is a confidently *wrong*
     reading of the image, which is worse for the WCAG alt-text than the
     merely *generic* description a false negative receives. The decision is
     therefore margin-gated: ``is_chart`` is True only when the chart
     prototype's cosine similarity beats the BEST non-chart class prototype by
     at least ``margin`` (:data:`CHART_BINARY_MARGIN`); ties and narrow wins
-    resolve to False. Spot-check baseline (raw zero-shot argmax): precision
+    resolve to False. The raw zero-shot argmax baseline measured precision
     0.90 / recall 0.69; this gate adds scatter/embedding/fan-chart prompt
     variants on the chart side to claw back the known recall leaks without
     touching the 5-class taxonomy path.
@@ -452,12 +448,11 @@ def route_chart_binary(
 
 
 # ---------------------------------------------------------------------------
-# Trained 5-class head (P2): calibrated logreg on the frozen embeddings
+# Trained five-class head: calibrated logistic regression on frozen embeddings
 # ---------------------------------------------------------------------------
 # Calibrated-probability floor below which the head ABSTAINS and routes the
-# figure to "other" (the generic-caption tier). Chosen in the P2/P3 fine-plan
-# (2026-06-09) alongside the head recipe; CalibratedClassifierCV at train
-# time is what makes thresholding the probability meaningful.
+# figure to "other" (the generic-caption tier). CalibratedClassifierCV at
+# training time makes the probability threshold meaningful.
 SUBTYPE_ABSTAIN_THRESHOLD: float = 0.55
 
 # Default head location (written by scripts/training/train_figure_router.py).
@@ -479,14 +474,14 @@ def load_subtype_head(path: str = SUBTYPE_HEAD_PATH) -> Any:
     """
     from pathlib import Path
 
-    from . import paths as _semantik_paths
+    from .. import paths as _semantik_paths
 
     p = Path(path)
     if not p.is_absolute():
         # Resolve relative head paths through the shared SemantiK model-root
-        # resolver (honors SEMANTIK_MODEL_DIR / SEMANTIK_HOME). The helper strips
-        # the legacy leading ``models/`` segment so the package-relative default
-        # stays byte-stable to ``<SemantiK>/models/figure_router/v1/head.joblib``.
+        # resolver (honors SEMANTIK_MODEL_DIR / SEMANTIK_HOME). The resolver
+        # accepts a leading ``models/`` segment and maps the default to
+        # ``<SemantiK>/models/figure_router/v1/head.joblib``.
         p = _semantik_paths.resolve_model_literal(p)
     if not p.exists():
         raise FigureRouterHeadMissing(
@@ -512,8 +507,8 @@ def classify_subtype(
 ) -> dict[str, Any]:
     """Classify a figure into the 6-class taxonomy with the TRAINED head.
 
-    The production subtype router (P2). Unlike :func:`zero_shot_subtype`
-    this requires the trained calibrated head on disk and abstains rather
+    Unlike :func:`zero_shot_subtype`, the production subtype router requires
+    the trained calibrated head on disk and abstains rather
     than guess: when the top calibrated probability is below
     ``abstain_threshold`` the figure routes to ``"other"`` (the generic
     caption tier) with ``abstained=True`` — a low-confidence specific
@@ -577,7 +572,7 @@ def classify_subtype(
 
 
 def similarity(image_emb: np.ndarray, text_emb: np.ndarray) -> float:
-    """SigLIP image/text agreement score — the future consistency-gate primitive.
+    """Return the SigLIP image/text agreement score for consistency gates.
 
     Returns the **sigmoid** of the SigLIP-scaled logit
     (``logit = cosine * logit_scale + logit_bias``, then ``sigmoid``), i.e. the
