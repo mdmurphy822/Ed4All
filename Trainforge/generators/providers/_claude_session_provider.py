@@ -1,4 +1,4 @@
-"""Claude-Code-session synthesis provider — Wave 107.
+"""Claude Code session-backed synthesis provider.
 
 Mirrors AnthropicSynthesisProvider's interface but dispatches paraphrase
 requests through MCP.orchestrator.local_dispatcher.LocalDispatcher's
@@ -57,8 +57,8 @@ _AGENT_TYPE = "training-synthesizer"
 _INSTRUCTION_KEYS = ["prompt", "completion"]
 _PREFERENCE_KEYS = ["prompt", "chosen", "rejected"]
 
-# Wave 112 Task 4: which output keys participate in the length-clamp per
-# paraphrase kind. Mirrors the per-kind bounds in
+# Output keys participating in the length clamp for each paraphrase kind.
+# Mirrors the per-kind bounds in
 # ``_anthropic_provider._KIND_BOUNDS`` (``chosen``/``rejected`` reuse the
 # completion bounds). The session provider's keys map 1:1 to bound names.
 _KIND_KEYS: Dict[str, List[str]] = {
@@ -75,10 +75,8 @@ def _validate_lengths(
 ) -> None:
     """Enforce per-key length bounds on a session-provider response.
 
-    Wave 112 Task 4: parallel to ``_anthropic_provider._clamp``'s raise
-    behavior. Short paraphrases must fail loud rather than silently
-    landing in the cache and the JSONL writer (which would let a
-    too-short prompt poison ``instruction_pairs.jsonl``).
+    This parallels ``_anthropic_provider._clamp``'s raise behavior.
+    Short paraphrases fail before reaching the cache or JSONL writer.
 
     Args:
         outputs: The dispatcher response's ``outputs`` dict (already
@@ -155,12 +153,12 @@ class ClaudeSessionProvider:
         self._cache: Dict[str, Dict[str, Any]] = {}
         if cache_path is not None and cache_path.exists():
             self._load_cache()
-        # Wave 110 / Phase D: budget tracking + telemetry persistence.
+        # Track dispatch budgets and persist their telemetry.
         self._budget = _BudgetTracker(
             telemetry_path=telemetry_path,
             max_dispatches=max_dispatches,
         )
-        # Wave 111 / Phase E: circuit breaker for repeated dispatcher failures.
+        # Stop repeated dispatcher failures before they exhaust the budget.
         self._breaker = _CircuitBreaker(
             failures_to_open=failures_to_open,
             window_seconds=failure_window_seconds,
@@ -193,9 +191,8 @@ class ClaudeSessionProvider:
             out["provider"] = "claude_session"
             return out
 
-        # Wave 110 / Phase D: pre-flight cap so we raise BEFORE
-        # contacting the dispatcher. The cache + telemetry written so
-        # far stay on disk; resume by re-running with a higher cap.
+        # Enforce the cap before dispatch while preserving cache and telemetry
+        # so the run can resume with a higher cap.
         if (
             self._budget.max_dispatches is not None
             and self._budget.dispatched >= self._budget.max_dispatches
@@ -222,8 +219,7 @@ class ClaudeSessionProvider:
             )
         )
         elapsed = time.monotonic() - t0
-        # Wave 112 Task 4: clamp lengths BEFORE persisting to cache so a
-        # poisoned response (short paraphrase) never lands on disk.
+        # Validate lengths before caching so malformed output never reaches disk.
         _validate_lengths(outputs, kind="instruction", chunk_id=chunk_id or None)
         self._budget.record(
             kind="instruction", chunk_id=chunk_id,
@@ -236,7 +232,7 @@ class ClaudeSessionProvider:
         out["prompt"] = str(outputs["prompt"])
         out["completion"] = str(outputs["completion"])
         out["provider"] = "claude_session"
-        # W-D11 T11.3 — thread structured-claim arrays through emit
+        # Preserve structured-claim arrays emitted by the subagent.
         # when the subagent produced them. Optional emit; absent on
         # the today-default (prompt, completion) shape.
         for k in ("key_claims", "per_claim_support"):
@@ -270,7 +266,7 @@ class ClaudeSessionProvider:
             out["provider"] = "claude_session"
             return out
 
-        # Wave 110 / Phase D: same pre-flight cap as paraphrase_instruction.
+        # Enforce the same pre-dispatch budget cap as instruction paraphrasing.
         if (
             self._budget.max_dispatches is not None
             and self._budget.dispatched >= self._budget.max_dispatches
@@ -297,8 +293,7 @@ class ClaudeSessionProvider:
             )
         )
         elapsed = time.monotonic() - t0
-        # Wave 112 Task 4: clamp lengths BEFORE persisting to cache so a
-        # poisoned response (short paraphrase) never lands on disk.
+        # Validate lengths before caching so malformed output never reaches disk.
         _validate_lengths(outputs, kind="preference", chunk_id=chunk_id or None)
         self._budget.record(
             kind="preference", chunk_id=chunk_id,
@@ -312,7 +307,7 @@ class ClaudeSessionProvider:
         out["chosen"] = str(outputs["chosen"])
         out["rejected"] = str(outputs["rejected"])
         out["provider"] = "claude_session"
-        # W-D11 T11.3 — thread structured-claim arrays through emit
+        # Preserve structured-claim arrays emitted by the subagent.
         # when the subagent produced them.
         for k in ("key_claims", "per_claim_support"):
             if k in outputs:
@@ -332,15 +327,15 @@ class ClaudeSessionProvider:
         chunk_text: str,
         expected_keys: List[str],
     ) -> Dict[str, Any]:
-        # Wave 111 / Phase E: circuit breaker fail-fast on repeated timeouts.
+        # Fail fast when repeated dispatcher timeouts open the circuit.
         # Raises SynthesisCircuitOpen before contacting the dispatcher.
         self._breaker.before_dispatch()
-        # W-D11 T11.3 — thread the per-claim evidence_quote directive
+        # Pass the per-claim evidence_quote directive
         # into the dispatch task params so the training-synthesizer
         # subagent receives the same per-claim contract every other
         # provider gets via prompt-string concatenation. Subagent may
         # ignore the field (graceful-degrade); the consumer-side
-        # validator (T11.2) handles the missing-quote case as
+        # validator handles the missing-quote case as
         # warning-only.
         from Trainforge.generators.providers._base_synthesis_provider import (
             EVIDENCE_QUOTE_PROMPT_DIRECTIVE,
@@ -375,11 +370,8 @@ class ClaudeSessionProvider:
                     f"training-synthesizer returned malformed output "
                     f"for kind={kind}: missing key {key!r}; got {sorted(outputs)!r}"
                 )
-        # Wave 112 Task 3: tighten value validation. The key-presence loop
-        # above accepted ``""``, ``"   "``, and ``None`` — all of which would
-        # silently poison ``instruction_pairs.jsonl`` downstream. Reject them
-        # here before the cache layer (Task 7) or the length clamp (Task 4)
-        # ever sees the value.
+        # Key presence alone admits blank and non-string values, so reject
+        # them before cache admission and length validation.
         for key in expected_keys:
             value = outputs[key]
             if not isinstance(value, str) or not value.strip():
@@ -401,18 +393,11 @@ class ClaudeSessionProvider:
         chunk_id: str,
         parsed: Optional[Dict[str, Any]] = None,
     ) -> None:
-        # Wave W-D5 § 6.8 / § 4.6: swallow + warn on capture-write
-        # failure, mirroring Anthropic / Together / Local / Curriculum
-        # providers. Pre-W-D5 ClaudeSession propagated capture
-        # exceptions; the alignment closes the silent-degradation gap
-        # where a capture-write failure could break the synthesis call
-        # path. Audit-trail-impact: ZERO under current test coverage —
-        # `log_decision` doesn't raise on the happy path.
+        # Warn on capture-write failure without breaking synthesis, matching
+        # the other provider implementations.
         if self._capture is None:
             return
-        # W-D11 T11.3 — interpolate per-claim evidence_quote emit rate
-        # into the rationale. Same pattern as Anthropic / Together /
-        # Local providers.
+        # Include the per-claim evidence_quote emit rate in the rationale.
         from Trainforge.generators.providers._base_synthesis_provider import (
             render_evidence_quote_rationale_fragment,
         )
@@ -450,14 +435,8 @@ class ClaudeSessionProvider:
                 continue
             if entry.get("provider_version") != self._provider_version:
                 continue
-            # Wave 112 Task 7: validate the cached outputs before storing
-            # them. A poisoned cache file (e.g. one row with
-            # ``"prompt": null`` written by a pre-Wave-112 build) would
-            # otherwise silently survive load and serve the bad string
-            # on the next cache hit. Fail loud — the same posture as
-            # _dispatch's value check (Task 3) and paraphrase_*'s length
-            # gate (Task 4) — so the operator notices and clears or
-            # regenerates the cache file.
+            # Validate cached output before admission so malformed rows cannot
+            # silently survive and be served on the next cache hit.
             outputs = entry.get("outputs") or {}
             kind = entry.get("kind", "instruction")
             chunk_id = entry.get("chunk_id") or None

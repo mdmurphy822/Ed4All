@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Trainforge generators — assessment-generator provider (Wave W-D15).
+"""Trainforge assessment-generation provider.
 
 The assessment-generator surface authors assessment questions
 (MCQ / T/F / fill-in-blank / short answer / essay) grounded in
@@ -64,7 +64,7 @@ Public surface:
   ``to_dict()`` shape) consumed by
   ``MCP/tools/trainforge_tools.py::generate_assessments`` under the
   ``TRAINFORGE_ASSESSMENT_PROVIDER`` opt-in. Each question entry
-  carries an ``evidence_quote`` field per the W-D11 T11.3 grounding
+  carries an ``evidence_quote`` field for grounding
   contract.
 - :data:`ENV_PROVIDER` — ``"TRAINFORGE_ASSESSMENT_PROVIDER"``.
 - :data:`ENV_MODEL` — ``"TRAINFORGE_ASSESSMENT_MODEL"``.
@@ -581,7 +581,7 @@ class AssessmentGeneratorProvider(_BaseLLMProvider):
           doesn't blow the model's context window.
         - One-shot example so smaller local models (Qwen-2.5-7B etc.)
           have a concrete shape to imitate.
-        - ``evidence_quote`` directive per the W-D11 T11.3 grounding
+        - ``evidence_quote`` grounding directive
           contract — every emitted question MUST carry a verbatim
           substring from one of the cited chunks supporting the
           correct answer.
@@ -889,7 +889,7 @@ class AssessmentGeneratorProvider(_BaseLLMProvider):
     ) -> float:
         """Return the fraction of emitted questions carrying an evidence_quote.
 
-        Mirrors the W-D11 T11.3 emit-rate semantic (claims_with_quote /
+        Uses the shared emit-rate semantic (claims_with_quote /
         total) on the per-question surface. Returns 0.0 on an empty
         questions list so the rationale always stays well-typed.
         """

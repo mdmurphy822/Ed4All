@@ -24,7 +24,7 @@ length clamping, JSON parsing of the rendered draft envelope.
 Mirrors :class:`AnthropicSynthesisProvider`:
 
 - Same public surface: ``paraphrase_instruction`` / ``paraphrase_preference``.
-- Same length-clamp invariant (Wave 112): short paraphrases raise
+- Same length-clamp invariant: short paraphrases raise
   ``SynthesisProviderError`` rather than getting padded with sentinel
   filler; over-max strings get truncated on a sentence boundary.
 - Same ``synthesis_provider_call`` decision-capture event per call,
@@ -77,7 +77,7 @@ DEFAULT_BASE_URL = "https://api.together.xyz/v1"
 TOGETHER_API_URL = "https://api.together.xyz/v1/chat/completions"
 ENV_API_KEY = "TOGETHER_API_KEY"
 ENV_MODEL = "TOGETHER_SYNTHESIS_MODEL"
-# Wave 113: the Together provider doesn't accept a base-URL env override.
+# The Together provider does not accept a base-URL environment override.
 # Kept None so subclasses that DO want one (e.g. ``LocalSynthesisProvider``
 # whose server URL varies per Ollama / vLLM / llama.cpp / LM Studio install)
 # can flip it to a real env-var name without touching the base class.
@@ -148,7 +148,7 @@ class TogetherSynthesisProvider:
     to ``self._oa_client.chat_completion(...)`` for the HTTP call and
     only own the prompt construction + length clamping + parse-retry.
 
-    Subclass hooks (Wave 113 prep — used by
+    Subclass hooks used by
     :class:`Trainforge.generators.providers._local_provider.LocalSynthesisProvider`):
 
     - ``_default_base_url``: provider-specific OpenAI-compatible base URL
@@ -165,12 +165,12 @@ class TogetherSynthesisProvider:
     - ``_provider_name``: string written to ``out["provider"]`` on every
       emitted pair AND surfaced in decision-capture events for audit.
       Also flowed through to the embedded client's ``provider_label``
-      so the Wave-115 ``llm_chat_call`` audit row identifies the
+      so each ``llm_chat_call`` audit row identifies the
       backend.
     """
 
     # ------------------------------------------------------------------
-    # Subclass hooks (Wave 113). Keep these as class attributes so
+    # Keep subclass hooks as class attributes so
     # subclasses can flip them without overriding ``__init__``.
     # ------------------------------------------------------------------
     _default_base_url: str = DEFAULT_BASE_URL
@@ -205,10 +205,8 @@ class TogetherSynthesisProvider:
                 f"provider={self._provider_name}; "
                 "set the env var or inject a client (tests)."
             )
-        # Wave 113 prep: when the API key isn't required (local servers
-        # that ignore auth), still send *something* in the Authorization
-        # header so reverse-proxy servers that DO check auth get a stable
-        # placeholder rather than an unset-header surprise.
+        # When the API key is optional, still send a stable placeholder
+        # for reverse proxies that require an Authorization header.
         if not resolved_key and not self._api_key_required:
             resolved_key = "local"
         self._api_key = resolved_key
@@ -217,7 +215,7 @@ class TogetherSynthesisProvider:
             or os.environ.get(self._default_model_env)
             or self._default_model
         )
-        # Wave 113 prep: resolve the base URL with the same precedence
+        # Resolve the base URL with the same precedence
         # the API key + model use — explicit kwarg, then env override
         # (when configured), then class default.
         env_base_url_name = self._default_base_url_env
@@ -242,7 +240,7 @@ class TogetherSynthesisProvider:
         # legacy decision-capture surface stable. Only one event per
         # paraphrase call lands in the capture stream.
         #
-        # Wave 113: ``json_mode=True`` defense-in-depth — Together's
+        # ``json_mode=True`` provides defense in depth: Together's
         # hosted Llama-3.3-70B and Qwen2.5-72B are more reliable at
         # JSON than 7B local models, but the cost of sending both
         # ``format`` and ``response_format`` is zero (the server ignores
@@ -310,7 +308,7 @@ class TogetherSynthesisProvider:
         )
         out["provider"] = self._provider_name
 
-        # W-D11 T11.3 — thread structured-claim arrays through emit
+        # Preserve structured-claim arrays emitted by the model.
         # when the LLM produced them.
         for k in ("key_claims", "per_claim_support"):
             if k in parsed:
@@ -355,7 +353,7 @@ class TogetherSynthesisProvider:
         )
         out["provider"] = self._provider_name
 
-        # W-D11 T11.3 — thread structured-claim arrays through emit
+        # Preserve structured-claim arrays emitted by the model.
         # when the LLM produced them.
         for k in ("key_claims", "per_claim_support"):
             if k in parsed:
@@ -446,13 +444,8 @@ class TogetherSynthesisProvider:
                 )
                 continue
             return parsed, last_usage, total_http_retries
-        # Wave W-D5 § 6.1: standardise exhaustion code on
-        # `paraphrase_invalid_after_retry` across all 3 synthesis
-        # providers (Anthropic + Local already use this code; Together's
-        # legacy `parse_retries_exhausted` is replaced here for parity).
-        # Behavior change: callers dispatching on the code see one
-        # canonical value across providers — no test asserts the prior
-        # `parse_retries_exhausted` string today.
+        # Use one retry-exhaustion code across synthesis providers so callers
+        # can dispatch on a canonical value.
         raise SynthesisProviderError(
             f"{type(self).__name__}: failed to parse a valid JSON "
             f"response after {MAX_PARSE_RETRIES} attempts. "
@@ -488,7 +481,7 @@ class TogetherSynthesisProvider:
         return text, usage, retry_count
 
     # ------------------------------------------------------------------
-    # Strict-JSON directives appended to the user prompt (Wave 113).
+    # Strict-JSON directives appended to the user prompt.
     # Defense in depth: while Together's 70B-class hosted models are
     # reliable at JSON output via ``response_format``, an explicit
     # end-of-prompt directive eliminates the rare drift that still
@@ -596,7 +589,7 @@ class TogetherSynthesisProvider:
     def _clamp(text: str, kind: str, *, chunk_id: Optional[str] = None) -> str:
         """Clamp paraphrased text to the [lo, hi] bounds for ``kind``.
 
-        Wave 112 invariant — short responses raise
+        Short responses raise
         ``SynthesisProviderError`` (no sentinel-filler injection); over-
         max strings are truncated on a sentence boundary when possible.
         Bounds are shared with the Anthropic provider via
@@ -664,7 +657,7 @@ class TogetherSynthesisProvider:
             logger.warning("synthesis_provider_call capture failed: %s", exc)
 
     # ------------------------------------------------------------------
-    # Decision-capture string builders (Wave 113 — subclass hooks).
+    # Decision-capture string builders exposed as subclass hooks.
     # Subclasses override to interpolate provider-specific signals
     # (e.g. base_url for the local provider) without copy-pasting the
     # _emit_decision wiring above.
@@ -698,7 +691,7 @@ class TogetherSynthesisProvider:
         retry_count: int,
         parsed: Optional[Dict[str, Any]] = None,
     ) -> str:
-        # W-D11 T11.3 — interpolate per-claim evidence_quote emit rate
+        # Include the per-claim evidence_quote emit rate
         # into the rationale. Mirrors the W5.D pattern (extend an
         # existing decision_type's rationale with a new dynamic
         # signal; no new enum value).

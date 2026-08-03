@@ -7,20 +7,11 @@ Curriculum / ClaudeSession) override only the task-specific surface
 (``_render_*_user``, ``_emit_per_call_decision``) plus their dispatch
 hook when the OpenAI-compat / Anthropic-SDK default doesn't fit.
 
-See ``plans/wave-D5-trainforge-base-provider-2026-05-07.md`` § 3 for
-the canonical class hierarchy + method partitioning.
-
-Wave W-D5 lands the base file in isolation (T5.1) plus the two behavior
-changes the plan flags (§ 6.1 retry-exhaustion code standardization on
-``paraphrase_invalid_after_retry``; § 6.8 ClaudeSession ``_emit_decision``
-swallow-on-error). Provider migrations T5.2-T5.6 happen incrementally
-in subsequent commits — each provider continues to own its existing
-constructor / dispatch / parse-retry implementation today and gradually
-migrates to ``super().__init__(...)`` + base methods over time. The
-base imports + re-exports the canonical ``SynthesisProviderError`` /
-``_Usage`` / ``_validate_lengths`` so new providers can import from the
-canonical base while the legacy import paths stay intact (per the
-plan's "Module-level preservation contract" subsections).
+The base standardizes retry-exhaustion errors and makes decision-capture
+failures non-fatal. Concrete providers continue to own their constructors,
+dispatch, and parse-retry implementations. It also re-exports the canonical
+``SynthesisProviderError``, ``_Usage``, and ``_validate_lengths`` interfaces
+while preserving leaf-module import compatibility.
 """
 
 from __future__ import annotations
@@ -32,13 +23,8 @@ import re as _re
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
-# Re-export the canonical error + dataclass + length helper so future
-# subclasses can import from the canonical base instead of reaching into
-# the leaf provider modules. Legacy import paths remain intact — the plan
-# § 4 module-level preservation contract guarantees the original symbols
-# stay where Courseforge / `_local_provider` / `_together_provider` /
-# `_curriculum_provider` / `_claude_session_provider` already import them
-# from.
+# Re-export the canonical error, usage record, and length helper while leaf
+# modules retain their existing import surfaces.
 from Trainforge.generators.providers._synthesis_common import (  # noqa: F401
     SynthesisProviderError,
     _KIND_BOUNDS,
@@ -236,18 +222,12 @@ def extract_usage_anthropic(response: Any) -> _Usage:
 
 # ---------------------------------------------------------------------------
 # Capture-emit helper shared by every synthesis provider.
-# Wave W-D5 § 6.8 standardisation: swallow-on-error so capture failures
-# never break the synthesis path. ClaudeSession's pre-W-D5 helper did
-# NOT swallow; the base helper does. The migration aligns ClaudeSession
-# with the rest of the family.
+# Capture failures are logged without breaking the synthesis path.
 # ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
-# W-D11 T11.3 — per-claim evidence-quote emit (synthesis side).
-#
-# T11.0 (commit 92d1bf8) landed two additive optional fields on the
-# claim-bearing schemas:
+# Per-claim evidence-quote emission uses two optional schema fields:
 #
 #   * ``schemas/knowledge/chunk_v4.schema.json::key_claims`` structured
 #     arm: ``evidence_quote`` (string, ≤240 chars, nullable) +
@@ -255,9 +235,8 @@ def extract_usage_anthropic(response: Any) -> _Usage:
 #   * ``schemas/knowledge/pair_audit_fields.schema.json::$defs.PerClaimSupport``:
 #     same two fields, same null arms.
 #
-# T11.3 teaches every synthesis provider to ASK the LLM for the
-# verbatim quote at synthesis time — the consumer-side validator
-# (T11.2) handles the missing-quote case as warning-only so a small
+# Every synthesis provider asks the LLM for the verbatim quote. The
+# consumer-side validator handles a missing quote as warning-only so a small
 # local model that ignores the schema gracefully degrades. The
 # directive + schema fragment + emit-rate helper live ONCE here so
 # every concrete provider (Anthropic / Together / Local /
@@ -283,7 +262,7 @@ EVIDENCE_QUOTE_SCHEMA_FRAGMENT: Dict[str, Any] = {
                 {"type": "null"},
             ],
         },
-        # T11.3 optional emit — LLM is asked to fill these per-claim.
+        # Optional fields the LLM is asked to fill for each claim.
         "evidence_quote": {
             "anyOf": [
                 {"type": "string", "minLength": 1, "maxLength": 240},
@@ -380,7 +359,7 @@ def compute_evidence_quote_emit_rate(parsed: Any) -> Tuple[int, int, float]:
     A claim entry "has a quote" when ``entry["evidence_quote"]`` is a
     non-empty string after strip. Null / missing / empty-string all
     count as "no quote", which aligns with the day-1 graceful-degrade
-    contract — the consumer-side validator (T11.2) handles those arms
+    contract; the consumer-side validator handles those arms
     as warning-only.
 
     When no claim-bearing arrays are present (the common case for
@@ -458,13 +437,8 @@ def emit_decision_safely(
 
 
 # ---------------------------------------------------------------------------
-# Abstract base class — the structural contract for every synthesis
-# provider. Today (T5.1) the base lives in isolation; subclass migrations
-# T5.2-T5.6 happen incrementally. The base's existence + the imported
-# helpers above are sufficient for the Wave W-D5 acceptance criteria
-# § 8.1 (file exists at the canonical path with the right shape) and
-# § 8.3 (module-level preservation contract — every legacy import path
-# stays valid because the leaf modules retain their existing exports).
+# Abstract structural contract shared by synthesis providers. Leaf modules
+# retain their existing exports for import compatibility.
 # ---------------------------------------------------------------------------
 
 
@@ -478,14 +452,8 @@ class _BaseSynthesisProvider(ABC):
     `_emit_per_call_decision`) plus their dispatch hook when the
     OpenAI-compat / Anthropic-SDK default doesn't fit.
 
-    See ``plans/wave-D5-trainforge-base-provider-2026-05-07.md`` § 3
-    for the canonical class hierarchy + method partitioning.
-
-    Wave W-D5 status: T5.1 lands the base in isolation. Existing
-    providers are NOT yet migrated to subclass this class; migrations
-    happen incrementally in subsequent commits. The base nonetheless
-    documents the canonical surface so new providers (Fireworks, Groq,
-    vLLM-direct, etc.) can adopt it directly.
+    This class documents the canonical extension surface for providers whose
+    dispatch mechanism fits the shared HTTP, SDK, and capture skeleton.
     """
 
     def __init__(
@@ -673,8 +641,7 @@ class _BaseSynthesisProvider(ABC):
 
         Forwards to ``emit_decision_safely``. Swallow-on-error contract
         preserves the synthesis-pipeline invariant that capture
-        failures never break the call path. Wave W-D5 § 6.8 aligns
-        ClaudeSession with this contract.
+        failures never break the call path.
         """
         emit_decision_safely(
             self._capture,
@@ -693,7 +660,7 @@ __all__ = [
     "extract_text_anthropic",
     "extract_usage_anthropic",
     "emit_decision_safely",
-    # W-D11 T11.3 — per-claim evidence-quote synthesis surface.
+    # Per-claim evidence-quote synthesis surface.
     "EVIDENCE_QUOTE_SCHEMA_FRAGMENT",
     "EVIDENCE_QUOTE_PROMPT_DIRECTIVE",
     "compute_evidence_quote_emit_rate",

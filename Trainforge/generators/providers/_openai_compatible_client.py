@@ -119,8 +119,8 @@ ENV_ACTIVE_PHASE: str = "ED4ALL_ACTIVE_PHASE"
 # ``max_tokens`` trips the ``finish_reason == "length"`` anti-truncation guard
 # in ``_extract_text`` and CRASHES the phase. When this env is truthy the
 # client disables reasoning on every composed OpenAI-compatible call via a
-# belt-and-suspenders dual-injection (mirroring the Wave-113 ``json_mode``
-# rationale — servers ignore what they don't understand): (a) a ``detailed
+# dual-injection because servers ignore mechanisms they do not understand:
+# (a) a ``detailed
 # thinking off`` SYSTEM directive (the ollama-path mechanism) and (b)
 # ``chat_template_kwargs={"enable_thinking": False}`` (the vLLM / HF-native
 # mechanism the ``nemotron_v3`` reasoning parser honors). Default OFF →
@@ -196,7 +196,7 @@ def _rejects_ollama_format(response: httpx.Response) -> bool:
 # semantics mirror the other ``ED4ALL_*`` boolean knobs.
 ENV_REASONING_LOW_EFFORT: str = "ED4ALL_REASONING_LOW_EFFORT"
 
-# Task #10 — TTFT (time-to-first-token) metering. When this env is truthy the
+# TTFT (time-to-first-token) metering. When this env is truthy the
 # chat-completion call switches from the non-streaming JSON POST to a streaming
 # (``stream: true`` + ``stream_options.include_usage``) POST so the client can
 # measure wall-clock from request-send to the FIRST content / reasoning delta
@@ -296,10 +296,10 @@ def maybe_append_usage_row(
     error: Optional[str] = None,
     include_run_identity: bool = False,
 ) -> None:
-    """Append one OP2 metering row to ``runtime/state/runs/<run_id>/llm_usage.jsonl``.
+    """Append one metering row to ``runtime/state/runs/<run_id>/llm_usage.jsonl``.
 
-    Roadmap OP2 + Task #10 + perf-doc P4 — the SHARED tap implementation.
-    Module-level so every OpenAI-compatible call site meters through ONE
+    This module-level implementation lets every OpenAI-compatible call site
+    meter through one
     seam: :meth:`OpenAICompatibleClient._maybe_append_usage_row` (the
     ``chat_completion`` path) delegates here, and call sites that POST via
     ``_post_with_retry`` directly — notably
@@ -311,7 +311,7 @@ def maybe_append_usage_row(
     no-op so bare library callers stay byte-identical. Base row shape:
     ``{ts, provider, model, prompt_tokens, completion_tokens, duration_ms}``.
 
-    Task #10 additive fields (present ONLY when TTFT metering measured a
+    Additional fields are present only when TTFT metering measured a
     streaming call, so the flag-off row is byte-identical to the legacy
     OP2 row): ``ttft_ms`` (float, time-to-first-token) and — when the
     streaming server omitted the ``usage`` block despite
@@ -494,7 +494,7 @@ class OpenAICompatibleClient:
             client: Optional pre-built ``httpx.Client``. Tests inject
                 one with ``httpx.MockTransport``. Production callers
                 let the property build one lazily.
-            json_mode: Wave 113 — when ``True``, every request payload
+            json_mode: When ``True``, every request payload
                 carries BOTH ``"format": "json"`` (the Ollama-style
                 top-level field that triggers JSON-grammar-constrained
                 decoding on Ollama 0.4+) AND
@@ -506,7 +506,7 @@ class OpenAICompatibleClient:
                 local servers (Ollama, vLLM, llama.cpp, LM Studio) at
                 once. Default ``False`` for backward compat — providers
                 explicitly opt in.
-            vision_capable: Wave W-D13 — declarative flag the BACKEND
+            vision_capable: Declarative flag the backend
                 layer reads to decide whether to permit ``images=...``
                 on a ``chat_completion`` call. The client itself does
                 NOT enforce this (vision content-block translation is
@@ -573,7 +573,7 @@ class OpenAICompatibleClient:
         # Time-to-first-token (ms) of the most recent chat_completion call:
         # a float when TTFT metering was on AND the call streamed successfully,
         # otherwise ``None`` (metering off, or streaming fell back to the
-        # non-streaming path). Task #10 observability surface.
+        # non-streaming path) for observability.
         self.last_ttft_ms: Optional[float] = None
 
     # ------------------------------------------------------------------
@@ -667,8 +667,8 @@ class OpenAICompatibleClient:
                 The client does not validate or interpret these — it
                 just passes them through to the wire. Servers that
                 don't recognise a given field silently ignore it
-                (Wave-113 ``json_mode`` uses the same pattern).
-            images: Wave W-D13 — optional list of base64-encoded image
+                (``json_mode`` uses the same pattern).
+            images: Optional list of base64-encoded image
                 blocks. Each entry is ``{"media_type": "image/jpeg" |
                 "image/png" | ..., "data": "<base64>"}``. When
                 non-empty, the LAST user message in ``messages`` is
@@ -708,8 +708,8 @@ class OpenAICompatibleClient:
         """
         if not isinstance(messages, list) or not messages:
             raise ValueError("messages must be a non-empty list")
-        # Wave W-D13: vision content-block translation. When images
-        # are supplied, rewrite the LAST user message from a string
+        # When images are supplied, translate them to vision content blocks.
+        # Rewrite the last user message from a string
         # ``content`` to OpenAI's content-block list shape so the
         # server sees the canonical multimodal payload. Non-user
         # messages and intermediate user messages stay untouched —
@@ -750,7 +750,7 @@ class OpenAICompatibleClient:
             )
 
         _call_start = self._monotonic()
-        # Task #10 — TTFT metering. When on, stream the completion and measure
+        # When TTFT metering is enabled, stream the completion and measure
         # time-to-first-token; reconstruct a body identical in shape to the
         # non-streaming return. ANY streaming-specific failure falls back to the
         # proven non-streaming path with NO ttft (metering never fails a call).
@@ -785,7 +785,7 @@ class OpenAICompatibleClient:
         # OP2 usage tap — best-effort per-call metering row (no-op when
         # ``ED4ALL_RUN_ID`` is unset). Written BEFORE ``_extract_text`` so a
         # ``finish_reason == "length"`` response still records its row. The row
-        # carries real server-reported token counts. ``ttft_ms`` (Task #10),
+        # carries real server-reported token counts. ``ttft_ms``,
         # the stream-usage-present note, and ``finish_reason`` (perf-doc P4) are
         # OMITTED from the row when None so the flag-off / no-signal path stays
         # byte-identical to the legacy shape.
@@ -951,7 +951,7 @@ class OpenAICompatibleClient:
         return True
 
     # ------------------------------------------------------------------
-    # Internals — TTFT streaming (Task #10)
+    # Internals — TTFT streaming
     # ------------------------------------------------------------------
 
     def _post_streaming(
@@ -1129,7 +1129,7 @@ class OpenAICompatibleClient:
         return body, ttft_ms, usage_present
 
     # ------------------------------------------------------------------
-    # Internals — vision content-block translation (Wave W-D13)
+    # Internals — vision content-block translation
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -1329,7 +1329,7 @@ class OpenAICompatibleClient:
         headers: Dict[str, str] = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
-        # Wave 113: when json_mode is on, inject BOTH the Ollama-style
+        # When json_mode is on, inject both the Ollama-style
         # top-level ``format`` field AND the OpenAI-spec
         # ``response_format`` object. Servers ignore whichever they
         # don't recognize. Caller-supplied values (extra_payload) take
