@@ -1,93 +1,151 @@
-# Super synthesis benchmark protocol
+# Synthesis concurrency benchmark
 
-Use this protocol to select server batch limits and client concurrency for a
-self-hosted synthesis teacher. Results are deployment-specific: do not copy a
-setting from another model revision, engine build, hardware profile, prompt
-contract, or output allowance.
+Use this methodology to choose a safe client-concurrency limit for a
+self-hosted Trainforge synthesis provider. The result is deployment-specific:
+repeat the benchmark whenever the model, inference engine, prompt contract,
+output allowance, or hardware changes.
 
-Raw manifests, prompts, responses, logs, and result ledgers belong under the
-gitignored `runtime/state/benchmarks/` tree. Tracked documentation must not contain
-course text, course slugs, workflow identifiers, machine paths, endpoint
-addresses, or hashes of local artifacts.
+This guide defines a methodology, not a universal performance target. Keep raw
+prompts, responses, manifests, endpoint details, logs, and result ledgers under
+an ignored operator-local runtime directory. Never publish source content,
+course or run identifiers, local paths, host details, or artifact hashes.
 
-## Series identity
+## Safety and licensing first
 
-Record the following in the ignored benchmark manifest. Changing any field
-starts a new series:
+Benchmark only a provider whose outputs are permitted to become training data.
+Provider and model posture is governed by
+[`docs/LICENSING.md`](../LICENSING.md); benchmark results never override that
+policy. The recommended public workflow is a license-clean local provider.
 
-- model repository, immutable revision, served ID, and quantization;
-- inference engine image and revision;
-- tensor/expert parallelism and scheduler configuration;
-- maximum sequence length, scheduled-token limit, and server batch limit;
-- prompt/schema contract fingerprints and reasoning mode;
-- output allowance, timeout, retry policy, and client concurrency;
-- hardware class and observable memory/cache capacity.
+Do not weaken claim, objective, leakage, decontamination, quota, or promotion
+checks to improve throughput. A rejected pair is not successful work, even when
+the request completed quickly.
 
-## Workload
+## Runtime contract
 
-Build a fixed, content-sanitized manifest containing representative SFT and DPO
-windows from every synthesis substage. Include short, median, p95-sized, and
-validator-repair cases. Replay the identical manifest and request order for
-each cell. A one-shot transport benchmark measures raw capacity; a separate
-production-shaped pass must exercise the real validators and bounded repairs.
+Trainforge resolves synthesis concurrency in this order:
 
-Do not publish the captured prompts or responses. Store their hashes and the
-manifest itself only in ignored evidence.
+1. the explicit `--max-concurrent` value;
+2. `TRAINFORGE_SYNTHESIS_MAX_CONCURRENT`;
+3. the sequential default, `1`.
 
-## Required metrics
+Missing, blank, non-integer, and non-positive values resolve to `1`. Values
+above the validated hard ceiling of `48` fail loudly instead of being clamped.
+The `claude_session` provider is restricted to sequential operation
+because its dispatch and budget ordering are not concurrency-safe.
 
-| Metric | Definition |
+At concurrency `1`, Trainforge does not construct a thread pool. At higher
+values, generation may run concurrently, but one source-order writer remains
+responsible for output JSONL, checkpoints, counters, and deduplication state.
+There is no silent serial fallback after a concurrent failure.
+
+The full flag and resume semantics are documented in
+[`behavior-flags-trainforge.md`](behavior-flags-trainforge.md).
+
+## Reproducible series
+
+Create an ignored manifest for each benchmark series. Record enough information
+to detect an invalid comparison:
+
+- immutable model and inference-engine revisions;
+- quantization and server scheduling configuration;
+- context, output, timeout, and retry limits;
+- synthesis contract and response-schema fingerprints;
+- reasoning mode and client concurrency;
+- a non-identifying hardware profile;
+- the sanitized workload-manifest hash.
+
+Changing any item starts a new series. Keep identifying values and the manifest
+itself private.
+
+## Workload design
+
+Use a fixed, sanitized manifest of representative instruction and preference
+units. Include varied prompt lengths and the validator-repair paths exercised by
+the intended production synthesis contract.
+
+Run two distinct passes:
+
+1. A transport pass measures request capacity with a fixed request order.
+2. A production-shaped pass uses the real synthesis path, validators,
+   checkpointing, and bounded repairs.
+
+Replay the same manifest and request order for every candidate. Do not compare
+cells built from different prompts or acceptance requirements.
+
+For a small preflight of the real synthesis path, use the documented pilot
+command in [`full-run-playbook.md`](full-run-playbook.md#7-training-pair-pilot).
+The pilot is a quality and integration check; it is not by itself a concurrency
+benchmark.
+
+## Measurements
+
+Capture both transport efficiency and useful output:
+
+| Measurement | Interpretation |
 |---|---|
-| Prompt tokens/s | Prompt tokens from every HTTP attempt divided by cell wall time. |
-| Completion tokens/s | Completion tokens from every HTTP attempt divided by cell wall time. |
-| Total tokens/s | All prompt and completion tokens divided by cell wall time. |
-| Accepted-pair tokens/s | Tokens in accepted SFT/DPO pairs divided by cell wall time. |
-| Terminal units/s | Source chunks reaching a durable terminal disposition divided by cell wall time. |
-| Request latency | Dispatch through complete response; report p50, p95, and p99 when sample size supports it. |
-| Queue delay | Enqueue through server admission; report `unavailable` when admission time is not exposed. |
-| TTFT | Dispatch through first streamed response token; non-streaming clients report `unavailable`. |
-| Context headroom | `max_seq_len - (prompt_tokens + requested_max_tokens)`; report the minimum. |
-| Batch-token headroom | Scheduled-token limit minus peak scheduled tokens. |
-| KV/Mamba headroom | Peak used versus configured capacity for each state pool; never infer it from a lack of errors. |
-| Unified-memory headroom | Minimum available memory from a source that accounts for model allocations. Process RSS is not a substitute. |
+| Prompt and completion throughput | Server-reported tokens divided by cell wall time, including every transport attempt. |
+| Accepted-pair throughput | Tokens or pairs that survive the production validators divided by cell wall time. |
+| Terminal-unit throughput | Source units reaching a durable accepted or rejected disposition divided by cell wall time. |
+| Request latency | Dispatch-to-completion latency; report percentiles only when the sample supports them. |
+| Time to first token | Dispatch to the first streamed content token; report unavailable for non-streaming calls. |
+| Queue delay | Enqueue to server admission when the engine exposes it; otherwise report unavailable. |
+| Context headroom | Served context limit minus prompt tokens and requested output allowance. |
+| Scheduler and cache headroom | Peak use compared with the corresponding server limits, using direct telemetry. |
+| Memory headroom | Minimum available memory from a source that includes model allocations. |
 
-Keep these outcomes separate:
+Do not treat missing telemetry as zero use or positive headroom. Client HTTP
+attempt records are the authority for request throughput and latency; server
+logs describe scheduling behavior but do not automatically reveal cache or
+memory capacity.
 
-- `output_cap`: response ended at its output allowance;
-- `context_rejected`: prompt plus allowance exceeded the served window;
-- `batch_token_pressure`: scheduler queued or split the request;
-- `kv_or_state_exhausted`: cache/state allocation failed or preempted;
-- `transport`: timeout, disconnect, reset, abort, or non-success HTTP response;
-- `parse_or_schema`: complete response violated the JSON/schema contract;
-- `validator_rejection`: structurally complete response failed a quality gate.
+## Failure classification
+
+Keep these outcomes separate so capacity problems are not mistaken for content
+quality problems:
+
+- `output_cap`: generation ended at its output allowance;
+- `context_rejected`: prompt plus allowance exceeded the served context;
+- `scheduler_pressure`: work queued, split, or preempted under load;
+- `cache_or_state_exhausted`: inference state allocation failed;
+- `transport`: timeout, disconnect, reset, abort, or non-success response;
+- `parse_or_schema`: a complete response violated the response contract;
+- `validator_rejection`: a structurally valid response failed a quality check.
+
+Trainforge's production path is fail-loud. Do not recategorize a failed request
+as a successful lower-quality result.
 
 ## Matrix and stopping rule
 
-Sweep bounded server-batch and client-concurrency candidates from low to high.
-Run only one cell at a time and restore the same clean server configuration
-between server-batch changes. Stop escalation immediately when a cell has:
+Start with the sequential baseline, then test bounded concurrency candidates in
+ascending order. Change one capacity dimension at a time, run one cell at a
+time, and restore the same clean server configuration between cells.
 
-- a transport, context, cache/state, fatal, output-cap, or schema failure;
-- an engine-hang signal;
-- zero scheduler/cache/memory headroom; or
-- unsafe p95/p99 or queue-delay growth.
+Stop escalation when a cell shows any of the following:
 
-Zero failures and explicitly positive measured headroom are required for a
-production candidate. `unavailable` is not zero and cannot qualify a dimension.
+- transport, context, output-cap, cache/state, schema, or fatal failure;
+- an engine hang or incomplete telemetry lifecycle;
+- exhausted scheduler, cache, context, or memory headroom;
+- unstable latency or queue growth relative to the lower-concurrency cells.
 
-## Selection and validation
+A production candidate requires zero benchmark failures and positive measured
+headroom for every required capacity dimension. `unavailable` does not satisfy
+that requirement.
 
-Among qualifying cells, choose the lowest server batch and client concurrency
-on the accepted-pair-throughput plateau. Raw tokens/s alone is insufficient.
-Validate the candidate with:
+## Select and verify
 
-1. real SFT and DPO staged windows;
-2. unchanged claim, objective, leakage, and promotion validators;
-3. a longer soak capable of revealing rare failures;
-4. a post-soak structured generation probe; and
-5. stop/resume replay proving no duplicate or lost terminal work.
+Choose the lowest concurrency on the accepted-pair-throughput plateau, not the
+cell with the highest raw token rate. Then verify it with:
 
-Record the selected value in deployment-local configuration, not as a universal
-project default. `TRAINFORGE_SYNTHESIS_MAX_CONCURRENT` remains `1` when unset.
-Re-run the matrix after any model, revision, engine, prompt/schema, token,
-server-capacity, or hardware change.
+1. representative instruction and preference synthesis;
+2. unchanged production validators and bounded repairs;
+3. a longer soak;
+4. a structured-output probe after the soak; and
+5. stop/resume replay with no duplicated or lost terminal work.
+
+Store the selected value in ignored deployment configuration. Keep the public
+default unchanged. The concurrency flag's checkpoint-identity rules remain in
+[`behavior-flags-trainforge.md`](behavior-flags-trainforge.md); use the public
+[`pipeline invocation guide`](pipeline-invocation.md#7-graceful-stop-resume-and-checkpoints)
+and [`full-run playbook`](full-run-playbook.md#8-stop-and-resume-safely) for
+fresh-start decisions, checkpoints, and stop/resume recovery.
