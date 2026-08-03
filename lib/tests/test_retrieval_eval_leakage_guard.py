@@ -2,8 +2,10 @@
 
 The gold/probe sets are operator MEASUREMENT data, not SLM training corpus.
 This test asserts (structurally) that no Trainforge SYNTHESIS / INGESTION path
-reads ``retrieval_eval/`` or a ``gold_set.json`` — a gold question must never
-leak into the trained-model corpus (R6 in the risk register).
+uses ``retrieval_eval/`` or a ``gold_set.json`` as synthesis input — a gold
+question must never leak into the trained-model corpus (R6 in the risk
+register). The one sanctioned reader is the decontamination gate: it compares
+emitted pairs with held-out questions only to quarantine matches.
 
 A runtime assertion is impractical (synthesis ingests an entire corpus tree via
 many entry points), so this is a grep-based structural guard over the Trainforge
@@ -33,6 +35,7 @@ _SYNTHESIS_PATHS = [
 # references; a bare mention in a comment is flagged too (cheap + conservative —
 # a comment referencing retrieval_eval in synthesis code is itself a smell).
 _FORBIDDEN_TOKENS = ("retrieval_eval", "gold_set.json", "gold_set", "refusal_probes")
+_DECONTAMINATION_GATE = TRAINFORGE / "generators" / "pair_decontamination.py"
 
 
 def _iter_py_files(paths):
@@ -46,6 +49,8 @@ def _iter_py_files(paths):
 def test_no_synthesis_path_references_retrieval_eval():
     offenders = []
     for py in _iter_py_files(_SYNTHESIS_PATHS):
+        if py == _DECONTAMINATION_GATE:
+            continue
         try:
             text = py.read_text(encoding="utf-8")
         except OSError:
@@ -69,6 +74,18 @@ def test_no_synthesis_path_references_retrieval_eval():
         "Trainforge synthesis paths must not read retrieval_eval/ gold sets "
         f"(eval-question leakage R6): {offenders}"
     )
+
+
+def test_only_decontamination_gate_reads_held_out_questions():
+    """Pin the narrow exception so it cannot spread through synthesis code."""
+    text = _DECONTAMINATION_GATE.read_text(encoding="utf-8")
+    assert "load_gold_set(course_dir, verify=False)" in text
+    assert "decontaminate_pairs(" in text
+
+    synthesizer = TRAINFORGE / "synthesis" / "synthesize_training.py"
+    source = synthesizer.read_text(encoding="utf-8")
+    assert "from Trainforge.generators.pair_decontamination import" in source
+    assert "decontaminate_pairs(" in source
 
 
 def _is_benign_prose(line: str, token: str) -> bool:
