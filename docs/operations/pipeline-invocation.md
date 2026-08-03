@@ -43,7 +43,7 @@ flowchart LR
     B --> C[Courseforge course and package]
     C --> D[Trainforge retrieval and training data]
     D --> E[LibV2 private archive]
-    E -. explicit opt-in .-> F[LoRA training and evaluation]
+    E -. training selected .-> F[Adapter training and evaluation]
 ```
 
 Text equivalent: private material flows through SemantiK, Courseforge,
@@ -145,6 +145,38 @@ only with `--with-training`; an existing private LibV2 archive can use the
 dedicated `trainforge_train` workflow. Read [Licensing and ToS
 posture](../LICENSING.md) before synthesis or training.
 
+### Courseforge stage reruns
+
+Courseforge exposes focused aliases over the full workflow. Preview the full
+Courseforge sequence or one tier with private inputs:
+
+```bash
+ed4all run courseforge \
+  --corpus <PRIVATE_CORPUS_PATH> \
+  --course-name <PRIVATE_COURSE_NAME> \
+  --dry-run
+
+ed4all run courseforge-outline \
+  --corpus <PRIVATE_CORPUS_PATH> \
+  --course-name <PRIVATE_COURSE_NAME> \
+  --dry-run
+
+ed4all run courseforge-validate \
+  --corpus <PRIVATE_CORPUS_PATH> \
+  --course-name <PRIVATE_COURSE_NAME> \
+  --dry-run
+
+ed4all run courseforge-rewrite \
+  --corpus <PRIVATE_CORPUS_PATH> \
+  --course-name <PRIVATE_COURSE_NAME> \
+  --dry-run
+```
+
+Rewrite reruns can be narrowed with `--blocks`, `--block-ids`, and `--pages`.
+Use exact identifiers from the private outline; unknown values fail loudly.
+`--force` removes completed-phase skipping for the requested rerun. It is not
+needed for a normal checkpoint resume.
+
 ## 4. Convert material without building a course
 
 `convert` is the standalone SemantiK slice. It accepts a PDF, a directory of
@@ -188,9 +220,9 @@ must support that dispatch protocol; a harness without it can run deterministic
 scripts and validators directly but cannot execute the cross-agent local
 workflow.
 
-`--mode api` uses the selected SDK backend. The default API path uses the
-Anthropic SDK and requires `ANTHROPIC_API_KEY`. Provider and model overrides are
-listed by `ed4all run --help`. Provider selection does not waive the rules in
+`--mode api` uses the selected SDK backend and requires its credentials in the
+private operator environment. Provider and model overrides are listed by
+`ed4all run --help`. Provider selection does not waive the rules in
 [`docs/LICENSING.md`](../LICENSING.md), especially for training-pair synthesis.
 
 ```bash
@@ -222,6 +254,18 @@ Before removing `--dry-run`:
 4. Review provider and source licensing.
 5. Ensure enough local storage and accelerator capacity for the selected work.
 6. Start the run and retain its emitted run ID privately.
+
+Phase task and batch timeouts come from
+[`config/workflows.yaml`](../../config/workflows.yaml). A batch timeout requests
+a run-scoped graceful stop and gives active work a bounded drain window. If the
+work checkpoints during that window, the run becomes paused; an unresponsive
+batch is hard-cancelled and reported as a timeout. A task timeout uses a
+task-scoped stop request, drains to a unit boundary when possible, and retains
+the timeout/retry classification. Unit-level resume sidecars preserve completed
+work.
+
+Do not increase a timeout merely to hide a stalled dependency or invalid
+artifact. Diagnose the failing unit first.
 
 Use the same CLI and workflow contracts on any compatible host. Install
 architecture-appropriate accelerator dependencies as described under [Platform
@@ -280,8 +324,8 @@ When a blocking gate fails:
 4. resume or rerun the smallest supported scope; and
 5. rerun the same gate without lowering its threshold or severity.
 
-There is no supported silent-degradation path. A missing dependency, invalid
-artifact, unknown phase, or unsupported option should fail loudly.
+There is no supported silent fallback. A missing dependency, invalid artifact,
+unknown phase, unsupported option, or failed gate must remain visible.
 
 For a completed or failed private run, these read-only commands expose the
 recorded state:
