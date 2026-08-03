@@ -25,9 +25,9 @@ From the same source-grounded content, Ed4All can build a searchable course
 library, generate supervised fine-tuning (SFT) and preference (DPO) pairs, and
 optionally train a course-specific LoRA adapter.
 
-Its custom hybrid retrieval layer combines lexical BM25 and dense vector search
-with reciprocal rank fusion (RRF), helping applications answer questions from
-the course's indexed content.
+Its custom retrieval layer keeps lexical and semantic scores in their proper
+domains, fuses ranked evidence with Reciprocal Rank Fusion (RRF), refuses weak
+queries before generation, and verifies citations before returning an answer.
 
 **One source. Four useful outcomes.**
 
@@ -113,12 +113,13 @@ flowchart LR
     subgraph intelligence["Grounded course intelligence"]
         direction TB
         retrieval["BM25 + dense retrieval"]
-        rrf["Reciprocal rank fusion"]
-        answers["Course-grounded results"]
+        rrf["Custom rank-domain RRF"]
+        confidence["Evidence threshold<br/>refuse when weak"]
+        answers["Citation-grounded answers"]
         pairs["Trainforge<br/>SFT instructions + DPO preferences"]
         lora["Optional LoRA adapter"]
 
-        retrieval --> rrf --> answers
+        retrieval --> rrf --> confidence --> answers
         pairs -. operator opt-in .-> lora
     end
 
@@ -136,7 +137,7 @@ flowchart LR
     class source sourceNode;
     class semantik,html,courseforge,course buildNode;
     class imscc,library deliveryNode;
-    class retrieval,rrf,answers,pairs,lora intelligenceNode;
+    class retrieval,rrf,confidence,answers,pairs,lora intelligenceNode;
 ```
 
 The flow has three layers: Ed4All first converts source material into accessible
@@ -145,6 +146,29 @@ the archive supports hybrid retrieval while the grounded course content can
 supply training pairs. LoRA training is a separate operator opt-in. The LMS
 package, course archive, and retrieval system remain useful without training an
 adapter.
+
+## Retrieval that earns trust
+
+Ed4All does more than make course content searchable. It builds a private,
+course-scoped evidence system designed to show its work:
+
+- **Lexical precision + semantic reach.** BM25 catches exact terminology while
+  dense retrieval finds conceptually related passages.
+- **Custom rank-domain RRF.** Ed4All fuses rank positions instead of adding
+  incompatible BM25 and cosine scores, rewarding evidence found by both arms
+  without discarding strong single-arm results.
+- **Refusal before generation.** Weak retrieval stops before the answer model
+  can turn uncertainty into fluent guesswork.
+- **Citation-grounded answers.** Returned citations must resolve to passages
+  visible to the composer; unsupported answers are withheld.
+- **Useful with or without training.** The retrieval system is a complete
+  deliverable on its own and can also evaluate whether a LoRA adapter adds
+  value beyond the indexed course.
+
+The result is a local course intelligence layer that stays attached to the
+source: private indexes, reproducible ranking, inspectable evidence, and
+answers that can be traced back to the material. See the
+[retrieval architecture](docs/architecture/retrieval-and-serving.md).
 
 ## Quick start
 
