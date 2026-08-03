@@ -1,6 +1,6 @@
 """ITEM6 Phase 3 — dispatch-threshold calibration harness (CPU-only, no model).
 
-Loads ``SemantiK/scripts/calibrate_dispatch_thresholds.py`` by path and pins the
+Loads ``SemantiK/scripts/calibration/calibrate_dispatch_thresholds.py`` by path and pins the
 sweep math at two hand-computed grid points + the pre-ITEM6 (no role_top_k)
 non-zero exit contract + tau-monotonicity of dispatch_frac.
 """
@@ -12,7 +12,10 @@ import json
 from pathlib import Path
 
 _SCRIPT = (
-    Path(__file__).resolve().parents[2] / "scripts" / "calibrate_dispatch_thresholds.py"
+    Path(__file__).resolve().parents[2]
+    / "scripts"
+    / "calibration"
+    / "calibrate_dispatch_thresholds.py"
 )
 
 

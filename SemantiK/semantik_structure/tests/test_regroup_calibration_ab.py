@@ -1,5 +1,5 @@
 """Synthetic-region smoke for the ITEM1 regroup calibration harness
-(``SemantiK/scripts/regroup_calibration_ab.py``).
+(``SemantiK/scripts/calibration/regroup_calibration_ab.py``).
 
 CPU-only, no PDF, no cascade run beyond the ``block_resegment`` /
 ``pedagogical_units`` detector SoT. Feeds a hand-built ``region_provenance``
@@ -14,7 +14,10 @@ import importlib.util
 from pathlib import Path
 
 _HARNESS_PATH = (
-    Path(__file__).resolve().parents[2] / "scripts" / "regroup_calibration_ab.py"
+    Path(__file__).resolve().parents[2]
+    / "scripts"
+    / "calibration"
+    / "regroup_calibration_ab.py"
 )
 
 

@@ -1453,10 +1453,10 @@ _ESCALATION_SOURCE_TOKEN_CAP = 2048
 # trusted). Defaults are conservative (trust the head; dispatch rarely). The
 # ITEM6 persisted role distributions (region_provenance[].role_top_k) now make
 # these calibratable offline: sweep them against a run's structure_review
-# verdicts with SemantiK/scripts/calibrate_dispatch_thresholds.py (CPU-only, no
+# verdicts with SemantiK/scripts/calibration/calibrate_dispatch_thresholds.py (CPU-only, no
 # LLM/GPU). The constants stay 0.5 / 0.15 pending an owner-reviewed measured run.
 # ---------------------------------------------------------------------------
-# calibration harness: SemantiK/scripts/calibrate_dispatch_thresholds.py (ITEM6);
+# calibration harness: SemantiK/scripts/calibration/calibrate_dispatch_thresholds.py (ITEM6);
 # constants pending an owner-reviewed measured run.
 _AUTHORITATIVE_DISPATCH_TAU = 0.5  # top-1 confidence floor
 _AUTHORITATIVE_DISPATCH_DELTA = 0.15  # top1-top2 margin floor

@@ -41,8 +41,9 @@ Trainer layout: the seven council/theta head-trainers live under
 `train_semantic.py`, `train_merge_or_split.py`, `train_table_specialist.py`,
 `train_math_specialist.py`, `train_reasoner.py`). Three trainers remain under
 `SemantiK/scripts/` by design, not as an unfinished migration:
-`train_qwen_lora.py` is a thin CLI wrapper, while `train_figure_router.py` and
-`train_semantic_preservation.py` are substantial standalone trainers (the
+`scripts/training/train_qwen_lora.py` is a thin CLI wrapper, while
+`scripts/training/train_figure_router.py` and
+`scripts/training/train_semantic_preservation.py` are substantial standalone trainers (the
 theta cross-encoder + the figure-router head) that are run as one-off scripts
 rather than part of the council DAG.
 

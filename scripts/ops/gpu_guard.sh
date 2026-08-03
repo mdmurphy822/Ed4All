@@ -7,7 +7,7 @@
 #     Semantic's semantik_structure/qwen_specialists/training_lock.py flocks. Holding
 #     it here makes Semantic's (non-blocking) flock refuse, and vice-versa.
 #   * VRAM gate: refuse to start while memory.used > 1500 MiB — the SAME
-#     threshold Semantic's scripts/run_gpu_queue.sh uses. Catches ANY hog
+#     threshold Semantic's scripts/training/run_gpu_queue.sh uses. Catches ANY hog
 #     (e.g. SemantiK's training/train_structure.py, which does NOT take the flock).
 #
 # Primary entrypoint:

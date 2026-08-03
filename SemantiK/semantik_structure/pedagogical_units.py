@@ -41,7 +41,7 @@ def resolve_unit_regroup_mode() -> bool:
     ``SEMANTIK_STRUCTURE_CLEAN`` / ``SEMANTIK_READING_ORDER_FIX`` /
     ``SEMANTIK_SPECIALIST_BATCH``), NOT the truthy-set opt-in it used pre-ITEM1.
 
-    Calibrated 2026-07 (ITEM1 Phase A, ``scripts/regroup_calibration_ab.py``):
+    Calibrated 2026-07 (ITEM1 Phase A, ``scripts/calibration/regroup_calibration_ab.py``):
     0 dual-oracle over-merges, full elimination of the residual label-only-box
     population on an anchored corpus, and a byte-identical no-op on an
     anchor-free control. The merge additionally REQUIRES the reading-order fix

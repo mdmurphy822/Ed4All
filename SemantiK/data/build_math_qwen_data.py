@@ -9,7 +9,7 @@ to emit MathML tokens verbatim, including ``display`` / ``alttext``
 attributes).
 
 Splits use the same hash-bucket function as
-``scripts/build_semantic_preservation_dataset.py`` so an arxiv_id that
+``scripts/datasets/build_semantic_preservation_dataset.py`` so an arxiv_id that
 trains the semantic_preservation head won't appear in this builder's
 val/test (and vice versa). Cross-builder leakage would silently inflate
 held-out scores once the two heads run together.

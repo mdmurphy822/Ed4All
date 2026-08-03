@@ -262,17 +262,13 @@ motion is downward — every reorg below tightens the number it frees.
 ### 7.3 Reorg backlog (not yet executed)
 
 The cap freezes the problem; it does not fix it. Ordered by ratio of pain to
-risk. None of these are started.
+risk. Completed items are marked below.
 
-1. **`SemantiK/scripts/` — 70 loose, zero subdirs.** The worst container in
-   the tree, and 30 of the 70 are referenced by nothing else in the tracked
-   tree at all. Proposed taxonomy: `training/` (the three trainers
-   `SemantiK/CLAUDE.md` already documents as intentional exceptions, plus
-   `register_qwen_adapter.py`, `qwen_lora_to_gguf.py`), `eval/`, `smoke/`,
-   `calibration/`, `datasets/`, `analysis/`. `run_cascade_json.py` stays flat
-   — it is the cascade subprocess entry point, named at `SemantiK/CLAUDE.md`
-   §§ 174 and 195. **Sweep every tracked `SemantiK/scripts/` reference before
-   any `git mv`.**
+1. **`SemantiK/scripts/` — DONE.** The 70-file container now uses
+   `training/`, `eval/`, `smoke/`, `calibration/`, `datasets/`, and `analysis/`.
+   The runtime entry points `run_cascade_json.py`, `infer_pdf.py`, and
+   `pdf_to_html.py` stay flat intentionally. The tracked-reference sweep and
+   root-derivation updates landed with the move; the flat cap is now 3.
 2. **`Trainforge/` root — 19 loose modules** with one obvious cluster: nine
    `synthesis_*.py` plus `synthesize_training.py` want to be
    `Trainforge/synthesis/`. Costs a compatibility shim per moved module

@@ -460,7 +460,7 @@ def route_chart_binary(
 # time is what makes thresholding the probability meaningful.
 SUBTYPE_ABSTAIN_THRESHOLD: float = 0.55
 
-# Default head location (written by scripts/train_figure_router.py).
+# Default head location (written by scripts/training/train_figure_router.py).
 SUBTYPE_HEAD_PATH = "models/figure_router/v1/head.joblib"
 
 
@@ -491,7 +491,7 @@ def load_subtype_head(path: str = SUBTYPE_HEAD_PATH) -> Any:
     if not p.exists():
         raise FigureRouterHeadMissing(
             f"trained figure-router head not found at {p} — run "
-            "scripts/train_figure_router.py (requires the labeled candidate "
+            "scripts/training/train_figure_router.py (requires the labeled candidate "
             "sets, see data/figure_labels/README.md)"
         )
     try:

@@ -7,7 +7,7 @@ output to the cell-level input contract that
     * ``text``    — already-formatted bracketed neighbor string, byte-
                     equal to what the eval harness builds:
                     ``[ABOVE] {a} [LEFT] {l} [CELL] {c} [RIGHT] {r} [BELOW] {b}``
-                    (see ``scripts/eval_table_specialist_per_source.py``
+                    (see ``scripts/eval/eval_table_specialist_per_source.py``
                     ``_format_input``).
     * ``layout``  — 17-float vector matching the v5 training contract
                     frozen in ``models/council/table_specialist/final_v5/``.
@@ -141,7 +141,7 @@ def _neighbor(rows: list[list[str]], i: int, j: int) -> str:
 def _format_neighbored_text(rows: list[list[str]], i: int, j: int) -> str:
     """Build the bracketed [ABOVE]/[LEFT]/[CELL]/[RIGHT]/[BELOW] string.
 
-    Format string matches ``scripts/eval_table_specialist_per_source.py``
+    Format string matches ``scripts/eval/eval_table_specialist_per_source.py``
     ``_format_input`` exactly (lines 92-96). This string IS the model
     input — any drift breaks parity with the trained adapter.
     """

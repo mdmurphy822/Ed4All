@@ -594,8 +594,8 @@ class LlamaCppRuntime:
                 "Strict-by-default refuses to silently fall back to MockRuntime "
                 "(see feedback_no_silent_fallbacks.md).\n"
                 "To fix: train + convert + register the adapter with\n"
-                "  scripts/qwen_lora_to_gguf.py     (HF LoRA -> GGUF)\n"
-                "  scripts/register_qwen_adapter.py (write adapter_path into config.yaml)\n"
+                "  scripts/training/qwen_lora_to_gguf.py     (HF LoRA -> GGUF)\n"
+                "  scripts/training/register_qwen_adapter.py (write adapter_path into config.yaml)\n"
                 "To opt back into the deterministic mock, pass "
                 "runtime_mode='mock' (Stage 6 runner / assembler default)."
             )
@@ -936,8 +936,8 @@ def make_runtime(
                 "(see feedback_no_silent_fallbacks.md).\n"
                 f"Adapter status (from {cfg_path}):\n{status_block}\n"
                 "To fix: train + convert + register adapters with\n"
-                "  scripts/qwen_lora_to_gguf.py     (HF LoRA -> GGUF)\n"
-                "  scripts/register_qwen_adapter.py (write adapter_path into config.yaml)\n"
+                "  scripts/training/qwen_lora_to_gguf.py     (HF LoRA -> GGUF)\n"
+                "  scripts/training/register_qwen_adapter.py (write adapter_path into config.yaml)\n"
                 "To opt back into the deterministic mock for tests / smoke runs, "
                 "pass runtime_mode='mock' (the assembler / Stage 6 runner default)."
             )

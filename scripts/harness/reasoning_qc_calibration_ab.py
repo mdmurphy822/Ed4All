@@ -2,7 +2,7 @@
 """Offline CPU-only calibration harness for the Stage-9b reasoning-QC pass
 (``SEMANTIK_REASONING_QC``).
 
-Mirrors ``SemantiK/scripts/regroup_calibration_ab.py``: a measured-experiment
+Mirrors ``SemantiK/scripts/calibration/regroup_calibration_ab.py``: a measured-experiment
 arbiter that feeds the owner-gated shadow→on default-flip bar. It replays the
 SHADOW-mode ``reasoning_qc`` audit (``result['reasoning_qc']``, or the bridge
 JSON's forwarded arm) over one or more operator corpora and reports applied-op

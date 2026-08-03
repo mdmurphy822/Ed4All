@@ -4,14 +4,14 @@ Thin wrapper over :func:`semantik_structure.cascade.run_full_cascade` with
 ``return_html=True``. Runs the full v2 cascade (Stage 1..13) on ONE PDF and
 writes the assembled, WCAG-2.2-AA-gated HTML *document* to ``--out``.
 
-Why this exists: ``scripts/eval_full_cascade.py`` deliberately persists JSON
+Why this exists: ``scripts/eval/eval_full_cascade.py`` deliberately persists JSON
 reports carrying ``html_length`` only (to keep per-PDF reports small) — it does
 not write the HTML itself. This script persists the product: ``result["html"]``
 (a complete ``<!DOCTYPE html>`` document built by ``assembler/shell.py``)
 written verbatim.
 
 This script also doubles as the per-PDF VRAM-isolation worker for
-``scripts/eval_full_cascade.py`` (``--isolate-per-pdf``): when ``--out`` is
+``scripts/eval/eval_full_cascade.py`` (``--isolate-per-pdf``): when ``--out`` is
 omitted and ``--report`` is given, it runs the cascade with
 ``return_html=False`` (report-only mode) and, on exception, writes a JSON
 report carrying ``error`` + ``traceback`` + ``wall_elapsed`` before exiting

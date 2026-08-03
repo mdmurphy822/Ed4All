@@ -345,7 +345,7 @@ def load(model_dir: Path) -> SemanticPreservationModel | None:
     finetune = str(summary.get("finetune", "lora"))
 
     # Mirror the trainer: bf16 base, fp32 pooled cast before the head
-    # (scripts/train_semantic_preservation.py). deberta-v3-small's config
+    # (scripts/training/train_semantic_preservation.py). deberta-v3-small's config
     # defaults to torch_dtype=float16, which mismatches the fp32 head
     # ("mat1 and mat2 must have the same dtype, but got Half and Float");
     # the trainer used bf16 base + pooled.float().
@@ -460,7 +460,7 @@ def _load_linear_head(model_dir: Path, *, hidden_size: int) -> Any:
 
     # Phase 4b's training script emits ``heads.pt`` (a torch dict whose
     # ``head_score.state_dict`` key holds the linear head's state_dict).
-    # Verified by reading scripts/train_semantic_preservation.py:save_adapter
+    # Verified by reading scripts/training/train_semantic_preservation.py:save_adapter
     # — it does ``torch.save({"head_score.state_dict": ...}, "heads.pt")``.
     heads_pt = model_dir / "heads.pt"
     if heads_pt.exists():
@@ -532,7 +532,7 @@ def _load_calibration(calibration_path: Path) -> tuple[Any | None, float]:
 
     # Isotonic params: Phase 4b emits FLAT keys ``isotonic_X_thresholds`` and
     # ``isotonic_y_thresholds`` directly on the JSON root (verified by reading
-    # scripts/train_semantic_preservation.py:fit_calibration). We accept both
+    # scripts/training/train_semantic_preservation.py:fit_calibration). We accept both
     # the flat layout and a legacy nested ``isotonic: {x_thresholds, ...}``
     # layout; bounds default to [0, 1] since the trainer uses ``clip``.
     xs: list[float] | None = None

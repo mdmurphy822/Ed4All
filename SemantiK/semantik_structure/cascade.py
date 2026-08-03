@@ -2,7 +2,7 @@
 
 This module owns the end-to-end Stage 1..13 flow described in
 ``architecture.md`` §2. It is the canonical home of :func:`run_full_cascade`
-(previously embedded in ``scripts/run_stage12_smoke.py``); the smoke
+(previously embedded in ``scripts/smoke/run_stage12_smoke.py``); the smoke
 harness and the corpus-level eval driver both import it from here, and
 :mod:`semantik_structure.pipeline_v2` calls :func:`run_pipeline_v2` to expose
 the cascade as the v2 pipeline entry point.

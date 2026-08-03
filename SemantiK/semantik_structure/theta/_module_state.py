@@ -119,7 +119,7 @@ def _get_model() -> "SemanticPreservationModel | None":
                 f"dev/eval, set SEMANTIK_ALLOW_THETA_STUB=1 and accept that "
                 f"theta_score will include placeholder values. To fix "
                 f"the underlying issue, retrain the model (see "
-                f"scripts/train_semantic_preservation.py)."
+                f"scripts/training/train_semantic_preservation.py)."
             ) from exc
         logger.warning(
             "Theta semantic-preservation model failed to load from %s "

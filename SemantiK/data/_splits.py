@@ -1,7 +1,7 @@
 """Shared dataset split utility.
 
 Re-exports the canonical ``stable_split_for_id`` from
-``scripts/build_semantic_preservation_dataset.py`` so all dataset
+``scripts/datasets/build_semantic_preservation_dataset.py`` so all dataset
 builders that key on ``arxiv_id`` produce coherent splits — i.e. an
 arxiv_id that lands in val/test for the semantic_preservation
 cross-encoder lands in val/test here too. Without that coherence,

@@ -259,7 +259,7 @@ specialist requires expensive cell-level labels.
 | 1 | **BERT-MergeOrSplit** | multi-head | `same_logical_block` (binary) · `join_type` (space / newline_within_p / list_continuation) · `hyphen_repair` (binary) | text pair + 24-dim layout side-channel (font_size_a/b, font_size_delta, bold transition, y_gap_log1p, y_gap_lines, lhr, x0/x1_delta, width_ratio, x_overlap_frac, b_titlecase_frac, ...) + **deterministic features** (column_id, is_artifact) → LayerNorm → 64-dim MLP → concatenated with BERT pooled | flat-text + demoted regions |
 | 2 | **BERT-Structure** | multi-head | structural role · `is_heading` (binary) · heading-level (h1..h6, conditional on `is_heading=1`) · list-nesting | text + layout features | merged flat-text blocks |
 | 3 | **BERT-Semantic** | multi-head | doc-role (title/author/abstract/body/citation/footer/legal/metadata) · boilerplate flag | text + neighbor context + Structure top-k | merged flat-text blocks |
-| 4 | **BERT-TableDetector** *(RETIRED 2026-05-05 — folded into Structure as the `table_region` binary head; pdfplumber TableCandidate aggregation supplies the region grouping. Eval evidence: `scripts/eval_table_region_at_region_level.py`, P=R=F1=1.000 region-level on 170 arXiv held-out regions.)* | — | — | — | — |
+| 4 | **BERT-TableDetector** *(RETIRED 2026-05-05 — folded into Structure as the `table_region` binary head; pdfplumber TableCandidate aggregation supplies the region grouping. Eval evidence: `scripts/eval/eval_table_region_at_region_level.py`, P=R=F1=1.000 region-level on 170 arXiv held-out regions.)* | — | — | — | — |
 | 5 | **BERT-TableSpecialist** | multi-head | cell role + scope (header-col / header-row / both / data / span) · caption-association | layout + cell text + 2D neighbor cells + Structure top-k (soft hint) | detector-confirmed tables |
 | 6 | **BERT-MathDetector** | binary | is this region actually math? (vs. italicized prose / aligned symbols) | layout + glyph features | math-candidate regions |
 | 7 | **BERT-MathSpecialist** | multi-head | math-type (inline / display / numbered / multiline / matrix) · equation-number-association | text + glyph features (sub/sup, math-symbol density, fraction bars) | detector-confirmed math |
@@ -570,7 +570,7 @@ burden — and emits a per-dimension report.
 
 Composite weights, exit taus, and floors are **calibrated** (Plan 12 A3,
 2026-06-11): fitted on a 40-doc × 520-variant synthetic perturbation set
-(`scripts/calibrate_theta.py`; report
+(`scripts/calibration/calibrate_theta.py`; report
 `data/eval_reports/theta_calibration_v1.json`, fitted AUC 0.849 vs
 uniform 0.834) and locked in `theta/config.yaml` (`theta-config-2.0`)
 with full provenance. The numbers below are the calibrated values; the
@@ -930,7 +930,7 @@ The following are decided. Changes require an explicit revision of this doc.
   build), MathSpecialist. **BERT-TableDetector retired 2026-05-05**
   — folded into Structure as the `table_region` binary head;
   pdfplumber `TableCandidate` aggregation supplies the region grouping.
-  Eval evidence: `scripts/eval_table_region_at_region_level.py`,
+  Eval evidence: `scripts/eval/eval_table_region_at_region_level.py`,
   P=R=F1=1.000 region-level on 170 arXiv held-out regions
   (`data/eval/table_region_at_region.json`). With ImageSpecialist
   added 2026-05-04, the council target is **7 BERTs** total once

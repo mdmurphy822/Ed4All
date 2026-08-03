@@ -330,7 +330,7 @@ def process_pair_cpu(pair_path_str: str,
     from pegging a single core on align+chunk while workers idle.
 
     Assumes the PDF is either at pair["local_pdf"] (arXiv, form PDFs) or
-    in the prerender cache (Wikipedia, etc.). Run scripts/prerender_pairs.py
+    in the prerender cache (Wikipedia, etc.). Run scripts/datasets/prerender_pairs.py
     before this to warm the cache.
 
     Returns dict with either {features, html_blocks, targets, chunks} or
@@ -766,7 +766,7 @@ def main() -> None:
                     help="Skip the main-process GLM-OCR pre-pass; workers "
                          "still read glm_ocr_cache. Use when the cache is "
                          "already populated (from a prior run or a "
-                         "standalone scripts/glm_ocr_prepass.py).")
+                         "standalone scripts/datasets/glm_ocr_prepass.py).")
     ap.add_argument("--override-target-frac", type=float, default=0.20,
                     help="Target fraction of examples containing any override")
     ap.add_argument("--pair-floor", type=int, default=20,

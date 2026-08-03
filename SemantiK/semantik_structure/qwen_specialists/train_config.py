@@ -1,7 +1,7 @@
 """Per-adapter training hyperparameters for Phase 1.5 LoRA rollout.
 
 Single source of truth for max_len / epochs / lr / lora_*. The trainer
-CLI (``scripts/train_qwen_lora.py``) reads from this module and refuses
+CLI (``scripts/training/train_qwen_lora.py``) reads from this module and refuses
 to run an unknown adapter id.
 
 Sizing rationale (per architecture.md §4.2 + Plans/01 hyperparam grid):

@@ -1,7 +1,7 @@
 """Shared Qwen LoRA trainer core.
 
 One ``train(adapter_id, cfg, out_dir, ...)`` entry point that the CLI
-``scripts/train_qwen_lora.py`` calls. Mirrors the QLoRA + SFTTrainer
+``scripts/training/train_qwen_lora.py`` calls. Mirrors the QLoRA + SFTTrainer
 shape from ``train_reasoner.py`` but is parameterized per-adapter via
 ``ADAPTER_CONFIGS`` and applies completion-only loss masking via the
 chat-templated ``prompt_len`` precomputed in ``data_loader.build_dataset``.

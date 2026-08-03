@@ -442,7 +442,7 @@ def _load_heads(heads_path: Path, hidden_size: int) -> dict[str, Any]:
     layout_mlp = _build_layout_mlp(layout_dim, layout_hidden)
     layout_mlp.load_state_dict(state["layout_mlp.state_dict"])
     # Phase 3b post-hoc temperature calibration for the is_heading head.
-    # Fit on val.jsonl by ``scripts/calibrate_structure_heads.py``. T>1
+    # Fit on val.jsonl by ``scripts/calibration/calibrate_structure_heads.py``. T>1
     # means the head was over-confident and needs softening; T==1.0 (the
     # default) is a no-op for pre-calibration checkpoints. The runtime
     # plumbs this through to ``structure_graph.py`` as a SECOND signal

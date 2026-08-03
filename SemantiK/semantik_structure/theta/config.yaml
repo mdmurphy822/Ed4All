@@ -1,7 +1,7 @@
 # Theta configuration — versioned weights + thresholds.
 # Locked at model-release time per Plans/03_theta_investigation.md §7.3.
 # theta-config-2.0: weights, taus and floors are CALIBRATED by
-# scripts/calibrate_theta.py (Plan 12 A3) — see the calibration block
+# scripts/calibration/calibrate_theta.py (Plan 12 A3) — see the calibration block
 # below for dataset provenance. Do not hand-edit the numbers; re-run
 # the harness with --write-config instead.
 

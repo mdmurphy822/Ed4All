@@ -374,7 +374,7 @@ def metrics_from_collected(
 ) -> dict[str, object]:
     """Compute the per-head metric dict from already-collected (true, pred)
     label lists. Factored out of ``evaluate`` so an external benchmark harness
-    (``SemantiK/scripts/benchmark_structure_backbones.py``) can score every
+    (``SemantiK/scripts/calibration/benchmark_structure_backbones.py``) can score every
     backbone arm through the SAME metric path — apples-to-apples — without
     re-implementing (and silently drifting from) this formula. No behaviour
     change: ``evaluate`` delegates here."""

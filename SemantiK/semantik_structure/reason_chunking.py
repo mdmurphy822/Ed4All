@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 DEFAULT_PAGES_PER_CHUNK = 4
 DEFAULT_OVERLAP = 1
-# Must match the training-data sub_size (scripts/split_chunks.py: 30).
+# Must match the training-data sub_size (scripts/datasets/split_chunks.py: 30).
 # The training pipeline first builds 60-block chunks (build_qwen_data ->
 # densify) and then split_chunks halves every example into 30-block
 # sub-chunks so input+target fit the 2048-token trainer budget. Feeding

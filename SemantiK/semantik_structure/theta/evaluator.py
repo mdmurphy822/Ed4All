@@ -18,7 +18,7 @@ The composite formula loads its per-dimension weights from
 ``theta/config.yaml`` (:func:`semantik_structure.theta.types.load_theta_config`,
 cached). Since theta-config-2.0 those weights — and the TAU_* exit
 thresholds + per-dimension floors — are CALIBRATED against synthetic
-perturbations of WCAG-clean pair HTML (``scripts/calibrate_theta.py``;
+perturbations of WCAG-clean pair HTML (``scripts/calibration/calibrate_theta.py``;
 provenance in the config's ``calibration:`` block). A missing or
 invalid config raises :class:`~semantik_structure.theta.types.ThetaConfigError`
 — there is no silent fall-back to uniform weights.

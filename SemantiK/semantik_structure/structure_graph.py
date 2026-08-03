@@ -1577,7 +1577,7 @@ def build_structure_graph(
         plumbing) for emitting a heading region. Default 0.8. History:
         0.5 → 0.7 on 2026-05-06 (over-fire diagnostic); → 0.8 on
         2026-06-08 (Plans/11 Stage 2) after fitting the post-hoc
-        temperature T=1.6553 (`scripts/calibrate_structure_heads.py`,
+        temperature T=1.6553 (`scripts/calibration/calibrate_structure_heads.py`,
         ECE 0.0237→0.0042). On val.jsonl (n=12348) the calibrated 0.8
         operating point is P=0.926 / R=0.902 / F1=0.914 — the max-F1
         point, +5.4pt precision vs the old raw-0.7 (P=0.872 / R=0.935).
