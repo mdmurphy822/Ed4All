@@ -588,7 +588,7 @@ ed4all:html
 ed4all:summary
   a rdf:Property, owl:DatatypeProperty ;
   rdfs:label "summary" ;
-  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld 'summary'. Deterministic extractive summary from Trainforge/generators/summary_factory.py, used for dense-retrieval recall augmentation." ;
+  rdfs:comment "Deterministic extractive chunk summary from Trainforge/generators/postprocessing/summary_factory.py for dense-retrieval recall augmentation." ;
   rdfs:domain ed4all:Chunk ;
   rdfs:range xsd:string ;
   rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .

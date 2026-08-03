@@ -46,8 +46,36 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from lib.decision_capture import DecisionCapture
 from lib.ontology import concept_tagging as _concept_tagging
 from lib.ontology.slugs import canonical_slug
-from Trainforge.generators import summary_factory
+
+# Delegate chunk construction to Trainforge.chunker while retaining wrappers
+# and constant aliases as the public CourseProcessor compatibility surface.
+from Trainforge.chunker import (
+    CANONICAL_CHUNK_TYPES as _PKG_CANONICAL_CHUNK_TYPES,
+)
+from Trainforge.chunker import (
+    MAX_CHUNK_SIZE as _PKG_MAX_CHUNK_SIZE,
+)
+from Trainforge.chunker import (
+    MIN_CHUNK_SIZE as _PKG_MIN_CHUNK_SIZE,
+)
+from Trainforge.chunker import (
+    TARGET_CHUNK_SIZE as _PKG_TARGET_CHUNK_SIZE,
+)
+from Trainforge.chunker import (
+    ChunkerContext as _ChunkerContext,
+)
+from Trainforge.chunker import (
+    chunk_content as _pkg_chunk_content,
+)
+from Trainforge.chunker import (
+    chunk_text_block as _pkg_chunk_text_block,
+)
+from Trainforge.chunker import (
+    merge_small_sections as _pkg_merge_small_sections,
+)
+from Trainforge.generators.postprocessing import summary_factory
 from Trainforge.parsers.html_content_parser import HTMLContentParser, HTMLTextExtractor
+
 # The canonical chunker owns XPath resolution for chunk boundaries.
 from Trainforge.rag.boilerplate_detector import (
     BoilerplateConfig,
@@ -55,19 +83,6 @@ from Trainforge.rag.boilerplate_detector import (
     detect_repeated_ngrams,
 )
 from Trainforge.rag.wcag_canonical_names import canonicalize_sc_references
-
-# Delegate chunk construction to Trainforge.chunker while retaining wrappers
-# and constant aliases as the public CourseProcessor compatibility surface.
-from Trainforge.chunker import (
-    CANONICAL_CHUNK_TYPES as _PKG_CANONICAL_CHUNK_TYPES,
-    MAX_CHUNK_SIZE as _PKG_MAX_CHUNK_SIZE,
-    MIN_CHUNK_SIZE as _PKG_MIN_CHUNK_SIZE,
-    TARGET_CHUNK_SIZE as _PKG_TARGET_CHUNK_SIZE,
-    ChunkerContext as _ChunkerContext,
-    chunk_content as _pkg_chunk_content,
-    chunk_text_block as _pkg_chunk_text_block,
-    merge_small_sections as _pkg_merge_small_sections,
-)
 
 # Bumped whenever the semantics of quality_report.json metrics change.
 # v1: field-presence metrics (legacy).
@@ -393,12 +408,12 @@ def _assert_chunk_files_parity(jsonl_path: Path, json_path: Path) -> None:
     streaming JSONL and bundled JSON representations.
     """
     jsonl_chunks: List[Dict[str, Any]] = []
-    with open(jsonl_path, "r", encoding="utf-8") as f:
+    with open(jsonl_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
                 jsonl_chunks.append(json.loads(line))
-    with open(json_path, "r", encoding="utf-8") as f:
+    with open(json_path, encoding="utf-8") as f:
         json_chunks = json.load(f)
     if not isinstance(json_chunks, list):
         raise RuntimeError(
@@ -410,7 +425,7 @@ def _assert_chunk_files_parity(jsonl_path: Path, json_path: Path) -> None:
             f"chunks.json/.jsonl parity: line count mismatch — "
             f"jsonl={len(jsonl_chunks)} vs json={len(json_chunks)}"
         )
-    for idx, (a, b) in enumerate(zip(jsonl_chunks, json_chunks)):
+    for idx, (a, b) in enumerate(zip(jsonl_chunks, json_chunks, strict=False)):
         if a != b:
             raise RuntimeError(
                 f"chunks.json/.jsonl parity: chunk index {idx} differs "
@@ -1743,6 +1758,8 @@ class CourseProcessor:
         try:
             from lib.chunk_heading_sanity import (
                 is_heading_sanity_filter_enabled as _hs_enabled,
+            )
+            from lib.chunk_heading_sanity import (
                 repair_section_heading as _hs_repair,
             )
             if _hs_enabled():
@@ -1871,7 +1888,11 @@ class CourseProcessor:
         # bleed `co 15` / `to 03` artifact tokens into paraphrase prompts.
         from lib.ontology.concept_classifier import (
             canonicalize_alias as _canon_alias,
+        )
+        from lib.ontology.concept_classifier import (
             classify_concept as _classify,
+        )
+        from lib.ontology.concept_classifier import (
             is_droppable_class as _is_droppable,
         )
         from lib.ontology.slugs import strip_lo_ref_suffix as _strip_lo_ref
@@ -2105,7 +2126,7 @@ class CourseProcessor:
                 chunk["targeted_concepts"] = targeted
 
         # Per-chunk summary for dense-retrieval recall augmentation (v4).
-        # Deterministic extractive summary — see Trainforge/generators/summary_factory.py.
+        # Add a deterministic extractive summary for retrieval augmentation.
         chunk["summary"] = summary_factory.generate(
             chunk["text"],
             key_terms=chunk.get("key_terms"),
@@ -2592,7 +2613,6 @@ class CourseProcessor:
         jsonld_has_sections = bool(cf_meta and cf_meta.get("sections"))
         jsonld_has_blocks = bool(cf_meta and cf_meta.get("blocks"))
         jsonld_parse_failed = bool(item.get("_jsonld_parse_failed"))
-        section_match_found = False
 
         # prefer JSON-LD ``blocks[]`` when present.
         # Courseforge with ``COURSEFORGE_EMIT_BLOCKS=true`` emits a
@@ -2618,7 +2638,6 @@ class CourseProcessor:
                         break
                 if not matched_block:
                     continue
-                section_match_found = True
                 blk_content_type = matched_block.get("contentType") or matched_block.get(
                     "contentTypeLabel"
                 )
@@ -2690,7 +2709,6 @@ class CourseProcessor:
                         break
                 if not matched_sec:
                     continue
-                section_match_found = True
                 sec_content_type = matched_sec.get("contentType")
                 if sec_content_type:
                     content_type_label = sec_content_type
@@ -3505,7 +3523,6 @@ class CourseProcessor:
             if not raw:
                 continue
             tags = [t for t in (chunk.get("concept_tags") or []) if t]
-            first_tag = tags[0] if tags else None
             for entry in raw:
                 if isinstance(entry, dict):
                     statement = (entry.get("misconception") or "").strip()
@@ -3562,7 +3579,7 @@ class CourseProcessor:
                 if not concept_id and tags:
                     # token-overlap match — pick the tag whose
                     # slug-derived tokens most overlap the misconception
-                    # statement. Falls back to first_tag on no match.
+                    # statement and returns the first tag when no tokens overlap.
                     routed_tag = _route_misconception_to_tag(statement, tags)
                     if routed_tag:
                         concept_id = _make_concept_id(routed_tag, course_id)
@@ -3640,11 +3657,11 @@ class CourseProcessor:
         through to the in-process ``build_semantic_graph`` build so legacy
         corpora — and any stale phase-output handoff — degrade gracefully.
         """
+        from Trainforge.rag import named_graph_writer
         from Trainforge.rag.typed_edge_inference import (
             build_semantic_graph,
             build_semantic_graph_with_dataset,
         )
-        from Trainforge.rag import named_graph_writer
 
         # short-circuit on an upstream ``kind: "concept_semantic"``
         # graph. Only the semantic kind is adopted here — a ``kind:
@@ -4761,10 +4778,15 @@ class CourseProcessor:
         # --- module_sequence + bloom_progression --------------------------------
         module_meta: Dict[str, Dict[str, Any]] = {}
         module_order: List[str] = []
-        bloom_zero = lambda: {
-            "remember": 0, "understand": 0, "apply": 0,
-            "analyze": 0, "evaluate": 0, "create": 0,
-        }
+        def bloom_zero() -> Dict[str, int]:
+            return {
+                "remember": 0,
+                "understand": 0,
+                "apply": 0,
+                "analyze": 0,
+                "evaluate": 0,
+                "create": 0,
+            }
 
         for chunk in chunks:
             src = chunk.get("source") or {}
@@ -5560,8 +5582,8 @@ def main():
         # Trainforge/align_chunks.py::_resolve_align_model
         # so a single TRAINFORGE_ALIGN_CHUNKS_MODEL env var controls
         # both the standalone CLI and the embedded process_course path.
-        from Trainforge.align_chunks import main as align_main
         from Trainforge.align_chunks import _resolve_align_model
+        from Trainforge.align_chunks import main as align_main
         align_args = argparse.Namespace(
             corpus=args.output,
             objectives=args.objectives,

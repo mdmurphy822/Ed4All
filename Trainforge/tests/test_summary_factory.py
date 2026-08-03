@@ -1,4 +1,4 @@
-"""Tests for Trainforge/generators/summary_factory.py and the v4 chunk schema wiring."""
+"""Tests for the summary postprocessor and its v4 chunk-schema wiring."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.generators.summary_factory import (
+from Trainforge.generators.postprocessing.summary_factory import (
     SUMMARY_MAX_LEN,
     SUMMARY_MIN_LEN,
     generate,
@@ -166,7 +166,7 @@ class TestSchemaVersionStamping:
     def test_schema_version_stamped(self, regenerated_output):
         """Every chunk in the regenerated corpus carries schema_version == v4."""
         out_dir, expected_version = regenerated_output
-        # Phase 7c: process_course.py writes to imscc_chunks/.
+        # Course processing writes canonical chunk artifacts to imscc_chunks/.
         chunks_path = out_dir / "imscc_chunks" / "chunks.jsonl"
         assert chunks_path.exists(), f"expected chunks.jsonl at {chunks_path}"
 

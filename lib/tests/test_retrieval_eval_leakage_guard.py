@@ -19,8 +19,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TRAINFORGE = PROJECT_ROOT / "Trainforge"
 
@@ -35,7 +33,9 @@ _SYNTHESIS_PATHS = [
 # references; a bare mention in a comment is flagged too (cheap + conservative —
 # a comment referencing retrieval_eval in synthesis code is itself a smell).
 _FORBIDDEN_TOKENS = ("retrieval_eval", "gold_set.json", "gold_set", "refusal_probes")
-_DECONTAMINATION_GATE = TRAINFORGE / "generators" / "pair_decontamination.py"
+_DECONTAMINATION_GATE = (
+    TRAINFORGE / "generators" / "postprocessing" / "pair_decontamination.py"
+)
 
 
 def _iter_py_files(paths):
@@ -84,7 +84,10 @@ def test_only_decontamination_gate_reads_held_out_questions():
 
     synthesizer = TRAINFORGE / "synthesis" / "synthesize_training.py"
     source = synthesizer.read_text(encoding="utf-8")
-    assert "from Trainforge.generators.pair_decontamination import" in source
+    assert (
+        "from Trainforge.generators.postprocessing.pair_decontamination import"
+        in source
+    )
     assert "decontaminate_pairs(" in source
 
 

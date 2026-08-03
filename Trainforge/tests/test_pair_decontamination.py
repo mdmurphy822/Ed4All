@@ -1,9 +1,9 @@
-"""Regression net for ``Trainforge/generators/pair_decontamination.py`` (SFT S3).
+"""Regression net for the canonical pair-decontamination postprocessor.
 
 Layered gold-set decontamination:
   * exact-match drop;
   * sliding 8-gram overlap drop;
-  * embedding top-k drop (INJECTED fake embedder — no model, no network);
+  * embedding top-k drop through a deterministic embedder seam;
   * paraphrase hook drop (injected callable);
   * survivors stamped decontam_checked=True; quarantine carries reasons;
   * capture event fires; empty gold set => no drops (stamps only).
@@ -20,7 +20,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.generators.pair_decontamination import (  # noqa: E402
+from Trainforge.generators.postprocessing.pair_decontamination import (  # noqa: E402
     REASON_EMBED,
     REASON_EXACT,
     REASON_NGRAM,
@@ -88,8 +88,7 @@ def test_empty_gold_no_drops_but_stamps():
 
 
 class _FakeEmbedder:
-    """Deterministic fake: identical text -> identical unit vector; the two
-    gold questions and their paraphrase map near-parallel so cosine>=floor."""
+    """Map topic markers to vectors for deterministic similarity tests."""
 
     def encode(self, text: str) -> List[float]:
         t = text.lower()
@@ -101,7 +100,7 @@ class _FakeEmbedder:
 
 
 def test_embedding_layer_catches_paraphrase():
-    # No 8-gram overlap, but semantically the same as gold[0] per the fake.
+    # The vector seam identifies semantic overlap without an 8-gram match.
     para = _pair("Which quadratic expression solves a second-degree polynomial?")
     survivors, quarantined = decontaminate_pairs(
         [para], _GOLD, embedder=_FakeEmbedder(), embed_floor=0.9,
@@ -111,8 +110,7 @@ def test_embedding_layer_catches_paraphrase():
 
 
 def test_embedding_layer_off_by_default_offline():
-    # Same paraphrase pair survives when NO embedder is injected (layers 1-2
-    # only) — proving the embedding arm is opt-in / offline-safe.
+    # Without an embedder, the offline pass applies only lexical layers 1-2.
     para = _pair("Which quadratic expression solves a second-degree polynomial?")
     survivors, _ = decontaminate_pairs([para], _GOLD)
     assert len(survivors) == 1

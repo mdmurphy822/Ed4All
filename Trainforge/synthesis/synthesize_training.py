@@ -6803,7 +6803,7 @@ def run_synthesis(
         # course has no gold set, but survivors are still stamped so the
         # provenance field is honest.
         try:
-            from Trainforge.generators.pair_decontamination import (
+            from Trainforge.generators.postprocessing.pair_decontamination import (
                 decontaminate_pairs,
                 load_gold_questions,
             )
@@ -6815,7 +6815,7 @@ def run_synthesis(
             # ``rejected`` side is exactly the row that most needs a drop
             # trail, and the default text projection already screens
             # prompt + completion + chosen + rejected (see
-            # pair_decontamination._pair_fields), so a gold-set leak on the
+            # every pair field, so a gold-set leak on the
             # rejected side is caught, not just on chosen.
             preference_records, _quarantined_pref = decontaminate_pairs(
                 preference_records, _gold_questions, capture=capture,

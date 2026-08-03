@@ -228,7 +228,7 @@
     },
     "summary": {
       "type": "string",
-      "description": "Deterministic extractive summary from Trainforge/generators/summary_factory.py for dense-retrieval recall augmentation."
+      "description": "Deterministic extractive summary from Trainforge/generators/postprocessing/summary_factory.py for dense-retrieval recall augmentation."
     },
     "retrieval_text": {
       "type": "string",

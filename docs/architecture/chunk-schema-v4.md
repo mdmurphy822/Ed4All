@@ -5,11 +5,10 @@ This document records the durable chunk-v4 contract declared by
 [`ADR-001` Contract 1](ADR-001-pipeline-shape.md#contract-1--chunk-schema-versioning)
 for the versioning boundary.
 
-## Why v4 exists
+## Compatibility contract
 
-Three independent workers (B, D, E) each add fields to the chunk object.
-Bumping `CHUNK_SCHEMA_VERSION` once, collectively, avoids three silent
-coordinated-breakage releases. Every chunk at v4 carries:
+Chunk schema v4 adds retrieval enrichment and source provenance without
+removing or renaming earlier fields. Every v4 chunk carries:
 
 - `schema_version: "v4"` (string, stamped on every chunk by
   `CourseProcessor._create_chunk`)
@@ -24,30 +23,17 @@ Readers checking schema compatibility MUST read `chunk_schema_version` from
 MUST be updated to handle v4's new fields as optional — they are additive;
 none of v1–v3's fields have been removed or renamed.
 
-## Fields added at v4
-
-### Worker D — per-chunk summary and retrieval_text
+## Retrieval enrichment
 
 | Field | Type | Required? | Semantics |
 |---|---|---|---|
-| `summary` | string | yes (Worker D) | 2–3 sentences, 40–400 characters, never exceeds `len(text)`. Deterministic extractive generation; see `Trainforge/generators/summary_factory.py`. Used by retrieval to boost recall; measured by `Trainforge/rag/retrieval_benchmark.py`. |
-| `retrieval_text` | string | no | Optional. When present, composed as `summary + " " + key_terms_joined`. Emitted only when it demonstrably lifts recall@k on the held-out LO-statement question set. Absent in the initial Worker D PR unless the benchmark proves a positive delta; see the PR body for the measured lift. |
+| `summary` | string | yes | 2–3 sentences, 40–400 characters, never exceeding `len(text)`. Deterministic extractive generation lives in `Trainforge/generators/postprocessing/summary_factory.py`; retrieval benchmarks measure its recall effect. |
+| `retrieval_text` | string | no | When present, composed as `summary + " " + key_terms_joined`. Enable it only after the held-out retrieval benchmark demonstrates a positive recall delta. |
 
-Worker D's writer: `Trainforge/generators/summary_factory.py::generate`.
+Summary writer: `Trainforge/generators/postprocessing/summary_factory.py::generate`.
 Benchmark: `Trainforge/rag/retrieval_benchmark.py::run_benchmark`.
 Benchmark artifact location: `<output>/quality/retrieval_benchmark.json`.
 Activated via the `--benchmark-retrieval` CLI flag on `Trainforge/process_course.py`.
-
-### Worker B — (to be filled by Worker B)
-
-Worker B amends this section with the five flow-metrics field names it
-adds to chunks (if any land on the chunk object; several of B's metrics
-live on the quality report, not the chunk).
-
-### Worker E — (to be filled by Worker E)
-
-Worker E amends this section with the HTML XPath provenance field(s).
-Reserved name: `xpath_provenance` (scalar or list, TBD by Worker E).
 
 ## Field-level invariants
 
@@ -77,5 +63,4 @@ re-running `python -m Trainforge.process_course ...` against the same
 
 ## Versioning policy
 
-One bump per release train. No worker bumps `CHUNK_SCHEMA_VERSION`
-independently. See `ADR-001` Contract 1.
+One coordinated bump per release train. See `ADR-001` Contract 1.
