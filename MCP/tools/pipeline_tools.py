@@ -25765,9 +25765,19 @@ def _build_tool_registry() -> dict:
                             tool="courseforge",
                             streaming=True,
                         )
-                        _ex_provs = [
-                            e.get("provenance")
+                        _ex_alternatives = [
+                            {
+                                "option": str(e.get("provenance") or ""),
+                                "reason_rejected": (
+                                    "Retained as an advisory exemplar rather "
+                                    "than a canonical objective for "
+                                    f"{course_name!r}; relevance="
+                                    f"{e.get('relevance')}, source_course="
+                                    f"{e.get('source_course')!r}"
+                                ),
+                            }
                             for e in _ex_result.get("exemplars", [])
+                            if e.get("provenance")
                         ]
                         _ex_capture.log_decision(
                             decision_type="content_selection",
@@ -25792,7 +25802,7 @@ def _build_tool_registry() -> dict:
                                 f"{_ex_result.get('min_overlap')}, limit="
                                 f"{_ex_result.get('limit')}."
                             ),
-                            alternatives_considered=_ex_provs or None,
+                            alternatives_considered=_ex_alternatives or None,
                             confidence=0.5,
                         )
                     except Exception as _ex_cap_exc:  # noqa: BLE001

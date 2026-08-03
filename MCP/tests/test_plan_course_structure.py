@@ -813,3 +813,75 @@ def test_collect_lo_ids_dict_of_lists_shape():
     assert ids == [
         "TO-01", "TO-02", "CO-01", "CO-02", "CO-03", "CO-04",
     ], f"dict-of-lists chapter_objectives dropped CO-NN ids: {ids!r}"
+
+
+def test_library_exemplar_capture_uses_canonical_alternatives(
+    planner_fixture, monkeypatch, tmp_path
+):
+    """Enabled exemplar surfacing emits a strict-valid advisory decision."""
+    from lib import decision_capture as decision_capture_module
+
+    fx = planner_fixture
+    _write_semantik_html(
+        fx["staging_dir"] / "book.html",
+        ["RDF Graph Data Models", "RDF Triple Components"],
+    )
+    library_root = tmp_path / "library"
+    objectives_dir = (
+        library_root
+        / "courses/reference-graph-course/sources/objectives"
+    )
+    objectives_dir.mkdir(parents=True)
+    (objectives_dir / "synthesized_objectives.json").write_text(
+        json.dumps({
+            "terminal_objectives": [{
+                "id": "TO-01",
+                "statement": "Analyze RDF graph data models and triples.",
+                "bloom_level": "analyze",
+            }],
+            "chapter_objectives": [],
+        }),
+        encoding="utf-8",
+    )
+
+    real_capture = decision_capture_module.DecisionCapture
+
+    class RecordingCapture(real_capture):
+        instances = []
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.instances.append(self)
+
+    monkeypatch.setattr(
+        decision_capture_module, "DecisionCapture", RecordingCapture
+    )
+    monkeypatch.setenv("ED4ALL_OBJECTIVE_LIBRARY_EXEMPLARS", "true")
+    monkeypatch.setenv("ED4ALL_OBJECTIVE_LIBRARY_MIN_OVERLAP", "0")
+    monkeypatch.setenv("DECISION_VALIDATION_STRICT", "true")
+
+    result = asyncio.run(_call(
+        project_id=fx["project_id"],
+        staging_dir=str(fx["staging_dir"]),
+        libv2_root=str(library_root),
+    ))
+
+    assert result["success"]
+    exemplar_events = [
+        event
+        for capture in RecordingCapture.instances
+        for event in capture.decisions
+        if event.get("decision_type") == "content_selection"
+        and "cross-course objective exemplar" in event.get("decision", "")
+    ]
+    assert len(exemplar_events) == 1
+    alternatives = exemplar_events[0]["alternatives_considered"]
+    assert alternatives
+    assert all(
+        alternative["option"].startswith("libv2:")
+        and "advisory exemplar" in alternative["reason_rejected"]
+        and "relevance=" in alternative["reason_rejected"]
+        for alternative in alternatives
+    )
+    for capture in RecordingCapture.instances:
+        capture.close()
