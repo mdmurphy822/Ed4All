@@ -908,11 +908,11 @@ class AssessmentGenerator:
                 alternatives_considered=[
                     {
                         "option": "fewer_questions",
-                        "rejected_because": "Insufficient sampling",
+                        "reason_rejected": "Insufficient sampling",
                     },
                     {
                         "option": "more_questions",
-                        "rejected_because": "Exceeds optimal length",
+                        "reason_rejected": "Exceeds optimal length",
                     },
                 ],
             )
@@ -1257,8 +1257,8 @@ class AssessmentGenerator:
                 decision=f"Completed assessment {assessment_id} with {len(questions)} questions across {len(objective_ids)} objectives",
                 rationale=rationale,
                 alternatives_considered=[
-                    {"option": "all_mcq", "rejected_because": "Homogeneous formats allow test-taking strategies and fail to assess constructed response skills"},
-                    {"option": "all_essay", "rejected_because": "Excessive grading burden and potential learner fatigue without assessing factual recall"},
+                    {"option": "all_mcq", "reason_rejected": "Homogeneous formats allow test-taking strategies and fail to assess constructed response skills"},
+                    {"option": "all_essay", "reason_rejected": "Excessive grading burden and potential learner fatigue without assessing factual recall"},
                 ],
             )
 
@@ -1345,7 +1345,7 @@ class AssessmentGenerator:
         if self.capture:
             base_rationale = type_rationales.get(question_type, "because it aligns with the target cognitive level")
             alternatives = [
-                {"option": alt_type, "rejected_because": f"Less appropriate for {bloom_level} level cognitive demands"}
+                {"option": alt_type, "reason_rejected": f"Less appropriate for {bloom_level} level cognitive demands"}
                 for alt_type in available_types[1:3] if alt_type != question_type
             ]
 
@@ -3768,7 +3768,7 @@ class AssessmentGenerator:
                     f"of any single item on overall assessment outcomes."
                 ),
                 alternatives_considered=[
-                    {"option": "single_question", "rejected_because": "Single item provides insufficient reliability for competency determination"},
+                    {"option": "single_question", "reason_rejected": "Single item provides insufficient reliability for competency determination"},
                 ],
             )
 

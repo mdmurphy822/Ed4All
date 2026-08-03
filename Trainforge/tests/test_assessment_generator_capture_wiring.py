@@ -88,6 +88,39 @@ def test_capture_fires_on_generate_call():
     # Dynamic signals interpolated by ``assessment_generator.py:284-291``.
     assert "1 objectives" in rationale
     assert "Bloom" in rationale or "bloom" in rationale.lower()
+    alternatives = [
+        alternative
+        for event in capture.events
+        for alternative in event.get("alternatives_considered") or []
+    ]
+    assert alternatives
+    assert all(alternative.get("reason_rejected") for alternative in alternatives)
+    assert all("rejected_because" not in alternative for alternative in alternatives)
+
+
+def test_objective_capture_uses_canonical_alternative_key():
+    """Objective assessment alternatives conform to the decision schema."""
+    capture = _RecordingCapture()
+    gen = AssessmentGenerator(capture=capture, check_leaks=False)
+    gen.generate_for_objective(
+        objective={"id": "TO-01", "text": "Explain Topic X."},
+        bloom_level="remember",
+        source_chunks=_stub_chunks(),
+        question_count=1,
+    )
+
+    event = next(
+        item
+        for item in capture.events
+        if item["decision_type"] == "objective_assessment"
+    )
+    assert event["alternatives_considered"] == [{
+        "option": "single_question",
+        "reason_rejected": (
+            "Single item provides insufficient reliability for competency "
+            "determination"
+        ),
+    }]
 
 
 def test_capture_rationale_carries_dynamic_signals():

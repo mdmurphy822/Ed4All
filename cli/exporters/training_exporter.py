@@ -401,7 +401,10 @@ class TrainingExporter:
         # Create pair for each rejected alternative
         for alt in alternatives:
             alt_option = alt.get("option", "")
-            rejection_reason = alt.get("rejected_because", "")
+            # Persisted captures may predate the canonical decision schema key.
+            rejection_reason = alt.get(
+                "reason_rejected", alt.get("rejected_because", "")
+            )
 
             # Build rejected response
             rejected = f"{alt_option}\n\n(This was rejected because: {rejection_reason})"
