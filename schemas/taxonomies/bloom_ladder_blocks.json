@@ -26,7 +26,7 @@
     },
     "MisconceptionProbe": {
       "type": "object",
-      "description": "Per-rung misconception-card probe guidance. card_class / claim_class / correction_class are the existing (zero-touch) HTML class tokens the rewrite tier already emits -- see Courseforge/generators/_rewrite_provider.py and Trainforge/generators/synthesis_window_contract.py::_role_and_polarity.",
+      "description": "Per-rung misconception-card probe guidance. card_class / claim_class / correction_class are the existing (zero-touch) HTML class tokens the rewrite tier already emits -- see Courseforge/generators/rewrite/_rewrite_provider.py and Trainforge/generators/synthesis_window_contract.py::_role_and_polarity.",
       "required": ["probe_strategy", "card_class", "claim_class", "correction_class"],
       "additionalProperties": false,
       "properties": {

@@ -320,7 +320,7 @@ def test_within_round_concurrency_resolves_from_knob(monkeypatch):
     """The within-round pool width comes from
     resolve_rewrite_batched_concurrency() (the COURSEFORGE_REWRITE_CONCURRENCY
     override, else the low cloud default of 2)."""
-    from Courseforge.generators._rewrite_batch import (
+    from Courseforge.generators.rewrite._rewrite_batch import (
         resolve_rewrite_batched_concurrency,
     )
 

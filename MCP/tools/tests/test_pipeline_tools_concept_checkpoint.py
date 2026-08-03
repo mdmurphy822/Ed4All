@@ -123,7 +123,7 @@ def _run_phase(
     observe: bool = False,
 ) -> Dict[str, Any]:
     """Drive ``run_concept_extraction`` through Stage-3, hermetically."""
-    import Courseforge.generators._textbook_synthesis_provider as _tsp
+    import Courseforge.generators.outline._textbook_synthesis_provider as _tsp
 
     monkeypatch.setattr(_tsp, "TextbookSynthesisProvider", _FakeConceptProvider)
     # Stage-3 only runs when TEXTBOOK_SYNTHESIS_PROVIDER is set.

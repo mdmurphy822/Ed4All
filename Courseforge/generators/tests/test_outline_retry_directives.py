@@ -32,7 +32,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Courseforge.generators._outline_provider import (  # noqa: E402
+from Courseforge.generators.outline._outline_provider import (  # noqa: E402
     _OUTLINE_KIND_BOUNDS,
     _OUTLINE_SYSTEM_PROMPT,
     _RETRY_DIRECTIVE_PATTERNS,
@@ -169,7 +169,7 @@ def test_user_prompt_bounds_block_ends_with_bloom_level_enum():
     `_render_user_prompt` MUST include the bloom_level allowed-values
     line so the 7B-class default model sees the enum at the bottom of
     the bounds block (recency bias)."""
-    from Courseforge.generators._outline_provider import OutlineProvider
+    from Courseforge.generators.outline._outline_provider import OutlineProvider
     from blocks import Block
 
     # Construct a provider with deps stubbed (no LLM dispatch in this

@@ -2178,7 +2178,7 @@ def _render_block_fallback_html(
 
     LLM-free. Maps ``block.block_type`` to the SAME styled component classes
     the successful rewrite path emits (mirrors the P2 contracts in
-    ``Courseforge/generators/_rewrite_provider.py::_BLOCK_TYPE_OUTPUT_CONTRACTS``
+    ``Courseforge/generators/rewrite/_rewrite_provider.py::_BLOCK_TYPE_OUTPUT_CONTRACTS``
     and the CSS in ``Courseforge/scripts/rendering/generate_course.py::COURSEFORGE_CSS``).
     Wraps everything in a ``<section>`` carrying the same ``data-cf-*``
     attributes (content-type via the rewrite content-type table, teaching-role
@@ -7367,7 +7367,7 @@ async def _run_stage2_window_synthesis(
     from lib.objectives.objective_grounding import ground_candidates
     from lib.objectives.objective_dedup import dedup_candidates
     from lib.ontology.lo_backlink import backlink_cos_to_tos
-    from Courseforge.generators._textbook_synthesis_provider import (
+    from Courseforge.generators.outline._textbook_synthesis_provider import (
         _SYNTHESIS_NUM_CTX_ENV,
         _TEXTBOOK_SYNTHESIS_SYSTEM_PROMPT,
     )
@@ -7420,7 +7420,7 @@ async def _run_stage2_window_synthesis(
         _per_section = resolve_window_per_section()
         _max_cands: Optional[int] = None
         try:
-            from Courseforge.generators._textbook_synthesis_provider import (
+            from Courseforge.generators.outline._textbook_synthesis_provider import (
                 resolve_window_max_candidates as _resolve_window_max_cands,
             )
             _max_cands = _resolve_window_max_cands()
@@ -12896,7 +12896,7 @@ async def _run_post_rewrite_validation(**kwargs) -> str:
     # Canonical content-type enum — sourced from the single canonical taxonomy
     # (``schemas/taxonomies/content_type.json`` $defs.ChunkType) via
     # ``lib/validators/content_type.py::get_valid_chunk_types``, the SAME source
-    # ``Courseforge/generators/_outline_provider.py`` and
+    # ``Courseforge/generators/outline/_outline_provider.py`` and
     # ``Courseforge/router/inter_tier_gates.py::BlockContentTypeValidator`` use.
     # A stale hardcoded set here silently DROPPED ``content_type_label`` on any
     # block carrying a modern taxonomy value (e.g. ``explanation`` / ``key_idea``),
@@ -17315,7 +17315,7 @@ async def _run_content_generation_outline(**kwargs) -> str:
         # to a conservative fixed estimate so the budget still bounds the page.
         _sys_tokens = 8000
         try:
-            from Courseforge.generators._rewrite_provider import (  # noqa: PLC0415
+            from Courseforge.generators.rewrite._rewrite_provider import (  # noqa: PLC0415
                 _REWRITE_SYSTEM_PROMPT,
             )
 
@@ -21322,7 +21322,7 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
     # COURSEFORGE_REWRITE_CONCURRENCY is unset (explicit value always wins).
     _use_batch = False
     try:
-        from Courseforge.generators._rewrite_batch import (
+        from Courseforge.generators.rewrite._rewrite_batch import (
             resolve_rewrite_batch_mode as _rb_mode,
             resolve_rewrite_batched_concurrency as _rb_conc,
         )
@@ -24314,7 +24314,7 @@ def _build_tool_registry() -> dict:
             # plan §2.2 (Stage 1 is a single call → no per-chapter
             # degradation).
             if os.environ.get("TEXTBOOK_SYNTHESIS_PROVIDER", "").strip():
-                from Courseforge.generators._textbook_synthesis_provider import (
+                from Courseforge.generators.outline._textbook_synthesis_provider import (
                     TextbookSynthesisProvider,
                 )
                 from lib.decision_capture import DecisionCapture
@@ -24649,7 +24649,7 @@ def _build_tool_registry() -> dict:
                         chapters_synthesized = 0
                         _stage2_provider = None
                         try:
-                            from Courseforge.generators._textbook_synthesis_provider import (  # noqa: E501
+                            from Courseforge.generators.outline._textbook_synthesis_provider import (  # noqa: E501
                                 TextbookSynthesisProvider,
                                 TextbookSynthesisProviderError,
                             )
@@ -24816,7 +24816,7 @@ def _build_tool_registry() -> dict:
                     pass
                 elif _courseplanner_provider_env:
                     try:
-                        from Courseforge.generators._outliner_provider import (
+                        from Courseforge.generators.outline._outliner_provider import (
                             OutlinerProvider,
                             OutlinerProviderError,
                         )
@@ -29578,7 +29578,7 @@ def _build_tool_registry() -> dict:
 
             # --- construct the provider -----------------------------------
             try:
-                from Courseforge.generators._textbook_synthesis_provider import (
+                from Courseforge.generators.outline._textbook_synthesis_provider import (
                     TextbookSynthesisProvider,
                     TextbookSynthesisProviderError,
                 )
@@ -29613,7 +29613,7 @@ def _build_tool_registry() -> dict:
                 chunks_for_chapter as _chunks_for_chapter,
                 group_chunks_into_windows as _group_chunks_into_windows,
             )
-            from Courseforge.generators._textbook_synthesis_provider import (
+            from Courseforge.generators.outline._textbook_synthesis_provider import (
                 _SYNTHESIS_NUM_CTX_ENV as _CONCEPT_NUM_CTX_ENV,
                 _TEXTBOOK_SYNTHESIS_SYSTEM_PROMPT as _CONCEPT_SYSTEM_PROMPT,
             )

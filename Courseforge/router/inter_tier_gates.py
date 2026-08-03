@@ -172,7 +172,7 @@ def _is_unshipped_escalation_tombstone(block: Block) -> bool:
       it (no audit, not counted toward ``audited``, no issue emitted).
     * **Marker + non-empty content** — a *salvaged* block. The
       escalated-rewrite salvage path
-      (``Courseforge/generators/_rewrite_provider.py::_apply_rewrite_touch``
+      (``Courseforge/generators/rewrite/_rewrite_provider.py::_apply_rewrite_touch``
       via ``dataclasses.replace``, marker preserved) produces a block
       that carries a marker BUT also real content; per the design comment
       at ``pipeline_tools.py:5135`` it DOES ship and therefore MUST be

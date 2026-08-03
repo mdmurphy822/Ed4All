@@ -203,7 +203,7 @@ def _extract_assessment_surface(block: Block) -> Optional[str]:
 
     Outline-tier assessment_item blocks carry ``stem`` + ``answer_key``
     in ``content`` per the per-block-type JSON schema in
-    ``Courseforge/generators/_outline_provider.py:411-415``.
+    ``Courseforge/generators/outline/_outline_provider.py:411-415``.
     Rewrite-tier blocks carry an HTML string in ``content``; we strip
     tags via the same lightweight helper as the inter_tier_gates
     adapters and use the full visible text as the embedding surface.

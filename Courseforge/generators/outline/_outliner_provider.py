@@ -117,7 +117,7 @@ _DEFAULT_TEMPERATURE = 0.2
 
 # Compact system prompt — the prompt body has to fit a 7B-class local
 # model's instruction-following window. Mirrors the ≤80-word terseness
-# of ``Courseforge/generators/_outline_provider.py::_OUTLINE_SYSTEM_PROMPT``.
+# of ``Courseforge/generators/outline/_outline_provider.py::_OUTLINE_SYSTEM_PROMPT``.
 _OUTLINER_SYSTEM_PROMPT = (
     "You are a Courseforge course-outliner authoring canonical learning "
     "objectives for a single course from its textbook structure. Emit "

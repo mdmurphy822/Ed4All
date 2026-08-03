@@ -1,7 +1,7 @@
 """Tests for the multi-block BATCHED rewrite primitive (rate-limit defeat).
 
 Exercises the Courseforge-native batch envelope + packer + flag resolvers in
-``Courseforge/generators/_rewrite_batch.py`` (mirrors the SemantiK Stage-6
+``Courseforge/generators/rewrite/_rewrite_batch.py`` (mirrors the SemantiK Stage-6
 batch shape but with CF_BLOCK keys + per-block rewrite max_tokens budget).
 """
 
@@ -17,7 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Courseforge.generators._rewrite_batch import (  # noqa: E402
+from Courseforge.generators.rewrite._rewrite_batch import (  # noqa: E402
     CF_BLOCK_CLOSE,
     CF_BLOCK_OPEN,
     DEFAULT_OUTPUT_TOKEN_CAP,

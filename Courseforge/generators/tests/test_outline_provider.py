@@ -51,7 +51,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Courseforge.generators._outline_provider import (  # noqa: E402
+from Courseforge.generators.outline._outline_provider import (  # noqa: E402
     DEFAULT_MODEL,
     DEFAULT_PROVIDER,
     ENV_MAX_TOKENS,
@@ -223,7 +223,7 @@ def test_registry_seat_constructs_and_stamps_valid_touch(monkeypatch):
     admits now constructs the outline tier without a ValueError, and its
     Touch provenance collapses to the seat's registry ``provenance_provider``
     (``groq`` → ``together``) so Touch validation passes."""
-    from Courseforge.generators._outline_provider import _touch_provenance
+    from Courseforge.generators.outline._outline_provider import _touch_provenance
 
     monkeypatch.setenv("TOGETHER_API_KEY", "tk")
     p = OutlineProvider(

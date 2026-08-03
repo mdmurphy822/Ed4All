@@ -1,7 +1,7 @@
 """Wave 1.5 W1.5.A — outline-tier ``key_claims`` schema bump regression.
 
 Pins the back-compat ``oneOf`` contract on
-``Courseforge.generators._outline_provider._BLOCK_TYPE_JSON_SCHEMAS``:
+``Courseforge.generators.outline._outline_provider._BLOCK_TYPE_JSON_SCHEMAS``:
 
 - legacy ``List[str]`` (every existing fixture + every existing corpus
   emit) MUST keep validating clean against the bumped schema.
@@ -33,7 +33,7 @@ if str(_SCRIPTS_DIR) not in sys.path:
 
 from blocks import Block  # noqa: E402
 
-from Courseforge.generators._outline_provider import (  # noqa: E402
+from Courseforge.generators.outline._outline_provider import (  # noqa: E402
     _BLOCK_TYPE_JSON_SCHEMAS,
     _CONTENT_TYPE_ENUM,
     _OUTLINE_KIND_BOUNDS,

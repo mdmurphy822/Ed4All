@@ -516,7 +516,7 @@ def test_outline_resolves_source_chunks_from_grounded_objectives(
 
     # Contract verification: _block_source_chunk_ids reads id/chunk_id and
     # must return the resolved ids for a resolved block.
-    from Courseforge.generators._outline_provider import (
+    from Courseforge.generators.outline._outline_provider import (
         _block_source_chunk_ids,
     )
     resolved_block = next(

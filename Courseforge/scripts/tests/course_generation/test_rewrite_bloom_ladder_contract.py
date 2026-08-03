@@ -3,7 +3,7 @@ fit-window registration.
 
 ``ED4ALL_BLOOM_LADDER`` (default OFF) gates an ADDITIVE suffix onto the
 existing rewrite-tier misconception output contract
-(``Courseforge/generators/_rewrite_provider.py::_BLOCK_TYPE_OUTPUT_CONTRACTS
+(``Courseforge/generators/rewrite/_rewrite_provider.py::_BLOCK_TYPE_OUTPUT_CONTRACTS
 ["misconception"]``): when a ``misconception`` block carries a resolvable
 ``bloom_level`` (the ladder rung), the rewrite-tier prompt is told to (a)
 stamp ``data-cf-bloom-level="<rung>"`` on the ``misconception-card`` wrapper
@@ -58,7 +58,7 @@ _SCRIPTS_DIR = Path(__file__).resolve().parents[2]
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
-from Courseforge.generators._rewrite_provider import (  # noqa: E402
+from Courseforge.generators.rewrite._rewrite_provider import (  # noqa: E402
     ENV_PROVIDER,
     RewriteProvider,
     _BLOCK_TYPE_OUTPUT_CONTRACTS,

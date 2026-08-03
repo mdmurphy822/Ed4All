@@ -19,7 +19,7 @@ Items covered:
 
 import pytest
 
-import Courseforge.generators._rewrite_provider as rp
+import Courseforge.generators.rewrite._rewrite_provider as rp
 
 
 # ---------------------------------------------------------------------------

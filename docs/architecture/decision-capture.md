@@ -102,7 +102,7 @@ Each row below was verified: the emitting module exists, emits the named `decisi
 | `MCP/tools/pipeline_tools.py::_emit_block_resegment_capture` (same seam) | `block_resegment`, one per converted doc when the re-partition pass fired | `lib/semantik/tests/test_structure_review_bridge.py` |
 | `lib/retrieval/groundedness.py::score_groundedness` (`ED4ALL_GROUNDEDNESS_COMPUTATIONAL`) | `groundedness_computational_check` | `lib/tests/test_groundedness.py` |
 | `Trainforge/generators/assessment_generator.py` (`TRAINFORGE_COGNITIVE_TASK_TYPE`) | `cognitive_task_type_detection` | `Trainforge/tests/test_assessment_generator_capture_wiring.py` |
-| `LibV2/tools/libv2/model_eval_bridge.py::run_fresh_eval` | `fresh_eval_invocation` | `LibV2/tools/libv2/tests/test_model_eval_bridge.py` |
+| `LibV2/tools/libv2/evaluation/model_bridge.py::run_fresh_eval` | `fresh_eval_invocation` | `LibV2/tools/libv2/tests/test_model_eval_bridge.py` |
 | `Trainforge/generators/_curriculum_provider.py` (consumed by `Trainforge/align_chunks.py::classify_teaching_roles`) | `curriculum_alignment_call` | `Trainforge/tests/test_curriculum_alignment_provider.py` |
 | `Trainforge/generators/_local_provider.py`, `_together_provider.py`, `_claude_session_provider.py` (all over `_base_synthesis_provider.py`) | `synthesis_provider_call` | `Trainforge/tests/test_local_synthesis_provider.py`, `test_together_synthesis_provider.py`, `test_claude_session_provider.py`, `test_base_synthesis_provider.py`, `test_synthesis_provider.py` |
 | `Trainforge/generators/_openai_compatible_client.py::OpenAICompatibleClient` | `llm_chat_call`, one per call when wired with a capture | `Trainforge/tests/test_openai_compatible_client.py` |

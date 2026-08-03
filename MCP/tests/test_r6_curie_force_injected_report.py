@@ -26,7 +26,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from MCP.core.workflow_runner import WorkflowRunner  # noqa: E402
-from Courseforge.generators._rewrite_provider import (  # noqa: E402
+from Courseforge.generators.rewrite._rewrite_provider import (  # noqa: E402
     _force_inject_curies,
     html_has_forced_curie_marker,
 )

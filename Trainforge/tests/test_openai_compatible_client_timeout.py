@@ -108,7 +108,7 @@ def test_garbage_env_falls_back_to_default(monkeypatch, bad):
 def test_rewrite_provider_local_timeout_is_generous(monkeypatch):
     monkeypatch.delenv(ENV_REQUEST_TIMEOUT, raising=False)
     monkeypatch.delenv("COURSEFORGE_REWRITE_MODEL", raising=False)
-    from Courseforge.generators._rewrite_provider import RewriteProvider
+    from Courseforge.generators.rewrite._rewrite_provider import RewriteProvider
 
     provider = RewriteProvider(provider="local")
     assert provider._oa_client is not None
@@ -120,7 +120,7 @@ def test_rewrite_provider_local_timeout_is_generous(monkeypatch):
 def test_outline_provider_local_timeout_is_generous(monkeypatch):
     monkeypatch.delenv(ENV_REQUEST_TIMEOUT, raising=False)
     monkeypatch.delenv("COURSEFORGE_OUTLINE_MODEL", raising=False)
-    from Courseforge.generators._outline_provider import OutlineProvider
+    from Courseforge.generators.outline._outline_provider import OutlineProvider
 
     provider = OutlineProvider(provider="local")
     assert provider._oa_client is not None
@@ -130,7 +130,7 @@ def test_outline_provider_local_timeout_is_generous(monkeypatch):
 
 def test_rewrite_provider_env_overrides_default(monkeypatch):
     monkeypatch.setenv(ENV_REQUEST_TIMEOUT, "450")
-    from Courseforge.generators._rewrite_provider import RewriteProvider
+    from Courseforge.generators.rewrite._rewrite_provider import RewriteProvider
 
     provider = RewriteProvider(provider="local")
     assert provider._oa_client is not None
@@ -139,7 +139,7 @@ def test_rewrite_provider_env_overrides_default(monkeypatch):
 
 def test_outline_provider_explicit_kwarg_wins(monkeypatch):
     monkeypatch.setenv(ENV_REQUEST_TIMEOUT, "450")
-    from Courseforge.generators._outline_provider import OutlineProvider
+    from Courseforge.generators.outline._outline_provider import OutlineProvider
 
     provider = OutlineProvider(provider="local", timeout=88.0)
     assert provider._oa_client is not None
@@ -148,7 +148,7 @@ def test_outline_provider_explicit_kwarg_wins(monkeypatch):
 
 def test_rewrite_provider_garbage_env_falls_back_to_300(monkeypatch):
     monkeypatch.setenv(ENV_REQUEST_TIMEOUT, "garbage")
-    from Courseforge.generators._rewrite_provider import RewriteProvider
+    from Courseforge.generators.rewrite._rewrite_provider import RewriteProvider
 
     provider = RewriteProvider(provider="local")
     assert provider._oa_client is not None

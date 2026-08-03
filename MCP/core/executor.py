@@ -1200,7 +1200,7 @@ class TaskExecutor:
         #
         #   COURSEFORGE_PROVIDER        -> content-generator
         #   COURSEPLANNER_PROVIDER      -> course-outliner, via
-        #       ``Courseforge.generators._outliner_provider.OutlinerProvider``
+        #       ``Courseforge.generators.outline._outliner_provider.OutlinerProvider``
         #   TRAINFORGE_ASSESSMENT_PROVIDER -> assessment-generator, via
         #       ``Trainforge.generators._assessment_provider.AssessmentGeneratorProvider``
         #

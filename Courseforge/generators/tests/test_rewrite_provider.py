@@ -39,7 +39,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Courseforge.generators._rewrite_provider import (  # noqa: E402
+from Courseforge.generators.rewrite._rewrite_provider import (  # noqa: E402
     DEFAULT_PROVIDER,
     ENV_MAX_TOKENS,
     ENV_PROVIDER,
@@ -427,7 +427,7 @@ def test_force_injected_block_carries_durable_signals(monkeypatch):
       (the in-memory / JSON-LD audit-chain carrier) instead of the
       clean-path ``pedagogical_depth``.
     """
-    from Courseforge.generators._rewrite_provider import (
+    from Courseforge.generators.rewrite._rewrite_provider import (
         html_has_forced_curie_marker,
         _TOUCH_PURPOSE_CURIE_FORCED,
     )
@@ -460,7 +460,7 @@ def test_clean_rewrite_carries_no_force_injected_signals(monkeypatch):
     force-injection) carries neither the ``data-cf-curie-forced``
     marker nor the ``curie_force_injected`` Touch purpose; the rewrite
     Touch keeps the clean-path ``pedagogical_depth`` purpose."""
-    from Courseforge.generators._rewrite_provider import (
+    from Courseforge.generators.rewrite._rewrite_provider import (
         html_has_forced_curie_marker,
     )
 
@@ -637,7 +637,7 @@ def test_m3_block_with_zero_used_terms_keeps_one_curie(monkeypatch):
 
 
 def html_has_forced_curie_marker_local(html: str) -> bool:
-    from Courseforge.generators._rewrite_provider import (
+    from Courseforge.generators.rewrite._rewrite_provider import (
         html_has_forced_curie_marker,
     )
 
@@ -1126,7 +1126,7 @@ def test_registry_seat_constructs_and_stamps_valid_touch(monkeypatch):
     self-stamped Touch collapses to the seat's registry ``provenance_provider``
     (``groq`` → ``together``) so Touch validation passes — healing the
     router-allowlist / tier-enforcement split-brain."""
-    from Courseforge.generators._rewrite_provider import (
+    from Courseforge.generators.rewrite._rewrite_provider import (
         RewriteProvider,
         _touch_provenance,
     )
@@ -1145,7 +1145,7 @@ def test_openai_compatible_alias_collapses_to_local():
     """The legacy ``openai_compatible`` alias collapses to ``local`` at
     constructor entry so a standalone construction matches the
     router-mediated one (and never hits the base's UnknownEndpoint branch)."""
-    from Courseforge.generators._rewrite_provider import RewriteProvider
+    from Courseforge.generators.rewrite._rewrite_provider import RewriteProvider
 
     class _FakeOA:
         model = "fake-model"
@@ -1158,7 +1158,7 @@ def test_openai_compatible_alias_collapses_to_local():
 def test_unknown_provider_still_fails_fast():
     """An unknown provider name is still rejected at construction (fail-fast),
     now via the base's registry-derived allow-list ValueError."""
-    from Courseforge.generators._rewrite_provider import RewriteProvider
+    from Courseforge.generators.rewrite._rewrite_provider import RewriteProvider
 
     class _FakeOA:
         model = "fake-model"

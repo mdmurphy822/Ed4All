@@ -139,7 +139,7 @@ _DEFAULT_TEMPERATURE = 0.3
 
 
 # Canonical Bloom enum mirrored from
-# ``Courseforge/generators/_outliner_provider.py::_BLOOM_LEVEL_ENUM``
+# ``Courseforge/generators/outline/_outliner_provider.py::_BLOOM_LEVEL_ENUM``
 # and ``schemas/knowledge/courseforge_jsonld_v1.schema.json::bloomLevel``.
 _BLOOM_LEVEL_ENUM: Tuple[str, ...] = (
     "remember",
@@ -166,7 +166,7 @@ _QUESTION_TYPE_ENUM: Tuple[str, ...] = (
 
 # Compact system prompt — the prompt body has to fit a 7B-class local
 # model's instruction-following window. Mirrors the ≤80-word terseness
-# of ``Courseforge/generators/_outliner_provider.py::_OUTLINER_SYSTEM_PROMPT``.
+# of ``Courseforge/generators/outline/_outliner_provider.py::_OUTLINER_SYSTEM_PROMPT``.
 # The ``evidence_quote`` directive lands in the user prompt rather
 # than the system prompt so the per-question shape is in close
 # proximity to the example payload (smaller models follow that more

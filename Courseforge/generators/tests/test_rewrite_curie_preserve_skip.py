@@ -28,7 +28,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Courseforge.generators._rewrite_provider import (  # noqa: E402
+from Courseforge.generators.rewrite._rewrite_provider import (  # noqa: E402
     ENV_CURIE_PRESERVE_SKIP_WHEN_POSTMINT,
     ENV_PROVIDER,
     MAX_PARSE_RETRIES,
@@ -36,7 +36,7 @@ from Courseforge.generators._rewrite_provider import (  # noqa: E402
     _TOUCH_PURPOSE_CURIE_FORCED,
     resolve_curie_preserve_skip_when_postmint,
 )
-from Courseforge.generators._rewrite_fit_window import (  # noqa: E402
+from Courseforge.generators.rewrite._rewrite_fit_window import (  # noqa: E402
     ENV_CURIE_DETERMINISTIC,
 )
 from blocks import Block  # noqa: E402

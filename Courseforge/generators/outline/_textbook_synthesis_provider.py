@@ -2614,7 +2614,7 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
         # Lazy import to avoid pulling the outline-tier module at import time of
         # this provider; the GBNF string is the only symbol reused.
         try:
-            from Courseforge.generators._outline_provider import (
+            from Courseforge.generators.outline._outline_provider import (
                 _GENERIC_JSON_GBNF,
             )
         except Exception:  # noqa: BLE001 — GBNF fallback is optional

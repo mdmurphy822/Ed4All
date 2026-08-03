@@ -160,6 +160,6 @@ The reference implementation makes building your own easier, not redundant: the 
 
 - `LibV2/tools/libv2/retriever.py` — BM25 + metadata filters + rationale.
 - `LibV2/tools/libv2/retrieval_scoring.py` — three metadata-aware boost functions.
-- `LibV2/tools/libv2/eval_harness.py` — `evaluate_retrieval()` + the pre-existing `RetrievalEvaluator`.
+- `LibV2/tools/libv2/evaluation/harness.py` — `evaluate_retrieval()` + the pre-existing `RetrievalEvaluator`.
 - `LibV2/tools/libv2/cli.py` — `retrieve` and `retrieval-eval` subcommands.
 - `LibV2/tools/libv2/tests/test_eval_harness_retrieval.py` — a three-chunk synthetic fixture (see `_write_fixture`) shows the expected `gold_queries.jsonl` shape end-to-end. Users curate their own per-course queries locally; no course-specific query file ships in this repo.

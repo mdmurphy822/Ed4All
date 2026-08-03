@@ -101,7 +101,7 @@ _CONTENT_TYPE_SCHEMA_PATH = (
 _ENFORCE_CONTENT_TYPE_ENV = "TRAINFORGE_ENFORCE_CONTENT_TYPE"
 _ENFORCE_TRUTHY_VALUES = frozenset({"1", "true", "yes", "on"})
 #: Falsey tokens for the DEFAULT-ON page-MathJax gate (parse-with-fallback,
-#: mirroring ``Courseforge/generators/_rewrite_fit_window.py::_FALSEY``).
+#: mirroring ``Courseforge/generators/rewrite/_rewrite_fit_window.py::_FALSEY``).
 _MATHJAX_FALSEY_VALUES = frozenset({"0", "false", "no", "off"})
 _PAGE_MATHJAX_ENV = "COURSEFORGE_PAGE_MATHJAX"
 _CONTENT_TYPE_DEFAULT = "explanation"
@@ -472,7 +472,7 @@ def _page_mathjax_enabled() -> bool:
     (``0``/``false``/``no``/``off``, case-insensitive) omit the include
     byte-identically; unset / garbage / truthy → on (parse-with-fallback,
     mirroring the default-ON rewrite-tier resolvers in
-    ``Courseforge/generators/_rewrite_fit_window.py``).
+    ``Courseforge/generators/rewrite/_rewrite_fit_window.py``).
     """
     return os.getenv(_PAGE_MATHJAX_ENV, "").strip().lower() not in _MATHJAX_FALSEY_VALUES
 

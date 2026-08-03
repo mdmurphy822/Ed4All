@@ -189,14 +189,14 @@ def run_stage3_concept_synthesis(
         return None
 
     # --- construct the provider --------------------------------------------
-    from Courseforge.generators._textbook_synthesis_provider import (
+    from Courseforge.generators.outline._textbook_synthesis_provider import (
         TextbookSynthesisProviderError,
     )
 
     if provider_factory is not None:
         provider = provider_factory()
     else:
-        from Courseforge.generators._textbook_synthesis_provider import (
+        from Courseforge.generators.outline._textbook_synthesis_provider import (
             TextbookSynthesisProvider,
         )
         provider = TextbookSynthesisProvider(capture=None)

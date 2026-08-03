@@ -135,7 +135,7 @@ DEFAULT_REGEN_BUDGET = 3
 DEFAULT_MAX_CHUNKS = 8
 
 #: Truthy / falsey tokens (case-insensitive) for the boolean env resolvers.
-#: Mirrors ``Courseforge/generators/_rewrite_fit_window.py``.
+#: Mirrors ``Courseforge/generators/rewrite/_rewrite_fit_window.py``.
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 _FALSEY = frozenset({"0", "false", "no", "off"})
 

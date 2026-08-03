@@ -115,7 +115,7 @@ def _outline_payload(
     type ``required`` list so the only contract under test is the
     ``key_claims`` arm of the ``oneOf``.
     """
-    from Courseforge.generators._outline_provider import _OUTLINE_KIND_BOUNDS
+    from Courseforge.generators.outline._outline_provider import _OUTLINE_KIND_BOUNDS
 
     section_min, _section_max = (
         _OUTLINE_KIND_BOUNDS.get(block_type, {}).get("section_skeleton", (0, 0))
@@ -255,13 +255,13 @@ def test_1_schema_validity_both_shapes_and_mixed_rejection() -> None:
     Replicates the per-block-type sweep from
     ``Courseforge/router/tests/test_outline_provider_schema.py`` so a
     future rename of that file can't silently disable this gate. Uses
-    ``Courseforge.generators._outline_provider._build_block_outline_schema``
+    ``Courseforge.generators.outline._outline_provider._build_block_outline_schema``
     directly (the schema builder is the single source of truth for the
     bumped per-block-type ``oneOf`` shape).
     """
     jsonschema = _require_jsonschema()
 
-    from Courseforge.generators._outline_provider import (
+    from Courseforge.generators.outline._outline_provider import (
         _BLOCK_TYPE_JSON_SCHEMAS,
     )
 
@@ -505,7 +505,7 @@ def test_3_anti_silent_degradation_legacy_corpora_validate() -> None:
     calibration corpus.
     """
     jsonschema = _require_jsonschema()
-    from Courseforge.generators._outline_provider import (
+    from Courseforge.generators.outline._outline_provider import (
         _BLOCK_TYPE_JSON_SCHEMAS,
     )
 
@@ -552,7 +552,7 @@ def test_4_outline_prompt_golden_output_sanity(monkeypatch) -> None:
        canonical jsonschema ``oneOf`` rejection error surface).
     """
     # Import private symbols directly per the plan §4 Test 4 contract.
-    from Courseforge.generators._outline_provider import (
+    from Courseforge.generators.outline._outline_provider import (
         OutlineProvider,
         _OUTLINE_SYSTEM_PROMPT,
         _RETRY_DIRECTIVE_PATTERNS,
@@ -722,7 +722,7 @@ def test_5_rewrite_prompt_includes_per_claim_map(monkeypatch) -> None:
        ``"per-claim source attribution"`` directive sentinel
        (case-insensitive — W1.5.D's authored copy uses lowercase).
     """
-    from Courseforge.generators._rewrite_provider import (
+    from Courseforge.generators.rewrite._rewrite_provider import (
         RewriteProvider,
         _REWRITE_SYSTEM_PROMPT,
     )
@@ -851,7 +851,7 @@ def test_6_collected_count_guard() -> None:
     # via warnings.catch_warnings() so a DeprecationWarning trips the
     # gate explicitly. Plan §4 Test 6 named clause: "no warnings tagged
     # ``DeprecationWarning`` from the new oneOf surface".
-    from Courseforge.generators._outline_provider import (
+    from Courseforge.generators.outline._outline_provider import (
         _BLOCK_TYPE_JSON_SCHEMAS,
         _build_block_outline_schema,
     )

@@ -279,7 +279,7 @@ _VOID_TAGS: frozenset = frozenset(
 # the JSON-LD blocks[] projection.
 #
 # Public surface: imported by
-# ``Courseforge/generators/_rewrite_provider.py`` so the rewrite
+# ``Courseforge/generators/rewrite/_rewrite_provider.py`` so the rewrite
 # prompt enumerates the same attributes the gate enforces. Single
 # source of truth; do NOT duplicate the table.
 REQUIRED_ATTRS: Dict[str, Tuple[str, ...]] = {

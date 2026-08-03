@@ -33,10 +33,10 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from MCP.tools import pipeline_tools  # noqa: E402
 from MCP.tools.pipeline_tools import _build_tool_registry  # noqa: E402
-from Courseforge.generators import (  # noqa: E402
+from Courseforge.generators.outline import (  # noqa: E402
     _textbook_synthesis_provider as tsp_mod,
 )
-from Courseforge.generators._textbook_synthesis_provider import (  # noqa: E402
+from Courseforge.generators.outline._textbook_synthesis_provider import (  # noqa: E402
     TextbookSynthesisProviderError,
 )
 from lib.validators.textbook_structure import (  # noqa: E402

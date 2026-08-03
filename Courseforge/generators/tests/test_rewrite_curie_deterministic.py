@@ -32,12 +32,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Courseforge.generators._rewrite_provider import (  # noqa: E402
+from Courseforge.generators.rewrite._rewrite_provider import (  # noqa: E402
     ENV_PROVIDER,
     RewriteProvider,
     _TOUCH_PURPOSE_CURIE_DETERMINISTIC,
 )
-from Courseforge.generators._rewrite_fit_window import (  # noqa: E402
+from Courseforge.generators.rewrite._rewrite_fit_window import (  # noqa: E402
     ENV_CURIE_DETERMINISTIC,
 )
 from blocks import Block  # noqa: E402

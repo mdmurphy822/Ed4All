@@ -72,7 +72,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Courseforge.generators._outline_provider import (  # noqa: E402
+from Courseforge.generators.outline._outline_provider import (  # noqa: E402
     OutlineProvider,
     _BLOCK_TYPE_GBNF,
     _BLOCK_TYPE_JSON_SCHEMAS,

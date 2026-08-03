@@ -46,8 +46,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from MCP.tools.pipeline_tools import _build_tool_registry  # noqa: E402
-import Courseforge.generators._textbook_synthesis_provider as _tsp_mod  # noqa: E402
-from Courseforge.generators._textbook_synthesis_provider import (  # noqa: E402
+import Courseforge.generators.outline._textbook_synthesis_provider as _tsp_mod  # noqa: E402
+from Courseforge.generators.outline._textbook_synthesis_provider import (  # noqa: E402
     TextbookSynthesisProviderError,
 )
 

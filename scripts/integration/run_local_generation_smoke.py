@@ -315,7 +315,7 @@ def _run_two_pass_content(
     # OutlineProviderError. Mirror the production router's degrade-and-continue
     # posture — log + skip that one block rather than aborting the whole
     # course. The W5 eval then scores the blocks that DID synthesize.
-    from Courseforge.generators._outline_provider import OutlineProviderError
+    from Courseforge.generators.outline._outline_provider import OutlineProviderError
 
     outline_blocks: List[Any] = []
     skipped: List[str] = []

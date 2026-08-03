@@ -439,7 +439,7 @@ _NVIDIA_LARGE_MODEL_DEFAULT = _HOSTED_LARGE_MODEL_DEFAULT
 
 # Hosted-large build profile GAP-1 fix — the textbook-synthesis seat (the env
 # the objective_extraction / course_planning / concept_extraction phases read,
-# confirmed at Courseforge/generators/_textbook_synthesis_provider.py
+# confirmed at Courseforge/generators/outline/_textbook_synthesis_provider.py
 # ENV_PROVIDER/ENV_MODEL). ``--provider`` only fills the four authoring envs
 # and does NOT reach this seat, so WITHOUT this setdefault the synthesis phases
 # would silently stay on the local 7B while the rest of the build ran on the
@@ -7456,7 +7456,7 @@ class WorkflowRunner:
         # that survives every JSONL round trip).
         curie_force_injected_count = 0
         try:
-            from Courseforge.generators._rewrite_provider import (
+            from Courseforge.generators.rewrite._rewrite_provider import (
                 html_has_forced_curie_marker as _has_forced_curie,
             )
         except Exception:  # noqa: BLE001 — best-effort; absence -> no marker

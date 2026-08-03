@@ -28,7 +28,7 @@ from lib.ontology.curie_discovery import (
 from lib.ontology.curie_extraction import extract_curies
 
 # The outline JSON-schema CURIE pattern, mirrored verbatim from
-# ``Courseforge/generators/_outline_provider.py::_CURIE_PATTERN``.
+# ``Courseforge/generators/outline/_outline_provider.py::_CURIE_PATTERN``.
 _OUTLINE_CURIE_PATTERN = re.compile(r"^[a-z][a-z0-9]*:[A-Za-z0-9_-]+$")
 
 

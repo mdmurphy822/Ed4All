@@ -1,7 +1,7 @@
 """Wave6 regression: ``claude_session`` rewrite-tier provider.
 
 Exercises the new ``provider="claude_session"`` branch in
-:class:`Courseforge.generators._rewrite_provider.RewriteProvider` that
+:class:`Courseforge.generators.rewrite._rewrite_provider.RewriteProvider` that
 dispatches the rewrite tier through
 :class:`MCP.orchestrator.local_dispatcher.LocalDispatcher` to the
 ``content-generator`` Claude Code subagent instead of routing through
@@ -48,7 +48,7 @@ _COURSEFORGE_SCRIPTS = PROJECT_ROOT / "Courseforge" / "scripts"
 if str(_COURSEFORGE_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_COURSEFORGE_SCRIPTS))
 
-from Courseforge.generators._rewrite_provider import (  # noqa: E402
+from Courseforge.generators.rewrite._rewrite_provider import (  # noqa: E402
     ENV_PROVIDER,
     RewriteProvider,
     _CLAUDE_SESSION_AGENT_TYPE,

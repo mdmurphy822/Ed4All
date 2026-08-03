@@ -9,7 +9,7 @@ from typing import Callable, List
 import httpx
 import pytest
 
-from Courseforge.generators._rewrite_provider import (
+from Courseforge.generators.rewrite._rewrite_provider import (
     RewriteProvider,
     _REWRITE_SYSTEM_PROMPT,
     _REWRITE_SYSTEM_PROMPT_TRIMMED,
@@ -386,7 +386,7 @@ def test_predispatch_refuses_when_optimistic_reading_overflows(monkeypatch):
 def test_backstops_noop_on_clean_block(monkeypatch):
     """A rewrite that already emits the CURIE token + clean HTML makes the
     str-backstop / force-inject idempotent (no extra hidden span added)."""
-    from Courseforge.generators._rewrite_provider import (
+    from Courseforge.generators.rewrite._rewrite_provider import (
         html_has_forced_curie_marker,
     )
 

@@ -14,7 +14,7 @@ This module asserts the two load-bearing contracts:
    whose target_blooms are members of ``lib.ontology.bloom.BLOOM_LEVELS``.
 
 2. The outline provider's FLOOR logic
-   (``Courseforge.generators._outline_provider._max_bloom_level``) LIFTS a
+   (``Courseforge.generators.outline._outline_provider._max_bloom_level``) LIFTS a
    below-target emitted bloom up to the target but PRESERVES a higher
    objective-declared bloom (never lowers below the existing ≥-objective
    rule). The ordering is sourced from ``lib.ontology.bloom.BLOOM_LEVELS``.
@@ -37,7 +37,7 @@ from MCP.tools.pipeline_tools import (  # noqa: E402
     _PAGE_BLOCK_PLAN,
     _PAGE_TYPE_BLOCK_PLAN,
 )
-from Courseforge.generators._outline_provider import (  # noqa: E402
+from Courseforge.generators.outline._outline_provider import (  # noqa: E402
     _max_bloom_level,
 )
 

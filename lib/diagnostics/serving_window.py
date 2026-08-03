@@ -297,7 +297,7 @@ def _resolve_assumed_budgets() -> List[Tuple[str, int]]:
     budgets: List[Tuple[str, int]] = []
 
     try:
-        from Courseforge.generators._rewrite_fit_window import (  # noqa: PLC0415
+        from Courseforge.generators.rewrite._rewrite_fit_window import (  # noqa: PLC0415
             resolve_rewrite_num_ctx,
         )
 

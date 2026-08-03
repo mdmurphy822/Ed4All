@@ -440,7 +440,7 @@ _BLOOM_SPREAD_FLOOR_ENV = "ED4ALL_BLOOM_SPREAD_FLOOR"
 #   ``OBJECTIVE_NO_ACTIVITY`` / ``OBJECTIVE_NO_ALIGNED_ASSESSMENT`` ~100% fire.
 #   NOTE: on the two-pass surface this floor runs on, an injected
 #   ``assessment_item`` ships as a REAL, LLM-authored, VISIBLE in-page MCQ —
-#   the rewrite tier authors it (``Courseforge/generators/_rewrite_provider.py``
+#   the rewrite tier authors it (``Courseforge/generators/rewrite/_rewrite_provider.py``
 #   ``assessment_item`` contract: stem + ``<li data-cf-distractor-index="N">``
 #   options) and it renders as ``<section>{content}</section>``
 #   (``MCP/tools/pipeline_tools.py`` rewrite-emit). It is INDEPENDENTLY GATED
@@ -1781,7 +1781,7 @@ def _apply_triangle_floor(
 
     On the two-pass surface this floor runs on, an injected ``assessment_item``
     ships as a REAL, LLM-authored, VISIBLE in-page MCQ: the rewrite tier authors
-    it (``Courseforge/generators/_rewrite_provider.py`` ``assessment_item``
+    it (``Courseforge/generators/rewrite/_rewrite_provider.py`` ``assessment_item``
     contract — stem + ``<li data-cf-distractor-index="N">`` options) and it
     renders as ``<section>{content}</section>``. It is INDEPENDENTLY GATED
     CRITICAL by ``outline_assessment_item_payload`` /

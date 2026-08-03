@@ -570,11 +570,11 @@ def test_4_outline_and_rewrite_prompts_carry_bloom_triple_verbatim(
       ``"MUST teach the BEHAVIORAL OUTCOME"`` directive sentinel.
     """
     from blocks import Block  # noqa: WPS433
-    from Courseforge.generators._outline_provider import (
+    from Courseforge.generators.outline._outline_provider import (
         OutlineProvider,
         _OUTLINE_SYSTEM_PROMPT,
     )
-    from Courseforge.generators._rewrite_provider import (
+    from Courseforge.generators.rewrite._rewrite_provider import (
         RewriteProvider,
         _REWRITE_SYSTEM_PROMPT,
     )

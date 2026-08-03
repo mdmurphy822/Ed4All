@@ -391,7 +391,7 @@ def test_rewrite_batched_pre_armed_never_dispatches(
     validated_path = _seed_validated_blocks(tmp_path, n=4)
 
     # Force the batched cloud lane on: mode ON + probe reports a cloud lane.
-    from Courseforge.generators import _rewrite_batch as _rb
+    from Courseforge.generators.rewrite import _rewrite_batch as _rb
     from Courseforge.router import router as _rmod
 
     monkeypatch.setattr(_rb, "resolve_rewrite_batch_mode", lambda: True)
@@ -467,7 +467,7 @@ class _ArmAfterBatchProvider(_FakeProvider):
 
 def _force_batched_cloud_lane(monkeypatch) -> None:
     """Force the batched cloud lane on with a single batch per round."""
-    from Courseforge.generators import _rewrite_batch as _rb
+    from Courseforge.generators.rewrite import _rewrite_batch as _rb
     from Courseforge.router import router as _rmod
 
     monkeypatch.setattr(_rb, "resolve_rewrite_batch_mode", lambda: True)

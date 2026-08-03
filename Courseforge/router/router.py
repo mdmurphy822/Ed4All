@@ -4,9 +4,9 @@
 The router is the per-block dispatch surface for the Phase 3 two-pass
 content pipeline. It chooses an LLM provider + model per ``(block_type,
 tier)`` then dispatches to either the
-:class:`Courseforge.generators._outline_provider.OutlineProvider`
+:class:`Courseforge.generators.outline._outline_provider.OutlineProvider`
 (structural-skeleton draft, fast/cheap) or the
-:class:`Courseforge.generators._rewrite_provider.RewriteProvider`
+:class:`Courseforge.generators.rewrite._rewrite_provider.RewriteProvider`
 (pedagogical-depth HTML body, larger/Anthropic-default).
 
 Resolution order for a per-block dispatch (Phase 3 §3.3):
@@ -1158,7 +1158,7 @@ class CourseforgeRouter:
         cached = self._provider_cache.get(cache_key)
         if cached is not None:
             return cached
-        from Courseforge.generators._outline_provider import (  # noqa: PLC0415
+        from Courseforge.generators.outline._outline_provider import (  # noqa: PLC0415
             OutlineProvider,
         )
         # Collapse the legacy ``openai_compatible`` alias to ``local`` (it
@@ -1193,7 +1193,7 @@ class CourseforgeRouter:
         cached = self._provider_cache.get(cache_key)
         if cached is not None:
             return cached
-        from Courseforge.generators._rewrite_provider import (  # noqa: PLC0415
+        from Courseforge.generators.rewrite._rewrite_provider import (  # noqa: PLC0415
             RewriteProvider,
         )
         # Collapse the legacy ``openai_compatible`` alias to ``local`` (not a
@@ -2461,7 +2461,7 @@ class CourseforgeRouter:
         # default). The off/local path is left byte-identical (the clamp
         # only ever LOWERS N; a clamp to the same value is a no-op).
         try:
-            from Courseforge.generators._rewrite_batch import (  # noqa: PLC0415
+            from Courseforge.generators.rewrite._rewrite_batch import (  # noqa: PLC0415
                 resolve_rewrite_batch_k,
                 resolve_rewrite_batch_mode,
             )
@@ -2977,7 +2977,7 @@ class CourseforgeRouter:
         """
         from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
 
-        from Courseforge.generators._rewrite_batch import (  # noqa: PLC0415
+        from Courseforge.generators.rewrite._rewrite_batch import (  # noqa: PLC0415
             pack_rewrite_batches,
             resolve_rewrite_batch_size,
             resolve_rewrite_batched_concurrency,

@@ -13,7 +13,7 @@ attempt:
    reuses a prior attempt's cached TO — even when the sidecar eviction was
    lost. Both unset → the fingerprint dict carries neither key
    (byte-identical to legacy) and sidecar reuse works as before.
-2. ``Courseforge/generators/_textbook_synthesis_provider.py`` folds the
+2. ``Courseforge/generators/outline/_textbook_synthesis_provider.py`` folds the
    salt (a ``[Re-roll …]`` directive) + the feedback digest (a delimited
    REMEDIATION section) into the SYSTEM prompt at construction, so every
    dispatched synthesis call differs per attempt and sees the concrete
@@ -229,7 +229,7 @@ def test_feedback_change_invalidates_cluster_sidecar_reuse(
 
 
 def test_provider_system_prompt_unsalted_by_default(monkeypatch) -> None:
-    from Courseforge.generators import _textbook_synthesis_provider as tsp
+    from Courseforge.generators.outline import _textbook_synthesis_provider as tsp
 
     monkeypatch.delenv(_SALT_ENV, raising=False)
     monkeypatch.delenv(_FEEDBACK_ENV, raising=False)
@@ -239,7 +239,7 @@ def test_provider_system_prompt_unsalted_by_default(monkeypatch) -> None:
 
 
 def test_provider_system_prompt_carries_reroll_salt(monkeypatch) -> None:
-    from Courseforge.generators import _textbook_synthesis_provider as tsp
+    from Courseforge.generators.outline import _textbook_synthesis_provider as tsp
 
     monkeypatch.setenv(_SALT_ENV, "attempt-2")
     monkeypatch.delenv(_FEEDBACK_ENV, raising=False)
@@ -260,7 +260,7 @@ def test_provider_system_prompt_carries_remediation_section(
 ) -> None:
     """Feedback env set → the digest rides in a clearly-delimited
     REMEDIATION section appended after the salt directive."""
-    from Courseforge.generators import _textbook_synthesis_provider as tsp
+    from Courseforge.generators.outline import _textbook_synthesis_provider as tsp
 
     monkeypatch.setenv(_SALT_ENV, "attempt-2")
     monkeypatch.setenv(_FEEDBACK_ENV, _DIGEST)
@@ -285,7 +285,7 @@ def test_provider_prompt_byte_identical_when_feedback_unset(
 ) -> None:
     """Feedback (and salt) unset → the prompt is the module constant,
     byte-identical to legacy."""
-    from Courseforge.generators import _textbook_synthesis_provider as tsp
+    from Courseforge.generators.outline import _textbook_synthesis_provider as tsp
 
     monkeypatch.delenv(_SALT_ENV, raising=False)
     monkeypatch.delenv(_FEEDBACK_ENV, raising=False)

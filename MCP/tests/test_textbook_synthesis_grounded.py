@@ -29,7 +29,7 @@ import MCP.tools.pipeline_tools as pt  # noqa: E402
 import lib.objectives.objective_grounding as og  # noqa: E402
 import lib.embedding.providers as ep  # noqa: E402
 from lib.objectives.tests._fakes import FakeEmbed, FakeNli  # noqa: E402
-from Courseforge.generators._textbook_synthesis_provider import (  # noqa: E402
+from Courseforge.generators.outline._textbook_synthesis_provider import (  # noqa: E402
     TextbookSynthesisProviderError,
 )
 

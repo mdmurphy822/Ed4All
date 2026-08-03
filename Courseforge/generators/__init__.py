@@ -4,9 +4,9 @@ Phase 3 Subtask 12: re-exports the LLM-agnostic provider surface so
 callers can ``from Courseforge.generators import ContentGeneratorProvider,
 _BaseLLMProvider`` without reaching into the private module names.
 
-OutlineProvider / RewriteProvider re-exports land alongside Subtasks
-13-22 once those modules exist; until then this package exposes only
-the Phase 1 + Phase 3 Subtask 9 surface.
+Outline and rewrite providers live in the focused ``outline`` and ``rewrite``
+subpackages. Keeping this package root limited to shared content-generation
+primitives avoids loading either specialized provider stack on import.
 """
 
 from Courseforge.generators._base import _BaseLLMProvider

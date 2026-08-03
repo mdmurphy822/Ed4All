@@ -3,7 +3,7 @@
 
 Phase 3 Subtasks 22-26. Sibling to
 :class:`Courseforge.generators._provider.ContentGeneratorProvider`
-(Phase 1) and :class:`Courseforge.generators._outline_provider.OutlineProvider`
+(Phase 1) and :class:`Courseforge.generators.outline._outline_provider.OutlineProvider`
 (Phase 3 Subtasks 13-20). All three subclass
 :class:`Courseforge.generators._base._BaseLLMProvider` so the HTTP
 plumbing, decision-capture surface, and per-backend env-var resolution
@@ -81,7 +81,7 @@ from Courseforge.generators._base import (
     _BaseLLMProvider,
     _default_supported_providers,
 )
-from Courseforge.generators._rewrite_fit_window import (  # noqa: E402
+from Courseforge.generators.rewrite._rewrite_fit_window import (  # noqa: E402
     RESERVE_TOKENS,
     cited_chunk_ids_from_content,
     resolve_curie_deterministic,
@@ -4426,7 +4426,7 @@ class RewriteProvider(_BaseLLMProvider):
         per-block (post-parse) in the router — this method only collapses the
         HTTP dispatch.
         """
-        from Courseforge.generators._rewrite_batch import (  # noqa: PLC0415
+        from Courseforge.generators.rewrite._rewrite_batch import (  # noqa: PLC0415
             CF_BLOCK_OPEN,
             CF_BLOCK_CLOSE,
             parse_rewrite_batch_envelope,

@@ -7,7 +7,7 @@ The rendered user prompt surfaces the directive for a block carrying an
 """
 from __future__ import annotations
 
-from Courseforge.generators._rewrite_provider import (
+from Courseforge.generators.rewrite._rewrite_provider import (
     RewriteProvider,
     _interaction_type_directive,
 )

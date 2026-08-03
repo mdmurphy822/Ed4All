@@ -2,7 +2,7 @@
 
 Closes the W7 regression class: pre-W7 the outline-tier per-block JSON
 schema required only ``stem`` + ``answer_key`` for ``assessment_item``
-Blocks (`Courseforge/generators/_outline_provider.py:431-438`), and the
+Blocks (`Courseforge/generators/outline/_outline_provider.py:431-438`), and the
 four ``Block*Validator``s in ``Courseforge/router/inter_tier_gates.py``
 only validated generic CURIE / content_type / objective_ref / source_id
 shape. So a model could emit a "valid" assessment_item carrying one (or
@@ -221,7 +221,7 @@ def _audit_outline_block(
                 suggestion=(
                     "Re-roll the outline tier with the per-block JSON "
                     "schema's distractors[] requirement (see "
-                    "Courseforge/generators/_outline_provider.py "
+                    "Courseforge/generators/outline/_outline_provider.py "
                     "assessment_item branch)."
                 ),
             ))

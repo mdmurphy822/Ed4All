@@ -75,7 +75,7 @@ def test_guided_practice_in_default_block_routing():
 
 
 def test_guided_practice_in_outline_bounds():
-    from Courseforge.generators._outline_provider import _OUTLINE_KIND_BOUNDS
+    from Courseforge.generators.outline._outline_provider import _OUTLINE_KIND_BOUNDS
 
     assert "guided_practice" in _OUTLINE_KIND_BOUNDS
 

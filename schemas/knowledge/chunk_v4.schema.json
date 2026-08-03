@@ -239,7 +239,7 @@
       "description": "Worker M1 (VERSIONING.md §4.4a) diagnostic — records the source path for each enrichment field. Removed by a later fix PR; schema permits its presence to keep diagnostic runs valid."
     },
     "key_claims": {
-      "description": "GPT Feedback v2 Wave 5 / W5.C — per-block per-claim attribution carried from Courseforge outline-tier emit (Wave 1.5 / W1.5.A migration contract). One entry per factual claim the originating block declared, with optional source_chunk_ids[] mapping each claim to specific SemantiK/Courseforge chunk-ID(s). Legacy List[str] shape preserved as oneOf back-compat (Wave 1.5 W1.5.A migration contract — same shape declared at Courseforge/generators/_outline_provider.py per-block-type schema). Optional; absent on chunks built from sections without an emitting block (legacy / pre-Wave-1.5 corpora). Carried through merge_small_sections via concatenation (per-claim entries are independent).",
+      "description": "GPT Feedback v2 Wave 5 / W5.C — per-block per-claim attribution carried from Courseforge outline-tier emit (Wave 1.5 / W1.5.A migration contract). One entry per factual claim the originating block declared, with optional source_chunk_ids[] mapping each claim to specific SemantiK/Courseforge chunk-ID(s). Legacy List[str] shape preserved as oneOf back-compat (Wave 1.5 W1.5.A migration contract — same shape declared at Courseforge/generators/outline/_outline_provider.py per-block-type schema). Optional; absent on chunks built from sections without an emitting block (legacy / pre-Wave-1.5 corpora). Carried through merge_small_sections via concatenation (per-claim entries are independent).",
       "oneOf": [
         {
           "type": "array",

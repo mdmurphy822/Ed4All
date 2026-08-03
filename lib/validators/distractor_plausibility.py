@@ -180,7 +180,7 @@ def _extract_outline_distractors(
     Outline-tier ``assessment_item`` Blocks carry ``answer_key`` (str)
     and ``distractors[]`` (list of dicts with a ``text`` key) per the
     per-block JSON schema in
-    ``Courseforge/generators/_outline_provider.py:431-438``.
+    ``Courseforge/generators/outline/_outline_provider.py:431-438``.
     """
     content = getattr(block, "content", None)
     if not isinstance(content, dict):

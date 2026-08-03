@@ -109,7 +109,7 @@ def test_terminal_objective_authoring_in_enum(
 ) -> None:
     """WS1 — the new bottom-up TO-authoring decision_type is enumerated.
 
-    Fired by ``Courseforge.generators._textbook_synthesis_provider.
+    Fired by ``Courseforge.generators.outline._textbook_synthesis_provider.
     TextbookSynthesisProvider.author_terminal_for_cluster`` per cluster. A
     ``DECISION_VALIDATION_STRICT=true`` run fails closed on the very first
     cluster if this string is missing from the enum.

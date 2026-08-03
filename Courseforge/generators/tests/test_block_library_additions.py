@@ -37,10 +37,10 @@ if str(SCRIPTS_DIR) not in sys.path:
 import pytest  # noqa: E402
 
 from Courseforge.scripts.blocks import BLOCK_TYPES, Block  # noqa: E402
-from Courseforge.generators._outline_provider import (  # noqa: E402
+from Courseforge.generators.outline._outline_provider import (  # noqa: E402
     _OUTLINE_KIND_BOUNDS,
 )
-from Courseforge.generators._rewrite_provider import (  # noqa: E402
+from Courseforge.generators.rewrite._rewrite_provider import (  # noqa: E402
     _BLOCK_TYPE_OUTPUT_CONTRACTS,
     _block_type_output_contract,
 )

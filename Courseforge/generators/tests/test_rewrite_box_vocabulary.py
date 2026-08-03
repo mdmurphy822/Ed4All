@@ -5,7 +5,7 @@ classes, the system prompt references them, and the minted-CURIE
 pedagogical-context flip behaves. No LLM, no pipeline run.
 """
 
-import Courseforge.generators._rewrite_provider as rp
+import Courseforge.generators.rewrite._rewrite_provider as rp
 import MCP.tools.pipeline_tools as pt
 
 

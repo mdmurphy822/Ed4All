@@ -217,7 +217,7 @@ def _resolve_concept_refs(block: Block) -> List[str]:
 
     The outline-tier shape carries CURIEs in ``content["curies"]`` (the
     canonical Phase-3 anchoring field — see
-    ``Courseforge/generators/_outline_provider.py:347-350``); some
+    ``Courseforge/generators/outline/_outline_provider.py:347-350``); some
     fixtures additionally use ``concept_refs`` for explicit concept
     targeting. Both surfaces are unioned, deduplicated while
     preserving discovery order.

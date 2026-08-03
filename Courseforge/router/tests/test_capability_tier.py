@@ -548,7 +548,7 @@ def test_recorded_outline_failure_strings_match_retry_directive_table():
     match a §3.6 retry-directive table pattern. Closes plan §5.2.1
     (replay the recorded transcripts and assert the new pipeline
     handles them)."""
-    from Courseforge.generators._outline_provider import _match_retry_directive
+    from Courseforge.generators.outline._outline_provider import _match_retry_directive
 
     surfaces = _load_surfaces()
     outline_failures = [
@@ -589,7 +589,7 @@ def test_recorded_token_stuffing_rewrite_response_rejected_by_contextual_gate():
     """The §1.7 misconception rewrite-tier response (token-stuffing
     via `vocab="rdf:RDF"` attribute on an invented `<span>`) MUST be
     rejected by the new contextual CURIE-preservation gate."""
-    from Courseforge.generators._rewrite_provider import _missing_preserve_curies
+    from Courseforge.generators.rewrite._rewrite_provider import _missing_preserve_curies
 
     surfaces = _load_surfaces()
     # Pull the misconception entry's wire transcripts; the second

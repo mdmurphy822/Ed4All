@@ -368,7 +368,7 @@ def test_semantic_budget_exhaustion_marker_untouched(tmp_path, monkeypatch):
 
 
 def test_rewrite_marker_context_covers_dispatch_error():
-    from Courseforge.generators._rewrite_provider import (
+    from Courseforge.generators.rewrite._rewrite_provider import (
         _ESCALATION_MARKER_CONTEXT,
     )
     assert "outline_dispatch_error" in _ESCALATION_MARKER_CONTEXT

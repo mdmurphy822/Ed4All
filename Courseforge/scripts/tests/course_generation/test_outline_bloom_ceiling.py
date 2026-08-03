@@ -44,7 +44,7 @@ _SCRIPTS_DIR = Path(__file__).resolve().parents[2]
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
-from Courseforge.generators._outline_provider import (  # noqa: E402
+from Courseforge.generators.outline._outline_provider import (  # noqa: E402
     OutlineProvider,
     _OUTLINE_KIND_BOUNDS,
 )

@@ -37,7 +37,7 @@ SCRIPTS = PROJECT_ROOT / "Courseforge" / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from Courseforge.generators._rewrite_provider import (  # noqa: E402
+from Courseforge.generators.rewrite._rewrite_provider import (  # noqa: E402
     _fix_malformed_comment_closes,
     _inject_ib5_a11y_skeleton,
 )

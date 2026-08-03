@@ -2,8 +2,8 @@
 the system-prompt-trim equivalence (rewrite-overflow-fix-2026-06)."""
 from __future__ import annotations
 
-import Courseforge.generators._rewrite_provider as rp
-from Courseforge.generators._rewrite_fit_window import (
+import Courseforge.generators.rewrite._rewrite_provider as rp
+from Courseforge.generators.rewrite._rewrite_fit_window import (
     cited_chunk_ids_from_content,
     resolve_fit_window,
     resolve_rewrite_num_ctx,
