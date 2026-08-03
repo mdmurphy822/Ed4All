@@ -8,8 +8,8 @@ per-course entry point), `lib/retrieval/library_wide.py::answer_library_question
 `gui/services/answer_service.py`.
 **Relates to:** `docs/architecture/ADR-002-retrieval-scope.md` (what LibV2's
 reference retriever is and is not), `docs/operations/behavior-flags.md`
-(per-flag detail), `docs/architecture/gpu-seat-residency.md` (which seat serves
-the answer model).
+(per-flag detail), and `docs/operations/seat-scripts.md` (the portable contract
+for local model-serving seats).
 
 The rest of the pipeline is the *write* path: a corpus becomes an
 accessible-HTML course, a chunkset, a concept graph, and a vector index. This

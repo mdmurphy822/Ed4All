@@ -643,4 +643,6 @@ out above the call — and nothing sweeps for a resume-skipped phase, which
 `continue`s earlier still. The sweep is best-effort by construction, so a sweep
 failure cannot change `final_status`.
 Phases declare their vLLM seats via a `seats:` annotation in
-`config/workflows.yaml`; see [`gpu-seat-residency.md`](gpu-seat-residency.md).
+`config/workflows.yaml`; see
+[`../operations/seat-scripts.md`](../operations/seat-scripts.md) for the
+portable seat contract. Machine-specific residency topology remains local.

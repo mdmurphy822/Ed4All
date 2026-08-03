@@ -236,6 +236,12 @@ schemas/training/schema_translation_catalog.*.yaml
 plans/
 plan/
 
+# Operator-only documentation retained locally during the public-doc rebuild.
+# Tracked publication is allowlisted by review; cleanup evidence and detailed
+# machine-seat topology are not source-release dependencies.
+/docs/reference/repository-cleanup.md
+/docs/architecture/gpu-seat-residency.md
+
 # Local regression retirement shelves. Every scripts container may retain
 # proven obsolete scripts here without publishing them or treating them as a
 # build/test dependency. The recursive form covers subsystem and nested

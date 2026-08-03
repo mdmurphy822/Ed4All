@@ -1,7 +1,8 @@
 # Repo Organization Schema
 
-The public-safe results of completed organization and removal decisions are
-recorded in [`../reference/repository-cleanup.md`](../reference/repository-cleanup.md).
+This document contains the durable public placement rules. Cleanup evidence,
+file-disposition ledgers, and operator review notes remain in the ignored local
+planning workspace rather than the source release.
 
 **Status: ADOPTED** — Phase 1 landed 2026-07-29 (this document, the four-bucket
 `docs/` taxonomy, `ci/layout_guard.py`); the runtime-collapse phase landed the
