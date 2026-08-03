@@ -3223,9 +3223,21 @@ def _emit_judge_capture(
                 f"transport_failures={meta.get('transport_failures', 0)}."
             ),
             alternatives_considered=[
-                "keep every pending heading at the defaulted level 3 (flat tree)",
-                "trust the model's proposed level unclamped (rejected: could skip "
-                "a tier or orphan a heading above its section)",
+                {
+                    "option": "Keep every pending heading at level 3",
+                    "reason_rejected": (
+                        f"Rejected because {result.applied} of {n_pending} pending "
+                        "headings received usable judged levels."
+                    ),
+                },
+                {
+                    "option": "Apply every proposed level without structural clamps",
+                    "reason_rejected": (
+                        "Rejected because the invariant pass clamped "
+                        f"{result.clamped} and dropped {result.dropped} "
+                        "unsafe proposals."
+                    ),
+                },
             ],
             heading_level_judge=True,
             hj_applied=result.applied,
@@ -3703,11 +3715,21 @@ def _emit_review_capture(
                 f"posts={meta.get('posts', 0)}, finish={meta.get('finish')}."
             ),
             alternatives_considered=[
-                "keep every judged level unreconciled (accept cross-window "
-                "inconsistency in recurring section levels)",
-                "flatten every same-title heading to one level (rejected: the "
-                "same title at different structural depths is legitimately "
-                "different and must not be flattened)",
+                {
+                    "option": "Keep all judged levels without final reconciliation",
+                    "reason_rejected": (
+                        f"Rejected because {result.applied} of {result.proposed} "
+                        "review proposals safely reconciled recurring headings."
+                    ),
+                },
+                {
+                    "option": "Flatten every repeated heading title to one level",
+                    "reason_rejected": (
+                        f"Rejected because {result.preserved_legitimate} "
+                        "repeated-title headings occur at legitimate different "
+                        "depths."
+                    ),
+                },
             ],
             final_review=True,
             fr_proposed=result.proposed,

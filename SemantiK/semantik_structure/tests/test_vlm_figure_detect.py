@@ -572,6 +572,12 @@ def test_decision_capture_fires_with_a_dynamic_rationale(monkeypatch, tmp_path):
     assert "1 page(s)" in rationale                # page count
     assert "0.1563" in rationale or "area" in rationale.lower()  # bbox areas
     assert "(3, 1)" in rationale                   # busiest page = page 3, 1 figure
+    alternatives = row["alternatives_considered"]
+    assert all(
+        set(item) == {"option", "reason_rejected"} for item in alternatives
+    )
+    assert "1 proposals" in alternatives[0]["reason_rejected"]
+    assert "1 of 2" in alternatives[1]["reason_rejected"]
 
     # The gate DECIDED: 1 accepted, the page raster rejected.
     assert audit["totals"]["accepted"] == 1

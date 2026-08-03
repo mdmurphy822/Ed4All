@@ -1371,8 +1371,21 @@ def _emit_detect_capture(page_rows: "list[dict]", totals: dict, model: str) -> N
                 f"busiest pages={[(r['page'], r['accepted']) for r in top]}."
             ),
             alternatives_considered=[
-                "object extraction (impossible here: every image page-object is the full-page raster)",
-                "accept every proposed bbox (rejected: would ship page rasters + body-text crops)",
+                {
+                    "option": "Use embedded page-image objects as figures",
+                    "reason_rejected": (
+                        f"Rejected because {totals.get('page_raster', 0)} proposals "
+                        "matched full-page raster geometry."
+                    ),
+                },
+                {
+                    "option": "Accept every proposed bounding box",
+                    "reason_rejected": (
+                        f"Rejected because {rejected} of "
+                        f"{totals.get('proposed', 0)} proposals failed "
+                        "geometry, text-density, table, duplication, or page guards."
+                    ),
+                },
             ],
         )
     except Exception as exc:  # noqa: BLE001 — best-effort, never fatal

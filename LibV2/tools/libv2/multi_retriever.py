@@ -200,18 +200,37 @@ class MultiQueryRetriever:
         # Log query decomposition decision
         if self.capture:
             sub_query_texts = [sq.text for sq in decomposed.sub_queries]
+            primary_intent = getattr(
+                decomposed.primary_intent, "value", decomposed.primary_intent
+            )
             self.capture.log_decision(
                 decision_type="query_decomposition",
                 decision=f"Decomposed into {len(decomposed.sub_queries)} sub-queries",
                 rationale=(
-                    f"Primary intent: {decomposed.primary_intent.value if hasattr(decomposed.primary_intent, 'value') else decomposed.primary_intent}, "
+                    f"Primary intent: {primary_intent}, "
                     f"Bloom level: {decomposed.bloom_level}, "
                     f"Detected concepts: {decomposed.detected_concepts}"
                 ),
                 inputs_ref=[{"type": "query", "content": query}],
                 alternatives_considered=[
-                    "Single query without decomposition",
-                    f"Alternative decomposition with {len(sub_query_texts) + 1} queries",
+                    {
+                        "option": "Run only the original query",
+                        "reason_rejected": (
+                            f"Rejected because decomposition identified "
+                            f"{len(sub_query_texts)} sub-queries for intent "
+                            f"{primary_intent}."
+                        ),
+                    },
+                    {
+                        "option": (
+                            f"Generate {len(sub_query_texts) + 1} sub-queries"
+                        ),
+                        "reason_rejected": (
+                            f"Rejected because the decomposer emitted "
+                            f"{len(sub_query_texts)} bounded sub-queries for "
+                            f"{len(decomposed.detected_concepts)} detected concepts."
+                        ),
+                    },
                 ],
             )
 

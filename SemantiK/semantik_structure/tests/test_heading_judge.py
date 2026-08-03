@@ -480,6 +480,11 @@ def test_decision_capture_fires_with_dynamic_rationale(monkeypatch):
     assert "applied=2" in rationale
     assert "nemotron-3-super" in rationale or "model=" in rationale
     assert len(rationale) >= 20
+    alternatives = log["alternatives_considered"]
+    assert all(
+        set(item) == {"option", "reason_rejected"} for item in alternatives
+    )
+    assert "2 of 2" in alternatives[0]["reason_rejected"]
 
 
 def test_capture_failure_never_breaks_judge(monkeypatch):
@@ -2676,6 +2681,11 @@ def test_final_review_decision_capture_has_discriminator(monkeypatch):
     assert log["fr_applied"] == 1
     assert "preserved_legitimate" in log["rationale"]
     assert len(log["rationale"]) >= 20
+    alternatives = log["alternatives_considered"]
+    assert all(
+        set(item) == {"option", "reason_rejected"} for item in alternatives
+    )
+    assert "1 of 1" in alternatives[0]["reason_rejected"]
 
 
 # ── Wiring: run_heading_judge + both-OFF byte-identity. ──────────────────────

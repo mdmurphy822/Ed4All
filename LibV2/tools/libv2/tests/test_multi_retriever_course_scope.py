@@ -124,6 +124,37 @@ class TestSemantikChunksOnlyCourse:
         assert fusion.result_count > 0
         assert decomposed.sub_queries  # decomposition actually fired
 
+    def test_decomposition_capture_uses_structured_alternatives(self, tmp_path):
+        _make_course(
+            tmp_path, "scope-alpha", _algebra_chunks(),
+            chunkset_dir="semantik_chunks",
+        )
+        rows = []
+
+        class _Capture:
+            def log_decision(self, **kwargs):
+                rows.append(kwargs)
+
+        retriever = MultiQueryRetriever(
+            repo_root=tmp_path,
+            course_slug="scope-alpha",
+            capture=_Capture(),
+        )
+        retriever.retrieve(query="compare linear equation methods", limit=5)
+
+        row = next(r for r in rows if r["decision_type"] == "query_decomposition")
+        alternatives = row["alternatives_considered"]
+        assert all(
+            set(item) == {"option", "reason_rejected"}
+            for item in alternatives
+        )
+        decomposition = retriever.decomposer.decompose(
+            "compare linear equation methods"
+        )
+        assert str(len(decomposition.sub_queries)) in alternatives[0][
+            "reason_rejected"
+        ]
+
     def test_decompose_false_returns_results(self, tmp_path):
         """The non-decomposed branch must surface results, not an empty list
         (the pre-fix branch dropped ``results`` on the floor)."""
