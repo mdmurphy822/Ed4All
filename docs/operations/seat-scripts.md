@@ -1,104 +1,73 @@
-# `runtime/seats/` — local vLLM seat launch scripts
+# Local model seats
 
-A **seat** is one long-lived local [vLLM](https://docs.vllm.ai) container that
-serves exactly one model on a fixed loopback port. The Ed4All pipeline never
-hardcodes a model or a URL — it addresses seats by a **logical name** and
-resolves everything else from data-driven env registries. The scripts under `runtime/seats/` are the machine-specific launch specs for
-one host's seat stack.
+A **seat** is one long-lived local [vLLM](https://docs.vllm.ai) service that
+serves one model. Ed4All addresses seats by logical name and resolves their
+endpoints, containers, and launchers from environment registries; workflow code
+does not embed deployment addresses or model paths.
 
-## Why these scripts are not tracked
+## Keep deployment configuration private
 
-Every real seat script carries host-specific detail — absolute HF-cache mount
-paths, concrete model ids, container names, and port / GPU-utilization pins
-tuned for one machine's GPU. Per the project's data-hygiene contract, that
-never lands in git. `runtime/` is wholly gitignored; this doc and the sanitized
-[`launch-seat.example.sh`](launch-seat.example.sh) template are the tracked
-reference. Copy the template into `runtime/seats/`, fill the
-`<PLACEHOLDERS>`, and keep your filled-in scripts local-only.
+Real launch scripts contain deployment-specific paths, model identifiers,
+container names, device allocations, and resource limits. Store them under the
+gitignored `runtime/seats/` directory. Never commit filled templates, endpoint
+addresses, credentials, model caches, or service logs.
 
-> These scripts previously lived at the repo-root `seats/` directory (and
-> before that under the operator campaign harness). The only supported in-repo
-> location is now `runtime/seats/`; update `ED4ALL_SEAT_LAUNCH_SPECS` rather
-> than recreating a root compatibility link.
+Start with the sanitized [`launch-seat.example.sh`](launch-seat.example.sh).
+[`launch-super-hj.sh.example`](launch-super-hj.sh.example) demonstrates the same
+contract for a separately scheduled heading-judge seat without prescribing a
+model or resource profile.
 
-## The three seat registries
+## Registry contract
 
-A new seat is a set of registry entries, never a code change. All three are
-comma-separated env vars parsed by `lib/vllm_container_lifecycle.py`:
+The lifecycle manager in `lib/vllm_container_lifecycle.py` reads three
+registries:
 
-| Env var | Shape | Maps |
-|---------|-------|------|
-| `ED4ALL_SEAT_BASE_URLS` | `<seat-name>=<loopback base_url>` | logical seat name → vLLM URL |
-| `ED4ALL_VLLM_CONTAINERS` | `<base_url>=<container-name>` | vLLM URL → docker container |
-| `ED4ALL_SEAT_LAUNCH_SPECS` | `<seat-name>=<abs path to a script here>` | logical seat name → cold-recreate launcher |
+| Environment variable | Value shape | Purpose |
+|---|---|---|
+| `ED4ALL_SEAT_BASE_URLS` | `<seat>=<loopback-base-url>` | Logical seat to endpoint |
+| `ED4ALL_VLLM_CONTAINERS` | `<base-url>=<container>` | Endpoint to container |
+| `ED4ALL_SEAT_LAUNCH_SPECS` | `<seat>=<absolute-script-path>` | Logical seat to private cold-recreate launcher |
 
-The declarative per-phase seat schedule (`ED4ALL_SEAT_SCHEDULE`, wired at each
-workflow phase boundary) reconciles resident seats to a phase's `seats:`
-annotation in `config/workflows.yaml`: it stops seats a phase does not need and
-(cold-)starts the ones it does, then health-checks each with a liveness poll
-(`/v1/models`) followed by a bounded content-coherence probe. When a seat has an
-`ED4ALL_SEAT_LAUNCH_SPECS` entry, the schedule can **cold-recreate** it (via the
-script here) to self-heal a mode-collapse.
+Use operator-selected values in ignored local environment files. The examples
+intentionally provide no working endpoint, path, model, or credential.
 
-## Two rules every seat script must honor
+When `ED4ALL_SEAT_SCHEDULE` is enabled, each workflow phase reconciles the
+declared `seats:` in `config/workflows.yaml`. It stops unneeded seats, launches
+required seats, polls `/v1/models`, and runs a bounded content-coherence probe.
+A configured launch spec lets the manager replace an unhealthy service with a
+fresh container.
 
-1. **Never co-resident.** Size `--gpus` / `--gpu-memory-utilization` so this
-   seat and any other simultaneously-scheduled seat fit the card. The default
-   small-box profile serves ONE heavy seat at a time under the GPU-lifecycle
-   lease (`ED4ALL_GPU_LIFECYCLE`); only a large-unified-memory host runs several
-   concurrently. Two seats that overcommit VRAM will OOM.
+## Launcher requirements
 
-2. **Cold-recreate, never warm-start; always coherence-probe.** A warm
-   `docker start` of a previously-stopped vLLM seat can come up live-but-
-   mode-collapsed (passes `/v1/models` yet emits degenerate output). Every
-   script here does `docker rm -f` + `docker run` (a fresh container), and the
-   seat schedule content-coherence-probes every seat it (re)starts — a live seat
-   that is incoherent is cold-recreated immediately and re-checked.
+Every private launcher must:
 
-## Assistant-capable seats need OpenAI tool-calling flags
+1. Validate all required settings before changing container state.
+2. Bind the service to a loopback endpoint selected by the operator.
+3. Cold-recreate its container; do not rely on a warm `docker start`.
+4. Use pre-provisioned model artifacts and offline runtime settings.
+5. Set deployment resource limits from private local configuration.
+6. Contain no credentials. Pass secrets through an approved runtime secret
+   mechanism when a selected provider requires them.
 
-The `ed4all assistant` surface (and any caller that sends OpenAI
-`tools` + `tool_choice:"auto"`) requires the seat to be launched with vLLM's
-tool-calling machinery enabled. Without it, vLLM rejects the request with
-**HTTP 400** (`"auto" tool choice requires --enable-auto-tool-choice`). Add
-both flags to any seat that must answer tool calls:
+The lifecycle manager owns readiness and coherence checks. A launcher only
+needs to validate its inputs and start the requested service cleanly.
 
-```
---enable-auto-tool-choice --tool-call-parser qwen3_coder
-```
+## Optional tool calling
 
-**Verified parser for Nemotron-3: `qwen3_coder`.** The Nemotron-3 chat
-template (`chat_template.jinja`, shipped in both the Super-120B-NVFP4 and
-Nano-30B-FP8 model dirs) emits tool calls in the XML grammar
+A seat used by `ed4all assistant`, or by another OpenAI-compatible caller that
+sends `tools` with `tool_choice: "auto"`, must enable the tool-calling support
+required by its selected model and vLLM release. Parser selection is
+model-specific and belongs in the ignored private launcher; do not copy a
+parser from another model without validating its chat-template grammar.
 
-```
-<tool_call>
-<function=NAME>
-<parameter=KEY>
-value
-</parameter>
-</function>
-</tool_call>
-```
+## Related documentation
 
-which is byte-for-byte the format vLLM's `qwen3_coder` parser consumes. The
-required `<tool_call>` / `</tool_call>` control tokens are atomic added-tokens
-in the Nemotron-3 tokenizer (ids 14 / 15), so the parser constructs cleanly.
-There is **no** `nemotron`-named tool parser in the vLLM build these seats run
-(NGC `nvcr.io/nvidia/vllm:26.05.post1-py3`, vLLM `0.21.0`); `qwen3_coder` is the
-correct match, not a workaround. Fallback if it ever misbehaves: `qwen3_xml`
-(same grammar, streaming-oriented reimplementation, no special-token
-construction guard). No chat-template override is needed — the model dir's
-bundled tool-capable `chat_template.jinja` is auto-loaded.
-
-Both `seats/launch-super.sh` and `seats/launch-nano.sh` carry these flags. The
-Super seat additionally keeps its A/B-validated `--reasoning-parser nemotron_v3`
-alongside the tool parser (reasoning + tool parsing coexist).
-
-## Related
-
-- `seats/launch-seat.example.sh` — sanitized copy-me template.
-- `docs/operations/seat-schedule.env.example` — the seat-schedule env stack
-  (source it alongside the run env; never enable it mid-build).
-- Root `CLAUDE.md` → the `ED4ALL_SEAT_*` / `ED4ALL_VLLM_CONTAINER*` flag rows.
-- `docs/operations/behavior-flags.md` — full seat-schedule / lifecycle detail.
+- [`launch-seat.example.sh`](launch-seat.example.sh) — generic, fail-loud shell
+  template.
+- [`launch-super-hj.sh.example`](launch-super-hj.sh.example) — separately
+  scheduled heading-judge template.
+- [`seat-schedule.env.example`](seat-schedule.env.example) — registry shape and
+  schedule configuration.
+- [`behavior-flags.md`](behavior-flags.md) — lifecycle and schedule behavior.
+- [`pipeline-invocation.md`](pipeline-invocation.md) — running, stopping, and
+  resuming workflows.

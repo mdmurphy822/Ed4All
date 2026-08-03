@@ -1,58 +1,71 @@
-#!/bin/bash
-# =============================================================================
-# Seat launch-spec TEMPLATE (sanitized — copy, fill the <PLACEHOLDERS>, keep
-# your copy local-only; real seat scripts under seats/ are gitignored).
-# =============================================================================
+#!/usr/bin/env bash
+# Portable Ed4All model-seat launcher template.
 #
-# A "seat" is one long-lived local vLLM container serving ONE model on a fixed
-# loopback port. The pipeline addresses seats by LOGICAL name; the mapping from
-# a logical name to a URL and to a launch script is data-driven via three envs:
-#
-#   ED4ALL_SEAT_BASE_URLS   <seat-name>=<loopback base_url>   (logical -> URL)
-#   ED4ALL_VLLM_CONTAINERS  <base_url>=<container-name>       (URL -> container)
-#   ED4ALL_SEAT_LAUNCH_SPECS <seat-name>=<abs path to THIS script>  (cold-recreate)
-#
-# The seat-schedule reconciler (ED4ALL_SEAT_SCHEDULE) COLD-RECREATES a seat by
-# running its ED4ALL_SEAT_LAUNCH_SPECS script when the seat must (re)start or
-# self-heal from a mode-collapse. See docs/operations/seat-schedule.env.example.
-#
-# RULES a seat script must honor:
-#   * Cold rm + run, NEVER a warm `docker start` — a warm-restarted vLLM seat
-#     can come up live-but-mode-collapsed (degenerate output). Always recreate.
-#   * The schedule content-coherence-probes every (re)started seat; a launch
-#     script only needs to bring the container up cleanly.
-#   * NEVER co-resident: size --gpus / --gpu-memory-utilization so this seat and
-#     any other simultaneously-scheduled seat fit the card. The default
-#     small-box profile serves ONE heavy seat at a time (GPU-lifecycle lease);
-#     only a large-unified-memory host runs several concurrently.
-#   * Offline by construction: models are pre-seeded; pass HF_HUB_OFFLINE=1 so a
-#     launch never phones home.
-# =============================================================================
+# Copy this file to gitignored runtime/seats/, set the required environment
+# values in a private local configuration, and add deployment-specific device
+# or vLLM arguments to the empty arrays below. Do not add credentials here.
 
 set -euo pipefail
 
-CONTAINER="<CONTAINER_NAME>"          # e.g. vllm-myseat
-HOST_PORT="<HOST_PORT>"              # loopback port this seat listens on, e.g. 8005
-MODEL="<HF_MODEL_ID>"               # e.g. org/Model-Name
-SERVED_NAME="<SERVED_MODEL_NAME>"    # must match the seat name your config expects
-HF_CACHE="<ABS_PATH_TO_HF_CACHE>"    # e.g. /home/<user>/.cache/huggingface
-VLLM_IMAGE="<VLLM_IMAGE>"           # e.g. nvcr.io/nvidia/vllm:<tag>
+require_value() {
+  local name="$1"
+  if [[ -z "${!name:-}" ]]; then
+    printf 'error: required setting %s is not set\n' "${name}" >&2
+    exit 64
+  fi
+}
 
-# Cold recreate: remove any stale container, then launch fresh.
-docker rm -f "${CONTAINER}" >/dev/null 2>&1 || true
-sleep 3
+required=(
+  ED4ALL_SEAT_CONTAINER
+  ED4ALL_SEAT_HOST_PORT
+  ED4ALL_SEAT_CONTAINER_PORT
+  ED4ALL_SEAT_MODEL_PATH
+  ED4ALL_SEAT_CONTAINER_MODEL_PATH
+  ED4ALL_SEAT_SERVED_MODEL
+  ED4ALL_SEAT_VLLM_IMAGE
+)
+for name in "${required[@]}"; do
+  require_value "${name}"
+done
 
-docker run -d --name "${CONTAINER}" --gpus all --ipc=host \
-  -v "${HF_CACHE}:/root/.cache/huggingface" \
-  -p "${HOST_PORT}:8000" \
-  -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 -e HF_HUB_DISABLE_TELEMETRY=1 \
-  "${VLLM_IMAGE}" \
-  vllm serve "${MODEL}" --served-model-name "${SERVED_NAME}" \
-  --max-model-len <MAX_MODEL_LEN> \
-  --gpu-memory-utilization <GPU_UTIL_0_TO_1> \
-  --max-num-seqs <MAX_NUM_SEQS>
-  # Add model-specific flags as needed, e.g.:
-  #   --trust-remote-code
-  #   --reasoning-parser <PARSER>
-  #   --kv-cache-dtype fp8
-  #   --allowed-local-media-path /      # vision seats reading local images
+for port_name in ED4ALL_SEAT_HOST_PORT ED4ALL_SEAT_CONTAINER_PORT; do
+  port_value="${!port_name}"
+  if [[ ! "${port_value}" =~ ^[0-9]+$ ]] ||
+     (( port_value < 1 || port_value > 65535 )); then
+    printf 'error: %s must be an integer from 1 to 65535\n' "${port_name}" >&2
+    exit 64
+  fi
+done
+
+if [[ ! -e "${ED4ALL_SEAT_MODEL_PATH}" ]]; then
+  printf 'error: model path does not exist: %s\n' \
+    "${ED4ALL_SEAT_MODEL_PATH}" >&2
+  exit 66
+fi
+
+if ! command -v docker >/dev/null 2>&1; then
+  printf 'error: docker is required to launch this seat\n' >&2
+  exit 69
+fi
+
+# Add operator-selected device mounts and resource controls only in the private
+# copied launcher. Keep each argument as its own array element.
+device_args=()
+vllm_args=()
+
+# All validation occurs before the existing container is removed.
+docker rm -f "${ED4ALL_SEAT_CONTAINER}" >/dev/null 2>&1 || true
+
+exec docker run -d \
+  --name "${ED4ALL_SEAT_CONTAINER}" \
+  --ipc=host \
+  --publish "127.0.0.1:${ED4ALL_SEAT_HOST_PORT}:${ED4ALL_SEAT_CONTAINER_PORT}" \
+  --volume "${ED4ALL_SEAT_MODEL_PATH}:${ED4ALL_SEAT_CONTAINER_MODEL_PATH}:ro" \
+  --env HF_HUB_OFFLINE=1 \
+  --env TRANSFORMERS_OFFLINE=1 \
+  --env HF_HUB_DISABLE_TELEMETRY=1 \
+  "${device_args[@]}" \
+  "${ED4ALL_SEAT_VLLM_IMAGE}" \
+  vllm serve "${ED4ALL_SEAT_CONTAINER_MODEL_PATH}" \
+  --served-model-name "${ED4ALL_SEAT_SERVED_MODEL}" \
+  "${vllm_args[@]}"
