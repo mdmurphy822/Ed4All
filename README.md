@@ -55,31 +55,61 @@ Accessible HTML · Digital course + IMSCC · Grounded training data · Hybrid re
 
 ## From source to course-grounded AI
 
-```text
-Books and learning materials
-            |
-            v
-Structured, accessible HTML
-            |
-            v
-Modular digital course
-      |             |
-      |             +--> IMS Common Cartridge package
-      |
-      +--> Searchable course archive
-      |          |
-      |          +--> BM25 + dense vectors --> RRF --> grounded answers
-      |
-      +--> Source-grounded SFT + DPO pairs
-                 |
-                 +--> optional LoRA adapter
+```mermaid
+flowchart LR
+    source["Books · PDFs · HTML<br/>Learning materials"]
+
+    subgraph build["Build an accessible digital course"]
+        direction LR
+        semantik["SemantiK<br/>Structure + accessibility"]
+        html["Accessible HTML<br/>with source provenance"]
+        courseforge["Courseforge<br/>Modules + activities + assessments"]
+        course["Modular digital course"]
+
+        semantik --> html --> courseforge --> course
+    end
+
+    subgraph deliver["Deliver and reuse"]
+        direction TB
+        imscc["LMS-ready<br/>IMS Common Cartridge"]
+        library["LibV2 course archive<br/>Searchable local library"]
+    end
+
+    subgraph intelligence["Grounded course intelligence"]
+        direction TB
+        retrieval["BM25 + dense retrieval"]
+        rrf["Reciprocal rank fusion"]
+        answers["Course-grounded results"]
+        pairs["Trainforge<br/>SFT instructions + DPO preferences"]
+        lora["Optional LoRA adapter"]
+
+        retrieval --> rrf --> answers
+        pairs -. operator opt-in .-> lora
+    end
+
+    source --> semantik
+    course --> imscc
+    course --> library
+    library --> retrieval
+    course --> pairs
+
+    classDef sourceNode fill:#eef6ff,stroke:#2563eb,color:#172554,stroke-width:2px;
+    classDef buildNode fill:#f0fdf4,stroke:#16a34a,color:#14532d;
+    classDef deliveryNode fill:#fff7ed,stroke:#ea580c,color:#7c2d12;
+    classDef intelligenceNode fill:#faf5ff,stroke:#9333ea,color:#581c87;
+
+    class source sourceNode;
+    class semantik,html,courseforge,course buildNode;
+    class imscc,library deliveryNode;
+    class retrieval,rrf,answers,pairs,lora intelligenceNode;
 ```
 
-In plain language: Ed4All converts source material, organizes it as a course,
-packages it for LMS delivery, and indexes the result for search. The same
-grounded course content can also supply training pairs and, when explicitly
-enabled, a LoRA training workflow. Training is optional; the course package and
-retrieval library remain useful on their own.
+The flow has three layers: Ed4All first converts source material into accessible
+HTML and a modular course; it then packages and archives that course; finally,
+the archive supports hybrid retrieval while the grounded course content can
+supply training pairs. LoRA training is a separate operator opt-in. The LMS
+package, course archive, and retrieval system remain useful without training an
+adapter.
 
 ## Quick start
 
