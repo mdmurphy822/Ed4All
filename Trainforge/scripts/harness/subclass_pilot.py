@@ -31,12 +31,12 @@ Chapter selection (mirrors ``semantik_rerender`` conventions)
 Example
 -------
     # dry-run pilot on two chapters (report only, mocked, CPU)
-    python scripts/archive/subclass_pilot.py --input-dir SemantiK/output \
+    python Trainforge/scripts/harness/subclass_pilot.py --input-dir <INPUT_DIR> \
         --chapters ch06,ch09 --title-map titles.json \
         --dry-run --json-out /tmp/subclass_pilot.json
 
     # corpus-wide apply of all 10 chapters (LIVE local 7B seat)
-    python scripts/archive/subclass_pilot.py --input-dir SemantiK/output \
+    python Trainforge/scripts/harness/subclass_pilot.py --input-dir <INPUT_DIR> \
         --apply --output-dir /tmp/subclass_apply \
         --title-map titles.json --json-out /tmp/subclass_apply.json
 """
@@ -51,7 +51,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 

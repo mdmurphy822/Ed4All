@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.archive.stratified_synthesis_pilot import (
+from Trainforge.scripts.harness.stratified_synthesis_pilot import (
     compare_reports,
     fallback_provenance_summary,
     isolated_runtime_environment,

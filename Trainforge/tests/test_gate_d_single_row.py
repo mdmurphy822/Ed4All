@@ -7,7 +7,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from lib.ontology.misconception_id import canonical_mc_id
-from Trainforge.scripts.archive.gate_d_single_row import (
+from Trainforge.scripts.harness.gate_d_single_row import (
     CAPABILITY_SCHEMA, CONTROL_EVIDENCE_SCHEMA, GATE_A_TRUST_SCHEMA,
     PINNED_AUTHORITY_SHA256, PINNED_CONTRACT_SHA256,
     PINNED_GO_CANONICAL_SHA256, PINNED_RELEASE_ROOT_SHA256, PINNED_ROW,

@@ -4591,7 +4591,7 @@ def main() -> int:
         )
         if not all(value is not None for value in required_observe):
             parser.error("Gate D observe-only requires complete control-plane identity")
-        from Trainforge.scripts.archive.gate_d_single_row import (
+        from Trainforge.scripts.harness.gate_d_single_row import (
             collect_control_plane_evidence,
         )
         args.output_dir.mkdir(parents=True, exist_ok=False)
@@ -4711,7 +4711,7 @@ def main() -> int:
     gate_d_secure_tree = None
     gate_d_prior_umask = None
     if args.gate_d_go_artifact:
-        from Trainforge.scripts.archive.gate_d_single_row import authorize_single_row
+        from Trainforge.scripts.harness.gate_d_single_row import authorize_single_row
         selected, dispatched = authorize_single_row(
             rows=rows,
             full_manifest_sha256=args.frozen_d_c1_manifest_sha256,
@@ -4724,7 +4724,7 @@ def main() -> int:
             trust_root_path=args.gate_d_wp11_public_key,
             gate_a_authority_path=args.gate_a_authority,
         )
-        from Trainforge.scripts.archive.gate_d_single_row import (
+        from Trainforge.scripts.harness.gate_d_single_row import (
             SecureOutputTree, gate_a_trusted_output_root,
         )
         gate_d_prior_umask = os.umask(0o077)
@@ -4737,7 +4737,7 @@ def main() -> int:
         full_rows = rows
         rows = [selected]
     elif args.gate_d_functional_canary:
-        from Trainforge.scripts.archive.gate_d_single_row import (
+        from Trainforge.scripts.harness.gate_d_single_row import (
             authorize_functional_single_row,
         )
         selected, dispatched = authorize_functional_single_row(
@@ -4755,7 +4755,7 @@ def main() -> int:
         # artifacts. No custom trust root or retained-dirfd security gate.
         args.output_dir.mkdir(parents=True, mode=0o700, exist_ok=False)
         gate_d_prior_umask = os.umask(0o077)
-        from Trainforge.scripts.archive.gate_d_single_row import (
+        from Trainforge.scripts.harness.gate_d_single_row import (
             collect_functional_preflight,
         )
         functional_preflight = collect_functional_preflight(
@@ -4814,7 +4814,7 @@ def main() -> int:
             ),
         )
     if args.gate_d_go_artifact or args.gate_d_functional_canary:
-        from Trainforge.scripts.archive.gate_d_single_row import (
+        from Trainforge.scripts.harness.gate_d_single_row import (
             GateDCallController, write_unconsumed,
         )
         dispatched_path = args.output_dir / "gate-d-dispatched-subset.json"
@@ -5024,7 +5024,7 @@ def main() -> int:
                 row for row in ledger_rows
                 if row.get("event") == "http_attempt_terminal"
             ]
-            from Trainforge.scripts.archive.gate_d_single_row import (
+            from Trainforge.scripts.harness.gate_d_single_row import (
                 collect_functional_postflight, functional_reasoning_bytes,
             )
             last_terminal = max(
@@ -5159,7 +5159,7 @@ def main() -> int:
         json.dumps(summary, indent=2, sort_keys=True) + "\n"
     ).encode()
     if gate_d_controller is not None:
-        from Trainforge.scripts.archive.gate_d_single_row import (
+        from Trainforge.scripts.harness.gate_d_single_row import (
             _offline_pair_validator, verify_gate_d_precommit,
             verify_full_gate_d_transaction,
         )

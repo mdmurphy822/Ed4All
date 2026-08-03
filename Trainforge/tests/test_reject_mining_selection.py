@@ -911,7 +911,7 @@ def test_no_anchor_emits_nothing_and_never_synthesizes_a_chosen():
 
 
 def _real_schema_validator():
-    from Trainforge.scripts.archive.gate_d_single_row import _offline_pair_validator
+    from Trainforge.scripts.harness.gate_d_single_row import _offline_pair_validator
 
     knowledge = Path("schemas/knowledge").resolve()
     validator, _evidence = _offline_pair_validator(

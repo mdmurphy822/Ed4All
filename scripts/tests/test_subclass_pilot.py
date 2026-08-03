@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from lib.semantik.adapter import _AdapterBlock, _AdapterChapter
-from scripts.archive import subclass_pilot as pilot
+from Trainforge.scripts.harness import subclass_pilot as pilot
 
 
 def _worked_example_chapter():
