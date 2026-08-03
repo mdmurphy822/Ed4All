@@ -1,8 +1,12 @@
-"""Train per-Bloom-level DeBERTa-v3 classifier head(s): one-vs-rest or multiclass.
+"""Prepare optional DeBERTa-v3 Bloom heads in one-vs-rest or multiclass form.
 
-Bloom-ladder initiative WI-13, operator-run precedent-mirror of
-``SemantiK/training/train_classifier.py``, extended by addendum WI-AD-01
-with a second ``--head`` mode.
+This trainer supports a staged classifier path that is currently unproven and
+unprovisioned. It is not registered as a workflow or agent tool, Ed4All ships
+no resulting weights, and the presence of this module is not authorization to
+train or provision them. Any future training requires separate operator review
+of the data, checkpoint, evaluation plan, and licensing posture. See
+``docs/validation/validators.md`` for current classifier availability and
+``docs/LICENSING.md`` for the governing licensing posture.
 
 **``--head one-vs-rest`` (default, back-compat).** Run six times (once per
 :data:`lib.bloom_labels.dataset.BLOOM_LEVELS` entry via ``--bloom-level``) to
@@ -14,21 +18,17 @@ populate the checkpoint tree
 level (input: harvested block/objective/assessment-item text; output: 1
 "this text IS at <bloom-level>" or 0, every other level).
 
-**``--head multiclass``.** ONE run trains a single ``num_labels=6`` softmax
+**``--head multiclass``.** One run trains a single ``num_labels=6`` softmax
 head over all six levels at once instead of six independent binary heads —
-the addendum's answer to the thin-class tail (a measured harvest ran roughly
-930 / 790 / 590 / 350 / 140 / 80 across understand..create — a one-vs-rest
-evaluate/create head trains on only ~100-150 positives). Writes
-``<heads-dir>/multiclass/final/`` by default.
-``--bloom-level`` is forbidden with ``--head multiclass`` (argparse error) —
-see ``docs/operations/bloom-deberta-training.md`` DECISION PROTOCOL for when
-to prefer this mode over the six one-vs-rest runs.
+useful when the evaluated label distribution does not support reliable
+independent heads. It writes ``<heads-dir>/multiclass/final/`` by default.
+``--bloom-level`` is forbidden with ``--head multiclass`` (argparse error).
 
 Base: a pre-seeded LOCAL snapshot of the MIT ``microsoft/deberta-v3-base``
 checkpoint (``models/base/deberta-v3-base`` by default — not fetched over
 the network by this script; see :func:`validate_base_model_path`).
 
-Splits come from :mod:`lib.bloom_labels.dataset` (WI-04): a seeded
+Splits come from :mod:`lib.bloom_labels.dataset`: a seeded
 per-level stratified train/val split, then either a per-split one-vs-rest
 binary view for the requested level, or a per-split multiclass view over
 all six levels. Class-weighted cross-entropy loss is always applied in
@@ -79,8 +79,8 @@ from lib.bloom_labels.dataset import (
 #: is deliberately NOT imported from there -- that module pulls in
 #: ``lib.classifiers.nli_classifier`` (a sibling import graph this trainer
 #: has no other reason to depend on), and a plain string constant is cheap
-#: to keep in sync (both are covered by the WI-04/WI-05 spec's frozen
-#: ``<heads-dir>/<level>/final`` shape).
+#: to keep in sync. Both modules preserve the
+#: ``<heads-dir>/<level>/final`` artifact shape.
 _DEFAULT_HEADS_DIR = "models/bloom_classifiers"
 
 #: Pre-seeded local snapshot of the MIT ``microsoft/deberta-v3-base``
@@ -111,7 +111,7 @@ def _is_truthy(value: Optional[str]) -> bool:
 
 
 def default_output_dir(bloom_level: str) -> Path:
-    """``<heads-dir>/<level>`` -- the exact shape the WI-05 registry reads.
+    """Return ``<heads-dir>/<level>``, the loader's per-level artifact root.
 
     :class:`lib.classifiers.bloom_deberta_heads.BloomDebertaHeads`'s
     ``default_registry`` appends the ``final`` checkpoint subdir itself
@@ -127,7 +127,7 @@ def default_multiclass_output_dir() -> Path:
 
     Sibling of :func:`default_output_dir`;
     :meth:`lib.classifiers.bloom_deberta_heads.BloomDebertaHeads.get_or_load`'s
-    auto-detect (WI-AD-01c) looks for exactly ``<heads_dir>/multiclass/final``
+    auto-detect looks for exactly ``<heads_dir>/multiclass/final``
     BEFORE falling back to the six-way one-vs-rest ladder, so a default
     (unflagged) multiclass run lands its output exactly where the loader
     checks first.
@@ -210,7 +210,8 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(
         description=(
             "Train one per-Bloom-level DeBERTa-v3 one-vs-rest binary "
-            "classifier head (operator-run; see module docstring)."
+            "classifier head. This staged utility does not authorize training; "
+            "see docs/LICENSING.md and the module docstring."
         )
     )
     ap.add_argument(
@@ -224,9 +225,8 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
             "one-vs-rest (default, back-compat): six independent per-level "
             "binary heads, one operator-run invocation per --bloom-level. "
             "multiclass: ONE num_labels=6 softmax head over all six levels "
-            "in a single run -- --bloom-level is forbidden with this mode "
-            "(see docs/operations/bloom-deberta-training.md DECISION "
-            "PROTOCOL for when to prefer it)."
+            "in a single run; --bloom-level is forbidden with this mode. "
+            "Both modes are staged, unproven, and unprovisioned."
         ),
     )
     ap.add_argument(
@@ -268,10 +268,7 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 
 def _train_one_vs_rest(args: argparse.Namespace, output_dir: Path) -> None:
-    """``--head one-vs-rest`` training path -- byte-identical to the
-    pre-WI-AD-01 ``main()`` body (only lifted into its own function so
-    :func:`main` can dispatch between this and :func:`_train_multiclass`).
-    """
+    """Train and save one binary head for the requested Bloom level."""
     print(f"[data] loading {args.labels_path} (level={args.bloom_level})")
     dataset = prepare_dataset(args.labels_path, seed=args.seed)
     train_view = one_vs_rest_view(dataset.split.train, args.bloom_level)

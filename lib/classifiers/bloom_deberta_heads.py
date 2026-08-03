@@ -1,23 +1,23 @@
-"""Singleton-load per-Bloom-level DeBERTa classifier head(s) -- one-vs-rest
-ladder or single multiclass head, auto-detected.
+"""Load optional DeBERTa Bloom-classifier artifacts from local storage.
 
-Bloom-ladder initiative WI-05, extended by addendum WI-AD-01 with a second
-loadable artifact shape. The trivote abstention contract
-(``ED4ALL_BLOOM_TRIVOTE_HEADS`` — owned by the validator wiring in a
-sibling work item, not by this module) wants a fourth, HIGH-precision
-voter alongside the generator's own asserted level, the zero-shot NLI
-pass (:mod:`lib.classifiers.bloom_zero_shot`), and the deterministic
-verb-ontology level. This module can back that voter with EITHER of two
-trained-artifact shapes (see
+The ``ED4ALL_BLOOM_TRIVOTE_HEADS`` validation path can use these heads as an
+additional high-precision voter alongside the asserted level, zero-shot NLI
+heuristic (:mod:`lib.classifiers.bloom_zero_shot`), and deterministic verb
+ontology. The head path is staged, unproven, and unprovisioned: Ed4All ships no
+weights, enabling the flag does not make a classifier available, and this
+loader does not authorize training. Current validator status is documented in
+``docs/validation/validators.md``; model and training-data licensing posture is
+documented in ``docs/LICENSING.md``.
+
+The loader supports either of two trained-artifact shapes (see
 ``lib.classifiers.training.train_bloom_deberta``'s ``--head`` flag):
 
-* **multiclass** (preferred when trained -- see
-  ``docs/operations/bloom-deberta-training.md`` DECISION PROTOCOL) — ONE
-  single ``num_labels=6`` softmax head at ``<heads_dir>/multiclass/final``.
+* **multiclass** — one ``num_labels=6`` softmax head at
+  ``<heads_dir>/multiclass/final``.
   :meth:`BloomDebertaHeads.classify_batch` softmaxes the six logits and
   takes the argmax + its probability.
-* **one-vs-rest** (the WI-05 original) — six SEPARATE, purpose-fine-tuned
-  DeBERTa heads, one per canonical Bloom level, each trained as an
+* **one-vs-rest** — six separate purpose-fine-tuned DeBERTa heads, one per
+  canonical Bloom level, each trained as an
   independent one-vs-rest binary classifier ("is this text at level X,
   yes/no"). :meth:`BloomDebertaHeads.classify_batch` argmaxes the six
   per-level sigmoid scores.
@@ -62,8 +62,8 @@ code path that can reach the network, with or without
 ``from_pretrained`` call as defense-in-depth (belt-and-suspenders on
 top of the local-path-only contract).
 
-Graceful degrade is the default for BOTH shapes: no repo ships either
-artifact (GPU training output, out of scope for this work item), so on a
+Graceful degrade is the default for both shapes: no repo ships either
+artifact, so on a
 fresh checkout ``ED4ALL_BLOOM_HEADS_DIR`` resolves to a directory that
 doesn't exist, :meth:`get_or_load` returns ``None`` on the first (cheap)
 directory-existence checks, and NO heavy ``torch`` / ``transformers``
@@ -318,11 +318,10 @@ class BloomDebertaHeads:
     ) -> Tuple[str, str]:
         """Move + (on CUDA) fp16-cast every head. Return ``(device, dtype)``.
 
-        Mirrors ``NliClassifier._place_model_on_device`` minus the NLI
-        module's VRAM-contention eviction machinery (not part of this
-        work item's spec — the three behaviors asked for are: default
-        cpu, ``.half()`` on CUDA, and a non-crashing CPU fallback when
-        CUDA is requested but unavailable).
+        Mirrors ``NliClassifier._place_model_on_device`` without the NLI
+        module's VRAM-contention eviction machinery. This loader defaults to
+        CPU, casts to fp16 on CUDA, and falls back to CPU when CUDA is
+        requested but unavailable.
 
         * ``device == "cpu"`` — no-op, byte-identical to the historical
           (no-heads) behavior. Returns ``("cpu", "float32")``.

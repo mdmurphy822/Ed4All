@@ -460,7 +460,6 @@ ed4all-backup*.tar.gz
 !/docs/operations/behavior-flags-semantik.md
 !/docs/operations/behavior-flags-trainforge.md
 !/docs/operations/behavior-flags.md
-!/docs/operations/bloom-deberta-training.md
 !/docs/operations/convert-verb.md
 !/docs/operations/demo-course.md
 !/docs/operations/development-token-stats.md
