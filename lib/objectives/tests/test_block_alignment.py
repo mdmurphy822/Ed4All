@@ -90,7 +90,11 @@ def test_alignment_adds_missed_objective_ref():
     # CO-01 was cosine-scored against the block and rejected below the
     # threshold — a genuinely weighed alternative, listed with its score.
     assert alternatives
-    assert any("CO-01" in a and "cosine" in a for a in alternatives)
+    assert any(
+        "CO-01" in a["option"] and "cosine" in a["reason_rejected"]
+        for a in alternatives
+    )
+    assert all(isinstance(a["score"], float) for a in alternatives)
     assert "no_objective_alignment" not in (
         out[0].content.get("structural_warnings") or []
     )

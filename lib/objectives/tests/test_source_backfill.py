@@ -62,11 +62,18 @@ def test_backfill_promotes_discarded_order_of_operations():
     ]
     chunks = _chunks_by_id(_chunk("c_simp"), _chunk("c_oo"))
 
+    events = []
+
+    class _Capture:
+        def log_decision(self, **kwargs):
+            events.append(kwargs)
+
     result = backfill_uncovered_chunks(
         canonical=canonical,
         pre_dedup_candidates=pre_dedup,
         chunks_by_id=chunks,
         enabled=True,
+        capture=_Capture(),
     )
     assert result.available is True
     # c_oo was uncovered before; the promotion covers it.
@@ -76,6 +83,10 @@ def test_backfill_promotes_discarded_order_of_operations():
     # A backfilled CO now NAMES order-of-operations.
     statements = " || ".join(c["statement"].lower() for c in canonical)
     assert "order of operations" in statements
+    assert len(events) == 1
+    alternatives = events[0]["alternatives_considered"]
+    assert all(a["option"] and len(a["reason_rejected"]) >= 20 for a in alternatives)
+    assert isinstance(alternatives[0]["score"], float)
 
 
 def test_backfill_promoted_source_refs_uses_real_chapter_not_self_ref():

@@ -193,6 +193,13 @@ def test_adds_grounded_analyze_complement_and_share_rises():
     assert any(
         e["decision_type"] == "objective_bloom_complement" for e in cap.events
     )
+    event = next(
+        e for e in cap.events
+        if e["decision_type"] == "objective_bloom_complement"
+    )
+    alternatives = event["alternatives_considered"]
+    assert all(a["option"] and len(a["reason_rejected"]) >= 20 for a in alternatives)
+    assert all(isinstance(a.get("score"), (int, float)) for a in alternatives)
 
 
 # ---------------------------------------------------------------------------

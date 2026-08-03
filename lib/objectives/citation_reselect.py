@@ -443,7 +443,17 @@ def _emit_reselect_capture(
                 f"the same pool (anti-fabrication: pool ⊆ chunks seen)."
             ),
             alternatives_considered=[
-                "keep the model's original citations (Fix 1A prune-only)",
+                {
+                    "option": "Keep the original citation set",
+                    "score": float(old_best_cos or 0.0),
+                    "reason_rejected": (
+                        f"Rejected because original best cosine "
+                        f"{'was unavailable' if old_best_cos is None else f'was {old_best_cos:.3f}'}; "
+                        f"the selected pool best was "
+                        f"{'unavailable' if new_best_cos is None else f'{new_best_cos:.3f}'} "
+                        f"at floor {floor:.3f} across {pool_size} chunks."
+                    ),
+                },
             ],
         )
     except Exception as exc:  # noqa: BLE001 — capture is best-effort

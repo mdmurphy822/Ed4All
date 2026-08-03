@@ -346,9 +346,21 @@ def _emit_capture(capture: Any, result: SanitizeResult) -> None:
                 "re-pointed, or reordered."
             ),
             alternatives_considered=[
-                "keep the fabricated ids (hard-blocks objective_source_refs)",
-                "cosine re-selection (citation_reselect; needs a resolvable "
-                "pool + embeddings)",
+                {
+                    "option": "Keep every supplied citation identifier",
+                    "reason_rejected": (
+                        f"Rejected because {result.entries_dropped} citation entries "
+                        f"did not resolve for {result.los_mutated} objectives."
+                    ),
+                },
+                {
+                    "option": "Replace unresolved identifiers by cosine re-selection",
+                    "reason_rejected": (
+                        f"Rejected because deterministic membership removed "
+                        f"{result.entries_dropped} entries across {result.los_scanned} "
+                        "objectives and this write seam has no scored replacement pool."
+                    ),
+                },
             ],
         )
     except Exception as exc:  # noqa: BLE001 — capture must not break the phase

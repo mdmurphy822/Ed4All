@@ -69,6 +69,9 @@ def test_relevel_apply_verb_mislabelled_understand():
     assert ev["decision_type"] == "bloom_level_assignment"
     assert "understand" in ev["rationale"] and "apply" in ev["rationale"]
     assert len(ev["rationale"]) >= 20
+    alternative = ev["alternatives_considered"][0]
+    assert alternative["option"]
+    assert "apply" in alternative["reason_rejected"]
 
 
 def test_relevel_translate_verb_mislabelled_apply():

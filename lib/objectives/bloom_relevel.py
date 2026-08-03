@@ -236,8 +236,13 @@ def _emit_relevel_capture(capture: Any, *, row: Dict[str, Any]) -> None:
                 f"bloom_level field). Deterministic, no LLM."
             ),
             alternatives_considered=[
-                "keep the mislabelled bloom_level (abcd_verb_alignment then "
-                "flags the disagreement but the label stays wrong)",
+                {
+                    "option": f"Keep declared Bloom level {row['old_level']}",
+                    "reason_rejected": (
+                        f"Rejected because main verb {row['verb']!r} maps to "
+                        f"{row['new_level']}, not {row['old_level']}."
+                    ),
+                },
             ],
         )
     except Exception as exc:  # noqa: BLE001 — capture is best-effort

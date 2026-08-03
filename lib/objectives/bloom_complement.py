@@ -502,6 +502,7 @@ def _synthesize_complements(
     chunks_by_id: Dict[str, Any],
     capture: Optional[Any],
     share_before: float,
+    min_share: float,
 ) -> List[Dict[str, Any]]:
     """One grounded complement LLM call → validated complement candidates.
 
@@ -543,6 +544,7 @@ def _synthesize_complements(
         raw_count=raw_count,
         validated_count=len(validated),
         share_before=share_before,
+        min_share=min_share,
     )
     return validated
 
@@ -556,6 +558,7 @@ def _emit_complement_capture(
     raw_count: int,
     validated_count: int,
     share_before: float,
+    min_share: float,
 ) -> None:
     """Best-effort ``objective_bloom_complement`` capture (never raises).
 
@@ -584,10 +587,23 @@ def _emit_complement_capture(
                 f"unoffered id is dropped whole."
             ),
             alternatives_considered=[
-                "leave the course apply/understand-heavy (no analyze/evaluate "
-                "objectives — learner never reasons above the apply ceiling)",
-                "synthesize ungrounded higher-order objectives (fabrication — "
-                "rejected)",
+                {
+                    "option": "Leave the objective set without complementation",
+                    "score": share_before,
+                    "reason_rejected": (
+                        f"Rejected because higher-order share {share_before:.3f} "
+                        f"was below the configured floor {min_share:.3f}."
+                    ),
+                },
+                {
+                    "option": "Accept higher-order objectives without source grounding",
+                    "score": float(validated_count),
+                    "reason_rejected": (
+                        f"Rejected because only {validated_count} of {raw_count} "
+                        f"candidates cited the {offered_count} offered chunks and "
+                        f"satisfied the {target_level} verb contract."
+                    ),
+                },
             ],
         )
     except Exception as exc:  # noqa: BLE001 — capture is best-effort
@@ -786,6 +802,7 @@ def complement_bloom_profile(
                 chunks_by_id=chunks_by_id,
                 capture=capture,
                 share_before=higher_order_share(canonical),
+                min_share=target,
             )
             # Checkpoint the call's validated candidates BEFORE the acceptance
             # pass so a stop at the next loop-top leaves this call recoverable.

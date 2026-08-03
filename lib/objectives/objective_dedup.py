@@ -962,8 +962,21 @@ def _emit_lexical_merge_capture(
                 f"candidate indices only — no statement invented."
             ),
             alternatives_considered=[
-                "single-link only (leaves ~35-50 residual cross-window dupes)",
-                "single-link lexical merge (risks a re-chained mega-cluster)",
+                {
+                    "option": "Keep the initial single-link clusters",
+                    "reason_rejected": (
+                        f"Rejected because the lexical pass absorbed {clusters_absorbed} "
+                        f"clusters at cosine {cosine_floor:.3f} and Jaccard "
+                        f"{jaccard_floor:.3f}."
+                    ),
+                },
+                {
+                    "option": "Merge on any qualifying lexical edge",
+                    "reason_rejected": (
+                        f"Rejected because complete linkage was required across "
+                        f"{clusters_before} input clusters to prevent transitive chains."
+                    ),
+                },
             ],
         )
     except Exception as exc:  # noqa: BLE001 — capture is best-effort
@@ -1617,7 +1630,14 @@ def _emit_prune_capture(
                 f"misleading provenance (no source beats a misleading one)."
             ),
             alternatives_considered=[
-                "keep full union (legacy; produced 25-chunk grab-bags)",
+                {
+                    "option": "Keep the full citation union",
+                    "score": float(len(union_ids)),
+                    "reason_rejected": (
+                        f"Rejected because {len(union_ids)} citations exceeded cap "
+                        f"{cap}; {len(dropped)} fell below the retained ranking."
+                    ),
+                },
             ],
         )
     except Exception as exc:  # noqa: BLE001 — capture is best-effort
@@ -1652,8 +1672,15 @@ def _emit_split_capture(
                 f"candidate statements only — no statement invented."
             ),
             alternatives_considered=[
-                "keep single-link clusters (discards chained distinct skills' "
-                "statements; their chunks demote to supporting evidence)",
+                {
+                    "option": "Keep the original single-link clusters",
+                    "score": float(pre_split_clusters),
+                    "reason_rejected": (
+                        f"Rejected because {clusters_split} clusters contained "
+                        f"{distinct_skill_count} distinct named skills at threshold "
+                        f"{threshold:.3f}."
+                    ),
+                },
             ],
         )
     except Exception as exc:  # noqa: BLE001 — capture is best-effort

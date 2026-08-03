@@ -357,6 +357,9 @@ def test_capture_fires_on_mutation() -> None:
     ev = cap.events[0]
     assert ev["decision_type"] == "objective_chunk_prune"
     assert len(ev["rationale"]) >= 20
+    alternatives = ev["alternatives_considered"]
+    assert all(isinstance(a, dict) for a in alternatives)
+    assert all(a["option"] and len(a["reason_rejected"]) >= 20 for a in alternatives)
 
 
 def test_no_capture_when_nothing_dropped() -> None:

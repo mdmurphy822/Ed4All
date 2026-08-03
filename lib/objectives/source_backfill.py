@@ -340,8 +340,28 @@ def _emit_backfill_capture(
                 f"promoted CO's source_chunk_ids subset the candidate's."
             ),
             alternatives_considered=[
-                "leave content chunks uncovered (skill vanishes from course)",
-                "re-synthesize a CO (fabrication — rejected)",
+                {
+                    "option": "Leave content-bearing chunks uncovered",
+                    "score": (
+                        1.0
+                        - result.uncovered_before / result.content_bearing_chunks
+                        if result.content_bearing_chunks
+                        else 1.0
+                    ),
+                    "reason_rejected": (
+                        f"Rejected because {result.uncovered_before} of "
+                        f"{result.content_bearing_chunks} chunks were uncovered "
+                        f"against target {target:.3f}."
+                    ),
+                },
+                {
+                    "option": "Synthesize replacement objectives",
+                    "reason_rejected": (
+                        f"Rejected because {result.cos_promoted} grounded discarded "
+                        f"candidates supplied {result.named_skills_added} named skills "
+                        "through promotion without inventing new statements."
+                    ),
+                },
             ],
         )
     except Exception as exc:  # noqa: BLE001 — capture is best-effort

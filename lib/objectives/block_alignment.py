@@ -211,22 +211,29 @@ def align_blocks_to_objectives(
                     reverse=True,
                 )
                 alternatives = [
-                    (
-                        f"add {oid} (cosine {cos:.3f} "
-                        + (
-                            f"< threshold {threshold}"
+                    {
+                        "option": f"Add objective {oid}",
+                        "score": float(cos),
+                        "reason_rejected": (
+                            f"Rejected because cosine {cos:.3f} was below threshold "
+                            f"{threshold:.3f}."
                             if cos < threshold
-                            else f">= threshold {threshold} but capped out "
-                            f"of top-{_TOP_K}"
-                        )
-                        + ")"
-                    )
+                            else f"Rejected because objective {oid} ranked outside "
+                            f"top-{_TOP_K} despite cosine {cos:.3f}."
+                        ),
+                    }
                     for (oid, cos) in rejected[:5]
                 ]
                 if len(rejected) > 5:
                     alternatives.append(
-                        f"...plus {len(rejected) - 5} lower-cosine "
-                        "objective candidate(s) also scored and rejected"
+                        {
+                            "option": "Add a lower-ranked objective candidate",
+                            "score": float(rejected[5][1]),
+                            "reason_rejected": (
+                                f"Rejected with {len(rejected) - 5} additional "
+                                f"candidates at or below cosine {rejected[5][1]:.3f}."
+                            ),
+                        }
                     )
                 inputs_ref = [
                     {

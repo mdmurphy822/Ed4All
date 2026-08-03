@@ -198,6 +198,10 @@ def test_prune_capture_emitted():
     assert any(e.get("decision_type") == "objective_chunk_prune" for e in events)
     ev = next(e for e in events if e["decision_type"] == "objective_chunk_prune")
     assert len(ev["rationale"]) >= 20
+    alternative = ev["alternatives_considered"][0]
+    assert alternative["option"] == "Keep the full citation union"
+    assert isinstance(alternative["score"], float)
+    assert len(alternative["reason_rejected"]) >= 20
 
 
 # ===========================================================================

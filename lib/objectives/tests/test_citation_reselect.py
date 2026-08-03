@@ -401,6 +401,10 @@ def test_capture_reuses_objective_chunk_prune(monkeypatch):
     assert events[0]["decision_type"] == "objective_chunk_prune"  # reused
     assert "c_subst" in events[0]["decision"]
     assert len(events[0]["rationale"]) >= 20
+    alternative = events[0]["alternatives_considered"][0]
+    assert alternative["option"] == "Keep the original citation set"
+    assert isinstance(alternative["score"], float)
+    assert len(alternative["reason_rejected"]) >= 20
 
 
 # ---------------------------------------------------------------------------
