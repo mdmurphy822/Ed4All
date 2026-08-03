@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from LibV2.tools.libv2.eval_harness import compare_retrieval_methods
+from LibV2.tools.libv2.evaluation.harness import compare_retrieval_methods
 
 
 def _make_course_repo(tmp_path: Path) -> Path:

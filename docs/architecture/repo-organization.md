@@ -293,7 +293,17 @@ risk. Completed items are marked below.
    core package's exact loose-module cap from 52 to 49. Extraction and figure
    families remain candidates for later bounded moves; the current GLM-OCR SDK
    lane and the legacy region-enrichment lane stay explicitly distinct.
-6. **`lib/validators/` — 115 loose.** Largest number in the tree but the
+6. **`Courseforge/generators/` — DONE.** Outline planning and textbook
+   synthesis now live under `outline/`; rewrite generation, batching, and
+   context-window helpers live under `rewrite/`. The package root retains only
+   the two shared content-generation primitives, reducing its exact cap from
+   8 to 2. All tracked callers use the canonical package paths; the moved
+   underscore modules were internal and therefore need no compatibility shims.
+7. **`LibV2/tools/libv2/` — IN PROGRESS.** Evaluation implementations now
+   live under `evaluation/`. Three documented compatibility modules remain at
+   the package root through their deprecation window, so the exact flat cap
+   stays 28 while internal imports use the canonical paths.
+8. **`lib/validators/` — 115 loose.** Largest number in the tree but the
    *weakest* case: it is a genuine package whose flat module list is the
    registry `docs/validation/gates.md` maps onto. Listed for completeness;
    the recommendation is to leave it flat and let the cap hold the line.

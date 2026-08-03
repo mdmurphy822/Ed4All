@@ -27,8 +27,8 @@ from pathlib import Path
 
 import pytest
 
-from LibV2.tools.libv2 import eval_harness
-from LibV2.tools.libv2.eval_harness import (
+from LibV2.tools.libv2.evaluation import harness as eval_harness
+from LibV2.tools.libv2.evaluation.harness import (
     benchmark_retrieval_engines,
     evaluate_retrieval,
 )

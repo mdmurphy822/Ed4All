@@ -936,7 +936,7 @@ def get_model_eval_report(
     Wave 93 — backs ``libv2 models eval <slug> <model_id>``. This
     function only surfaces the CACHED (training-time) report. To run a
     FRESH evaluation from the saved adapter, use the fresh-eval bridge
-    ``LibV2.tools.libv2.model_eval_bridge.run_fresh_eval`` (exposed as
+    ``LibV2.tools.libv2.evaluation.model_bridge.run_fresh_eval`` (exposed as
     ``libv2 models eval <slug> <model_id> --fresh``), which rebuilds the
     adapter callable and re-scores it via ``SLMEvalHarness``.
     """

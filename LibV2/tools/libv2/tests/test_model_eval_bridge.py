@@ -20,7 +20,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[4]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from LibV2.tools.libv2 import model_eval_bridge  # noqa: E402
+from LibV2.tools.libv2.evaluation import model_bridge as model_eval_bridge  # noqa: E402
 from LibV2.tools.libv2.cli import main as libv2_main  # noqa: E402
 
 

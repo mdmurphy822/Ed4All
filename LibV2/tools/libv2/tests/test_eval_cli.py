@@ -145,7 +145,7 @@ def test_eval_run_two_arg_form_dispatches_fresh_bridge(tmp_path, monkeypatch):
     The bridge is monkeypatched so the test stays CPU-only; we assert the
     dispatch happened with the right (slug, model_id) rather than actually
     loading an adapter."""
-    from LibV2.tools.libv2 import model_eval_bridge
+    from LibV2.tools.libv2.evaluation import model_bridge as model_eval_bridge
 
     repo_root = tmp_path / "libv2"
     course_dir = _stage_course(repo_root, "tst-101")

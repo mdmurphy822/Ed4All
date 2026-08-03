@@ -1,6 +1,6 @@
 """WS2 Wave C — CliRunner tests for ``libv2 retrieval-benchmark``.
 
-The command wraps ``eval_harness.benchmark_retrieval_engines`` over the WS1
+The command wraps ``evaluation.harness.benchmark_retrieval_engines`` over the WS1
 mini-course fixture (``tests/fixtures/retrieval/mini_course/``, chunks sha
 ``fc8a1c65...``, 3-question gold set) materialized into a tmp LibV2 root.
 

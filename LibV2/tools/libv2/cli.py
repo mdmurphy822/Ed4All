@@ -1371,7 +1371,7 @@ def eval_generate(ctx, slug: str, num_queries: int, output: str):
 
         libv2 eval generate my-course -n 30 -o json
     """
-    from .eval_generator import generate_and_save_eval_set
+    from .evaluation.generator import generate_and_save_eval_set
 
     repo_root = ctx.obj["repo_root"]
     course_dir = repo_root / "courses" / slug
@@ -1457,7 +1457,7 @@ def eval_run(ctx, slug: str, model_id: Optional[str], judge: str,
         )
         return
 
-    from .eval_harness import run_course_evaluation
+    from .evaluation.harness import run_course_evaluation
 
     eval_set_path = course_dir / "quality" / "eval_set.json"
     if not eval_set_path.exists():
@@ -1650,7 +1650,7 @@ def _run_ed4all_bench_eval(
     """ED4ALL-Bench dispatch — run a fresh adapter eval (judge=none).
 
     ``judge=none`` routes through the fresh-eval bridge
-    (``model_eval_bridge.run_fresh_eval``): rebuild the saved adapter into
+    (``evaluation.model_bridge.run_fresh_eval``): rebuild the saved adapter into
     an :class:`AdapterCallable` and score it with :class:`SLMEvalHarness`,
     writing a fresh ``eval_report.json`` under the model dir. Real runs
     need the ``[training]`` ML stack + the ``scripts/ops/gpu_guard.sh`` wrap
@@ -1719,7 +1719,7 @@ def eval_compare(ctx, baseline: str, comparison: str):
 
         libv2 eval compare eval_20240101.json eval_20240115.json
     """
-    from .eval_harness import compare_reports
+    from .evaluation.harness import compare_reports
 
     try:
         result = compare_reports(Path(baseline), Path(comparison))
@@ -1902,7 +1902,7 @@ def retrieval_eval(ctx, course: str, gold_queries: Optional[str], report: Option
     Example:
         libv2 retrieval-eval --course <your-course-slug>
     """
-    from .eval_harness import evaluate_retrieval
+    from .evaluation.harness import evaluate_retrieval
 
     repo_root = ctx.obj["repo_root"]
     gold_path = Path(gold_queries) if gold_queries else None
@@ -1975,7 +1975,7 @@ def retrieval_compare(
     expected_chunk_ids[], optional chunk_type/difficulty/notes).
     """
     from datetime import datetime as _dt
-    from .eval_harness import compare_retrieval_methods
+    from .evaluation.harness import compare_retrieval_methods
 
     repo_root = ctx.obj["repo_root"]
     course_dir = repo_root / "courses" / course
@@ -2497,7 +2497,7 @@ def models_eval_cmd(ctx, slug: str, model_id: str, output: str,
     alongside the model card at training time.
 
     ``--fresh`` runs a NEW evaluation from the saved adapter via the
-    fresh-eval bridge (``model_eval_bridge.run_fresh_eval`` — rebuilds
+    fresh-eval bridge (``evaluation.model_bridge.run_fresh_eval`` — rebuilds
     :class:`AdapterCallable` from the model dir and scores it with
     :class:`SLMEvalHarness`). The fresh report lands non-destructively at
     ``models/<model_id>/eval_report.fresh-<ts>.json`` unless ``--replace``
@@ -2579,11 +2579,11 @@ def _run_fresh_model_eval(
     gpu_guard wrap) instead of a bare stack trace.
     """
     from lib.decision_capture import DecisionCapture
-    from . import model_eval_bridge
+    from .evaluation import model_bridge
 
     capture = DecisionCapture(course_code=slug, phase="libv2-indexing", tool="libv2")
     try:
-        report_path = model_eval_bridge.run_fresh_eval(
+        report_path = model_bridge.run_fresh_eval(
             course_slug=slug,
             model_id=model_id,
             repo_root=repo_root,
@@ -2600,13 +2600,13 @@ def _run_fresh_model_eval(
         # rich would otherwise interpret as console markup and swallow.
         if RICH_AVAILABLE:
             console.print(
-                model_eval_bridge.TRAINING_DEPS_GUIDANCE,
+                model_bridge.TRAINING_DEPS_GUIDANCE,
                 style="yellow", markup=False,
             )
         else:
-            print(model_eval_bridge.TRAINING_DEPS_GUIDANCE)
+            print(model_bridge.TRAINING_DEPS_GUIDANCE)
         sys.exit(1)
-    except model_eval_bridge.FreshEvalError as exc:
+    except model_bridge.FreshEvalError as exc:
         print_error(str(exc))
         sys.exit(1)
     except Exception as exc:  # noqa: BLE001 — surface a clean CLI error.
@@ -2755,7 +2755,7 @@ def _print_build_provenance(manifest) -> None:
 
 # ==========================================================================
 # WS2 — retrieval-benchmark command (BM25 vs semantic vs hybrid-rrf).
-# Wraps eval_harness.benchmark_retrieval_engines: the harness runs whatever
+# Wraps evaluation.harness.benchmark_retrieval_engines: the harness runs whatever
 # index already exists (build it first with `libv2 vector-index build`, or
 # pass --build-index to build the canonical index inline). Fail-closed:
 # a missing/stale index, an unavailable backend, or a drifted gold set all
@@ -2866,7 +2866,7 @@ def retrieval_benchmark(
         libv2 retrieval-benchmark --course demo-course-1 \\
             --engines bm25,semantic,hybrid-rrf
     """
-    from .eval_harness import benchmark_retrieval_engines
+    from .evaluation.harness import benchmark_retrieval_engines
 
     repo_root = ctx.obj["repo_root"]
     course_dir = Path(repo_root) / "courses" / course
@@ -3027,7 +3027,7 @@ def _run_model_sweep(
         build_embedding_client,
     )
 
-    from .eval_harness import benchmark_retrieval_engines
+    from .evaluation.harness import benchmark_retrieval_engines
     from .vector_index import VECTOR_INDEX_DIRNAME, build_vector_index
 
     canonical_dir = course_dir / VECTOR_INDEX_DIRNAME

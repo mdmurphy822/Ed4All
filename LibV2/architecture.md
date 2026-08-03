@@ -96,7 +96,7 @@ the retrieval path never reads every chunk into an agent context.
 | `tools/libv2/result_fusion.py` | Reciprocal rank fusion |
 | `tools/libv2/vector_index.py` | Local vector-index build and exact search |
 | `tools/libv2/multi_retriever.py` | Decomposition and multi-query fusion |
-| `tools/libv2/model_eval_bridge.py` | Fresh adapter evaluation bridge |
+| `tools/libv2/evaluation/` | Evaluation generation, retrieval harness, and fresh-adapter bridge |
 | `tools/libv2/migrate.py` | Versioned, rollback-safe migrations |
 | `tools/libv2/cli.py` | Public command surface |
 

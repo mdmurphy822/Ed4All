@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from LibV2.tools.libv2.eval_harness import evaluate_retrieval
+from LibV2.tools.libv2.evaluation.harness import evaluate_retrieval
 
 
 def _write_fixture(repo_root: Path, slug: str) -> None:
