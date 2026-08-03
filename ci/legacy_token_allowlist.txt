@@ -339,7 +339,7 @@ Trainforge/parsers/tests/test_unit_extraction.py
 # lists, and the legacy source/dart + --source-kind dart sweep read path.
 Trainforge/process_course.py
 Trainforge/scripts/harness/retrieval_chunk_sweep.py
-Trainforge/synthesize_training.py
+Trainforge/synthesis/synthesize_training.py
 Trainforge/training/graph_layout.py
 
 # ── TRAINFORGE LEGACY-COMPAT TESTS (WHAT-MUST-STAY) ──────────────────────────────

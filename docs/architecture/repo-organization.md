@@ -1,5 +1,8 @@
 # Repo Organization Schema
 
+The public-safe results of completed organization and removal decisions are
+recorded in [`../reference/repository-cleanup.md`](../reference/repository-cleanup.md).
+
 **Status: ADOPTED** — Phase 1 landed 2026-07-29 (this document, the four-bucket
 `docs/` taxonomy, `ci/layout_guard.py`); the runtime-collapse phase landed the
 same day (owner decision): `state/`, `training-captures/`, `seats/`, `demo/`,
