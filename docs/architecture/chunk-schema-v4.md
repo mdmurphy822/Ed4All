@@ -2,7 +2,7 @@
 
 This document records the durable chunk-v4 contract declared by
 `CHUNK_SCHEMA_VERSION = "v4"` in `Trainforge/process_course.py`. See
-[`ADR-001` Contract 1](ADR-001-pipeline-shape.md#contract-1--chunk-schema-versioning)
+[`ADR-001` chunk-schema contract](ADR-001-pipeline-shape.md#chunk-schema)
 for the versioning boundary.
 
 ## Compatibility contract

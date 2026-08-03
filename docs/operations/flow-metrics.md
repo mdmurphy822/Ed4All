@@ -126,7 +126,7 @@ The chunk contract is documented in
 [`docs/architecture/chunk-schema-v4.md`](../architecture/chunk-schema-v4.md).
 Base-pass ownership of `metrics_semantic_version` and the separation between
 base and alignment metrics are defined by
-[`ADR-001`](../architecture/ADR-001-pipeline-shape.md#contract-2--metrics_semantic_version-ownership).
+[`ADR-001`](../architecture/ADR-001-pipeline-shape.md#quality-metrics).
 
 ## Versioning contract
 
