@@ -47,7 +47,7 @@ PINNED_CONTRACT_SHA256 = (
     "5442ea5d1febd0fe4d1750f8757da65c0f18132efc2756082bf1020974d02315"
 )
 PINNED_ROW = {
-    "chunk_id": "openstax_ea2e_scan_eval_chunk_00276",
+    "chunk_id": "fixture_source_chunk_00276",
     "pair_type": "preference",
     "chunk_sha256": "b34811be73afe740d9e38d1a93f1123180f1655642960d0f4ec9eacfef2c015e",
     "objective_id": "co-155",

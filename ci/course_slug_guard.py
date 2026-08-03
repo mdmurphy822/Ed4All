@@ -100,7 +100,7 @@ _SELF_PATHS: Set[str] = {
 # envelopes are uppercase, the slug families lowercase.
 # Boundary note: ``\b`` does NOT break between ``_`` and a letter (both
 # word chars), so a slug embedded in an underscore-joined identifier
-# (``openstax_ea2e_scan_eval_chunk_00276``) evades a ``\b``-anchored
+# (``course_slug_joined_to_a_fixture``) evades a ``\b``-anchored
 # pattern. Every family therefore (a) opens with a ``(?<![A-Za-z0-9])``
 # lookbehind instead of ``\b`` and (b) accepts ``[-_]`` joiners, so the
 # underscore spelling of a slug is caught too.

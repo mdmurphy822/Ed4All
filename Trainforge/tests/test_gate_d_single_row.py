@@ -29,7 +29,7 @@ ELIG="95fd0ba42871968fb344961669299fc70643b94bcff2b6b3922c5117dddc018a"
 ORDER="f0be5cf9600418e60e75b0a566234f51118f64b94ca421686322e203d456315e"
 RUN="gate-d-v1.2.3-dpo-00276-seed0-001"
 OUT=Path("synthetic-evidence/gate-d-canary-output").resolve()
-FUNCTIONAL_ROW_ID="openstax_ea2e_scan_eval_chunk_00183"
+FUNCTIONAL_ROW_ID="fixture_source_chunk_00183"
 FUNCTIONAL_ROW_SHA="44082f134734ef019e01f0bc51cfa887725fde67089e1146cd00f29b5b4452c0"
 
 @pytest.fixture(autouse=True)
