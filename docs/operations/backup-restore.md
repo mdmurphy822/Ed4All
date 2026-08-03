@@ -1,92 +1,187 @@
-# `ed4all backup` (OP3)
+# Backup and restore
 
-A **complete, restore-able snapshot** of every mutable Ed4All data directory —
-and a verifier for it. Unlike [`support-bundle`](support-bundle.md) (a redacted
-*diagnostic* slice), a backup is meant to bring a working system back, so it
-includes secrets and is written owner-only `0600`.
+`ed4all backup` creates a private recovery archive from Ed4All’s resolved data
+directories and verifies archives before restoration. It is a data backup, not
+an application image, dependency mirror, or model snapshot.
+
+Backups may contain credentials, course content, generated outputs, learner or
+operator activity, and model interaction records. Treat every archive as
+sensitive even when its filename or manifest looks harmless.
+
+## Private data scope
+
+The command resolves storage through [`lib/paths.py`](../../lib/paths.py), so it
+honors the active data root and supported per-directory overrides. Its scope
+includes application state, the LibV2 course library, Courseforge exports,
+training captures, SemantiK output, and a separately relocated run-state tree
+when one is configured.
+
+The archive includes credentials stored inside those directories. It is created
+with owner-only file permissions, but it is a gzip-compressed tar archive—not an
+encrypted archive.
+
+The following remain outside the application backup:
+
+- container images and writable container layers;
+- model weights and model-server volumes;
+- embedding, tokenizer, browser, and package caches;
+- external databases or object stores not resolved by Ed4All path helpers; and
+- source documents held outside the configured data directories.
+
+Re-create excluded dependencies from approved upstream sources or protect them
+with the backup facilities of the platform that owns them. Do not add dependency
+payloads or model caches to the project repository.
+
+## Create an archive
+
+Quiesce writes before creating a recovery point: stop active workflows and
+prevent uploads or library mutations. The backup is a filesystem walk, not a
+transactional snapshot, so concurrent writes can produce an internally
+inconsistent point in time.
+
+Choose a new path in private, operator-controlled storage:
 
 ```bash
-# Create a backup of every resolved data dir (0600, includes secrets.json)
-ed4all backup --output /secure/ed4all-backup.tar.gz
-
-# Verify an existing archive (manifest sha256 + libv2 fsck)
-ed4all backup --verify /secure/ed4all-backup.tar.gz
+export ED4ALL_PRIVATE_BACKUP_DIR='<private-backup-directory>'
+export ED4ALL_BACKUP="$ED4ALL_PRIVATE_BACKUP_DIR/ed4all-backup.tar.gz"
+ed4all backup --output "$ED4ALL_BACKUP"
 ```
 
-`--output` (create) and `--verify` are mutually exclusive.
+The command writes an embedded `manifest.json` containing archive member names,
+sizes, and SHA-256 digests. It reports included and missing data roots and sets
+the resulting archive mode to `0600` where the filesystem permits it.
 
-## What's IN
-
-Every directory in the `_DATA_DIR_KEYS` relocation set, **resolved through
-`lib/paths` helpers** so `ED4ALL_HOME` and each per-dir override are honored —
-paths are never hardcoded:
-
-| Archive prefix | Resolver | Honors |
-|----------------|----------|--------|
-| `state/` | `ED4ALL_HOME/state` (home-aware, call-time) | `ED4ALL_HOME` |
-| `libv2/` | `lib.paths.libv2_path()` | `ED4ALL_LIBV2_ROOT` → `ED4ALL_HOME` |
-| `exports/` | `lib.paths.courseforge_exports_dir()` | `ED4ALL_HOME` |
-| `training-captures/` | `lib.paths.get_training_captures_dir()` | `ED4ALL_TRAINING_CAPTURES_DIR` → `ED4ALL_HOME` |
-| `semantik-output/` | `lib.paths.semantik_output_dir()` | `ED4ALL_HOME` (dual-reads a legacy `dart-output/` basename from a pre-SemantiK layout; old backups whose manifest carries the `dart-output` key still restore — restore iterates the manifest keys generically) <!-- legacy-token: allow --> |
-| `state-runs/` | `lib.paths.get_state_runs_dir()` | `ED4ALL_STATE_RUNS_DIR` — added **only** when the runs subtree is relocated OUTSIDE the state root (scattered layout) |
-
-A missing directory is reported (`missing_dirs`) and skipped — not fatal.
-
-`manifest.json` (at the archive root) records the resolved `dirs`, the
-`missing_dirs`, and every member's `arcname` / `size` / `sha256`.
-
-## What's OUT
-
-* **Docker-only external stores** — the HuggingFace model cache and the ollama
-  model store live outside the data-dir set and are **out of scope**. They are
-  re-fetchable and large; back them up with your container/volume tooling, not
-  this command. See [`docker.md`](docker.md).
-* Nothing else is filtered — a backup is deliberately complete.
-
-## Secret handling
-
-A backup **includes `secrets.json`** on purpose: a restored system needs its
-credentials to be functional. Consequences:
-
-* The archive is chmod'd to **`0600`** (owner read/write only) and the command
-  says so on stdout.
-* Treat the file as a credential. **Do not commit it, do not share it**, store
-  it in your secrets-grade location.
-
-This is the deliberate inverse of `support-bundle`, which *drops* secrets so it
-is safe to hand to a maintainer.
-
-## Verification (`--verify`)
-
-`--verify ARCHIVE` extracts the archive to a temp dir (refusing any member whose
-path escapes the extract root) and:
-
-1. **Recomputes every member's sha256** against the embedded `manifest.json`. A
-   mismatch or a missing member fails verification — this is what catches a
-   **corrupted member**. A tar/gzip stream that is itself unreadable fails
-   loudly rather than raising.
-2. **Runs the LibV2 fsck** (`lib/libv2_fsck.py`) over the extracted `libv2/`
-   tree, folding any blob/catalog **error** into the verdict.
-
-Exit code `0` = verified, `1` = failed (not restore-safe). The temp extraction
-is a full copy of the archive; ensure enough scratch space for a large backup.
-
-## Restore
-
-Restore is a manual, deliberate step (there is no `--restore` — overwriting a
-live data root should never be a single flag):
+There is no create-mode `--dry-run`, no incremental mode, and no built-in
+retention policy. The output path is opened for writing and an existing file can
+be replaced. Before running the command, confirm the target is the intended new
+archive:
 
 ```bash
-# 1. Verify first
-ed4all backup --verify /secure/ed4all-backup.tar.gz
+test ! -e "$ED4ALL_BACKUP"
+```
 
-# 2. Extract into the target data root (ED4ALL_HOME, or the repo root)
-tar -xzf /secure/ed4all-backup.tar.gz -C "$ED4ALL_HOME"
+A configured data directory that does not exist is reported and skipped. The
+archive can still be created. Review that list: a missing directory may be
+expected on a new installation, or it may indicate an incorrect environment.
+The creator also skips a source file it cannot read, so quiescing the system and
+performing a separate inventory or storage-level snapshot is important for
+high-assurance recovery.
 
-# 3. Re-run fsck against the live tree
+## Verify an archive
+
+Verify immediately after creation and again before every restore:
+
+```bash
+ed4all backup --verify "$ED4ALL_BACKUP"
+```
+
+Verification safely extracts to a temporary directory, rejects archive members
+that escape that directory, checks every manifest-listed member against its
+SHA-256 digest, and runs a read-only LibV2 consistency check when the library is
+present.
+
+Missing archives, unreadable tar or gzip streams, unsafe paths, missing
+manifests, missing members, digest mismatches, and LibV2 error findings make the
+archive not restore-safe and return a nonzero status. If the LibV2 checker itself
+cannot run, verification reports that it was skipped; repeat the check in a
+working Ed4All environment before treating the archive as disaster-recovery
+ready.
+
+`--output` and `--verify` are mutually exclusive. The command has no mode that
+repairs a damaged archive.
+
+## Encryption and retention
+
+Ed4All does not encrypt, upload, rotate, or expire backup archives. The operator
+is responsible for:
+
+- encrypting archives at rest and in transit with an approved system;
+- controlling access to encryption keys separately from the archive;
+- keeping multiple recovery points in failure-independent locations;
+- defining retention and secure-deletion periods; and
+- testing restores often enough to detect configuration or format drift.
+
+File mode `0600` protects against other local users under normal Unix permission
+semantics. It does not protect against privileged users, copied files, lost
+media, remote storage exposure, or an unencrypted transfer.
+
+## Restore safely
+
+There is deliberately no `ed4all backup --restore` command. Restoration can
+overwrite live state and therefore requires explicit staging and conflict
+review.
+
+First verify and extract into a new temporary directory:
+
+```bash
+ed4all backup --verify "$ED4ALL_BACKUP"
+export ED4ALL_RESTORE_STAGE="$(mktemp -d)"
+tar -xzf "$ED4ALL_BACKUP" -C "$ED4ALL_RESTORE_STAGE"
+find "$ED4ALL_RESTORE_STAGE" -maxdepth 2 -mindepth 1 -print
+```
+
+Inspect `manifest.json`, the top-level data prefixes, available disk space, and
+the destination configuration. Do not extract an unverified archive directly
+over a live data root.
+
+For a unified `ED4ALL_HOME` layout, preview file conflicts with `rsync` after
+stopping Ed4All services:
+
+```bash
+test -n "$ED4ALL_HOME"
+rsync -a --dry-run --itemize-changes --exclude manifest.json \
+  "$ED4ALL_RESTORE_STAGE/" "$ED4ALL_HOME/"
+```
+
+The staging root also contains `manifest.json`; exclude it when applying the
+restore because it describes the archive rather than live application state:
+
+```bash
+rsync -a --exclude manifest.json "$ED4ALL_RESTORE_STAGE/" "$ED4ALL_HOME/"
+```
+
+For a scattered layout, map each archive prefix to the corresponding active
+path helper override instead of copying the staging root wholesale. If a
+destination already contains useful state, preserve or rename it before the
+copy. Neither tar nor rsync can decide which conflicting course, checkpoint, or
+credential is authoritative.
+
+Remove the dedicated staging directory with your platform’s approved temporary
+file cleanup only after the restored system passes verification.
+
+## Disaster-recovery verification
+
+A successful archive checksum is necessary but not sufficient. Test the
+restored system in isolation before returning it to service:
+
+```bash
 ed4all fsck
+ed4all doctor
 ```
 
-The archive's top-level prefixes (`state/`, `libv2/`, …) match the `ED4ALL_HOME`
-data layout, so extracting into `ED4ALL_HOME` reconstitutes the tree. For a
-scattered layout (per-dir overrides), extract each prefix to its override target.
+Then verify that:
+
+- expected courses and run histories are present;
+- credentials are loaded from the intended private store;
+- manifests, blobs, and indexes refer to available artifacts;
+- required model and dependency stores have been restored or rebuilt; and
+- a synthetic, non-private smoke workflow can read and write the restored data
+  root without modifying production state.
+
+Record the archive identity, verification result, restore destination, software
+revision, and smoke-test result in the operator’s private recovery log. A backup
+is proven only by a successful restore exercise.
+
+## Failure semantics
+
+- Creation reports missing roots but does not treat every absent optional root
+  as fatal.
+- Verification fails closed on archive corruption, manifest mismatch, unsafe
+  extraction paths, and LibV2 consistency errors.
+- Verification never changes the archive or live data.
+- Restore conflict resolution is manual and explicit.
+- No backup failure authorizes falling back to an older unverified archive.
+
+For container-specific volume exclusions, see [Docker deployment](docker.md).
+For a redacted diagnostic artifact that is safer to share with a maintainer,
+see [Support bundles](support-bundle.md).
