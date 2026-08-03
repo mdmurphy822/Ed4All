@@ -1,20 +1,18 @@
 # Archived one-shot migration scripts
 
-These are executed, one-shot LibV2-archive migration scripts kept for
-provenance. Each was run once against on-disk LibV2 course archives to
-retroactively backfill a field, reclassify nodes, or rebuild a graph as
-the chunk / concept-graph / pedagogy-graph emit pipeline evolved. The
-behaviors they performed are now part of the emit pipeline itself, so a
-fresh run no longer needs them.
+The remaining files are unsupported historical one-shot migrations retained
+temporarily while they are reviewed and moved to the ignored regression shelf.
+They are not production tools, supported CLI entry points, or templates for new
+repair work.
 
-They are not wired into production workflows or the CLI. Their behavior is
-frozen, but focused regression tests remain in CI so the historical migrations
-stay reproducible and auditable. Do not extend them; if a new migration is
-needed, write a new script rather than reviving one of these.
+Two files remain here because tracked references must be resolved first:
 
-`test_wave76_clean_concept_graph.py` is the companion regression test for
-`wave76_clean_concept_graph.py` and is kept alongside its script. It runs
-against a synthetic stub graph and pulls in no real course data.
+- `wave75_classify_concept_graph.py` is imported directly by
+  `Trainforge/tests/test_concept_graph_classification.py`.
+- `wave81_reclassify_chunks.py` still has tracked legacy references that must be
+  removed or redirected before it is shelved.
 
-`Trainforge/tests/test_concept_graph_classification.py` likewise preserves the
-classification contract exercised by `wave75_classify_concept_graph.py`.
+New supported repair behavior belongs in a purpose-named directory under
+`Trainforge/scripts/ops/`, `Trainforge/scripts/maintenance/`, or
+`Trainforge/scripts/harness/`, according to its role. Historical scripts belong
+in the recursively ignored regression directory, not in tracked source.
