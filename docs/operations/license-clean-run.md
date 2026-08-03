@@ -1,167 +1,144 @@
-# License-clean pipeline run — opt-in deployment recipe (W-D11.F)
+# License-clean pipeline run
 
-This file documents how to opt INTO a license-clean Ed4All pipeline run. The Anthropic-defaulted path remains the canonical / backward-compatible default — this recipe is for operators who want a corpus that is ToS-clean from end to end (so the trained SLM adapter can be redistributed without separately negotiated provider agreements).
+Use this runbook when Ed4All outputs may become courseware, training pairs, or
+model artifacts. It keeps every authoring and synthesis surface on an explicitly
+selected, license-cleared provider and fails loudly when that provider is not
+available.
 
-Cross-reference: `docs/LICENSING.md` is the canonical ToS-posture document. Read it before kicking off a multi-hundred-dispatch run.
+> **Corpus privacy is invariant.** Source books, converted content, course
+> identifiers, generated courses, training pairs, adapters, and run captures
+> are private. Keep them outside the repository and do not publish them.
 
----
+The authoritative licensing policy is [`docs/LICENSING.md`](../LICENSING.md).
+Review it, the selected model license, and the provider terms before every
+production run. This document is an operational checklist, not legal advice.
 
-## TL;DR — the four env vars
+## Supported provider posture
 
-| Env var | License-clean value | What it changes |
-|---------|---------------------|-----------------|
-| `COURSEFORGE_REWRITE_PROVIDER` | `local` | Routes the Courseforge rewrite-tier authoring surface through a local OSS server (Ollama / vLLM) instead of Anthropic. |
-| `COURSEPLANNER_PROVIDER` | `local` | **W-D14**: routes the Courseforge course-outliner surface (canonical `TO-NN` / `CO-NN` objective synthesis from `textbook_structure.json`) through `Courseforge/generators/outline/_outliner_provider.py::OutlinerProvider`. The synthesised objective text propagates to every downstream chunk's `learning_outcome_refs[]`, so this surface IS training-data exposure. Bypasses the Claude Code `course-outliner` subagent dispatch. Reuses the same `LOCAL_SYNTHESIS_*` env vars as the other local-OSS surfaces. |
-| `TRAINFORGE_ASSESSMENT_PROVIDER` | `local` | **W-D15**: routes the Trainforge assessment-generator surface (assessment-question authoring grounded in course content chunks) through `Trainforge/generators/providers/_assessment_provider.py::AssessmentGeneratorProvider`. The authored questions land in `assessments.json` and feed into the downstream `training_synthesis` instruction-pair / preference-pair surface, so this surface IS training-data exposure. Bypasses the Claude Code `assessment-generator` subagent dispatch. Reuses the same `LOCAL_SYNTHESIS_*` env vars as the other local-OSS surfaces. |
-| `TRAINFORGE_TARGET_MODELS` | `local/qwen2.5-14b,together/llama-3.3-70b` (or similar — operator-chosen CSV) | Cosmetic dataset_config.json field documenting which teacher models the corpus was synthesized against; lets the LibV2 audit trail record the actual ToS-clean teachers used. |
-| `COURSEFORGE_BLOCK_ROUTING_PATH` | optional legacy override | The checked-in routing YAML still has per-tier Qwen choices; it is not required for the canonical shared Nemotron seat. |
+| Training-pair provider | Operational posture |
+|---|---|
+| `local` | Recommended license-clean route. Use an OpenAI-compatible server with a model whose license permits the intended output use. |
+| `together` | Hosted OSS alternative. It is paid and networked; verify the current hosted-model license and provider terms before use. |
+| `mock` | Plumbing tests only. Its template output is not a shippable training corpus. |
+| `claude_session` | Not a license-clean default. It fails closed unless `TRAINFORGE_ALLOW_ANTHROPIC_SYNTHESIS` is explicitly truthy and requires a dispatcher. Use only with a separate agreement permitting derivative training. |
+| `anthropic` | Removed from training-pair synthesis and rejected unconditionally. There is no acknowledgment bypass. |
+| `nvidia` | Rejected unconditionally for training-pair synthesis. There is no acknowledgment bypass. |
 
-Plus the prerequisites the pipeline already documents on the canonical `--provider local` path:
+The accepted truthy acknowledgment values for `claude_session` are `1`,
+`true`, `yes`, and `on` (case-insensitive). The acknowledgment records an
+operator decision; it does not change provider terms or make the output
+license-clean.
 
-- `COURSEFORGE_TWO_PASS=true` — required for `COURSEFORGE_BLOCK_ROUTING_PATH` to take effect.
-- `COURSEFORGE_PROVIDER=local` — routes the legacy single-pass content-generator surface; same env var the canonical `docs/LICENSING.md` recommends.
-- `LOCAL_SYNTHESIS_BASE_URL` (default `http://localhost:8000/v1`) and `LOCAL_SYNTHESIS_MODEL` (default `nemotron-3-nano-30b-a3b`) — read by every local-OSS provider (synthesis, curriculum-alignment, content-generator, outline, rewrite).
-- `CURRICULUM_ALIGNMENT_PROVIDER=local` — routes Trainforge teaching-role classification through the local server.
+## 1. Install and prepare
 
----
+1. Install Ed4All and the required extras using the maintained
+   [installation guide](installation.md). Do not vendor dependency source,
+   environments, model weights, or caches into this repository.
+2. Place the private input corpus in an operator-controlled location outside
+   the repository.
+3. Start an OpenAI-compatible local inference server. Choose its endpoint and
+   model for the current deployment; this runbook intentionally does not pin a
+   host, port, device, or model.
+4. Confirm the selected model license permits the intended courseware and
+   derivative-training use.
+5. Confirm the server reports the exact model you intend to use. Staged local
+   synthesis requires an explicit `LOCAL_SYNTHESIS_MODEL` and rejects a
+   conflicting generic model selector.
 
-## Pre-flight checklist
+## 2. Pin every authoring surface
 
-Before kicking off a license-clean run:
-
-- [ ] A strict OpenAI-compatible local model server is running at `http://localhost:8000/v1`. Provision it with the exact pinned command in `docs/operations/nemotron-spark-serving.md` § “Serve Nano (fast tier)”. Ed4All does not launch a server and has no implicit Ollama fallback.
-- [ ] The required model pull completed. For the recipe below the local server must serve `nemotron-3-nano-30b-a3b` (canonical NVIDIA Nano served ID; roughly 30B total / 3.5B active parameters, with deployment memory determined by engine and precision).
-- [ ] **`ANTHROPIC_API_KEY` is explicitly UNSET** for the run. License-clean provider routing fails closed on restricted synthesis paths; unsetting the key is an additional operator safeguard against an explicitly selected Anthropic SDK surface.
-- [ ] Calibration prerequisite for `assessment_item` is met (see next section).
-- [ ] `pip install -e '.[embedding]'` has run — the four statistical-tier validators wired into the two-pass router (objective_assessment_similarity, concept_example_similarity, objective_roundtrip_similarity, bloom_classifier_disagreement) need `sentence-transformers` + `transformers` + `torch`. Without these the validators emit `EMBEDDING_DEPS_MISSING` warnings and skip; for production runs set `TRAINFORGE_REQUIRE_EMBEDDINGS=true` to fail-closed instead.
-- [ ] `ED4ALL_EMBEDDING_DEVICE` is pinned to a device this host actually has (default `cuda`; there is **no** CUDA→CPU fallback). Distinct from the extras check above and not covered by `TRAINFORGE_REQUIRE_EMBEDDINGS`: with the extras installed but the requested device absent, the embedding-tier gates raise `EmbeddingModelUnavailable` and the gate manager fails them closed with a critical `EMBEDDING_MODEL_UNAVAILABLE`, even though every one of those gate rows is wired `on_error: warn`. On a GPU-less box export `ED4ALL_EMBEDDING_DEVICE=cpu`. See `docs/architecture/validation-architecture.md` § 4.2.
-
----
-
-## Calibration prerequisite for `assessment_item`
-
-`Courseforge/CLAUDE.md` states that the `assessment_item` block "MUST stay on Anthropic to avoid silent regression". That guidance was calibrated against `claude-sonnet-4-6`; the 32B local substitute in `block_routing.license_clean.yaml` is the right SHAPE for license-clean ops but its distractor-quality + misconception-targeting performance has NOT been empirically validated against the Courseforge eval suite at the time this recipe ships.
-
-The full calibration loop is documented inline in `Courseforge/config/block_routing.license_clean.yaml` (under the "CALIBRATION RISK" header at the top of the file). Summary:
-
-1. Pick a representative chapter (10-20 blocks of every type).
-2. Rebuild that chapter under both routings (license-clean variant vs. canonical).
-3. Compare outputs against the four validators wired into the `assessment_item.validators.required` matrix:
-   - `objective_assessment_similarity` (>=0.55 cosine floor).
-   - `bloom_alignment`.
-   - `answerability`.
-   - plus the `optional` `distractor_entropy` advisory.
-4. If the local-32B variant fails any required gate at a meaningfully higher rate than the Anthropic baseline, KEEP `assessment_item.rewrite` cascade pinned to the canonical `large` tier (i.e. comment out the assessment_item entry in the license-clean variant) and accept the per-block ToS hit on `assessment_item` only.
-
-Until that calibration loop closes, courses built under the license-clean variant should NOT promote past `non_certified_archive` on the Wave-3 promotion chain (`lib/governance/course_status.py::derive_course_status`). The `course_status` enum's `certified_*` cohorts gate on `assessment_item` distractor quality through the `INSTRUCTIONAL_GATE_IDS` cohort; an uncalibrated routing hit there is a structural signal that the corpus is not yet trainable-grade.
-
----
-
-## Recipe — minimum viable license-clean run
+Do not rely on inherited shell state or provider defaults. Pin the local route
+explicitly for each surface whose generated text can flow into the course or
+training corpus:
 
 ```bash
-# Start the provisioned strict OpenAI-compatible TRT-LLM/vLLM seat.
-# The canonical seat serves nemotron-3-nano-30b-a3b on localhost:8000.
-
-# Belt-and-braces: explicitly unset Anthropic key.
-unset ANTHROPIC_API_KEY
-
-# Provider routing — the documented env vars.
-export COURSEFORGE_REWRITE_PROVIDER=local
-export COURSEPLANNER_PROVIDER=local             # W-D14 — course-outliner surface
-export TRAINFORGE_ASSESSMENT_PROVIDER=local     # W-D15 — assessment-generator surface
-export TRAINFORGE_TARGET_MODELS="local/nemotron-3-nano-30b-a3b"
-
-# Prerequisites the canonical license-clean recipe already documents.
-export COURSEFORGE_TWO_PASS=true
+export TEXTBOOK_SYNTHESIS_PROVIDER=local
+export COURSEPLANNER_PROVIDER=local
 export COURSEFORGE_PROVIDER=local
+export COURSEFORGE_TWO_PASS=true
+export COURSEFORGE_OUTLINE_PROVIDER=local
+export COURSEFORGE_REWRITE_PROVIDER=local
 export CURRICULUM_ALIGNMENT_PROVIDER=local
-export LOCAL_SYNTHESIS_BASE_URL=http://localhost:8000/v1
-export LOCAL_SYNTHESIS_MODEL=nemotron-3-nano-30b-a3b
-export TRAINFORGE_REQUIRE_EMBEDDINGS=true
+export TRAINFORGE_ASSESSMENT_PROVIDER=local
+export TRAINFORGE_SYNTHESIS_PROVIDER=local
 
-# Run the full pipeline.
+export LOCAL_SYNTHESIS_BASE_URL="<OPENAI_COMPATIBLE_BASE_URL>"
+export LOCAL_SYNTHESIS_MODEL="<LICENSE_CLEARED_MODEL_ID>"
+```
+
+Provide credentials through the deployment's secret manager if the local
+endpoint requires authentication. Never write keys into tracked files, command
+examples, run reports, or captured logs.
+
+SemantiK conversion settings are deployment-specific. Select the current local
+GLM-OCR, SDK, enrichment, and heading-judge path described in the
+[pipeline invocation guide](pipeline-invocation.md); do not substitute a
+historical conversion stack.
+
+## 3. Validate, then run
+
+First resolve the workflow without dispatching work:
+
+```bash
 ed4all run textbook-to-course \
-  --corpus pdfs/ \
-  --course-name <course-name> \
-  --provider local
+  --corpus "<PRIVATE_CORPUS_PATH>" \
+  --course-name "<PRIVATE_COURSE_NAME>" \
+  --provider local \
+  --mode local \
+  --dry-run
 ```
 
----
-
-## Together fallback (no 24 GB GPU)
-
-For deployments without a consumer 24 GB GPU, swap the `large` tier in the routing YAML to a hosted Apache-2.0 OSS model. Edit `Courseforge/config/block_routing.license_clean.yaml`'s `capability_tiers.large` block to:
-
-```yaml
-  large:
-    provider: together
-    model: Qwen/Qwen2.5-72B-Instruct-Turbo
-    temperature: 0.4
-    max_tokens: 2400
-```
-
-Then add `TOGETHER_API_KEY` to the env. Together AI's ToS explicitly permits using outputs as training data; Qwen2.5-72B is gated by the Qwen License Agreement which permits derivative training at any scale (commercial use of the model itself is gated at >100M MAU). See `docs/LICENSING.md` Synthesis providers table for the full per-model license matrix.
-
----
-
-## What's NOT covered (engineering-wave gaps)
-
-The five-env-var recipe above closes the largest training-data exposure paths in the pipeline. The Anthropic-pinned subagent surfaces have all been routed through in-process license-clean providers as of Wave W-D15:
-
-## Conversion (SemantiK) — preferred local GLM-OCR lane
-
-The PDF → accessible-HTML conversion stage is **SemantiK**. The preferred local
-recipe uses the MIT-licensed GLM-OCR weights, Apache-2.0 `glmocr` SDK and layout
-stack, deterministic enrichment, and the local Super heading judge. Select it
-explicitly; the flag is still off by default in code.
+Then run the same command without `--dry-run`:
 
 ```bash
-export SEMANTIK_GLMOCR_LANE=1
-export SEMANTIK_GLMOCR_BASE_URL=http://localhost:8002/v1
-export SEMANTIK_GLMOCR_MODEL=glm-ocr
-export SEMANTIK_HEADING_JUDGE_BASE_URL=http://localhost:8123/v1
-export SEMANTIK_HEADING_JUDGE_MODEL=nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
+ed4all run textbook-to-course \
+  --corpus "<PRIVATE_CORPUS_PATH>" \
+  --course-name "<PRIVATE_COURSE_NAME>" \
+  --provider local \
+  --mode local
 ```
 
-With `SEMANTIK_GLMOCR_LANE` unset, the live default-by-code is the local
-ModernBERT council cascade. It remains a license-clean compatibility path, not
-the preferred deployment recipe. The flag-gated page arranger is an alternate
-compatibility route and is not required for GLM-OCR.
+Follow the stage, resume, stop, and timeout procedures in
+[`pipeline-invocation.md`](pipeline-invocation.md). Run the validation gates
+defined in `config/workflows.yaml`; stop at the first failed gate and fix its
+cause. Never lower a threshold, downgrade severity, or switch providers as an
+implicit fallback.
 
-**Optional hosted large-model quality seat.** Stage-6 specialist generation (and the
-off-by-default Stage-5d structure reviewer) can be routed to a hosted large-model
-endpoint for higher quality:
+Before promotion, inspect the decision-capture and provider provenance for all
+authoring and synthesis calls. A missing event, unexpected provider, unexpected
+model, or server identity mismatch invalidates the run until investigated.
+
+## Hosted OSS alternative
+
+Together remains the implemented hosted alternative for training-pair
+synthesis:
 
 ```bash
-export SEMANTIK_SPECIALIST_PROVIDER=nvidia   # opt-in quality seat, not a dependency
-export NVIDIA_API_KEY=nvapi-...
-# SEMANTIK_SPECIALIST_MODEL / SEMANTIK_STRUCTURE_REVIEW_MODEL override the model;
-# both resolve through NVIDIA_LARGE_MODEL → meta/llama-3.3-70b-instruct by default.
+export TRAINFORGE_SYNTHESIS_PROVIDER=together
+export TOGETHER_API_KEY="<FROM_SECRET_MANAGER>"
+export TOGETHER_SYNTHESIS_MODEL="<LICENSE_CLEARED_HOSTED_MODEL_ID>"
 ```
 
-This hosted seat produces **structured product content** (the accessible HTML),
-not a training-data corpus. The standard content → training-data caveat applies:
-operators who want a fully ToS-clean training corpus should keep
-`SEMANTIK_SPECIALIST_PROVIDER=local` (the default), which leaves the conversion
-path with zero cloud exposure. Full flag detail + the licensing row:
-`docs/operations/behavior-flags-semantik.md` and `docs/LICENSING.md`.
+This changes only the training-pair provider. Any other authoring surface stays
+on the explicitly pinned provider shown above unless its own provider setting
+is deliberately changed and reviewed. Because hosted catalogs and terms can
+change, re-check both before dispatch rather than copying a historical model
+name from documentation.
 
-### Assessment-generator subagent (W-D15) — closed
+## Release checklist
 
-W-D15 closes the assessment-generator subagent gap. `TRAINFORGE_ASSESSMENT_PROVIDER=local` (or any registered OpenAI-compatible provider) now routes assessment-question authoring through `Trainforge/generators/providers/_assessment_provider.py::AssessmentGeneratorProvider`, mirroring the W-D14 `OutlinerProvider` pattern. The authored questions land in `assessments.json` and feed into the downstream `training_synthesis` instruction-pair / preference-pair surface — so closing this seam was the dominant remaining training-data exposure on the Trainforge assessment surface. The provider's user prompt instructs the LLM to emit an `evidence_quote` field per question per the W-D11 T11.3 grounding contract; the per-call `assessment_generator_call` decision event surfaces the dynamic `evidence_quote_emit_rate` so a post-hoc audit can replay grounding quality.
+- The corpus and every generated artifact remain private.
+- Provider and model selections match the approved licensing record.
+- No call used `mock`, `claude_session`, `anthropic`, or an unreviewed hosted
+  provider.
+- Decision captures account for every LLM call and contain no private content
+  intended for publication.
+- All required validation gates pass without relaxed thresholds or fallbacks.
+- Only code and public-safe documentation are staged for GitHub.
 
-### Honest scope
+## Related documentation
 
-This recipe documents a license-clean COURSEWARE / TRAINING-CORPUS run for every dominant code path with the W-D15 wave landed: every Anthropic-defaulted subagent surface that touches training data now has a license-clean provider seam (`COURSEFORGE_PROVIDER` for content-generator, `COURSEPLANNER_PROVIDER` for course-outliner, `TRAINFORGE_ASSESSMENT_PROVIDER` for assessment-generator, `CURRICULUM_ALIGNMENT_PROVIDER` for align_chunks). The PDF → HTML conversion surface no longer needs a seam at all: SemantiK is license-clean by construction and offline by default (`SEMANTIK_SPECIALIST_PROVIDER=local`). Operators training adapters for redistribution should still verify the calibration prerequisites for the affected block-types and document any per-block Anthropic exposure (e.g. an uncalibrated `assessment_item` block staying on Anthropic per the calibration loop above) in the corpus's audit trail.
-
----
-
-## See also
-
-- `docs/operations/pipeline-invocation.md` — the **operational** companion: per-stage invocation, timeout controls, the preferred DGX Spark GLM-OCR recipe, and resource-constrained compatibility guidance. This licensing doc covers *which* seats to pin; that one covers *how* to invoke each stage.
-- `docs/LICENSING.md` — canonical ToS posture, per-provider terms, per-model license matrix.
-- `Courseforge/CLAUDE.md` § "Opt-In Behavior Flags" — full env-var table for the Courseforge two-pass router.
-- `Courseforge/config/block_routing.license_clean.yaml` — the sibling YAML this recipe pins via `COURSEFORGE_BLOCK_ROUTING_PATH`.
-- `Trainforge/CLAUDE.md` § "Synthesis providers" — same env-var stack from the Trainforge perspective.
-- `lib/governance/course_status.py::derive_course_status` — Wave-3 promotion-chain composer; the 5-value `course_status` enum a license-clean run targets.
+- [Licensing and provider policy](../LICENSING.md)
+- [Installation and dependencies](installation.md)
+- [Pipeline invocation, stop, and resume](pipeline-invocation.md)
+- [Validation gates](../validation/gates.md)
