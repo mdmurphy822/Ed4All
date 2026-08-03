@@ -1,26 +1,16 @@
-"""Wave 81 regression — a fresh hermetic emit matches enriched output.
+"""Fresh hermetic Trainforge emit and packet-validation contract.
 
-The Wave 81 worker brief calls out v2 Path B regen as the precipitating
-incident: a fresh Trainforge run produced
-a 1-node / 0-edge stub pedagogy graph, then needed the 4 Wave 75/76/78
-retroactive scripts to be run by hand before the archive validated
-under the Wave 78 packet validator.
-
-This test exercises that exact loop end-to-end:
+This test exercises the public processing path end-to-end:
 
 1. Build a representative IMSCC and objectives sidecar under ``tmp_path`` and
    run ``CourseProcessor.process()`` into a second temporary directory.
-2. Stamp the archive with the same scaffold the LibV2 importer
-   produces (objectives.json + course.json — the IMSCC carries
-   neither).
-3. Run the Wave 78 packet validator
+2. Mirror the emitted artifacts into the archive layout consumed by LibV2.
+3. Run the packet validator
    (:class:`lib.validators.libv2_packet_integrity.PacketIntegrityValidator`)
    in default mode.
 
-Pre-Wave-81: the validator surfaces the stub-pedagogy + missing-class
-issues immediately. Post-Wave-81: the fresh emit lands a real
-pedagogy graph (>= 14 nodes, >= 5 edge types) and a classified
-concept_graph at the same time.
+The fresh emit must contain a classified concept graph and a non-stub pedagogy
+graph with meaningful nodes and typed relationships.
 
 The fixture is small enough for the default suite and never discovers or reads
 operator archives.
@@ -37,7 +27,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-
 from Trainforge.tests.test_emit_pipeline_enrichment import (  # noqa: E402
     _imscc_manifest,
     _objectives_payload,
@@ -46,53 +35,39 @@ from Trainforge.tests.test_emit_pipeline_enrichment import (  # noqa: E402
 )
 
 
-def _build_fixture(tmp_path: Path) -> tuple[Path, Path]:
+def _build_fixture(tmp_path: Path) -> tuple[Path, Path, dict]:
     """Build a neutral two-page cartridge and complete objective inventory."""
-    imscc_path = tmp_path / "sample.imscc"
+    imscc_path = tmp_path / "synthetic_systems.imscc"
     with zipfile.ZipFile(imscc_path, "w") as archive:
         archive.writestr("imsmanifest.xml", _imscc_manifest())
         archive.writestr("week_01/content.html", _page_one())
         archive.writestr("week_02/content.html", _page_two())
 
     objectives = _objectives_payload()
-    objectives["course_code"] = "SAMPLE101"
-    objectives["chapter_objectives"].append({
-        "id": "CO-09",
-        "statement": "Apply constraint properties to a graph.",
-        "parent_to": "TO-04",
-        "bloom_level": "apply",
-        "week": 2,
-    })
     objectives_path = tmp_path / "objectives.json"
     objectives_path.write_text(json.dumps(objectives), encoding="utf-8")
-    return imscc_path, objectives_path
+    return imscc_path, objectives_path, objectives
 
 
 def test_fresh_emit_validates_against_packet_validator(tmp_path):
-    """End-to-end: fresh Trainforge emit → packet-validator pass.
-
-    Pre-Wave-81 this test would fail at the pedagogy-graph rule
-    (1 node / 0 edges); post-Wave-81 the fresh emit matches the
-    post-retroactive-script output that the Wave 78 packet validator
-    accepts in default (warning-only) mode.
-    """
-    from Trainforge.process_course import CourseProcessor
+    """A fresh emit has a non-stub graph and no critical packet issues."""
     from lib.validators.libv2.packet_integrity import PacketIntegrityValidator
+    from Trainforge.process_course import CourseProcessor
 
     out = tmp_path / "trainforge_out"
     out.mkdir()
-    imscc_path, objectives_path = _build_fixture(tmp_path)
+    imscc_path, objectives_path, objectives = _build_fixture(tmp_path)
 
     proc = CourseProcessor(
         imscc_path=str(imscc_path),
         output_dir=str(out),
-        course_code="SAMPLE101",
-        domain="knowledge_graphs",
+        course_code=objectives["course_code"],
+        domain=objectives["domain"],
         objectives_path=str(objectives_path),
     )
     proc.process()
 
-    # Wave 81 contract: fresh pedagogy_graph.json must NOT be the stub.
+    # A fresh pedagogy graph must contain useful structure.
     pg = json.loads(
         (out / "graph" / "pedagogy_graph.json").read_text(encoding="utf-8")
     )
@@ -100,16 +75,13 @@ def test_fresh_emit_validates_against_packet_validator(tmp_path):
     edges = pg.get("edges") or []
     relation_types = {e.get("relation_type") for e in edges}
 
-    # The legacy stub emits 1 node / 0 edges; the real builder must
-    # ship at least 14 nodes (6 bloom + 3 difficulty + objectives)
-    # and a non-trivial set of edge types on a representative archive.
+    # Five supplied objectives plus the typed support nodes and emitted chunks
+    # produce a nontrivial node and edge inventory.
     assert len(nodes) >= 14, (
-        f"Wave 81 regression: pedagogy_graph stub-detected "
-        f"({len(nodes)} nodes) on synthetic archive. Expected >= 14."
+        f"pedagogy_graph is too small ({len(nodes)} nodes); expected at least 14."
     )
     assert len(edges) >= 15, (
-        f"Wave 81 regression: pedagogy_graph thin "
-        f"({len(edges)} edges) on synthetic archive. Expected >= 15."
+        f"pedagogy_graph is too sparse ({len(edges)} edges); expected at least 15."
     )
     required_relations = {
         "derived_from_objective",
@@ -118,14 +90,12 @@ def test_fresh_emit_validates_against_packet_validator(tmp_path):
         "at_bloom_level",
     }
     assert required_relations <= relation_types, (
-        "Wave 81 regression: representative emit omitted required "
+        "representative emit omitted required "
         f"relations {sorted(required_relations - relation_types)}. "
         f"Got: {sorted(relation_types)}"
     )
 
-    # Now run the Wave 78 packet validator on the fresh emit. We
-    # have to assemble a faux libv2 archive structure from the
-    # Trainforge output so the validator finds what it expects.
+    # Mirror the fresh emit into the archive structure expected by validation.
     libv2_archive = tmp_path / "libv2_archive"
     libv2_archive.mkdir()
 
@@ -143,16 +113,12 @@ def test_fresh_emit_validates_against_packet_validator(tmp_path):
         if src.exists():
             shutil.copy2(src, libv2_archive / f)
 
-    # The packet validator is intentionally invoked in DEFAULT mode
-    # (no --strict / --strict-coverage / --strict-typing) so the
-    # coverage + typing rules surface as warnings rather than
-    # criticals. The Wave 81 contract is that critical-rule failures
-    # must NOT regress on a fresh emit. Pre-Wave-81: pedagogy stub
-    # surfaces typing-rule criticals.
+    # Default validation mode permits advisory coverage and typing warnings,
+    # while structural failures remain critical.
     validator = PacketIntegrityValidator()
     result = validator.validate(libv2_archive)
     assert result.critical_count == 0, (
-        f"Wave 81 regression: fresh emit failed packet validator with "
+        f"fresh emit failed packet validator with "
         f"{result.critical_count} critical issues. Issues: "
         + "\n".join(
             f"  [{i.severity}] {i.rule}: {i.message}"

@@ -74,6 +74,11 @@ from Trainforge.chunker import (
     merge_small_sections as _pkg_merge_small_sections,
 )
 from Trainforge.generators.postprocessing import summary_factory
+from Trainforge.alignment.outcomes import (
+    build_auto_vocabularies as _build_outcome_vocabularies,
+)
+from Trainforge.alignment.outcomes import build_parent_map as _build_outcome_parents
+from Trainforge.alignment.outcomes import retag_chunk_outcomes
 from Trainforge.parsers.html_content_parser import HTMLContentParser, HTMLTextExtractor
 
 # The canonical chunker owns XPath resolution for chunk boundaries.
@@ -1134,13 +1139,12 @@ class CourseProcessor:
                 self.objectives = None
                 self._objectives_source = "load_failed"
 
-        # precompute the component->terminal parent map once so
-        # the per-chunk retag pass in _create_chunk doesn't re-walk the
-        # objectives payload. Empty when no objectives are loaded —
-        # retag_chunk_outcomes degrades to a no-op for parent rollup
-        # in that case but still applies the vocabulary retag rule.
-        from Trainforge.retag_outcomes import build_parent_map as _bpm
-        self._lo_parent_map: Dict[str, str] = _bpm(self.objectives)
+        # Compile the active run's objective relationships and vocabulary once
+        # so chunk emission never relies on hidden or corpus-specific terms.
+        self._lo_parent_map: Dict[str, str] = _build_outcome_parents(self.objectives)
+        self._lo_vocabularies: Dict[str, List[str]] = (
+            _build_outcome_vocabularies(self.objectives)
+        )
 
         # Decision capture
         # Phase value must be in the canonical enum at
@@ -2070,15 +2074,13 @@ class CourseProcessor:
                 normalized_mis.append(m)
             chunk["misconceptions"] = normalized_mis
 
-        # vocabulary-driven retag + parent-outcome rollup.
-        # Runs *after* the structured/JSON-LD/regex extraction in
-        # _extract_objective_refs but *before* downstream consumers
-        # (targeted_concepts propagation, summary, retrieval_text) so
-        # they see the full set of refs. Both rules are additive —
-        # never removes an existing ref. See Trainforge/retag_outcomes.py
-        # for the rationale + vocabulary lists.
-        from Trainforge.retag_outcomes import retag_chunk_outcomes
-        retag_chunk_outcomes(chunk, parent_map=getattr(self, "_lo_parent_map", None))
+        # Apply runtime-derived objective matching and parent rollup before
+        # downstream consumers read the chunk's complete additive reference set.
+        retag_chunk_outcomes(
+            chunk,
+            parent_map=self._lo_parent_map,
+            vocabularies=self._lo_vocabularies,
+        )
 
         # propagate targetedConcepts[] from LOs onto chunks
         # whose learning_outcome_refs cite those LOs. Each chunk entry is

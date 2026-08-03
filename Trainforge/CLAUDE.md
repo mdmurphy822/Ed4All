@@ -348,9 +348,10 @@ Trainforge/
 ├── architecture.md
 ├── process_course.py            # IMSCC → RAG corpus pipeline (CourseProcessor)
 ├── align_chunks.py              # Chunk teaching-role alignment
+├── alignment/                   # Runtime-derived outcome alignment
+│   └── outcomes.py             # Objective vocabulary matching + parent rollup
 ├── curriculum.py                # Curriculum/teaching-role surface
 ├── instruction_pair_extractor.py
-├── retag_outcomes.py
 ├── synthesize_training.py       # Legacy CLI/import compatibility shim
 ├── train_course.py              # SLM adapter training entry point
 ├── pedagogy_graph_builder.py    # Typed pedagogy/concept graph builder

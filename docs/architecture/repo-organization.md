@@ -321,7 +321,12 @@ risk. Completed items are marked below.
    shims preserve the documented CLI/import surface and MCP dotted dispatch,
    so those legacy paths remain through their deprecation window; new code
    imports the canonical package paths. Four internal synthesis helpers moved
-   inward in the follow-up pass, reducing the exact root cap from 19 to 15.
+   inward in the follow-up pass. Outcome retagging now lives in the cohesive
+   `Trainforge/alignment/` package with no root compatibility facade. Its
+   vocabulary is derived only from the active run's objective records; no
+   course-specific vocabulary ships in tracked source. Corpus-specific repair
+   utilities belong in the recursively ignored `scripts/regression/` shelf,
+   not the public archive. The exact Trainforge root cap is now 14.
 3. **`Trainforge/eval/` — DONE.** Metrics, retrieval checks, and runners now
    live in named subpackages. Release-facing model-index conversion,
    headline-delta summaries, and reproducibility exports form the cohesive

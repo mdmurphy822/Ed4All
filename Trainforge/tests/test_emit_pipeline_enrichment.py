@@ -1,20 +1,14 @@
 """Emit-pipeline enrichment is baked into ``CourseProcessor.process``.
 
 Concept classification, concept-noise filtering, chunk retagging, and
-the real pedagogy-graph builder must all run inside a normal
-``process()`` call. When they only existed as retroactive scripts a
-fresh archive emitted a stub pedagogy graph (1 node / 0 edges) and
-unclassified concept-graph nodes, and had to be repaired by hand
-afterwards. These tests pin the contract at the integration boundary:
+the complete pedagogy-graph builder must all run inside a normal
+``process()`` call. These tests pin the contract at the integration boundary:
 
 * Every concept-graph node carries ``class``.
 * The pedagogy graph from ``process()`` has > 1 node and > 0 edges
-  across multiple relation types — i.e. the real builder, not the stub.
+  across multiple relation types.
 * Chunks whose body text matches a retag vocabulary entry carry the
-  matching CO ref plus its parent TO.
-
-A companion test (``test_emit_pipeline_full_archive.py``) exercises a
-full IMSCC end-to-end behind an env gate so this suite stays fast.
+  matching component-objective reference plus its terminal parent.
 """
 
 from __future__ import annotations
@@ -33,7 +27,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from Trainforge.process_course import CourseProcessor  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Synthetic IMSCC fixture builder
 # ---------------------------------------------------------------------------
@@ -50,7 +43,7 @@ def _imscc_manifest() -> str:
     <lomimscc:lom>
       <lomimscc:general>
         <lomimscc:title>
-          <lomimscc:string language="en">Enrichment Fixture</lomimscc:string>
+          <lomimscc:string language="en">Synthetic Systems Lab</lomimscc:string>
         </lomimscc:title>
       </lomimscc:general>
     </lomimscc:lom>
@@ -68,74 +61,66 @@ def _imscc_manifest() -> str:
 
 
 def _page_one() -> str:
-    """Week 1 page — RDF triples + intro vocabulary.
+    """First page with neutral system-modeling terminology.
 
-    Names ``RDF Graph``, ``RDF Triple``, ``Subject``, ``Predicate``,
-    ``Blank Node`` so the concept-graph extractor lands real domain
-    terms. Carries ``Component Objective: CO-01`` so the per-chunk LO
-    ref extractor binds chunks to ``co-01``.
+    Repeated CamelCase and prefixed identifiers give concept classification and
+    runtime-derived objective matching stable, synthetic signals.
     """
     return """<!DOCTYPE html>
 <html>
-<head><title>Introduction to RDF</title></head>
+<head><title>Signal Network Foundations</title></head>
 <body>
-<h1>Introduction to RDF</h1>
-<p>Component Objective: CO-01 — Identify subjects, predicates, and objects in RDF triples.</p>
+<h1>Signal Network Foundations</h1>
+<p>Learning goal: identify SYS:ALPHA and its NodeType.</p>
 
-<h2>RDF Triples</h2>
-<p>An RDF triple consists of a subject, a predicate, and an object.
-   Each subject is an IRI or a blank node. Predicates are always IRIs.
-   The object can be an IRI, a literal, or a blank node.</p>
-<p>An RDF graph is a set of RDF triples.</p>
+<h2>Signal Nodes</h2>
+<p>SYS:ALPHA is a NodeType in the synthetic signal network.
+   A SignalRouter connects a SourceNode to a TargetNode and records a
+   stable ChannelCode for each connection.</p>
+<p>The network groups SignalRouter nodes into ordered paths.</p>
 
-<h2>Working with Triples</h2>
-<p>Triples can be serialized in Turtle, RDF/XML, or JSON-LD.
-   The Turtle serialization is the most human-readable.</p>
-<p>A blank node is an existential variable in an RDF graph.</p>
+<h2>Working with Signals</h2>
+<p>Operators inspect a SourceNode, TargetNode, and ChannelCode together.
+   The NodeType determines which transformations are permitted.</p>
+<p>A SignalRouter preserves the order of the synthetic path.</p>
 </body>
 </html>
 """
 
 
 def _page_two() -> str:
-    """Week 2 page — IRIs + SPARQL vocabulary.
+    """Second page with the runtime-derived retagging signal.
 
-    Includes the SHACL Core constraint vocabulary the retag rule looks
-    for (``sh:minCount`` / ``sh:maxCount`` / ``sh:datatype``) so chunks
-    emitted from this page should pick up ``co-18`` plus its parent
-    ``to-04``.
+    ``SYS:BETA`` and ``ThermalNode`` appear in both the supplied objective and
+    page body, so no built-in vocabulary is needed for the match.
     """
     return """<!DOCTYPE html>
 <html>
-<head><title>SHACL Constraint Components</title></head>
+<head><title>Thermal Signal Controls</title></head>
 <body>
-<h1>SHACL Constraint Components</h1>
-<p>Component Objective: CO-02 — Distinguish IRIs from literals.</p>
+<h1>Thermal Signal Controls</h1>
+<p>Learning goal: apply SYS:BETA with a ThermalNode.</p>
 
-<h2>SHACL Core Constraints</h2>
-<p>SHACL Core defines the foundational constraint components.
-   sh:minCount sets a lower bound on the number of values for a property.
-   sh:maxCount sets an upper bound.
-   sh:datatype constrains the datatype of literal values.</p>
-<p>An IRI is an Internationalized Resource Identifier; a literal is
-   a typed value (xsd:string, xsd:integer, etc.).</p>
+<h2>Thermal Nodes</h2>
+<p>SYS:BETA routes each ThermalNode through a HeatLimiter.
+   The HeatLimiter records a TemperatureBand and a SafetyState before
+   forwarding the signal.</p>
+<p>A ThermalNode enters HoldMode when its TemperatureBand is exceeded.</p>
 
 <h2>Practice</h2>
-<p>Write a SPARQL SELECT query that retrieves all triples where the
-   predicate is rdfs:label.</p>
+<p>Trace SYS:BETA through the ThermalNode and explain when the
+   HeatLimiter selects HoldMode.</p>
 </body>
 </html>
 """
 
 
 def _objectives_payload() -> Dict[str, Any]:
-    """Canonical objectives.json shape with the COs the retag rule
-    rolls up to.
+    """Objective payload with runtime-derived terms and parent links.
 
-    ``co-18`` rolls up to ``to-04`` via ``parent_to``; the chunk text
-    on page two cites ``sh:minCount`` / ``sh:maxCount`` / ``sh:datatype``
-    so the vocabulary retag should add ``co-18`` AND ``to-04`` to the
-    chunk's ``learning_outcome_refs``.
+    ``OBJ-43`` rolls up to ``GOAL-72``. Its prefixed and
+    CamelCase terms also appear on page two, which exercises generic vocabulary
+    extraction rather than a built-in course table.
     """
     # ``bloom_level`` must stay snake_case: that is the canonical key in
     # ``schemas/knowledge/objectives_v1.schema.json`` and the key
@@ -145,40 +130,40 @@ def _objectives_payload() -> Dict[str, Any]:
     # ``at_bloom_level`` rule.
     return {
         "schema_version": "v1",
-        "course_code": "ENRICHMENT_FIXTURE",
+        "course_code": "SYNTHETIC_SYSTEMS",
         "duration_weeks": 2,
-        "domain": "knowledge_graphs",
+        "domain": "systems_modeling",
         "terminal_objectives": [
             {
-                "id": "TO-01",
-                "statement": "Analyze RDF graphs.",
+                "id": "GOAL-71",
+                "statement": "Analyze SignalNetwork behavior.",
                 "bloom_level": "analyze",
             },
             {
-                "id": "TO-04",
-                "statement": "Apply SHACL constraints.",
+                "id": "GOAL-72",
+                "statement": "Apply ThermalControl safeguards.",
                 "bloom_level": "apply",
             },
         ],
         "chapter_objectives": [
             {
-                "id": "CO-01",
-                "statement": "Identify subject, predicate, and object.",
-                "parent_to": "TO-01",
+                "id": "OBJ-41",
+                "statement": "Identify SYS:ALPHA NodeType behavior.",
+                "parent_to": "GOAL-71",
                 "bloom_level": "remember",
                 "week": 1,
             },
             {
-                "id": "CO-02",
-                "statement": "Distinguish IRIs from literals.",
-                "parent_to": "TO-01",
+                "id": "OBJ-42",
+                "statement": "Distinguish SourceNode from TargetNode.",
+                "parent_to": "GOAL-71",
                 "bloom_level": "understand",
                 "week": 2,
             },
             {
-                "id": "CO-18",
-                "statement": "Apply SHACL Core constraint components.",
-                "parent_to": "TO-04",
+                "id": "OBJ-43",
+                "statement": "Apply SYS:BETA ThermalNode controls.",
+                "parent_to": "GOAL-72",
                 "bloom_level": "apply",
                 "week": 2,
             },
@@ -191,7 +176,7 @@ def _build_fixture(tmp_path: Path) -> Tuple[Path, Path]:
 
     Returns ``(imscc_path, objectives_path)``.
     """
-    imscc = tmp_path / "enrichment_fixture.imscc"
+    imscc = tmp_path / "synthetic_systems.imscc"
     with zipfile.ZipFile(imscc, "w") as zf:
         zf.writestr("imsmanifest.xml", _imscc_manifest())
         zf.writestr("week_01/content.html", _page_one())
@@ -212,8 +197,8 @@ def _run_processor(tmp_path: Path) -> Path:
     proc = CourseProcessor(
         imscc_path=str(imscc),
         output_dir=str(out),
-        course_code="ENRICHMENT_FIXTURE",
-        domain="knowledge_graphs",
+        course_code="SYNTHETIC_SYSTEMS",
+        domain="systems_modeling",
         objectives_path=str(obj_path),
     )
     proc.process()
@@ -253,18 +238,15 @@ def test_concept_graph_nodes_carry_class_field(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Test 2: pedagogy graph is the real builder, not the stub
+# Test 2: pedagogy graph contains meaningful structure
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
 def test_pedagogy_graph_has_multiple_nodes_and_edge_types(tmp_path):
-    """pedagogy_graph.json must be real builder output, not the stub.
+    """The emitted pedagogy graph must contain nodes and typed edges.
 
-    The legacy stub (tag co-occurrence over PEDAGOGY/LOGISTICS tags)
-    emitted ~1 node and 0 edges on real corpora, which is why the
-    thresholds below are the discriminator. The real builder emits at
-    minimum:
+    The builder emits at minimum:
 
     * BloomLevel typed nodes (6) — unconditional.
     * DifficultyLevel typed nodes (3) — unconditional.
@@ -274,8 +256,8 @@ def test_pedagogy_graph_has_multiple_nodes_and_edge_types(tmp_path):
       ``at_bloom_level`` / ``follows`` / ``belongs_to_module`` /
       ``derived_from_objective`` / ``chunk_at_difficulty`` / …).
 
-    On this fixture (2 chunks, 3 COs, 2 TOs, 2 modules) that is at
-    least 14 nodes (6 bloom + 3 difficulty + 2 TO + 3 CO).
+    The fixture supplies multiple objectives, pages, and modules so the graph
+    must be nontrivial.
     """
     out = _run_processor(tmp_path)
     pg_path = out / "graph" / "pedagogy_graph.json"
@@ -286,12 +268,10 @@ def test_pedagogy_graph_has_multiple_nodes_and_edge_types(tmp_path):
     edges = pg.get("edges") or []
 
     assert len(nodes) > 1, (
-        f"stub-shaped pedagogy_graph ({len(nodes)} nodes). The real "
-        "builder emits at least 14 nodes (6 bloom + 3 difficulty + "
-        "objectives); the legacy stub emitted 1."
+        f"pedagogy_graph is not structurally useful ({len(nodes)} nodes)."
     )
     assert len(edges) > 0, (
-        "pedagogy_graph emitted 0 edges — the legacy stub's signature."
+        "pedagogy_graph emitted no relationships."
     )
 
     relation_types = {e.get("relation_type") for e in edges}
@@ -322,11 +302,10 @@ def test_pedagogy_graph_has_multiple_nodes_and_edge_types(tmp_path):
 
 
 @pytest.mark.unit
-def test_pedagogy_graph_includes_wave78_relations(tmp_path):
+def test_pedagogy_graph_includes_chunk_anchored_relations(tmp_path):
     """Chunk-anchored relation types ship from ``process()`` itself.
 
-    The fixture's chunks carry ``learning_outcome_refs`` (the in-page
-    ``Component Objective: CO-01`` token plus retag pickups), so the
+    The fixture's chunks carry runtime-derived ``learning_outcome_refs``, so the
     builder must fire ``derived_from_objective`` on every chunk with
     ≥ 1 ref. Every chunk lands a ``difficulty`` value (``foundational``
     by default for explanation chunks), so ``chunk_at_difficulty``
@@ -357,11 +336,10 @@ def test_chunks_pick_up_retag_vocabulary_refs(tmp_path):
     """``retag_chunk_outcomes`` fires at chunk-emit time.
 
     A chunk whose ``text`` matches the retag vocabulary must pick up
-    the right CO ref AND its parent TO via parent-rollup. The fixture's
-    page-two chunk carries ``sh:minCount`` / ``sh:maxCount`` /
-    ``sh:datatype`` (vocabulary entries for ``co-18``), and ``CO-18``
-    declares ``parent_to: TO-04``, so the chunk must also carry
-    ``to-04``.
+    the matching objective reference and its parent via parent rollup. The fixture's
+    page-two chunk carries ``SYS:BETA`` and ``ThermalNode``, and
+    ``OBJ-43`` declares ``parent_to: GOAL-72``, so the chunk
+    must carry both references.
 
     The retag is wired inside ``_create_chunk``; this pins that
     integration contract rather than the retag helper in isolation.
@@ -381,47 +359,47 @@ def test_chunks_pick_up_retag_vocabulary_refs(tmp_path):
 
     assert len(chunks) > 0, "fixture should produce at least one chunk"
 
-    # Find the chunk(s) whose text mentions the SHACL vocabulary —
-    # those are the ones the retag rule targets.
-    shacl_chunks = [
+    # Find chunks containing the supplied objective's retained identifiers.
+    thermal_chunks = [
         c for c in chunks
         if isinstance(c.get("text"), str)
-        and ("sh:minCount" in c["text"] or "sh:maxCount" in c["text"])
+        and "SYS:BETA" in c["text"]
+        and "ThermalNode" in c["text"]
     ]
-    assert len(shacl_chunks) > 0, (
+    assert thermal_chunks, (
         "fixture regression: at least one chunk must carry "
-        "'sh:minCount'/'sh:maxCount' in its text — without that signal "
+        "'SYS:BETA' and 'ThermalNode' in its text; without that signal "
         "the retag assertions below would pass vacuously."
     )
 
     # Compare case-insensitively: TRAINFORGE_PRESERVE_LO_CASE controls
     # emit casing, so pinning a literal case would make this test
     # flag-dependent. The canonical id is what matters here.
-    co18_hits = [
-        c for c in shacl_chunks
+    objective_hits = [
+        c for c in thermal_chunks
         if any(
-            isinstance(r, str) and r.lower() == "co-18"
+            isinstance(r, str) and r.lower() == "obj-43"
             for r in c.get("learning_outcome_refs") or []
         )
     ]
-    assert co18_hits, (
-        "no chunk picked up co-18 via the vocabulary retag. Chunks "
-        "with SHACL vocab in text:\n"
+    assert objective_hits, (
+        "no chunk picked up OBJ-43 from runtime vocabulary. "
+        "Matching chunks:\n"
         + "\n".join(
             f"  text='...{c['text'][:100]}...' refs={c.get('learning_outcome_refs')}"
-            for c in shacl_chunks
+            for c in thermal_chunks
         )
     )
 
-    to04_hits = [
-        c for c in shacl_chunks
+    parent_hits = [
+        c for c in thermal_chunks
         if any(
-            isinstance(r, str) and r.lower() == "to-04"
+            isinstance(r, str) and r.lower() == "goal-72"
             for r in c.get("learning_outcome_refs") or []
         )
     ]
-    assert to04_hits, (
-        "parent-rollup didn't add to-04 to a chunk that already cites "
-        "co-18. Check that build_parent_map runs at CourseProcessor "
+    assert parent_hits, (
+        "parent rollup did not add GOAL-72 to a chunk tagged with "
+        "OBJ-43. Check that build_parent_map runs at CourseProcessor "
         "construction time and that _create_chunk calls the retag."
     )
