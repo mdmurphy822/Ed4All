@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Iterable, Mapping, Sequence
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 POLICY_PATH = ROOT / "docs/architecture/repository-layout.json"
 PRIVATE_TOKEN_ENV = "ED4ALL_PRIVATE_TOKEN_FILE"
 

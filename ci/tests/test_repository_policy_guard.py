@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from ci.repository_policy_guard import (
+from ci.guards.repository_policy import (
     check_layout,
     check_privacy,
     check_release,

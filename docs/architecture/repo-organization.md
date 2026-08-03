@@ -179,7 +179,7 @@ Revisit any of these only on a repo split or a 2.0 packaging change.
    directory, and publishable file by role. Its companion
    [`repository-layout.schema.json`](repository-layout.schema.json) validates
    the policy shape without duplicating policy values. The standalone
-   `ci/repository_policy_guard.py` applies it to tracked files plus untracked,
+   `ci/guards/repository_policy.py` applies it to tracked files plus untracked,
    non-ignored release candidates; ignored input and runtime trees are never
    traversed. It rejects unclassified or ambiguous paths, illegal parent/child
    role combinations, non-sentinel tracked content in external-data roots,

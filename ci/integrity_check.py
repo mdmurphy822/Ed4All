@@ -1103,16 +1103,16 @@ def check_repository_policy(verbose: bool = False) -> CheckResult:
     result = CheckResult(name="repository_policy", passed=False, message="")
 
     try:
-        from ci import repository_policy_guard
+        from ci.guards import repository_policy
 
-        policy = repository_policy_guard.load_policy()
-        private_tokens = repository_policy_guard.load_private_tokens(
+        policy = repository_policy.load_policy()
+        private_tokens = repository_policy.load_private_tokens(
             PROJECT_ROOT, os.environ
         )
-        candidates = repository_policy_guard.git_paths(
+        candidates = repository_policy.git_paths(
             PROJECT_ROOT, candidates=True
         )
-        findings = repository_policy_guard.check_release(
+        findings = repository_policy.check_release(
             PROJECT_ROOT, candidates, policy, private_tokens
         )
     except (OSError, ValueError, subprocess.CalledProcessError) as e:
