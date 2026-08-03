@@ -4543,13 +4543,13 @@ def run_synthesis(
                     manifest_for_st.family,
                 )
 
-        # instantiate the per-pair promotion validator once.
-        # Filters every accepted pair through the 7-criterion hard-
+        # Instantiate the per-pair promotion validator once. It filters every
+        # accepted pair through the 7-criterion hard-
         # rejection chain (placeholder residue, unsupported answer,
         # weak distractor, unanswerable stem, source-free generation,
-        # low Bloom alignment, generic rationale). Lazy-loads the
-        # embedder + pinned zero-shot Bloom classifier on first use; degrades gracefully
-        # to Jaccard when [embedding] extras are absent.
+        # low Bloom alignment, generic rationale). Missing embeddings use the
+        # documented lexical comparisons; an unavailable Bloom classifier skips
+        # only the Bloom-alignment criterion.
         from lib.validators.pair.promotion import (
             TrainingPairPromotionValidator,
         )

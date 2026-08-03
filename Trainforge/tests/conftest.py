@@ -1,35 +1,11 @@
-"""Trainforge test configuration — model-hermeticity fixtures.
+"""Keep Trainforge unit tests independent of optional model integrations.
 
-Why this file exists (Family-A test-cluster fix, Subtask-25 follow-up):
-
-Unit tests under ``Trainforge/tests/`` synthesize toy instruction /
-preference pairs and run them through the real pair-promotion validator
-(``lib.validators.pair.promotion.TrainingPairPromotionValidator``). That
-validator, plus the claim-support path it shares, will lazy-load real
-~700MB BERT/DeBERTa models when the optional ``[bert]`` / ``[embedding]``
-extras are installed in the venv — which they ARE here since 2026-05-08.
-
-Two consequences without this fixture:
-
-1. The 3-model BERT ensemble + the DeBERTa NLI model load on first use,
-   adding minutes per suite (the cluster's pre-fix runtime was 18:09 vs
-   8:42).
-2. Worse, real DeBERTa NLI *legitimately* rejects the toy fixtures these
-   unit tests feed it (a one-sentence stub chunk genuinely doesn't entail
-   a synthetic claim), so tests that assert a pair PASSES promotion fail
-   for the "right" reason on real models but the wrong reason for a unit
-   test. Unit tests must exercise the DESIGNED deps-missing degrade arms,
-   not the heavyweight model arms.
-
-So this autouse fixture monkeypatches the two model-loader seams to
-return ``None``, routing both validators through their graceful-degrade
-("extras absent") code paths — exactly the arms a slim-install CI worker
-would hit. Integration tests that genuinely want the real models opt out
-with ``@pytest.mark.real_models``.
-
-The repo-root ``conftest.py`` already provides LibV2 / training-captures /
-state-runs tmp isolation; this file is additive and scoped to model
-loading only — it does NOT duplicate that isolation.
+The autouse fixture disables the Bloom compatibility resolver, active NLI
+loader, and embedding loader. This keeps synthetic unit fixtures focused on
+promotion contracts: Bloom classification abstains, NLI follows its documented
+unavailable-model path, and embedding criteria use their documented lexical
+paths. Tests that intentionally exercise provisioned integrations opt out with
+``@pytest.mark.real_models``.
 """
 from __future__ import annotations
 
@@ -41,7 +17,7 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers",
         "real_models: opt out of the autouse model-loader stub; the test "
-        "intentionally loads the real BERT/DeBERTa models (integration).",
+        "intentionally loads provisioned optional model integrations.",
     )
 
 
@@ -53,11 +29,10 @@ def pytest_configure(config):
 
 @pytest.fixture(autouse=True)
 def _stub_real_models(request, monkeypatch):
-    """Force the BERT-ensemble + NLI model loaders to return ``None``.
+    """Force optional Bloom, NLI, and embedding loaders to abstain.
 
-    Routes ``TrainingPairPromotionValidator`` (criterion 6 bloom) and
-    the claim-support NLI path through their designed deps-missing pass
-    arms so unit tests never load real weights. Opt out with
+    Routes promotion and claim-support checks through their documented
+    unavailable-model paths so unit tests never load model weights. Opt out with
     ``@pytest.mark.real_models``.
     """
     if request.node.get_closest_marker("real_models"):

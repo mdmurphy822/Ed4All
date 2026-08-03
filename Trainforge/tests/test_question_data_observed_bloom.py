@@ -1,10 +1,10 @@
-"""GPT Feedback v2 Wave 1 / W1.A — QuestionData observed_bloom round-trip tests.
+"""QuestionData observed-Bloom serialization contract tests.
 
 Pins three contracts on
 ``Trainforge/generators/assessment/generator.py::QuestionData``:
 
-  1. The two new fields (``observed_bloom_level``, ``bloom_alignment``)
-     default to ``None`` when not supplied — legacy constructor calls
+  1. The optional fields (``observed_bloom_level``, ``bloom_alignment``)
+     default to ``None`` when not supplied, so existing constructor calls
      keep working.
   2. ``to_dict()`` round-trips both fields unconditionally (None is an
      acceptable shape for a not-yet-classified question; the consumer
@@ -33,7 +33,7 @@ def _legacy_question(**overrides) -> QuestionData:
 
 
 def test_legacy_constructor_call_still_works():
-    """No new field supplied → defaults to None, no crash."""
+    """Omitted optional fields default to None."""
     q = _legacy_question()
     assert q.observed_bloom_level is None
     assert q.bloom_alignment is None
@@ -69,7 +69,7 @@ def test_to_dict_round_trips_bloom_alignment(alignment):
 
 
 def test_to_dict_preserves_existing_keys():
-    """The two new keys are additive — every legacy key still emits."""
+    """Observed-Bloom keys are additive to the established serialized shape."""
     q = _legacy_question(
         observed_bloom_level="apply",
         bloom_alignment=True,

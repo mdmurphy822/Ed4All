@@ -40,7 +40,7 @@ def _make_stub_ensemble(verdicts):
 
 
 def test_aligned_question_counted() -> None:
-    """Ensemble winner == declared bloom_level → aligned."""
+    """Injected classifier winner == declared bloom_level → aligned."""
     stub = _make_stub_ensemble(["understand"])
     evaluator = BloomAlignmentRateEvaluator(ensemble=stub)
     prompts = [
@@ -54,7 +54,7 @@ def test_aligned_question_counted() -> None:
 
 
 def test_mismatched_question_counted() -> None:
-    """Ensemble winner != declared bloom_level → mismatched."""
+    """Injected classifier winner != declared bloom_level → mismatched."""
     stub = _make_stub_ensemble(["create"])
     evaluator = BloomAlignmentRateEvaluator(ensemble=stub)
     prompts = [
@@ -82,7 +82,7 @@ def test_mixed_alignment_three_questions() -> None:
 
 
 def test_deps_missing_graceful_degrade() -> None:
-    """No loaded members → bloom_alignment_rate is None, deps_missing=True."""
+    """No usable classifier members returns the compatibility sentinel."""
     stub = MagicMock()
     stub._load_members.return_value = []
     evaluator = BloomAlignmentRateEvaluator(ensemble=stub)
@@ -110,7 +110,7 @@ def test_no_declared_bloom_skipped() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Wave 7 W7.B — per-question-type segmentation tests.
+# Per-question-type segmentation.
 # ---------------------------------------------------------------------------
 
 
@@ -156,7 +156,7 @@ def test_bloom_alignment_rate_emits_per_question_type_block() -> None:
 
 
 def test_bloom_alignment_rate_deps_missing_returns_per_question_type_none() -> None:
-    """Deps-missing branch must emit per_question_type=None + deps_missing=True."""
+    """Unavailable classifiers emit the compatible per-type sentinel shape."""
     stub = MagicMock()
     stub._load_members.return_value = []
     evaluator = BloomAlignmentRateEvaluator(ensemble=stub)

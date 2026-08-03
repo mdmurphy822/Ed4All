@@ -919,10 +919,9 @@ class SLMEvalHarness:
 
         # --- 6 per-question metrics --------------------------------- #
         # Pure post-emit scoring against the assessments.json + chunk
-        # corpus already on disk in the course tree. No model dispatch
-        # for 5 of 6 (only bloom_alignment_rate + source_support_rate
-        # touch the BERT / NLI ensembles, both gated on optional
-        # pyproject extras with graceful-degrade returns).
+        # corpus already on disk in the course tree. Five are deterministic.
+        # Bloom alignment uses the currently abstaining compatibility surface;
+        # source support uses the separate optional DeBERTa NLI integration.
         prompts = self._load_prompts_for_metrics()
         chunk_corpus = self._load_chunk_corpus_for_metrics()
         rendered_html_blocks = self._load_rendered_html_for_metrics(prompts)
