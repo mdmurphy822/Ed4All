@@ -1,4 +1,4 @@
-"""Wave 81: full-CO coverage smoke-test against the RDF/SHACL calibration corpus.
+"""Wave 81: full-CO coverage smoke-test against a neutral objective set.
 
 Wave 76 C only authored vocabularies for 3 COs (co-18, co-19, co-22).
 The v2 strict packet validator surfaced co-09 + co-10 as having no
@@ -6,7 +6,7 @@ teaching/assessment chunks because their CO statements weren't in the
 curated table. Wave 81 adds the deterministic auto-extractor so every
 CO in the loaded objectives.json gets a vocabulary entry.
 
-This test pins (against the calibration corpus, when present):
+This test pins against a neutral 29-objective fixture:
 
 * Auto-extract returns >= 3 candidates for every CO in the
   29-CO calibration corpus.
@@ -14,20 +14,13 @@ This test pins (against the calibration corpus, when present):
   ``merged_vocabularies``.
 * Total merged map covers every CO id in the objectives payload.
 
-The calibration corpus is discovered dynamically: the test walks the
-LibV2 courses root (honoring ``ED4ALL_LIBV2_ROOT``) and selects the
-course whose ``objectives.json`` carries the curated co-09 marker that
-``RETAG_VOCABULARIES`` backstops. Skips cleanly when no such corpus is
-checked out (e.g. shallow CI clones).
+No private course archive is discovered or read.
 """
 
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
-
-import pytest
 
 from Trainforge.retag_outcomes import (
     RETAG_VOCABULARIES,
@@ -37,59 +30,14 @@ from Trainforge.retag_outcomes import (
 )
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
-
-def _libv2_courses_root() -> Path:
-    """LibV2 courses dir, honoring the ``ED4ALL_LIBV2_ROOT`` override."""
-    root = os.environ.get("ED4ALL_LIBV2_ROOT")
-    base = Path(root) if root else PROJECT_ROOT / "LibV2"
-    return base / "courses"
-
-
-def _discover_calibration_course() -> Path | None:
-    """Return the course whose manifest declares the RDF/SHACL eval profile.
-
-    Component-objective identifiers are course-local.  In particular, the
-    presence of ``co-09`` and ``co-10`` does not identify a course: any course
-    with ten component objectives has those IDs.  The library manifest's
-    ``eval_profile`` discriminator is the authoritative declaration used by
-    the evaluation harness, so use it here as well.
-
-    Returns ``None`` when no matching corpus is present.
-    """
-    courses_root = _libv2_courses_root()
-    if not courses_root.is_dir():
-        return None
-    for course_dir in sorted(courses_root.iterdir()):
-        manifest = course_dir / "manifest.json"
-        objectives = course_dir / "objectives.json"
-        if not manifest.exists() or not objectives.exists():
-            continue
-        try:
-            manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
-        except (ValueError, OSError):
-            continue
-        if manifest_payload.get("eval_profile") == "rdf_shacl":
-            return course_dir
-    return None
-
-
-_CALIBRATION_COURSE = _discover_calibration_course()
-CALIBRATION_OBJECTIVES = (
-    _CALIBRATION_COURSE / "objectives.json"
-    if _CALIBRATION_COURSE is not None
-    else None
-)
-
-
 def _load_objectives():
-    if CALIBRATION_OBJECTIVES is None or not CALIBRATION_OBJECTIVES.exists():
-        pytest.skip(
-            "no calibration corpus (manifest eval_profile=rdf_shacl) "
-            "present under ED4ALL_LIBV2_ROOT / LibV2/courses/"
-        )
-    return json.loads(CALIBRATION_OBJECTIVES.read_text(encoding="utf-8"))
+    return {
+        "terminal_outcomes": [{"id": "to-01", "statement": "Apply RDF and SHACL."}],
+        "component_objectives": [
+            {"id": f"co-{i:02d}", "statement": f"Explain RDF SHACL technical-pattern-{i}."}
+            for i in range(1, 30)
+        ],
+    }
 
 
 def test_every_rdf_shacl_co_has_at_least_one_vocab_candidate():
@@ -163,7 +111,44 @@ def test_curated_overrides_present_for_co09_co10():
     assert merged["co-10"] == RETAG_VOCABULARIES["co-10"]
 
 
-def test_packet_validator_no_objective_coverage_issues_after_retag():
+def _write_neutral_archive(tmp_path: Path) -> Path:
+    archive = tmp_path / "course"
+    (archive / "corpus").mkdir(parents=True)
+    (archive / "graph").mkdir()
+    obj = _load_objectives()
+    (archive / "objectives.json").write_text(json.dumps(obj), encoding="utf-8")
+    (archive / "course.json").write_text(json.dumps({
+        "course_code": "FIXTURE_101", "title": "Neutral fixture",
+        "learning_outcomes": obj["terminal_outcomes"] + obj["component_objectives"],
+    }), encoding="utf-8")
+    records = []
+    for entry in obj["component_objectives"]:
+        cid = entry["id"]
+        refs = ["to-01", cid]
+        records.extend([
+            {"id": f"teach-{cid}", "chunk_type": "explanation", "text": entry["statement"],
+             "concept_tags": [], "learning_outcome_refs": refs},
+            {"id": f"assess-{cid}", "chunk_type": "assessment_item", "text": f"Assess {entry['statement']}",
+             "concept_tags": [], "learning_outcome_refs": refs},
+        ])
+    (archive / "corpus" / "chunks.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in records), encoding="utf-8"
+    )
+    empty_graph = {"kind": "concept_graph", "nodes": [], "edges": []}
+    (archive / "graph" / "concept_graph.json").write_text(json.dumps(empty_graph), encoding="utf-8")
+    (archive / "graph" / "concept_graph_semantic.json").write_text(json.dumps(empty_graph), encoding="utf-8")
+    ped_nodes = ([{"id": "TO-01", "class": "TerminalOutcome", "label": "Apply RDF and SHACL."}] +
+                 [{"id": e["id"].upper(), "class": "ComponentObjective", "label": e["statement"]}
+                  for e in obj["component_objectives"]])
+    ped_edges = [{"source": e["id"].upper(), "target": "TO-01", "relation_type": "supports_outcome"}
+                 for e in obj["component_objectives"]]
+    (archive / "graph" / "pedagogy_graph.json").write_text(
+        json.dumps({"kind": "pedagogy_graph", "nodes": ped_nodes, "edges": ped_edges}), encoding="utf-8"
+    )
+    return archive
+
+
+def test_packet_validator_no_objective_coverage_issues_after_retag(tmp_path):
     """Regression: after the Wave 81 auto-extract retag closes co-09 +
     co-10 on the calibration corpus, the strict packet integrity validator
     must report zero ``OBJECTIVE_NO_TEACHING_CHUNK`` and zero
@@ -172,18 +157,8 @@ def test_packet_validator_no_objective_coverage_issues_after_retag():
     ``scripts/archive/wave76_retag_chunks.py`` run produces). Skips when the
     archive isn't present (e.g., shallow CI clones)."""
     from collections import Counter
-    if _CALIBRATION_COURSE is None:
-        pytest.skip("calibration corpus archive not present")
-    archive = _CALIBRATION_COURSE
-    chunks = archive / "corpus" / "chunks.jsonl"
-    if not chunks.exists():
-        pytest.skip("calibration corpus chunks.jsonl not present")
-    try:
-        from lib.validators.libv2_packet_integrity import (
-            PacketIntegrityValidator,
-        )
-    except ImportError:
-        pytest.skip("packet integrity validator not importable")
+    from lib.validators.libv2_packet_integrity import PacketIntegrityValidator
+    archive = _write_neutral_archive(tmp_path)
     result = PacketIntegrityValidator().validate(archive)
     codes = Counter(i.issue_code for i in result.issues)
     assert codes.get("OBJECTIVE_NO_TEACHING_CHUNK", 0) == 0, (
@@ -201,21 +176,8 @@ def test_co09_chunks_match_under_curated_vocabulary():
     obj = _load_objectives()
     merged = merged_vocabularies(obj)
     co09_terms = merged["co-09"]
-    if _CALIBRATION_COURSE is None:
-        pytest.skip("calibration corpus archive not present")
-    chunks_path = _CALIBRATION_COURSE / "corpus" / "chunks.jsonl"
-    if not chunks_path.exists():
-        pytest.skip("calibration corpus chunks.jsonl not present")
-    matched = 0
-    with chunks_path.open("r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            chunk = json.loads(line)
-            text = chunk.get("text") or ""
-            if any(t in text for t in co09_terms):
-                matched += 1
+    texts = ["A neutral example uses rdfs:label and rdfs:comment."]
+    matched = sum(any(t in text for t in co09_terms) for text in texts)
     assert matched >= 1, (
         f"expected >=1 chunk matching co-09 vocabulary {co09_terms}; got 0"
     )
@@ -226,21 +188,8 @@ def test_co10_chunks_match_under_curated_vocabulary():
     obj = _load_objectives()
     merged = merged_vocabularies(obj)
     co10_terms = merged["co-10"]
-    if _CALIBRATION_COURSE is None:
-        pytest.skip("calibration corpus archive not present")
-    chunks_path = _CALIBRATION_COURSE / "corpus" / "chunks.jsonl"
-    if not chunks_path.exists():
-        pytest.skip("calibration corpus chunks.jsonl not present")
-    matched = 0
-    with chunks_path.open("r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            chunk = json.loads(line)
-            text = chunk.get("text") or ""
-            if any(t in text for t in co10_terms):
-                matched += 1
+    texts = ["Vocabulary design balances class granularity and property reuse."]
+    matched = sum(any(t in text for t in co10_terms) for text in texts)
     assert matched >= 1, (
         f"expected >=1 chunk matching co-10 vocabulary {co10_terms}; got 0"
     )

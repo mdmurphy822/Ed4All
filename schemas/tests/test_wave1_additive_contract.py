@@ -11,10 +11,8 @@ This is Tests 2 + 3 of the Wave 1 validation gate. The single test file pins:
     ``len(enum)`` per touched schema is at least the audited post-Wave-1
     count. Uses ``>=`` (not ``==``) so subsequent waves that ADD more fields
     don't break this gate; catches REMOVAL.
-  * ``test_legacy_fixtures_validate`` — first 10 records of the first
-    discovered LibV2 course's ``training_specs/instruction_pairs.jsonl``
-    + ``preference_pairs.jsonl`` + ``corpus/chunks.jsonl`` validate against
-    the post-Wave-1 schemas. Skips when no such corpus is present.
+  * ``test_legacy_fixtures_validate`` — neutral tracked and inline legacy
+    shapes validate against the post-Wave-1 schemas.
   * ``test_new_fixtures_validate`` — three new fixtures under
     ``schemas/tests/fixtures/wave1/`` validate against their target schemas.
 """
@@ -41,33 +39,6 @@ PREFERENCE_PAIR_PATH = SCHEMAS_DIR / "knowledge" / "preference_pair.schema.json"
 COURSE_STATUS_PATH = SCHEMAS_DIR / "governance" / "course_status.schema.json"
 PHASE_OUTPUT_PATH = SCHEMAS_DIR / "governance" / "phase_output.schema.json"
 DECISION_EVENT_PATH = SCHEMAS_DIR / "events" / "decision_event.schema.json"
-
-def _discover_legacy_corpus_dir() -> "Path | None":
-    """First LibV2 course carrying both training-pair JSONL files.
-
-    Resolves the LibV2 root via the ``ED4ALL_LIBV2_ROOT`` convention
-    (``lib.paths.libv2_path``) so the round-trip binds to whatever
-    archived corpus is on disk rather than a pinned course slug.
-    """
-    try:
-        from lib.paths import libv2_path
-
-        courses_root = libv2_path() / "courses"
-    except Exception:
-        courses_root = PROJECT_ROOT / "LibV2" / "courses"
-    if not courses_root.is_dir():
-        return None
-    for course in sorted(p for p in courses_root.iterdir() if p.is_dir()):
-        specs = course / "training_specs"
-        if (specs / "instruction_pairs.jsonl").exists() and (
-            specs / "preference_pairs.jsonl"
-        ).exists():
-            return course
-    return None
-
-
-LEGACY_CORPUS_DIR = _discover_legacy_corpus_dir()
-
 
 # --------------------------------------------------------------------------- #
 # Audited Wave-1 baselines (literal snapshots).
@@ -334,39 +305,14 @@ def test_property_count_deltas():
 
 
 # --------------------------------------------------------------------------- #
-# Legacy-fixture round-trip (auto-skips when corpus absent).
+# Legacy-shape round-trip using neutral fixtures.
 # --------------------------------------------------------------------------- #
 
 
-def _legacy_corpus_present() -> bool:
-    return LEGACY_CORPUS_DIR is not None
-
-
-def _read_jsonl_first_n(path: Path, n: int) -> List[Dict[str, Any]]:
-    records: List[Dict[str, Any]] = []
-    with path.open() as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            records.append(json.loads(line))
-            if len(records) >= n:
-                break
-    return records
-
-
 def test_legacy_fixtures_validate():
-    """First 10 legacy records validate against post-Wave-1 schemas."""
-    if not _legacy_corpus_present():
-        pytest.skip("legacy fixture corpus not available")
+    """Neutral legacy-shaped records validate against post-Wave-1 schemas."""
     _require_jsonschema()
-    from jsonschema import ValidationError  # noqa: F401  (used implicitly)
-
-    # Instruction pairs.
-    ip_records = _read_jsonl_first_n(
-        LEGACY_CORPUS_DIR / "training_specs" / "instruction_pairs.jsonl", 10
-    )
-    assert ip_records, "instruction_pairs.jsonl exists but had no records"
+    ip_records = [_load(FIXTURES_DIR / "instruction_pair_trainable.json")]
     ip_validator = _build_validator(_load(INSTRUCTION_PAIR_PATH))
     for idx, rec in enumerate(ip_records):
         errors = list(ip_validator.iter_errors(rec))
@@ -375,11 +321,15 @@ def test_legacy_fixtures_validate():
             f"{[(list(e.absolute_path), e.message) for e in errors]}"
         )
 
-    # Preference pairs.
-    pp_records = _read_jsonl_first_n(
-        LEGACY_CORPUS_DIR / "training_specs" / "preference_pairs.jsonl", 10
-    )
-    assert pp_records, "preference_pairs.jsonl exists but had no records"
+    pp_records = [{
+        "prompt": "Which explanation is supported by the supplied neutral context and why?",
+        "chosen": "The supported explanation cites the supplied context.",
+        "rejected": "An unsupported explanation invents a result that the supplied context never states.",
+        "chunk_id": "neutral_chunk_001",
+        "lo_refs": ["co-01"],
+        "seed": 42,
+        "decision_capture_id": "dc_neutral_001",
+    }]
     pp_validator = _build_validator(_load(PREFERENCE_PAIR_PATH))
     for idx, rec in enumerate(pp_records):
         errors = list(pp_validator.iter_errors(rec))
@@ -388,19 +338,7 @@ def test_legacy_fixtures_validate():
             f"{[(list(e.absolute_path), e.message) for e in errors]}"
         )
 
-    # Chunks.  Archived corpora keep the canonical chunks at corpus/chunks.jsonl
-    # (Phase-7c rename target); fall back to imscc_chunks/chunks.jsonl or the
-    # staged semantik_chunks/chunks.jsonl when only that layout is present.
-    chunks_path_candidates = [
-        LEGACY_CORPUS_DIR / "corpus" / "chunks.jsonl",
-        LEGACY_CORPUS_DIR / "imscc_chunks" / "chunks.jsonl",
-        LEGACY_CORPUS_DIR / "semantik_chunks" / "chunks.jsonl",
-    ]
-    chunks_path = next((p for p in chunks_path_candidates if p.exists()), None)
-    if chunks_path is None:
-        pytest.skip("legacy chunks.jsonl not available in any expected location")
-    chunk_records = _read_jsonl_first_n(chunks_path, 10)
-    assert chunk_records, f"{chunks_path} exists but had no records"
+    chunk_records = [_load(FIXTURES_DIR.parent / "wave_d11" / "chunk_with_evidence_quote_key_claims.json")]
     chunk_validator = _build_validator(_load(CHUNK_V4_PATH))
     for idx, rec in enumerate(chunk_records):
         errors = list(chunk_validator.iter_errors(rec))

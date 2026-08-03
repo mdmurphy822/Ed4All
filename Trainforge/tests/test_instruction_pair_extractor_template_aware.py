@@ -10,7 +10,6 @@ the expected pair shapes.
 from __future__ import annotations
 
 import json
-import os
 import sys
 from collections import Counter
 from pathlib import Path
@@ -352,7 +351,7 @@ def test_run_extraction_dispatches_template_aware_methods(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Real-corpus integration (after Wave 81 reclassification)
+# Neutral end-to-end integration
 # ---------------------------------------------------------------------------
 
 
@@ -368,68 +367,18 @@ _TEMPLATE_CHUNK_TYPES = {
 }
 
 
-def _has_template_chunk_types(chunks_path: Path) -> bool:
-    """True when the corpus carries >=1 Wave-79-C template chunk_type."""
-    try:
-        with chunks_path.open() as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                if json.loads(line).get("chunk_type") in _TEMPLATE_CHUNK_TYPES:
-                    return True
-    except (OSError, json.JSONDecodeError):
-        return False
-    return False
-
-
-def _discover_corpus_chunks():
-    """First resolvable ``<course>/.../chunks.jsonl`` with template types.
-
-    Honors ``ED4ALL_LIBV2_ROOT``; resolves each course's chunks via
-    ``resolve_imscc_chunks_path`` so the ``imscc_chunks/`` →
-    ``semantik_chunks/`` → legacy ``dart_chunks/`` → legacy ``corpus/``
-    layouts are all found, then
-    selects the first course carrying Wave-79-C template chunk_types (the
-    test's precondition). Returns ``None`` when none qualifies → the
-    real-corpus test skips cleanly.
-    """
-    from lib.libv2_storage import resolve_imscc_chunks_path
-
-    root = os.environ.get("ED4ALL_LIBV2_ROOT")
-    base = Path(root) if root else PROJECT_ROOT / "LibV2"
-    courses_root = base / "courses"
-    if not courses_root.is_dir():
-        return None
-    for course_dir in sorted(courses_root.iterdir()):
-        if not course_dir.is_dir():
-            continue
-        candidate = resolve_imscc_chunks_path(course_dir, "chunks.jsonl")
-        if candidate.exists() and _has_template_chunk_types(candidate):
-            return candidate
-    return None
-
-
-_CORPUS_PATH = _discover_corpus_chunks()
-
-
-@pytest.mark.skipif(
-    _CORPUS_PATH is None or not _CORPUS_PATH.exists(),
-    reason=(
-        "no LibV2 course carrying Wave-79-C template chunk_types present "
-        "under ED4ALL_LIBV2_ROOT / LibV2/courses/ (run "
-        "scripts/archive/wave81_reclassify_chunks.py on a corpus first)"
-    ),
-)
-def test_real_corpus_archive_yields_template_aware_methods(tmp_path):
-    """After Wave 81 reclassification a real archive should
-    contain chunks of every Wave 79 C template type, and the extractor
-    should fire at least four unique template-aware extraction methods on
-    them (i.e. beyond the original 6 legacy methods).
-    """
+def test_neutral_archive_yields_template_aware_methods(tmp_path):
+    chunks = [
+        _stub_chunk(id="p", chunk_type="procedure", text="Inputs: graph. Steps: 1. Parse. 2. Validate. Output: report. Worked Example: a valid report."),
+        _stub_chunk(id="s", chunk_type="real_world_scenario", text="Scenario: A team validates records. Your Task: Create a shape. Approach: Parse and validate. Success Criteria: A report is emitted."),
+        _stub_chunk(id="c", chunk_type="common_pitfall", section_heading="Validation", text="Common Pitfall: skipping validation. What looks like the right answer: trust input. Why it's wrong: errors escape. The right approach: validate first. Quick test: inspect the report."),
+        _stub_chunk(id="x", chunk_type="problem_solution", text="Problem: Data may be invalid. Walkthrough: Plan: parse input. Execute: validate. Verify: inspect results. Common Incorrect Approach: trust every record. Verification discipline: test malformed data."),
+    ]
+    chunks_path = tmp_path / "chunks.jsonl"
+    chunks_path.write_text("".join(json.dumps(c) + "\n" for c in chunks), encoding="utf-8")
     out_dir = tmp_path / "out"
     stats, pairs = run_extraction(
-        chunks_path=_CORPUS_PATH,
+        chunks_path=chunks_path,
         output_dir=out_dir,
         course_code="DEMO_101",
         capture=None,
@@ -446,7 +395,5 @@ def test_real_corpus_archive_yields_template_aware_methods(tmp_path):
     # The corpus must reclassify chunks; if reclassification hasn't run yet
     # we expect zero firings — the Wave 81 retroactive script populates this.
     assert len(fired) >= 4, (
-        f"Wave 81 expected ≥4 unique template-aware extraction methods on "
-        f"the discovered archive; got {fired}. Run "
-        f"scripts/archive/wave81_reclassify_chunks.py first."
+        f"expected ≥4 unique template-aware extraction methods; got {fired}"
     )

@@ -23,7 +23,6 @@ Contract locked by this suite:
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
@@ -34,43 +33,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from lib.libv2_storage import resolve_imscc_chunks_path  # noqa: E402
-
 SCHEMAS_DIR = PROJECT_ROOT / "schemas"
 CHUNK_SCHEMA_PATH = SCHEMAS_DIR / "knowledge" / "chunk_v4.schema.json"
-
-
-def _libv2_courses_root() -> Path:
-    """LibV2 courses dir, honoring the ``ED4ALL_LIBV2_ROOT`` override."""
-    root = os.environ.get("ED4ALL_LIBV2_ROOT")
-    base = Path(root) if root else PROJECT_ROOT / "LibV2"
-    return base / "courses"
-
-
-def _discover_real_corpora() -> List[Path]:
-    """Discover real LibV2 chunks.jsonl files for the parametrized regression.
-
-    No course slug is hardcoded: archives live under the gitignored
-    ``LibV2/courses/`` tree (honors ``ED4ALL_LIBV2_ROOT``). Each course's
-    chunks are resolved via ``resolve_imscc_chunks_path`` so the
-    ``imscc_chunks/`` → ``semantik_chunks/`` → legacy ``corpus/`` layouts
-    are all found. Returns the (sorted) list of existing chunks.jsonl paths;
-    empty when none present → the parametrized case skips cleanly.
-    """
-    courses_root = _libv2_courses_root()
-    if not courses_root.is_dir():
-        return []
-    found: List[Path] = []
-    for course_dir in sorted(courses_root.iterdir()):
-        if not course_dir.is_dir():
-            continue
-        candidate = resolve_imscc_chunks_path(course_dir, "chunks.jsonl")
-        if candidate.is_file():
-            found.append(candidate)
-    return found
-
-
-_REAL_CORPORA = _discover_real_corpora()
 
 
 # --------------------------------------------------------------------- #
@@ -275,46 +239,20 @@ def test_process_course_validator_resolves_all_refs():
     assert errors_second == []
 
 
-@pytest.mark.parametrize(
-    "corpus_path",
-    _REAL_CORPORA or [None],
-    ids=(
-        [p.parent.parent.name for p in _REAL_CORPORA]
-        if _REAL_CORPORA
-        else ["no-real-corpus"]
-    ),
-)
-def test_process_course_validates_real_corpus_chunks(corpus_path: object):
-    """Regression: real LibV2 chunks validate without raising.
-
-    Parametrized over every LibV2 course archive carrying a resolvable
-    chunks.jsonl (discovered dynamically — no course slug hardcoded).
-    Skips cleanly when no real corpus is present in the checkout.
-    """
-    if corpus_path is None:
-        pytest.skip(
-            "no LibV2 course with a resolvable chunks.jsonl present under "
-            "ED4ALL_LIBV2_ROOT / LibV2/courses/"
-        )
+def test_process_course_validates_neutral_chunk_batch():
+    """Repeated neutral chunks validate without reference-resolution errors."""
     _require_jsonschema()
     try:
         from Trainforge.process_course import _validate_chunk
     except ImportError as exc:  # pragma: no cover
         pytest.skip(f"process_course not importable: {exc}")
 
-    lines = Path(corpus_path).read_text().splitlines()
-    if not lines:
-        pytest.skip(f"corpus empty: {corpus_path}")
-
-    # Validate at least the first 5 chunks — the production bug
-    # crashed on the FIRST chunk, so this is the canonical reproducer.
-    for i, line in enumerate(lines[:5]):
-        if not line.strip():
-            continue
-        chunk = json.loads(line)
+    for i in range(5):
+        chunk = _sample_chunk_with_source_references()
+        chunk["id"] = f"tst_903_chunk_{i:05d}"
         # Must not raise.
         result = _validate_chunk(chunk)
         assert result is None or isinstance(result, str), (
-            f"chunk {i} in {corpus_path}: unexpected return type "
+            f"chunk {i}: unexpected return type "
             f"{type(result).__name__}"
         )
