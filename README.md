@@ -11,316 +11,215 @@
 ╰────────────────────────────────────────────────────────────╯
 </pre>
 
-### Textbook PDF → accessible course package → LoRA-tuned model with RRF retrieval, in a single command
+# Ed4All
 
-[![WCAG 2.2 AA](https://img.shields.io/badge/Accessibility-WCAG%202.2%20AA-22C55E)](#what-you-get)
-[![IMSCC](https://img.shields.io/badge/Export-IMS%20Common%20Cartridge-2563EB)](#what-you-get)
-[![Retrieval](https://img.shields.io/badge/Retrieval-BM25%20%2B%20Vector%20RRF-7C3AED)](#whats-inside)
-[![LoRA](https://img.shields.io/badge/Fine--tune-LoRA%20SFT%20%2B%20DPO-F97316)](#the-training-path)
+### Turn learning materials into accessible courses—and course-grounded AI
+
+Ed4All transforms books, PDFs, HTML, and documentation into structured,
+accessible HTML, modular digital course content, and LMS-ready IMS Common
+Cartridge packages.
+
+From the same source-grounded content, Ed4All can build a searchable course
+library, generate supervised fine-tuning (SFT) and preference (DPO) pairs, and
+optionally train a course-specific LoRA adapter.
+
+Its custom hybrid retrieval layer combines lexical BM25 and dense vector search
+with reciprocal rank fusion (RRF), helping applications answer questions from
+the course's indexed content.
+
+**One source. Four useful outcomes.**
+
+Accessible HTML · Digital course + IMSCC · Grounded training data · Hybrid retrieval
+
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/License-Apache--2.0-22C55E)](LICENSE)
 [![CI](https://github.com/mdmurphy822/Ed4All/actions/workflows/ci.yml/badge.svg)](https://github.com/mdmurphy822/Ed4All/actions/workflows/ci.yml)
 
-[Quick start](#quick-start) · [How it works](#how-it-works) · [Training path](#the-training-path) · [What's inside](#whats-inside) · [Developer guide](CLAUDE.md)
-
-**Semantic HTML, weekly modules, learning objectives, assessments, and a
-knowledge graph — then, on the same corpus, SFT instruction pairs, DPO
-preference pairs, and a LoRA fine-tune that answers *through* the course's own
-hybrid BM25 + vector RRF index rather than from weights alone. Every artifact
-is validated, cited back to its source, and WCAG 2.2 AA compliant by default.**
+[Get started](#quick-start) · [See the pipeline](#from-source-to-course-grounded-ai) · [Explore the components](#components) · [Read the documentation](#documentation)
 
 </div>
 
 ---
 
-## Why Ed4All
+## What Ed4All does
 
-Building a usable knowledge package from raw source material is weeks of manual work: extracting content, tagging it with learning science metadata, structuring it into pedagogically sound modules, writing aligned assessments, and validating accessibility. Ed4All runs that pipeline end-to-end, and everything it produces is WCAG 2.2 AA compliant by default.
+- **Converts source material** into semantic, accessibility-oriented HTML with source provenance and automated validation.
+- **Builds digital courses** with modules, learning objectives, activities,
+  assessments, and machine-readable educational metadata.
+- **Packages courses for an LMS** using IMS Common Cartridge (IMSCC).
+- **Indexes course content** in a reusable local library with lexical, semantic, and hybrid-RRF retrieval.
+- **Generates grounded training data** as SFT instruction pairs and DPO
+  preference pairs derived from course content.
+- **Optionally trains a LoRA adapter** and evaluates it alongside the course's
+  retrieval system.
 
-## What you get
+## From source to course-grounded AI
 
-Point Ed4All at a textbook PDF (or a directory of PDFs) and a course name, and it produces:
-
-- **Accessible HTML** — semantic structure, proper heading hierarchy, alt text for images, ARIA landmarks, keyboard navigation, dark mode, and full WCAG 2.2 AA coverage.
-- **An LMS-ready IMSCC package** — weekly modules with pages, activities, self-checks, summaries, and discussions, importable into Brightspace, Canvas, Blackboard, or Moodle.
-- **Bloom's-aligned learning objectives** — per module and per page, each tagged with a cognitive domain and linked back to the source content.
-- **A knowledge graph** — chunked content with key terms, misconceptions, learning-outcome references, and a typed concept graph covering taxonomic and pedagogical structure.
-- **A reusable archive** — the course is indexed into a local knowledge repository you can query with hybrid retrieval (BM25 fused with dense vector search via reciprocal rank fusion), filter by concept or objective, and reuse across courses.
-- **Training data, and optionally a course-tuned model** — instruction pairs for supervised fine-tuning (SFT) and preference pairs for direct preference optimization (DPO), synthesized from the course's own chunks and assessments. Pass `--with-training` and Ed4All goes one step further: a LoRA fine-tune (bf16 PEFT) of a small language model on those pairs, with promotion gates, a base-vs-adapter eval matrix, and a full provenance model card.
-
-Every chunk carries its Bloom's level, content type, key terms, misconceptions, and the original PDF region it came from, so downstream LLMs can ground their answers in cited source material.
-
-## Who it's for
-
-- **Instructors and instructional designers** producing online courses from textbook source material at scale.
-- **Accessibility teams** remediating document libraries to WCAG 2.2 AA compliance.
-- **EdTech and ML teams** building AI tutors, RAG assistants, or domain-adapted language models that need pedagogically structured training data.
-- **Researchers** studying retrieval quality, assessment generation, or learning-science-aligned content representations.
-
-## How it works
-
-`textbook-to-course` runs up to 24 phases end-to-end. Each phase checkpoints on
-completion (a failed or stopped run resumes where it left off), quality gates
-validate the artifacts between phases, and GPU model seats are started and
-stopped automatically so only the models a phase needs are ever resident.
-
-| # | Phase | What it does | GPU workload |
-|---|-------|--------------|--------------|
-| 1 | `semantik_conversion` | PDF → accessible semantic HTML (layout extraction + image alt text) | OCR + vision models |
-| 2 | `heading_judge` | Re-levels ambiguous heading levels via a large-model judge (runs by default; no-op on born-digital corpora) | Large model |
-| 3 | `staging` | Stages converted HTML for course generation | — |
-| 4 | `chunking` | Emits the deterministic source chunkset | — |
-| 5 | `objective_extraction` | Parses staged HTML into the textbook structure (chapters, sections, blocks) | — |
-| 6 | `source_mapping` | Maps source blocks to course module pages | — |
-| 7 | `course_planning` | Synthesizes terminal + component learning objectives from the structure | Large model |
-| 8 | `concept_extraction` | Builds the typed concept / knowledge graph | Large model |
-| 9 | `content_generation` | Single-pass content authoring *(alternative to 10–12)* | Large model |
-| 10 | `content_generation_outline` | Two-pass tier 1: terse per-block outlines | Large model |
-| 11 | `inter_tier_validation` | Structural validators over the outline tier (no LLM) | — |
-| 12 | `content_generation_rewrite` | Two-pass tier 2: full HTML block bodies | Large model |
-| 13 | `assessment_synthesis` | Grounded quizzes, assignments, and discussions as QTI/IMS XML *(optional)* | Large model |
-| 14 | `post_rewrite_validation` | The largest gate set: prose entailment, claim support, block quality | Local validators (NLI + embeddings) |
-| 15 | `packaging` | Packages the course as IMSCC | — |
-| 16 | `imscc_chunking` | Emits the post-packaging retrieval chunkset | — |
-| 17 | `trainforge_assessment` | Generates assessments from the packaged course *(optional)* | — |
-| 18 | `training_synthesis` | Synthesizes SFT instruction pairs and DPO preference pairs from the course chunks and assessments *(optional)* | Large model |
-| 19 | `libv2_archival` | Archives all artifacts to the local course library | — |
-| 20 | `vector_indexing` | Builds the per-course vector index, enabling semantic and hybrid-RRF retrieval so the course is immediately askable | Local embeddings |
-| 21 | `training` | LoRA fine-tune (SFT + DPO) of a small language model on the course's instruction and preference pairs (bf16 PEFT, licensing preflight, full provenance card) *(opt-in)* | Training (exclusive — all serving seats stopped) |
-| 22 | `post_training_validation` | Promotion gates on the trained adapter — eval thresholds and CURIE-family completeness *(opt-in)* | — |
-| 23 | `evaluation` | 5-layer × 3-tier eval matrix vs the base model, adapter audit, promote / hold / reject decision *(opt-in)* | Local eval models |
-| 24 | `finalization` | Final validation and training-data export | — |
-
-**GPU workload** legend: *OCR + vision models* — the lightweight extraction and
-alt-text seats; *Large model* — the main authoring/judging model seat; *Local
-validators / embeddings* — in-process models (no serving seat); *—* —
-deterministic CPU work. Seats in different groups are swapped at phase
-boundaries automatically, with health and coherence checks at every start.
-
-### The training path
-
-Phases 18, 20 and 21–23 turn the finished course into a **retrieval-grounded,
-course-tuned model**. Two things make it more than a fine-tune:
-
-- The training corpus is not scraped or hand-written — it is synthesized from
-  the same chunks and assessments the course was built from, so every pair is
-  already grounded in cited source material.
-- The adapter is **not** shipped alone. It is paired with the per-course vector
-  index built in phase 20, so at answer time it retrieves over the course
-  corpus with **hybrid RRF** — BM25 and dense vector search fused by reciprocal
-  rank fusion — and answers from cited chunks instead of from weights alone.
-
-| Phase | Produces |
-|---|---|
-| 18 `training_synthesis` | **SFT instruction pairs** + **DPO preference pairs**, grounded in the course's own chunks and assessments |
-| 20 `vector_indexing` | The **per-course vector index** the adapter answers through — on-device embeddings + exact cosine search, fail-closed (a stale or missing index raises, never a silent BM25 fallback) |
-| 21 `training` | A **LoRA adapter** (bf16 PEFT, SFT then DPO) over a small base model, with a licensing preflight and a full provenance model card |
-| 22 `post_training_validation` | Promotion gates — eval thresholds, faithfulness/yes-bias/no-bias regressions, CURIE-family completeness |
-| 23 `evaluation` | A 5-layer × 3-tier eval matrix against the **base** model, plus **grounded-answer** arms that score it through the retrieval path, then promote / hold / reject |
-
-```bash
-# Build the course AND train an adapter on it, one command
-ed4all run textbook-to-course --corpus my_textbook.pdf --course-name MY_COURSE_101 \
-  --with-training
-
-# Train an ALREADY-archived course without rebuilding it
-ed4all run trainforge_train --course-name my_course_101 --base-model <name>
-
-# Then ask the course — hybrid RRF over its own corpus, answers cite chunks
-libv2 retrieve "<question>" --course my_course_101 --engine hybrid-rrf
+```text
+Books and learning materials
+            |
+            v
+Structured, accessible HTML
+            |
+            v
+Modular digital course
+      |             |
+      |             +--> IMS Common Cartridge package
+      |
+      +--> Searchable course archive
+      |          |
+      |          +--> BM25 + dense vectors --> RRF --> grounded answers
+      |
+      +--> Source-grounded SFT + DPO pairs
+                 |
+                 +--> optional LoRA adapter
 ```
 
-Retrieval is a first-class deliverable here, not an afterthought. The archive
-ships three engines — `lexical` (BM25), `semantic`, and `hybrid-rrf` — and
-`--engine auto` selects hybrid-RRF whenever a vector index exists, falling back
-to lexical only when one doesn't. Phase 20 runs on a **default** build too, so
-a course is askable whether or not you ever train an adapter.
-
-The fine-tune is **off by default** — a training run takes hours and wants the
-whole GPU, so it never attaches to a build implicitly. Phases 21–23 run only
-with `--with-training`, and `--skip-training` wins if you pass both. A default
-build skips them and still finishes at `finalization`.
-
-Two things worth knowing before the first run. Training needs the `[training]`
-extra and a GPU, and retrieval needs `[embedding]` (see the extras table
-below) — without it there is no vector index and retrieval degrades to BM25
-alone. The trained adapter is also a derivative of whatever model generated its
-pairs, so pair synthesis routes to license-clean providers by default;
-`docs/LICENSING.md` is the reference.
+In plain language: Ed4All converts source material, organizes it as a course,
+packages it for LMS delivery, and indexes the result for search. The same
+grounded course content can also supply training pairs and, when explicitly
+enabled, a LoRA training workflow. Training is optional; the course package and
+retrieval library remain useful on their own.
 
 ## Quick start
 
-Requires Python 3.10+. Optional system tools (`tesseract-ocr`, `poppler-utils`) improve extraction on scanned or image-heavy PDFs.
+Ed4All requires Python 3.10 or newer. Tesseract OCR and Poppler improve
+extraction from scanned or image-heavy PDFs.
 
 ```bash
 git clone https://github.com/mdmurphy822/Ed4All.git
 cd Ed4All
 pip install -e ".[full]"
 
-# Convert a textbook PDF into a full course package
-ed4all run textbook-to-course --corpus my_textbook.pdf --course-name MY_COURSE_101
+ed4all run textbook-to-course \
+  --corpus <path-to-source> \
+  --course-name <course-name>
 ```
 
-`[full]` installs the CPU-light surface: PDF-to-HTML conversion, the MCP server,
-the dev/test toolchain, and the GUI. It deliberately leaves out the two heavy
-ML extras so a default install never pulls multi-GB GPU wheels:
+Authoring and synthesis phases require a configured model provider. See the
+[pipeline invocation guide](docs/operations/pipeline-invocation.md) for local
+and hosted OpenAI-compatible endpoint setup.
 
-| Extra | Adds | When you need it |
-|-------|------|------------------|
-| `embedding` | `sentence-transformers` + `torch` | Semantic and hybrid-RRF retrieval, plus the statistical-tier content validators. Without it those validators degrade to warnings and retrieval falls back to BM25 alone. |
-| `training` | `torch` + `transformers` + `trl` + `peft` + `bitsandbytes` | LoRA fine-tuning (SFT + DPO) of a course-pinned SLM adapter (`ed4all run trainforge_train`). Requires a GPU. |
+The default install leaves out the largest machine-learning dependencies. Add
+only the capabilities you need:
 
-Install them alongside `[full]` only when needed:
+| Extra | Adds | Use it for |
+|---|---|---|
+| `embedding` | Sentence Transformers and PyTorch | Dense retrieval, hybrid RRF, and embedding-backed validators |
+| `training` | Transformers, TRL, PEFT, and training dependencies | Optional SFT/DPO LoRA training on a supported GPU |
 
 ```bash
-pip install -e '.[full,embedding]'   # + semantic retrieval / statistical validators
-pip install -e '.[full,training]'    # + SLM fine-tuning (GPU)
+pip install -e '.[full,embedding]'
+pip install -e '.[full,training]'
 ```
 
-By default Ed4All runs in **local mode** — no API key required. To route orchestration through the Anthropic API instead, set `ANTHROPIC_API_KEY` and add `--mode api`.
+Before a production build, review the [full-run playbook](docs/operations/full-run-playbook.md)
+and [licensing posture](docs/LICENSING.md).
 
-Content generation is **model-agnostic**: every authoring, synthesis, and answer provider speaks the OpenAI-compatible API, so any local model server (Ollama, vLLM, llama.cpp) or hosted endpoint plugs in with just a base URL, an API key, and a model name — configuration, not code. Swap models or providers per task without touching the pipeline.
+## Choose your outcome
 
-That single command runs the full pipeline — accessibility conversion, objective synthesis, course planning, module generation, IMSCC packaging, knowledge-graph building, and archival. The IMSCC file lands in `Courseforge/exports/`, and the searchable archive lands in `LibV2/courses/`.
+### Convert documents to accessible HTML
 
-### Prefer a GUI?
-
-Ed4All ships a browser-based control panel for the whole pipeline — upload PDFs, manage API keys and environment, choose which model runs each task (including local **Ollama** and **vision/VLM** models), edit course topics and learning objectives, launch a full run or a single stage with live logs, and query the knowledge base — no command line required.
+Create remediated HTML without generating a course:
 
 ```bash
-# One click: builds a virtualenv, installs, starts the server, opens your browser
-./run-gui.sh           # macOS / Linux
-run-gui.bat            # Windows (double-click)
+ed4all convert <source> --output <output-directory>
 ```
 
-If you already ran `pip install -e ".[full]"` above (it includes the GUI), just launch it directly:
+See the [conversion guide](docs/operations/convert-verb.md).
+
+### Build and package a digital course
 
 ```bash
-ed4all gui             # serves http://127.0.0.1:8077
+ed4all run textbook-to-course \
+  --corpus <path-to-source> \
+  --course-name <course-name>
 ```
 
-To manage pipeline runs from the GUI's **Assistant** panel — ask what a run is
-doing, prepare and launch builds, resume or stop them — launch with the
-assistant seat enabled:
+This orchestrates conversion, course planning and generation, validation,
+IMSCC packaging, archival, and indexing according to the selected workflow and
+configuration.
+
+### Query existing course content
+
+Query an archived and indexed course through the retrieval layer:
 
 ```bash
-ED4ALL_ASSISTANT_AUTOSTART=1 ed4all gui   # assistant panel may start its local model seat on demand
+libv2 retrieve "<question>" --course <course-name> --engine hybrid-rrf
 ```
 
-The assistant picks its model dynamically: if a larger local model seat is
-already serving (for example while a build is running), it answers through
-that seat and the panel shows which model replied; otherwise it brings up its
-own small default seat. Details in [The built-in assistant](#the-built-in-assistant).
+Hybrid RRF combines BM25 term matching with dense vector similarity. Results
+retain course and chunk provenance so downstream answer systems can cite the
+retrieved material. See [retrieval and serving](docs/architecture/retrieval-and-serving.md).
 
-### Prefer containers?
+### Generate training data or train an adapter
 
-A two-service Docker Compose stack serves the GUI on `http://localhost:8077`
-alongside a local model backend — no API key, no command line:
+Training-pair synthesis produces SFT instructions and DPO preferences from the
+course's chunks and assessments. Adapter training is a separate, opt-in,
+GPU-bound stage:
 
 ```bash
-docker compose up -d                                          # build + start the stack
-docker compose exec ollama ollama pull qwen2.5:7b-instruct-q4_K_M   # pull the answer model (one-shot)
-# then open http://localhost:8077, upload a PDF, and run the pipeline
+# Build a course and explicitly include its training stages.
+ed4all run textbook-to-course \
+  --corpus <path-to-source> \
+  --course-name <course-name> \
+  --with-training
+
+# Or train from an already archived course.
+ed4all run trainforge_train \
+  --course-name <course-name> \
+  --base-model <supported-model>
 ```
 
-CPU-only by default; optional NVIDIA GPU support, volume layout, and remote-deploy auth are covered in [`docs/operations/docker.md`](docs/operations/docker.md).
+Model licenses and provider terms determine whether generated pairs and trained
+derivatives are distributable. Read [Licensing and ToS posture](docs/LICENSING.md)
+first. Full training runs and promotion decisions remain operator-driven.
 
-Full GUI guide — the six panels, settings and secret handling, model routing, retrieval, and how Claude Code sessions can drive it: [`gui/README.md`](gui/README.md).
+## Why Ed4All
 
-Other useful commands:
+- **One grounded content lineage.** Every stage works from the same source material.
+- **Accessibility is part of the pipeline.** Semantic structure and automated
+  checks are designed to support WCAG 2.2 AA targets; final conformance still
+  depends on the source, configuration, generated content, and human review.
+- **Standards-based packaging.** Courseforge emits IMS Common Cartridge.
+- **Retrieval is a first-class deliverable.** A course can be searched and
+  queried without training an adapter.
+- **Training is explicit.** LoRA stages do not attach to a default build unless
+  the operator opts in.
+- **Providers are configurable.** Authoring can use configured local or hosted
+  OpenAI-compatible endpoints.
 
-```bash
-ed4all run --help                                     # List workflows and flags
-ed4all run textbook-to-course --dry-run ...           # Plan only, no execution
-ed4all run textbook-to-course --resume <run_id>       # Resume an interrupted run
-ed4all stop <run_id>                                  # Checkpoint and pause at the next unit boundary
-ed4all list-runs                                      # Show recent runs
-```
+## Components
 
-### Running a full production build
+- **SemantiK** converts documents into accessibility-oriented HTML with source provenance.
+- **Courseforge** creates modular course content, learning activities, and IMS
+  Common Cartridge packages.
+- **Trainforge** creates tagged chunks, assessments, knowledge structures,
+  SFT/DPO pairs, and optional LoRA training inputs.
+- **LibV2** archives and queries course content through lexical, semantic, and
+  hybrid reciprocal-rank-fusion retrieval.
 
-The quick-start command above is the happy path and needs no configuration. A
-full multi-hour build against local model seats — seat topology, the phase
-sequence and what each phase produces, how to read gate outcomes, and the
-resume/stop procedure — is covered in one place:
-[`docs/operations/full-run-playbook.md`](docs/operations/full-run-playbook.md).
+**MCP** orchestrates workflows; **cli**, **gui**, and **lib** provide the user
+and shared service surfaces.
 
-Environment for such a run starts from [`run-env.example.sh`](docs/operations/run-env.example.sh).
-Read its hardware-profile section before copying any concurrency, batch-size, or
-GPU-lifecycle setting: those values are tuned for a single-GPU large-memory host
-and will exhaust VRAM on a small card unedited.
+## Ways to run it
 
-## The built-in assistant
+- **Command line:** `ed4all run --help` and the [invocation guide](docs/operations/pipeline-invocation.md).
+- **Browser:** `ed4all gui` and the [GUI guide](gui/README.md).
+- **Containers:** the provided Compose deployment and [Docker guide](docs/operations/docker.md).
+- **Long-running workflows:** checkpoints, resume, and graceful stop are covered
+  by the [operations runbook](docs/operations/full-run-playbook.md).
 
-Ed4All ships a local AI assistant for operating the pipeline — ask it what a
-run is doing, why a gate failed, or have it start the next build:
+## Documentation
 
-```bash
-ed4all assistant                          # interactive chat
-ed4all assistant --once "why did my last run fail?"
-ed4all assistant --debug                  # open a session pre-loaded with the
-                                          # most recent failure's diagnostics
-```
-
-It speaks through a fixed set of typed tools — run status and gate reports,
-bounded log tails, `ed4all doctor` diagnostics, build-cost and quality reports,
-course library inspection, grounded Q&A against any built course's index, and a
-small set of guarded actions (start / resume / stop runs, seat start/stop,
-support bundles). It can also walk you through **model-seat setup**: it audits
-your seat-swap environment variables, discovers running model containers, and
-generates a ready-to-source configuration block. It never gets shell access or
-free-form file access — everything flows through validated tools, so it can
-help without being able to hurt.
-
-The assistant is **model-agnostic**: it talks to any OpenAI-compatible local
-endpoint (`ED4ALL_ASSISTANT_BASE_URL` / `ED4ALL_ASSISTANT_MODEL`), restricted
-to localhost by design. The reference deployment — what it is tuned and tested
-against — is NVIDIA's **Nemotron Nano** (the NeMo model family) served with
-vLLM; set `ED4ALL_ASSISTANT_AUTOSTART=1` to let the CLI bring that seat up on
-demand, and `ED4ALL_ASSISTANT_DEBUG_ON_FAILURE=1` to have failed pipeline runs
-print the exact debug command to investigate them. The same assistant is
-available as a chat panel in the GUI (see [Prefer a GUI?](#prefer-a-gui) for
-launching it with the assistant enabled).
-
-**Dynamic model selection.** When several local seats are registered
-(`ED4ALL_SEAT_BASE_URLS`), the assistant probes them in
-`ED4ALL_ASSISTANT_SEAT_PRIORITY` order (default `spark-super,spark-nano`) and
-answers through the first one that is live — so while a build has a large
-model seat loaded, the assistant (CLI and GUI panel alike) automatically
-upgrades to it, sharing the seat with the running pipeline. If nothing is
-live, it starts only its own small default seat (`ED4ALL_ASSISTANT_SEAT`),
-never the large one.
-
-**Managing multi-run pipelines.** The assistant can also organize builds end
-to end: list your input corpora, arrange the environment for a run as a
-*validated configuration overlay* (it prepares settings from a curated
-allowlist — it can never write scripts or code), launch a build, watch its
-phases, resume a paused run, stop one gracefully, and compile structured
-error reports for a human (or a Claude Code session) to review whenever
-something needs an actual fix:
-
-```bash
-ed4all assistant --campaign        # interactive run-management session
-ed4all assistant --campaign-tick   # one non-interactive monitoring pass (for schedulers)
-```
-
-## What's inside
-
-Ed4All is organised around four components that each do one job well, plus the glue that orchestrates them:
-
-- **SemantiK** turns PDFs into accessible, semantic HTML using a license-clean extraction cascade (text layer, layout analysis, OCR, and learned structure/semantic classification) with per-block source provenance.
-- **Courseforge** generates structured weekly course modules with learning objectives, assessments, interactive components, and rich machine-readable metadata, and packages them as IMSCC.
-- **Trainforge** extracts content from the course package into pedagogically tagged chunks, builds a typed concept graph, and generates Bloom's-aligned assessments. It also synthesizes the SFT instruction pairs and DPO preference pairs, and owns the LoRA training, evaluation, and promotion workflow for course-pinned adapters.
-- **LibV2** is the archive and retrieval layer: a flat-storage course repository with hybrid BM25 + vector retrieval fused by reciprocal rank fusion (RRF), metadata filters, and cross-course concept indexes.
-
-Supporting directories: **MCP** hosts the orchestrator and tool server, **cli** is the `ed4all` command line entry point, and **lib** holds shared validators and ontology helpers. Output artefacts land under `Courseforge/exports/`, `LibV2/courses/`, and `runtime/training-captures/`.
-
-## Going deeper
-
-- Developer guide and orchestration protocol: [`CLAUDE.md`](CLAUDE.md)
-- Component guides: [`SemantiK/CLAUDE.md`](SemantiK/CLAUDE.md), [`Courseforge/CLAUDE.md`](Courseforge/CLAUDE.md), [`Trainforge/CLAUDE.md`](Trainforge/CLAUDE.md), [`LibV2/CLAUDE.md`](LibV2/CLAUDE.md)
-- Ontology and schemas: [`schemas/ONTOLOGY.md`](schemas/ONTOLOGY.md)
+- [Architecture overview](ARCHITECTURE.md)
+- [Pipeline flow](docs/architecture/pipeline-flow.md)
+- [Validation gates](docs/validation/gates.md)
+- [Licensing and ToS posture](docs/LICENSING.md)
+- Component guides: [SemantiK](SemantiK/README.semantic.md),
+  [Courseforge](Courseforge/README.md), [Trainforge](Trainforge/README.md), and
+  [LibV2](LibV2/README.md)
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Ed4All is available under the Apache License 2.0. See [LICENSE](LICENSE).
