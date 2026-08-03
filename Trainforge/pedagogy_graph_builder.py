@@ -28,8 +28,8 @@ Wave 76 (Worker D) refines the ``prerequisite_of`` and
   as concept tags, and (3) both endpoints classified as
   ``DomainConcept`` per the supplied ``concept_classes`` map (when
   provided). The previous rule emitted a hard-capped (50/source)
-  cartesian within adjacent weeks and over-saturated the graph
-  (84% of edges in the RDF/SHACL calibration corpus archive).
+  cartesian within adjacent weeks and could overwhelm the graph with
+  weak prerequisite edges.
 * ``interferes_with(M, C)`` only emits when ``C`` is classified as
   ``DomainConcept``. PedagogicalMarker / AssessmentOption / LowSignal
   / InstructionalArtifact targets are dropped.
@@ -290,10 +290,9 @@ def _mc_id(statement: str, correction: str = "", bloom_level: str = "") -> str:
     * ``Trainforge/generators/preference_factory.py::_misconception_id``
 
     Pre-Wave-99 the builder hashed text-only (statement, lowercased, with no
-    correction or bloom_level seed). That drift caused 34 pedagogy-graph
-    ``mc_*`` nodes in the RDF/SHACL calibration corpus to disagree with chunk-level +
-    DPO-pair IDs; Wave 97 rebuilt the on-disk file as a one-shot, Wave 99
-    fixes the underlying builder so the drift can't recur.
+    correction or bloom_level seed). That made pedagogy-graph ``mc_*`` nodes
+    disagree with chunk-level and DPO-pair IDs. A one-shot rebuild repaired
+    existing artifacts; routing through the canonical helper prevents recurrence.
 
     Call sites in this builder must supply ``correction`` and
     ``bloom_level`` from the same misconception entry — both default to
@@ -306,7 +305,7 @@ def _mc_id(statement: str, correction: str = "", bloom_level: str = "") -> str:
 # the ``{course_code_lower}_chunk_NNNNN`` shape. The trailing
 # ``_chunk_NNNNN`` is anchored; everything before is the lowercased course
 # code. Used by ``build_pedagogy_graph`` to recover ``course_id`` when the
-# caller omits it (closes the RDF/SHACL calibration corpus audit's "course_id=''" gap).
+# caller omits it, closing the empty-``course_id`` artifact gap.
 _CHUNK_ID_COURSE_PREFIX_RE = re.compile(r"^(?P<code>[a-z0-9_]+)_chunk_\d+$")
 
 
@@ -384,11 +383,9 @@ def build_pedagogy_graph(
     the new co-occurrence + strict-later-week filter still applies.
 
     Wave 82: ``course_id`` falls back to a chunk-ID-derived value when
-    the caller passes None/empty. The RDF/SHACL calibration corpus audit found a
-    shipped pedagogy_graph.json with ``course_id=""`` that joined cleanly
-    against the manifest's nested ``sourceforge_manifest.course_id`` —
-    proof that the value WAS reconstructible from upstream artifacts the
-    builder already saw. Chunk IDs follow the
+    the caller passes None/empty. Empty identifiers in emitted pedagogy graphs
+    are reconstructible from the upstream artifacts already available to the
+    builder. Chunk IDs follow the
     ``{course_code_lower}_chunk_NNNNN`` shape (set in
     ``process_course._chunk_content``), so the fallback parses the first
     chunk's prefix when ``course_id`` is missing. Derived values are

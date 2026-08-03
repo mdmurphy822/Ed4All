@@ -8,8 +8,8 @@ Read-modify-write pass that enriches chunks with relational metadata:
 
 Usage:
     python -m Trainforge.align_chunks \
-        --corpus Trainforge/output/synthetic_course \
-        --objectives /path/to/objectives.json \
+        --corpus <CORPUS_DIR> \
+        --objectives <OBJECTIVES_JSON> \
         --llm-provider mock
 """
 
@@ -464,7 +464,7 @@ def _heuristic_role(
     Wave 138b extension: ``content_type_label``-aware branches catch
     the systematic underlabeling of ``real_world_scenario`` /
     ``scenario`` chunks the Wave 138a TeachingRoleAlignmentEvaluator
-    surfaced (0/8 transfer rate on the RDF/SHACL calibration corpus vs expected ≥70%).
+    surfaced: scenario chunks were never assigned the ``transfer`` role.
     The 4-role LLM curriculum-alignment enum
     (introduce / elaborate / reinforce / synthesize) cannot return
     ``transfer`` or ``assess`` by design — those are heuristic-only.
@@ -498,8 +498,8 @@ def _heuristic_role(
 
     # Wave 138b: content_type_label-aware rules. The Wave 138a
     # TeachingRoleAlignmentEvaluator surfaced systematic
-    # underlabeling of real_world_scenario / scenario chunks (0/8
-    # transfer on the RDF/SHACL calibration corpus vs expected ≥70%). The 4-role LLM
+    # underlabeling of real_world_scenario / scenario chunks: the affected
+    # chunks never received ``transfer``. The 4-role LLM
     # enum (introduce / elaborate / reinforce / synthesize) cannot
     # return ``transfer`` or ``assess`` — those are heuristic-only by
     # design. Without this branch, scenario chunks fall through to

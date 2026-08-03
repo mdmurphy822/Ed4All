@@ -1,15 +1,9 @@
 """Wave 76: vocabulary-driven LO retag + parent-outcome rollup.
 
-External KG-quality review of the RDF/SHACL calibration corpus archive surfaced four
-real coverage gaps where content exists but is mis-tagged:
-
-    co-18 — SHACL Core constraint components
-            (sh:minCount / maxCount / datatype / class / pattern / in)
-    co-19 — SHACL validation report
-            (sh:result / focusNode / severity, "validation report")
-    co-22 — Trade-offs across SHACL Core / SHACL-SPARQL / SHACL Rules
-    to-07 — Capstone integration (42 chunks already cite co-25..co-29
-            but never roll up to the terminal)
+KG-quality review surfaced two general coverage gaps: content can exist but be
+missing its component-objective tag, and component tags can fail to roll up to
+their terminal outcome. The vocabulary pass and parent map repair those gaps
+without removing existing references.
 
 This module exposes two pure-data helpers:
 
@@ -30,10 +24,9 @@ duplicate refs.
 
 Wave 81 generalization
 ----------------------
-The hand-authored ``RETAG_VOCABULARIES`` table only covered three COs
-(co-18 / co-19 / co-22) — the v2 strict packet validator surfaced
-co-09 + co-10 as having no teaching/assessment chunks because their
-CO statements weren't represented anywhere in the curated table.
+The hand-authored ``RETAG_VOCABULARIES`` table covers known problem cases, but
+the strict packet validator also surfaced objectives whose statements were not
+represented in the curated table.
 
 To close that gap without forcing a hand-authored entry per CO per
 course, this module now also exposes:
@@ -190,10 +183,9 @@ _STOPWORDS: frozenset = frozenset({
     "appropriate", "correct",
 })
 
-# Tokens we deliberately keep even when short / lowercase because
-# they're domain-specific identifiers in the rdf-shacl corpus and
-# similar technical curricula. Conservative — only universally
-# domain-specific.
+# Tokens we deliberately keep even when short or lowercase because they are
+# meaningful technical identifiers. The set is conservative and limited to
+# broadly used identifiers.
 _PROTECTED_TOKENS: frozenset = frozenset({
     "rdf", "rdfs", "owl", "sparql", "shacl", "iri", "iris",
     "xsd", "uri", "uris", "json", "xml", "ttl", "ld",
@@ -318,9 +310,8 @@ def auto_extract_vocabulary(co_statement: str) -> List[str]:
          then technical-bigrams, then hyphenated singles.
 
     The conservative bigram rule is the Wave 81 design choice that
-    keeps auto-extraction useful without flooding curated coverage
-    (otherwise auto-vocab inflates co-01 from 8 chunks to 246 in the
-    RDF/SHACL calibration corpus). For COs whose statement carries no
+    keeps auto-extraction useful without flooding curated coverage.
+    For COs whose statement carries no
     technical tokens — typically generic Bloom verbs only — the
     extractor returns a short list, and curated ``RETAG_VOCABULARIES``
     overrides cover the gaps (see co-09 / co-10).

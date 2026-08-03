@@ -134,9 +134,9 @@ _QUALITY_BY_METHOD: Dict[str, float] = {
 # Regex toolkit
 # ---------------------------------------------------------------------------
 
-# Inline ``Show answer`` is the canonical Courseforge marker dropped between
-# stems and explanations in formative quizzes. Wave 77 gamma observed it
-# verbatim in the RDF/SHACL calibration corpus archive.
+# Inline ``Show answer`` is the canonical Courseforge marker placed between
+# stems and explanations in formative quizzes. Retaining it as an explicit
+# marker keeps answer extraction independent of course-specific phrasing.
 _SHOW_ANSWER_RE = re.compile(r"\bShow\s+answer\b", re.IGNORECASE)
 # Generic answer markers used across exercise / assessment chunks.
 _ANSWER_MARKERS = (

@@ -7,18 +7,18 @@ RAG corpus for LibV2 import.
 
 Usage:
     python -m Trainforge.process_course \
-        --imscc path/to/course.imscc \
+        --imscc <IMSCC_PATH> \
         --course-code <course-code> \
         --division ARTS --domain education --subdomain instructional-design \
-        --output Trainforge/output/synthetic_course
+        --output <OUTPUT_DIR>
 
     # With objectives file for Bloom's-based difficulty mapping:
     python -m Trainforge.process_course \
-        --imscc path/to/course.imscc \
-        --objectives path/to/objectives.json \
+        --imscc <IMSCC_PATH> \
+        --objectives <OBJECTIVES_JSON> \
         --course-code <course-code> \
         --division ARTS --domain education \
-        --output Trainforge/output/synthetic_course \
+        --output <OUTPUT_DIR> \
         --import-to-libv2
 """
 
@@ -207,8 +207,8 @@ def _load_chunk_validator() -> Any:
     orders / resolver-stack pushes, ``RefResolver`` fails to resolve
     inline ``#/$defs/Source`` with
     ``_RefResolutionError: Unresolvable JSON pointer: '$defs/Source'``
-    after descending into an external ``$ref`` (symptom observed in
-    today's ``RDF_SHACL_KG`` pipeline run). The ``referencing``-based
+    after descending into an external ``$ref`` (a failure observed in
+    a pipeline run). The ``referencing``-based
     resolver keeps the base-URI stack honest and resolves both inline
     and external refs deterministically. We fall back to ``RefResolver``
     only when ``referencing`` is missing, preserving backward compat
@@ -897,9 +897,9 @@ def extract_misconceptions_from_text(text: str) -> List[Dict[str, str]]:
 
 
 # Wave 82: token-overlap match for misconception → concept_tag routing.
-# Closes the RDF/SHACL calibration corpus audit's "interferes_with edges land on the
-# alphabetically-first concept_tag instead of the actually-relevant one"
-# gap. Pure function; deterministic; ties broken by tag-list position.
+# This prevents ``interferes_with`` edges from defaulting to the first concept
+# tag when another tag is more relevant. Pure function; deterministic; ties
+# break by tag-list position.
 _ROUTING_TOKEN_RE = re.compile(r"[a-z0-9]+")
 _ROUTING_STOPWORDS = frozenset({
     # Conservative stopword list — drops only the highest-frequency
@@ -3541,13 +3541,10 @@ class CourseProcessor:
              Ties break by tag-list order.
           3. First concept tag (legacy fallback).
 
-        The token-overlap path was added after the RDF/SHACL calibration corpus audit
-        showed 0% of authored misconceptions carry an explicit
-        ``concept_id``, so the legacy first-tag heuristic was the only
-        signal — and it routed misconceptions about "triple" to
-        ``concept:statement`` (the alphabetically-first tag) and
-        misconceptions about "blank-node-vs-IRI" to ``concept:one-line-rule``.
-        Token-overlap closes that gap without needing author-side changes.
+        The token-overlap path handles authored misconceptions without an
+        explicit ``concept_id``. In that case the legacy first-tag heuristic
+        can select an unrelated concept solely because of list order.
+        Token-overlap closes that gap without requiring author-side changes.
         """
         from Trainforge.rag.typed_edge_inference import _make_concept_id
 
@@ -4973,10 +4970,9 @@ class CourseProcessor:
             #   (b) flat:   [{"id": "co-01", "parent_to": "to-01", ...}, ...]
             # The Wave-24 plan_course_structure subagent emits the flat
             # form; pre-Wave-24 Trainforge fixtures use nested. Pre-Wave-75
-            # course.json build only handled the nested form, which is why
-            # the 29 COs from the RDF/SHACL calibration corpus's
-            # synthesized_objectives.json never propagated into the LibV2
-            # archive's course.json.
+            # course.json build only handled the nested form, so component
+            # objectives represented by the flat form never propagated into
+            # the LibV2 archive's course.json.
             for ch in self.objectives.get("chapter_objectives", []):
                 if isinstance(ch, dict) and "objectives" in ch:
                     inner = ch.get("objectives") or []
@@ -5263,8 +5259,8 @@ class CourseProcessor:
         # Pedagogy model (full: module sequence, bloom progression, prereq chain).
         # Wave 82: thread pedagogy_graph so prerequisite_chain populates from
         # the graph's prerequisite_of edges instead of the empty-by-default
-        # chunk.prereq_concepts field. Closes the RDF/SHACL calibration corpus audit's
-        # "404 prereq edges, prerequisite_chain=[]" gap.
+        # chunk.prereq_concepts field. This prevents a populated graph from
+        # producing an empty prerequisite chain in the pedagogy summary.
         pedagogy = self._build_pedagogy_summary(
             chunks=chunks, pedagogy_graph=pedagogy_graph
         )
