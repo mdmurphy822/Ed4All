@@ -1,4 +1,4 @@
-"""Relocatable path resolution for the vendored SemantiK (Semantic v2) runtime.
+"""Relocatable path resolution for the SemantiK conversion runtime.
 
 Single source of truth for every MODEL / CACHE / DATA / CONFIG directory the
 ``semantik_structure`` package resolves at runtime. Mirrors Ed4All's
@@ -38,10 +38,10 @@ a dev checkout — they live OUTSIDE the repo. To point the runtime at the
 existing weights WITHOUT that machine-specific absolute path ever appearing in
 tracked code, set the env var only::
 
-    export SEMANTIK_MODEL_DIR=/path/to/your/Semantic/models
+    export SEMANTIK_MODEL_DIR=/path/to/your/SemantiK/models
 
 ``model_dir()`` then resolves there and ``resolve_model("council/structure/final")``
-yields ``/path/to/your/Semantic/models/council/structure/final``. No absolute
+yields ``/path/to/your/SemantiK/models/council/structure/final``. No absolute
 path is committed; the pointer is supplied entirely through the environment.
 
 Dependency-free by contract

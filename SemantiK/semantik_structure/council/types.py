@@ -35,7 +35,7 @@ class TypedSignal:
 @dataclass(frozen=True)
 class BertOutput:
     """All TypedSignals produced by one BERT for one document."""
-    bert_name: str                          # e.g. "role" | "math_detector" | "table"
+    bert_name: str                          # e.g. "structure" | "semantic" | "table_specialist"
     signals: list[TypedSignal]
     backbone_version: str = ""              # e.g. "deberta-v3-base@hf-rev"
     adapter_version: str = ""               # e.g. "role-lora-v1"

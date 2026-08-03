@@ -23,20 +23,18 @@ for the per-span Structure outputs that cover prose — that is Stage
 should read ``state.outputs['structure'].signals`` directly, where
 each signal's ``region_id`` is the FeatureBlock index.
 
-Rules (architecture.md §3.2)
-----------------------------
+Current arbitration rules
+-------------------------
 
-1. **Detectors gate specialists.** A region only routes to its
-   specialist track (table / math) if the corresponding detector
-   confirmed it. v1's "detectors" are:
+1. **Candidate evidence gates specialist routing.** A region only routes to
+   its table or math track when the current evidence confirms it:
 
-   * Tables: Structure's binary ``table_region`` head, aggregated over
-     each TableCandidate's ``member_block_indices``. (BERT-TableDetector
-     was retired 2026-05-05.)
-   * Math: a deterministic stand-in over
-     :attr:`MathCandidate.glyph_density_features` (no MathDetector
-     ships in v1; see ``region_detection.py`` lines 432-475 for the
-     field's canonical population site).
+   * Tables: deterministic grid/border evidence is load-bearing. For weak
+     candidates, Structure's binary ``table_region`` head is aggregated over
+     the candidate's ``member_block_indices`` as secondary evidence.
+   * Math: deterministic thresholds over
+     :attr:`MathCandidate.glyph_density_features`; see
+     ``region_detection.py`` for the canonical feature population site.
 
 2. **Math wins matrix conflicts.** When a math region overlaps a table
    region by ≥0.5 along BOTH axes, math wins; the table is demoted.
@@ -45,9 +43,11 @@ Rules (architecture.md §3.2)
    < 0.5) still emit a label but flag ``low_confidence`` so the soft
    reranker downstream can weigh them.
 
-4. **Image-block demotion.** Structure's ``is_image_block`` head fires
-   only when ImageSpecialist isn't yet shipped (v1). Confirmed image
-   blocks route to prose with a flag.
+4. **Image-block demotion.** Structure's ``is_image_block`` head is a
+   secondary signal. Prose-routed blocks above its threshold receive the
+   ``image_block_demoted`` flag so structure-graph Pass 3b can preserve them
+   as figures; deterministic ``ImageCandidate`` objects route to figures
+   directly.
 
 5. **Semantic role override.** When Structure's ``structural_role``
    and Semantic's ``doc_role`` disagree on a prose-routed region and
@@ -73,7 +73,7 @@ from .types import (
 
 
 # ---------------------------------------------------------------------------
-# Tunable thresholds — v1 hard-codes; revisit when we ship MathDetector.
+# Tunable thresholds for the current deterministic/BERT evidence blend.
 # ---------------------------------------------------------------------------
 
 # Structure's table_region head: aggregate over member spans. A
@@ -150,17 +150,9 @@ def _structurally_confident_table(cand: TableCandidate) -> bool:
         return True
     return False
 
-# Math stand-in detector — see _math_candidate_confirmed and
-# :class:`MathThresholds`. The dataclass defaults below match the
-# legacy hard-coded constants exactly; keep them in sync until the
-# BERT-MathDetector lands and we retire the stand-in entirely.
-_MATH_FONT_FRAC_THRESHOLD = 0.5      # v1 threshold — revisit with MathDetector
-_MATH_CID_TOKEN_MIN = 3               # v1 threshold — revisit with MathDetector
-
-
 @dataclass(frozen=True)
 class MathThresholds:
-    """Tunable thresholds for the v1 math stand-in detector.
+    """Tunable thresholds for deterministic math-candidate confirmation.
 
     The deterministic stand-in confirms a :class:`MathCandidate` if
     EITHER ``math_font_frac >= min_math_font_frac`` OR
@@ -169,10 +161,9 @@ class MathThresholds:
     :func:`~semantik_structure.region_detection.detect_math_region_candidates`,
     see ``region_detection.py`` lines 432-475).
 
-    Defaults match the v1 hard-coded behavior exactly and are
-    intentionally conservative; actual tuning awaits the
-    BERT-MathDetector landing, at which point the stand-in (and this
-    dataclass) goes away.
+    Defaults preserve the established behavior and are intentionally
+    conservative. The dataclass provides one explicit seam for evaluation and
+    ablation without implying a future model dependency.
     """
 
     min_math_font_frac: float = 0.5
@@ -362,14 +353,15 @@ def _math_candidate_confirmed(
     cand: MathCandidate,
     thresholds: MathThresholds,
 ) -> bool:
-    """Deterministic math stand-in detector — uses
+    """Confirm a math candidate from deterministic glyph-density evidence.
+
+    Uses
     ``glyph_density_features`` (computed at Stage 2 by
     :func:`~semantik_structure.region_detection.detect_math_region_candidates`;
     see ``region_detection.py`` lines 432-475 for the field's
     population site on :class:`MathCandidate`).
 
-    v1 thresholds (revisit with MathDetector). Defaults are carried by
-    :class:`MathThresholds`:
+    Defaults are carried by :class:`MathThresholds`:
         * math_font_frac >= ``thresholds.min_math_font_frac`` (default 0.5)  OR
         * cid_token_count >= ``thresholds.min_cid_token_count`` (default 3)
     """
@@ -473,11 +465,9 @@ def arbitrate(
     Parameters
     ----------
     math_thresholds:
-        Optional override for the v1 math stand-in detector's
-        thresholds. ``None`` (the default) uses ``MathThresholds()``,
-        whose defaults match the v1 behavior exactly and are
-        intentionally conservative — actual tuning awaits the
-        BERT-MathDetector landing. Pass a custom instance to e.g.
+        Optional override for deterministic math-candidate thresholds.
+        ``None`` (the default) uses ``MathThresholds()``, whose defaults
+        preserve the established conservative behavior. Pass a custom instance to
         force-demote all math regions (useful for ablations and the
         ``math_detector_stand_in_demoted``-flag smoke test).
     """

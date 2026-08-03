@@ -17,10 +17,10 @@ Heads (all span-level):
                                       (its content shape) — table
                                       membership lives on the separate
                                       table_region binary head; figure
-                                      captions will be handled by a
-                                      future ImageSpecialist gated by
-                                      an is_image_block head added to
-                                      Structure later.
+                                      captions retain their content shape;
+                                      image membership is carried by
+                                      Structure's separate is_image_block
+                                      head.
     * is_heading          binary      1 if span aligns to <h1>..<h6>;
                                       heading-level (h1..h6) is the
                                       HeadingSpecialist's job, gated on
@@ -124,8 +124,8 @@ from data.alignment.structure_align import (
 # Specifically: the entire TABLE_* family is dropped because the
 # table_region BINARY head detects table membership, and the
 # TableSpecialist (Phase 3e) parses cell-level role + scope downstream.
-# FIGURE_CAPTION is dropped pending a future ImageSpecialist (gated by
-# an is_image_block Structure head) that owns figure-caption emission.
+# FIGURE_CAPTION is represented by the CAPTION content-shape label while
+# image membership remains an independent is_image_block Structure signal.
 # Page artifacts are captured by the layout side-channel
 # (top_5pct/bottom_5pct/is_artifact) and post-processing. The 6
 # remaining classes describe span CONTENT shape only.
@@ -272,9 +272,8 @@ TAG_TO_ROLE = {
     "td": Role.PARAGRAPH,
     # AXIS-1: <caption>/<figcaption> are CAPTION shape now (was PARAGRAPH).
     # The text "is a caption" is a real structural signal gold needs; the
-    # is_image_block binary head + the future ImageSpecialist still gate the
-    # figure-caption EMISSION downstream, but the head can now recommend the
-    # caption shape directly.
+    # is_image_block binary head independently carries image membership while
+    # this head recommends the caption content shape directly.
     "caption": Role.CAPTION,
     "figcaption": Role.CAPTION,
     # AXIS-1: definition-list leaves. <dt> = term, <dd> = definition. The <dl>
@@ -922,13 +921,12 @@ def process_pair(validator, work: tuple) -> dict:
             # table membership.
             table_region = 1 if (in_table or html_meta.get("in_table_html")) else 0
 
-            # is_image_block BINARY label — Phase 3f gating signal.
+            # is_image_block BINARY label — secondary image-membership signal.
             # HTML-only truth for now (no PDF-side image-region detector
-            # yet — extract_shared currently only surfaces tables). The
-            # ImageSpecialist (Phase 3f) consumes is_image_block=1 to
-            # parse caption_role / caption_position / is_alt_candidate,
-            # mirroring how table_region=1 hands spans to the
-            # TableSpecialist.
+            # yet — extract_shared currently only surfaces tables). Runtime
+            # routing uses it as confirmation for deterministic image
+            # candidates and as the legacy ``image_block_demoted`` signal for
+            # prose-routed regions.
             is_image_block = 1 if html_meta.get("in_image_block_html") else 0
 
             layout_vec = compute_span_layout_features(

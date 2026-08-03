@@ -28,13 +28,10 @@ Heads:
                                       scope; same gating pattern as
                                       is_heading→HeadingSpecialist.
     * is_image_block      binary      Span-level figure/image-block
-                                      membership. is_image_block=1
-                                      hands the span to the
-                                      ImageSpecialist (Phase 3f) for
-                                      caption_role / caption_position
-                                      / is_alt_candidate parsing.
-                                      Same gating pattern as
-                                      is_heading and table_region.
+                                      membership. Runtime routing treats this
+                                      as secondary confirmation for extracted
+                                      image candidates and preserves strong
+                                      prose-path hits for figure formation.
     * list_nesting        4-class     <ul>/<ol> ancestor count of <li>:
                                       0=not in list, 1=top-level li,
                                       2=nested, 3=3+ deep.

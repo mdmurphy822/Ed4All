@@ -136,10 +136,10 @@ def is_cuda_oom(exc: BaseException) -> bool:
 # Per-BERT runners. Populated by each BERT module on import (see
 # ``semantik_structure.council.math_specialist``). The signature is:
 #
-#     fn(adapter: LoRAAdapter, inputs: Any, *, multihead) -> BertOutput
+#     fn(adapter: LoRAAdapter, inputs: Any, **runner_kwargs) -> BertOutput
 #
-# where ``multihead`` is the ``MultiHeadModel`` instance the runner
-# constructs for that BERT.
+# Each specialist owns its tokenizer, feature projection, and output heads;
+# the generic runner owns backbone and adapter lifecycle only.
 BERT_RUNNERS: dict[str, Callable[..., BertOutput]] = {}
 
 

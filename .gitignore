@@ -272,7 +272,7 @@ docker-compose.override.yml
 /docs/operations/spark-profile.md
 
 # =============================================================================
-# SemantiK (Semantic v2 conversion) — runtime artifacts never ship
+# SemantiK conversion runtime — generated artifacts never ship
 # =============================================================================
 SemantiK/models/
 SemantiK/data/extract_cache/

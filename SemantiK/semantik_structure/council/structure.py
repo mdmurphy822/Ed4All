@@ -734,7 +734,7 @@ def run_inputs(
         # is_image_block: only emit a signal if the loaded checkpoint
         # actually carries trained weights. Pre-Phase-3f adapters give
         # random predictions on this head; emitting them would mislead
-        # downstream gating (e.g., ImageSpecialist routing).
+        # downstream figure confirmation and legacy figure formation.
         if has_image_weights:
             signals.append(
                 _softmax_signal(

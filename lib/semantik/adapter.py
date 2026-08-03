@@ -1,10 +1,10 @@
 """SemantiK v2 → Ed4All output-contract adapter (Phase P2a).
 
-Normalizes a Semantic v2 cascade RESULT into the HTML + sidecar shape
+Normalizes a SemantiK v2 cascade RESULT into the HTML + sidecar shape
 Ed4All's downstream contract consumers require.
 
 Without this adapter the critical ``semantik_markers`` gate blocks every run
-(Semantic v2 emits NO ``role="main"`` / ``aria-labelledby`` sections /
+(SemantiK v2 emits NO ``role="main"`` / ``aria-labelledby`` sections /
 ``semantik-*`` classes / ``data-semantik-*`` attrs / page provenance / sidecar)
 and the chunker / ``SemanticStructureExtractor`` / ``source_refs`` gate silently
 lose all structure.
@@ -188,7 +188,7 @@ def _resolve_source_value(source: Optional[str]) -> str:
         return _DATA_SEMANTIK_SOURCE_VALUE
     return val
 
-# §3.5 — page-kind is honest physical PDF pages. Semantic v2 resolves only
+# §3.5 — page-kind is honest physical PDF pages. SemantiK v2 resolves only
 # physical PDF pages today; never upgrade physical→printed (RISK-A
 # anti-fabrication). Absent normalizes to physical anyway (back-compat).
 _DATA_SEMANTIK_PAGE_KIND = "physical"
@@ -3603,7 +3603,7 @@ def normalize_cascade_to_ed4all(
     subclass_capture: Optional[Any] = None,
     subclass_review_sidecar: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Normalize a Semantic v2 cascade RESULT into Ed4All's output contract.
+    """Normalize a SemantiK v2 cascade RESULT into Ed4All's output contract.
 
     Parameters
     ----------

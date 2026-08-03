@@ -1,9 +1,10 @@
-"""Central registry mapping council BERT name -> adapter spec.
+"""Lazy adapter registry for the five-specialist compatibility council.
 
-Phase 0: empty registry. Each per-BERT phase (Phase 2 onward) inserts its
-own entry. The dict is module-level rather than YAML-driven because the
-mapping is code-shaped (Path objects, label tuples) — config.yaml carries
-hyperparameters, registry.py carries the disk pointers and head shapes.
+The current specialists are ``merge_or_split``, ``structure``, ``semantic``,
+``table_specialist``, and ``math_specialist``. Each specialist registers its
+code-shaped adapter specification when imported; ``config.yaml`` carries
+shared runtime hyperparameters. Keeping the registry module-level preserves
+lazy imports and prevents package import from loading model weights.
 """
 
 from __future__ import annotations
@@ -11,11 +12,7 @@ from __future__ import annotations
 from .base import LoRAAdapterSpec
 
 
-# Empty in Phase 0. Populated by:
-#   Phase 2  -> "math_detector"
-#   Phase 3  -> "role", "span", "order", "math_class",
-#               "table_class", "semantic"
-#   See architecture.md §3.1 for the full council membership.
+# Populated lazily by the five specialist modules named in the docstring.
 ADAPTER_REGISTRY: dict[str, LoRAAdapterSpec] = {}
 
 
