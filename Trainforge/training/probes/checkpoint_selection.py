@@ -12,7 +12,7 @@ This module is the deterministic, CPU-only wiring for that:
   dirs (paired with ``save_total_limit`` retention in the SFTConfig),
 * a ``ProbeRunner`` hook interface that consumes a checkpoint dir and returns
   a metric dict (the production course-aware GPU runner lives in
-  ``checkpoint_probe.py``; this deterministic selector never loads a model),
+  ``probes/checkpoint.py``; this deterministic selector never loads a model),
 * deterministic ``select_best_checkpoint`` with an overfit-preferring
   tie-break (earliest epoch wins a tie), and
 * ``run_checkpoint_selection`` that ties it together and persists a

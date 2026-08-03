@@ -1,16 +1,50 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from Trainforge.training.checkpoint_probe import (
+import Trainforge.training.checkpoint_probe as checkpoint_probe_facade
+from Trainforge.training.peft_trainer import PEFTTrainer
+from Trainforge.training.probes.checkpoint import (
     CourseCheckpointProbe,
     preflight_checkpoint_probe,
 )
-from Trainforge.training.checkpoint_selection import run_checkpoint_selection
-from Trainforge.training.peft_trainer import PEFTTrainer
+from Trainforge.training.probes.checkpoint_selection import (
+    run_checkpoint_selection,
+)
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_legacy_checkpoint_probe_facade_preserves_symbol_identity():
+    assert (
+        checkpoint_probe_facade.CourseCheckpointProbe
+        is CourseCheckpointProbe
+    )
+    assert (
+        checkpoint_probe_facade.preflight_checkpoint_probe
+        is preflight_checkpoint_probe
+    )
+
+
+def test_legacy_checkpoint_probe_module_help_is_cpu_only():
+    result = subprocess.run(
+        [sys.executable, "-m", "Trainforge.training.checkpoint_probe", "--help"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "CPU-only preflight" in result.stdout
+    assert "--course-dir" in result.stdout
+    assert "--metric" in result.stdout
 
 
 def _gold_course(root: Path) -> Path:

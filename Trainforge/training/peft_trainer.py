@@ -593,7 +593,7 @@ class PEFTTrainer:
                     "checkpoint selection is enabled but PEFTTrainer received "
                     "no course_dir for the held-out downstream probes"
                 )
-            from Trainforge.training.checkpoint_probe import CourseCheckpointProbe
+            from Trainforge.training.probes.checkpoint import CourseCheckpointProbe
             probe = CourseCheckpointProbe(
                 course_dir=self.course_dir,
                 stage=stage,
@@ -603,7 +603,7 @@ class PEFTTrainer:
                 metric=metric,
                 capture=self.decision_capture,
             )
-        from Trainforge.training.checkpoint_selection import (
+        from Trainforge.training.probes.checkpoint_selection import (
             _METRIC_HIGHER_IS_BETTER,
             run_checkpoint_selection,
         )

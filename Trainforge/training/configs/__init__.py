@@ -202,7 +202,7 @@ DPO_PREFERENCE_FILTERS = frozenset({"", "all", "editorial_or_misconception"})
 
 #: Values ``checkpoint_selection_metric`` may take. ``""`` selects the legacy
 #: final-epoch path; the three named metrics are the canonical set consumed by
-#: ``Trainforge/training/checkpoint_probe.py``.
+#: ``Trainforge/training/probes/checkpoint.py``.
 CHECKPOINT_SELECTION_METRICS = frozenset({
     "",
     "gold_keypoint_coverage",

@@ -419,7 +419,10 @@ Trainforge/
 │   ├── assessment_generator.py  # Deprecated compatibility alias
 │   └── question_factory.py      # Deprecated compatibility alias
 ├── eval/                        # 5-layer × 3-tier eval harness (slm_eval_harness.py)
-├── training/                    # base_models.py, peft_trainer.py, runner.py, configs/
+├── training/                    # Training orchestration, configuration, and probes
+│   ├── probes/                  # Checkpoint scoring/selection and memorization probes
+│   ├── checkpoint_probe.py     # Import + python -m compatibility facade
+│   └── configs/                 # Per-base training configuration
 ├── scripts/                     # operator, harness, and contract-maintenance tools
 │   ├── ops/                     # durable operator commands
 │   ├── harness/                 # active repeatable measurements
@@ -909,7 +912,7 @@ Pin source of truth is `pyproject.toml::[project.optional-dependencies].training
 | `verify_loss_mask` | `true` | Sample a batch pre-train and FAIL LOUD if no prompt token is `-100`-masked (`_verify_completion_only_loss_mask`); only runs on the masked path. |
 | `save_total_limit` | `3` | Per-epoch checkpoint retention for the downstream-probe checkpoint selector. |
 | `early_stopping_patience` | `1` | Downstream-probe patience over chronological epoch checkpoints. Once the configured number of non-improving epochs is reached, later checkpoints are excluded from selection; the report records the stopping step. |
-| `checkpoint_selection_metric` | `gold_keypoint_coverage` | Enables production checkpoint selection for **each isolated SFT/DPO namespace**. `gold_keypoint_coverage` reuses the verified retrieval gold set and canonical answer scorer; `sympy_correctness` uses authored numeric assessments; `composite` weights both. Missing corpus, missing/invalid metrics, or a failed probe fails the run—there is no final-epoch fallback. Probe generations resume from `.checkpoint_probe_state/` and poll the run stop sentinel. Run the CPU-only input check before GPU training: `python3 -m Trainforge.training.checkpoint_probe --course-dir <LibV2 course dir> --metric gold_keypoint_coverage`. Orchestration knobs are filtered out of `model_card.json::training_config` via `to_card_dict()` (card schema is `additionalProperties:false`). |
+| `checkpoint_selection_metric` | `gold_keypoint_coverage` | Enables production checkpoint selection for **each isolated SFT/DPO namespace**. `gold_keypoint_coverage` reuses the verified retrieval gold set and canonical answer scorer; `sympy_correctness` uses authored numeric assessments; `composite` weights both. Missing corpus, missing/invalid metrics, or a failed probe fails the run—there is no final-epoch fallback. Probe generations resume from `.checkpoint_probe_state/` and poll the run stop sentinel. The canonical implementation is `Trainforge.training.probes.checkpoint`; `Trainforge.training.checkpoint_probe` remains the supported import and `python -m` compatibility facade. Run the CPU-only input check before GPU training: `python3 -m Trainforge.training.checkpoint_probe --course-dir <LibV2 course dir> --metric gold_keypoint_coverage`. Orchestration knobs are filtered out of `model_card.json::training_config` via `to_card_dict()` (card schema is `additionalProperties:false`). |
 | `batch_size` | 1 | Per-device train batch size. |
 | `gradient_accumulation_steps` | 4 | Effective batch = `batch_size × accumulation`. |
 | `epochs` | 3 | SFT and DPO epochs. |

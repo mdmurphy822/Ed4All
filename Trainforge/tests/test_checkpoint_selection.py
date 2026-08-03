@@ -1,4 +1,4 @@
-"""SFT-D S8 — checkpoint-selection-by-downstream-probes scaffolding."""
+"""Checkpoint selection driven by downstream probe metrics."""
 from __future__ import annotations
 
 import json
@@ -11,7 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.training.checkpoint_selection import (  # noqa: E402
+from Trainforge.training.probes.checkpoint_selection import (  # noqa: E402
     CheckpointProbeResult,
     combine_probe_metrics,
     enumerate_epoch_checkpoints,

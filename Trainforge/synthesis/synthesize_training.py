@@ -4206,7 +4206,7 @@ def run_synthesis(
         # a withheld item never trains, making the probe's held-out slice genuinely
         # unseen. Best-effort: a missing helper / unreadable file -> empty set.
         try:
-            from Trainforge.training.memorization_probe import (
+            from Trainforge.training.probes.memorization import (
                 load_holdout_exclusion as _load_holdout_exclusion,
             )
             _holdout_item_ids = _load_holdout_exclusion(corpus_dir)

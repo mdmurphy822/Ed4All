@@ -121,7 +121,7 @@ flatcap:Trainforge/eval=17
 flatcap:Trainforge/generators=10
 flatcap:Trainforge/rag=8
 flatcap:Trainforge/rag/inference_rules=12
-flatcap:Trainforge/training=11
+flatcap:Trainforge/training=9
 # ci/ gained foreign_repo_guard.py (committed 2026-08-01) — the cap was
 # seeded while that file was still untracked. Raised 8 -> 9: ci/ is a
 # cohesive package of guards + their allowlists (repo-organization.md

@@ -1,4 +1,4 @@
-"""SFT-D S8 — memorization-probe held-out assessment-item slice contract."""
+"""Memorization probe contract for held-out assessment items."""
 from __future__ import annotations
 
 import sys
@@ -10,7 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.training.memorization_probe import (  # noqa: E402
+from Trainforge.training.probes.memorization import (  # noqa: E402
     HOLDOUT_REL_PATH,
     evaluate_memorization,
     load_holdout_exclusion,

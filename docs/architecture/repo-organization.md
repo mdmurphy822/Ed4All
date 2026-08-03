@@ -364,13 +364,19 @@ risk. Completed items are marked below.
    under `assessment/`. The documented generator and question-factory imports
    retain identity-preserving aliases; the internal extractor and report moved
    without aliases. The exact loose-module cap is now 10.
-8. **`LibV2/tools/libv2/` — IN PROGRESS.** Evaluation implementations live
+8. **`Trainforge/training/` — DONE.** Checkpoint scoring, checkpoint
+   selection, and memorization checks form the cohesive `probes/` package.
+   `Trainforge.training.checkpoint_probe` remains the supported import and
+   documented `python -m` facade; new code uses the canonical
+   `Trainforge.training.probes.checkpoint` implementation. The exact
+   loose-module cap is now 9.
+9. **`LibV2/tools/libv2/` — IN PROGRESS.** Evaluation implementations live
    under `evaluation/`, with three documented compatibility modules retained
    at the package root through their deprecation window. Cross-package concept
    indexing and discovery live under `cross_package/`; their former private
    implementation paths had no compatibility obligation. The exact flat cap
    is now 26.
-9. **`lib/validators/` — 115 loose.** Largest number in the tree but the
+10. **`lib/validators/` — 115 loose.** Largest number in the tree but the
    *weakest* case: it is a genuine package whose flat module list is the
    registry `docs/validation/gates.md` maps onto. Listed for completeness;
    the recommendation is to leave it flat and let the cap hold the line.
