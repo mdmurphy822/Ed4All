@@ -1,264 +1,216 @@
-# GLM-OCR extraction architecture
+# SemantiK document-extraction architecture
 
-SemantiK's preferred PDF converter uses the GLM-OCR SDK to recover page
-regions, then hands those regions to deterministic code for normalization,
-enrichment, provenance, and HTML publication. Model-backed components have
-bounded jobs; they do not own the final document contract.
+SemantiK's preferred PDF design combines GLM-OCR region extraction with
+deterministic normalization, structural enrichment, provenance, and accessible
+HTML publication. Model-backed stages recover evidence or make bounded
+proposals; deterministic code owns document identity, reading order, structure,
+and the published contract.
 
-This document describes the extraction boundary. See the
-[SemantiK architecture](../../SemantiK/architecture.md) for the complete
-subsystem and the [block ontology](block-ontology.md) for downstream semantic
-types.
+The preferred lane is explicit rather than an automatic fallback. Existing
+compatibility conversion remains reachable for deployments that have not
+selected GLM-OCR, but a failed GLM-OCR run must not silently switch routes.
+Operational configuration belongs in the
+[SemantiK behavior reference](../operations/behavior-flags-semantik.md), not in
+this architecture page.
 
-## Route selection
-
-The GLM-OCR lane is the preferred route for new PDF conversions, but it is
-currently explicit and default-off:
-
-```bash
-export SEMANTIK_GLMOCR_LANE=1
-export SEMANTIK_GLMOCR_BASE_URL="<OPENAI_COMPATIBLE_OCR_ENDPOINT>"
-export SEMANTIK_GLMOCR_MODEL="<GLM_OCR_MODEL_ID>"
-
-ed4all convert "<PRIVATE_INPUT_PATH>" --output "<PRIVATE_OUTPUT_DIR>"
-```
-
-Inputs, output paths, endpoint details, model identifiers, and generated
-artifacts are deployment data. Keep them outside the public repository. The
-example uses placeholders intentionally.
-
-When `SEMANTIK_GLMOCR_LANE` is unset or false, `run_pipeline_v2` enters the
-reachable compatibility converter. It is retained for existing deployments
-and artifacts, but is not the preferred architecture for new conversions.
-Both routes converge on the same Ed4All adapter contract.
-
-## Preferred extraction flow
+## Current flow
 
 ```mermaid
 flowchart LR
-    PDF["Private source PDF"] --> RENDER["Render ordered<br/>page images"]
-    RENDER --> SDK["GLM-OCR SDK<br/>layout and region OCR"]
-    SDK --> NORMALIZE["Normalize SDK results<br/>into page regions"]
-    NORMALIZE --> TRANSFORM["Deterministic transform<br/>structure and enrichment"]
-    TRANSFORM --> INLINE["Inline heading judgment<br/>bounded level decisions"]
-    INLINE --> SIDECARS["Layout and escalation<br/>sidecars"]
-    SIDECARS --> ADAPTER["Ed4All adapter<br/>HTML and provenance"]
+    PDF["Private source PDF"] --> PAGE["Ordered page images"]
+    PAGE --> SDK["GLM-OCR SDK<br/>layout + region OCR"]
+    SDK --> NORMAL["SDK result normalization"]
+    NORMAL --> ENRICH["Deterministic structure<br/>and enrichment"]
+    ENRICH --> JUDGE["Super heading judge<br/>bounded metadata"]
+    JUDGE --> EVIDENCE["Region provenance<br/>heading tree + escalations"]
+    EVIDENCE --> ADAPTER["Ed4All SemantiK adapter"]
+    ADAPTER --> HTML["Accessible HTML<br/>and structured sidecars"]
 
-    classDef input fill:#E8F1FF,stroke:#2563EB,color:#172554,stroke-width:2px;
+    classDef input fill:#E8F1FF,stroke:#1D4ED8,color:#172554,stroke-width:2px;
     classDef model fill:#F3E8FF,stroke:#7E22CE,color:#3B0764,stroke-width:2px;
     classDef deterministic fill:#ECFDF5,stroke:#047857,color:#052E2B,stroke-width:2px;
     classDef artifact fill:#FFF7ED,stroke:#C2410C,color:#431407,stroke-width:2px;
-    class PDF,RENDER input;
-    class SDK,INLINE model;
-    class NORMALIZE,TRANSFORM,ADAPTER deterministic;
-    class SIDECARS artifact;
+    class PDF,PAGE input;
+    class SDK,JUDGE model;
+    class NORMAL,ENRICH,ADAPTER deterministic;
+    class EVIDENCE,HTML artifact;
 ```
 
-Color reinforces component ownership, but each node is independently labeled
-and the diagram does not rely on color to convey meaning.
+The sequence and labels carry the meaning; color only groups responsibilities.
 
-### 1. Page rendering
+### Page rendering and SDK extraction
 
-`SemantiK/semantik_structure/glmocr/sdk_client.py::render_pdf_to_pngs`
-renders every PDF page to an isolated directory in source order. The rendered
-images preserve the page geometry needed for layout recovery. A missing
-renderer or failed render is an error; SemantiK does not silently substitute a
-lower-fidelity extractor.
+[`sdk_client.py`](../../SemantiK/semantik_structure/glmocr/sdk_client.py)
+renders pages in source order and passes them to the self-hosted GLM-OCR SDK.
+The SDK combines layout detection with per-region OCR and returns native
+labels, bounding boxes, extracted content, and region ordering.
 
-### 2. SDK extraction
+SemantiK normalizes the SDK response into `GlmPage` records. Normalization is
+a loss-aware shape conversion: it retains the page number, source image,
+native label, geometry, region order, content, and typed page errors. It does
+not rewrite the source or infer a course structure.
 
-`SdkGlmOcrClient` invokes the self-hosted `glmocr` SDK. The SDK performs layout
-detection and region OCR, returning ordered page results with native labels,
-bounding boxes, and extracted content. SemantiK retains instructional asides,
-references, and footnotes that the SDK could otherwise treat as furniture.
+Rendering failures are loud. A document for which every page fails OCR is
+rejected rather than published as an empty conversion. Partial page failures
+remain visible in the evidence passed to later stages.
 
-The client then normalizes the SDK response into `GlmPage` records. This is a
-shape conversion, not an authoring pass: it preserves the page number, region
-order, native label, geometry, extracted content, image path, and any page
-error.
+### Deterministic transformation and enrichment
 
-### 3. Deterministic transform and enrichment
+[`transform.py`](../../SemantiK/semantik_structure/glmocr/transform.py) converts
+normalized pages into the SemantiK wire contract:
 
-`SemantiK/semantik_structure/glmocr/transform.py::transform_document` maps
-normalized SDK regions into the stable SemantiK wire contract. It owns:
+- ordered `region_provenance` records with stable source-block identity;
+- a provisional heading tree;
+- structural escalation records; and
+- normalized representations of prose, apparatus, figures, tables, captions,
+  formulas, exercises, and document furniture.
 
-- canonical region kinds and emission order;
-- initial heading levels and the heading tree;
-- apparatus, caption, figure, table, math, and exercise structure;
-- source-page and region identity;
-- cross-page continuation handling; and
-- escalation records for unresolved structure.
+The transform applies data-driven recognition and structural rules without
+asking a language model to paraphrase source text. It may join continuations,
+associate neighboring regions, or attach metadata only when the source
+evidence supports that operation. Unresolved cases stay explicit rather than
+being filled with invented content.
 
-This transform is deterministic and does not ask a language model to rewrite
-source prose. Enrichment is additive: it can attach structure or descriptions,
-but the extracted content and its provenance remain inspectable.
+The region-enrichment utilities under
+[`glmocr/region_enrichment/`](../../SemantiK/semantik_structure/glmocr/region_enrichment/)
+support targeted OCR of detected regions and dataset preparation. They are not
+an additional always-on stage in the preferred whole-document lane. A future
+integration must declare its call site, conservation rules, and tests before
+this page describes it as part of production conversion.
 
-Optional figure description generation is separately selected with
-`SEMANTIK_ALTTEXT_PROVIDER`; it is off by default. Documentation must not imply
-that every GLM-OCR conversion includes generated alt text.
+## Figures, captions, and tables
 
-## Heading judgment at two boundaries
-
-Ambiguous heading candidates can retain a deterministic provisional level.
-The Super heading judge resolves only that bounded metadata; it does not own
-source text or general document rewriting.
+Figures and tables preserve both structure and source location.
 
 ```mermaid
 flowchart TD
-    PENDING["Pending heading levels"] --> CONTEXT["Build bounded<br/>hierarchy context"]
-    CONTEXT --> VERDICT{"Usable verdict?"}
-    VERDICT -->|Yes| APPLY["Apply clamped<br/>level decision"]
-    VERDICT -->|No| RETAIN["Retain deterministic level<br/>record unjudged state"]
-    APPLY --> EVIDENCE["Update hierarchy evidence"]
-    RETAIN --> EVIDENCE
-    EVIDENCE --> AUDIT["Workflow hierarchy audit"]
+    REGION["Normalized region"] --> KIND{"Structural kind"}
+    KIND -->|"figure"| FIG["Figure record<br/>geometry + source identity"]
+    KIND -->|"caption"| CAP["Caption evidence"]
+    CAP --> MATCH["Deterministic neighbor match"]
+    MATCH --> FIG
+    KIND -->|"table"| GRID{"Recoverable grid?"}
+    GRID -->|"yes"| CELLS["Cell grid + table mode"]
+    GRID -->|"no"| TEXT["Preserved table text<br/>with unresolved structure"]
+    FIG --> OUT["Adapter rendering"]
+    CELLS --> OUT
+    TEXT --> OUT
 
-    classDef input fill:#E8F1FF,stroke:#2563EB,color:#172554,stroke-width:2px;
-    classDef decision fill:#F3E8FF,stroke:#7E22CE,color:#3B0764,stroke-width:2px;
+    classDef evidence fill:#E8F1FF,stroke:#1D4ED8,color:#172554,stroke-width:2px;
+    classDef decision fill:#FFF7ED,stroke:#C2410C,color:#431407,stroke-width:2px;
+    classDef result fill:#ECFDF5,stroke:#047857,color:#052E2B,stroke-width:2px;
+    class REGION,CAP evidence;
+    class KIND,GRID,MATCH decision;
+    class FIG,CELLS,TEXT,OUT result;
+```
+
+For figures, the transform retains geometry and associates extracted caption
+evidence without treating a numbered figure label as a section heading.
+Generated descriptions are a separate optional enrichment. When no supported
+description exists, SemantiK must preserve an honest unresolved state rather
+than fabricate alt text.
+
+For tables, the transform can recover a cell grid from supported markdown or
+HTML-shaped OCR output. When topology is not recoverable, it preserves the
+extracted text and records the limitation. It does not invent spans, headers,
+or missing cells. The adapter remains responsible for accessible table markup
+when structured cells are available.
+
+## Super heading judge
+
+Deterministic rules assign headings that are directly anchored by document
+evidence and mark ambiguous levels as pending. The Super heading judge receives
+only bounded hierarchy context and proposes level decisions for those
+candidates. It does not rewrite headings or body prose.
+
+```mermaid
+flowchart TD
+    P["Provisional heading tree"] --> C["Bounded hierarchy context"]
+    C --> V{"Usable judge verdict?"}
+    V -->|"yes"| A["Apply validated level"]
+    V -->|"no"| K["Keep provisional level<br/>record unjudged status"]
+    A --> R["Rebuild hierarchy evidence"]
+    K --> R
+    R --> Q["Deterministic hierarchy audit"]
+
+    classDef evidence fill:#E8F1FF,stroke:#1D4ED8,color:#172554,stroke-width:2px;
+    classDef model fill:#F3E8FF,stroke:#7E22CE,color:#3B0764,stroke-width:2px;
     classDef safe fill:#ECFDF5,stroke:#047857,color:#052E2B,stroke-width:2px;
-    class PENDING,CONTEXT input;
-    class VERDICT decision;
-    class APPLY,RETAIN,EVIDENCE,AUDIT safe;
+    class P,C evidence;
+    class V model;
+    class A,K,R,Q safe;
 ```
 
-Judgment occurs in two places:
+The judge is wired at two boundaries:
 
-1. **Inline lane pass.** The default-on judge runs after deterministic
-   transformation and before GLM sidecars are written. It resolves pending
-   levels so the first published structure contains judgment evidence.
-2. **Workflow phase.** In `textbook_to_course`, the named `heading_judge`
-   phase runs after `semantik_conversion` and before staging. It processes the
-   immutable GLM layout sidecars, writes judged HTML and corrected escalation
-   evidence, and audits the resulting book hierarchy. Its normal scan is
-   restricted to document stems owned by the current run; an unscoped scan is
-   an explicit warned recovery condition.
+- The in-lane pass resolves pending levels before conversion sidecars are
+  written.
+- The named workflow phase can replay the immutable layout sidecar, reconcile
+  judged output, preserve prior figure enrichment, and audit the resulting
+  hierarchy before staging.
 
-`SEMANTIK_HEADING_JUDGE` is default-on; an explicit false value disables it.
-Both judgment boundaries are fail-open by design: transport, timeout, or
-response failure retains the deterministic heading levels and records the
-unjudged outcome. That exception is deliberate and must not be generalized to
-OCR extraction or adapter failures.
+The second boundary is intentionally idempotent when conversion already
+applied the same decisions. Judge transport or response failure keeps the
+deterministic provisional structure and records the unjudged condition. That
+bounded fail-open rule applies only to heading-level advice; it does not permit
+OCR, provenance, adapter, or required-validation failures to disappear.
 
-## Adapter and provenance contract
+## Publication and provenance
 
-The lane's primary result is structured evidence:
-`region_provenance`, `heading_tree`, and escalations. The adapter under
-`lib/semantik/` turns that evidence into the shared downstream contract.
+The lane's primary result is evidence, not model-authored HTML:
+`region_provenance`, `heading_tree`, page layout, and escalations. The adapter
+under [`lib/semantik/`](../../lib/semantik/) projects that evidence into the
+shared Ed4All contract.
 
-```mermaid
-flowchart LR
-    REGIONS["Ordered region provenance"] --> IR["Chapter-oriented IR"]
-    TREE["Heading tree"] --> IR
-    IR --> HTML["Semantic HTML<br/>data-semantik attributes"]
-    IR --> STRUCTURED["Structured content<br/>sidecar"]
-    HTML --> QUALITY["Quality evidence<br/>sidecar"]
-    HTML --> CONSUMERS["Course and retrieval<br/>consumers"]
-    STRUCTURED --> CONSUMERS
-    QUALITY --> CONSUMERS
+The adapter owns:
 
-    classDef contract fill:#E8F1FF,stroke:#2563EB,color:#172554,stroke-width:2px;
-    classDef deterministic fill:#ECFDF5,stroke:#047857,color:#052E2B,stroke-width:2px;
-    classDef artifact fill:#FFF7ED,stroke:#C2410C,color:#431407,stroke-width:2px;
-    class REGIONS,TREE contract;
-    class IR deterministic;
-    class HTML,STRUCTURED,QUALITY,CONSUMERS artifact;
-```
+- the semantic document shell and reading order;
+- accessible figure, table, and math rendering;
+- stable `data-semantik-*` identifiers and source references;
+- deterministic cleanup and structured sidecars; and
+- the status consumed by Courseforge, Trainforge, citation, and retrieval
+  components.
 
-Each emitted block can retain a stable identifier, source category, physical
-page coverage, normalized role, confidence, and measured accessibility status.
-Source references use the public shape
-`semantik:{document-slug}#{block-id}`; concrete slugs and identifiers remain
-private run data.
+Source identifiers in published metadata use a generic SemantiK reference
+shape. Concrete source names, identifiers, rendered pages, logs, caches, and
+generated artifacts remain operator-private runtime data and do not belong in
+the public repository.
 
-The adapter—not an OCR or heading-judge response—owns the HTML shell,
-deterministic cleanup, accessible table and math emission, and
-`data-semantik-*` provenance attributes.
+## Capability status
 
-## Artifacts and privacy
-
-A GLM-OCR conversion can produce:
-
-| Artifact | Responsibility |
+| Capability | Status |
 |---|---|
-| `{stem}.glmocr_layout.json` | Immutable page-region layout and OCR backbone |
-| `{stem}.glmocr_escalations.jsonl` | Pending, judged, and unresolved structure evidence |
-| `{stem}_accessible.html` | Adapter-rendered semantic HTML |
-| `{stem}_accessible_synthesized.json` | Structured downstream content |
-| `{stem}_accessible.quality.json` | Conversion and quality signals |
-| `{stem}_accessible.cascade_ir.json` | Best-effort rerenderable provenance and document evidence |
+| GLM-OCR SDK extraction and normalization | Preferred explicit conversion lane; not an implicit fallback |
+| Deterministic transform and adapter publication | Current required path after successful GLM-OCR extraction |
+| Super heading-level judgment | Current bounded metadata pass; failures retain and report provisional levels |
+| Generated figure descriptions | Optional enrichment; not present on every conversion |
+| Region-specific OCR enrichment utilities | Available supporting utilities; not an always-on stage of the preferred lane |
+| Compatibility converter | Reachable for existing deployments; selected before conversion, never after a GLM-OCR failure |
+| Additional staged or learned enrichers | Future until a production call site and conservation tests prove activation |
 
-Rendered page images, optional figure assets, logs, and heading-judge backups
-may also be present. Every item in this section is generated runtime data and
-private by default. An artifact's existence does not establish that a check
-ran or passed; consumers must inspect its recorded status.
+This table describes wiring, not quality certification. Structured HTML and
+automated evidence do not by themselves establish WCAG conformance. Expert and
+assistive-technology review remain necessary for release claims.
 
-## Accessibility posture
+## Failure and trust boundaries
 
-The preferred GLM-OCR lane currently records:
+The architecture preserves these boundaries:
 
-- accessibility status: `not_evaluated`;
-- exit action: `ship_with_flag`.
+- required rendering, OCR, adapter, and provenance failures surface loudly;
+- partial OCR failures remain typed and traceable;
+- optional enrichment never overwrites stronger extracted evidence silently;
+- model proposals cannot mint source provenance;
+- heading-judge failures retain provisional levels with explicit audit state;
+- generated conversion artifacts stay private; and
+- downstream consumers inspect recorded status rather than inferring success
+  from a file's existence.
 
-The lane does not run the compatibility converter's candidate-generation,
-document-gate, or semantic-preservation stack. Its HTML is structured for
-accessibility, but the current result must not be marketed as certified WCAG
-conformance. Automated evidence also never replaces expert or assistive-
-technology review.
-
-## Failure model
-
-The architecture distinguishes extraction failure from optional judgment:
-
-- missing rendering or runtime dependencies fail loudly;
-- a document on which every OCR page fails is rejected;
-- partial page failures remain typed in page and escalation evidence;
-- malformed or mock-backed production results fail closed at the Ed4All seam;
-- missing required provenance cannot be replaced with fabricated empty data;
-- heading-judge failure retains deterministic levels and is explicitly
-  reported; and
-- generated output never becomes repository source merely because conversion
-  succeeded.
-
-This preserves the central trust boundary: models recover content or make
-bounded proposals, while deterministic code owns identity, ordering,
-publication structure, and evidence.
-
-## Workflow position
-
-```mermaid
-flowchart LR
-    CONVERT["semantik_conversion<br/>extract and adapt"] --> JUDGE["heading_judge<br/>reconcile and audit"]
-    JUDGE --> STAGE["staging<br/>private course workspace"]
-    STAGE --> DOWNSTREAM["course, training,<br/>and retrieval stages"]
-
-    classDef semantik fill:#F3E8FF,stroke:#7E22CE,color:#3B0764,stroke-width:2px;
-    classDef boundary fill:#ECFDF5,stroke:#047857,color:#052E2B,stroke-width:2px;
-    class CONVERT,JUDGE semantik;
-    class STAGE,DOWNSTREAM boundary;
-```
-
-The standalone `ed4all convert` command ends at the conversion artifacts. The
-full workflow continues through the named judgment phase and downstream
-private workspaces.
-
-## Compatibility boundary
-
-The flag-off converter remains reachable and supported for compatibility. It
-has its own extraction, generation, validation, and exit machinery, but those
-internals are intentionally outside this preferred-lane document. It must not
-activate as an implicit fallback after a GLM-OCR failure. Route selection is an
-operator decision made before conversion.
-
-Changes on either route must preserve the adapter's public contract so
-downstream course, training, citation, and retrieval components do not need to
-know which converter produced a block.
-
-## Related documentation
+## Related architecture
 
 - [SemantiK architecture](../../SemantiK/architecture.md)
 - [SemantiK overview](../../SemantiK/README.md)
 - [Block ontology](block-ontology.md)
 - [Decision capture](decision-capture.md)
 - [Installation and dependencies](../operations/installation.md)
-- [SemantiK behavior flags](../operations/behavior-flags-semantik.md)
+- [SemantiK behavior reference](../operations/behavior-flags-semantik.md)
 - [Licensing posture](../LICENSING.md)
