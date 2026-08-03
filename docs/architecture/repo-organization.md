@@ -125,8 +125,10 @@ Placement question for any new script: *documented operator procedure* →
 `ops/`; *produces a measurement you'll want again* → `harness/`; *one
 campaign* → `archive/` (or `runtime/` if truly scratch). The Phase 2 move
 updated imports, tests, documented commands, code comments, fixed argument
-vectors, and repo-root derivations together; the loose-file ratchet now retains
-only the wrapper awaiting separate disposition.
+vectors, and repo-root derivations together. No tracked loose files or
+`script:` allowlist exceptions remain at the directory root; private campaign
+importers belong in the ignored regression shelf, while reusable import
+behavior belongs in `lib/importers/` and the public CLI.
 
 Every directory named `scripts/`, including subsystem and nested script
 taxonomies, may contain a local `regression/` child. The recursive ignore rule

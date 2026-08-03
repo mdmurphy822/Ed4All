@@ -100,9 +100,6 @@ libflat:write_facade.py
 
 # --- docs/ single-file-dir escapes (none currently needed) -----------------
 
-# --- scripts/ loose-file snapshot (frozen; campaign wrapper pending disposition)
-script:nvidia_corpus_to_semantik.py
-
 # --- interior flat-file caps (check 5; seeded 2026-08-01) -----------------
 # Frozen loose-code-file count per interior directory. Growing past the cap
 # means the directory needs a taxonomy, not a bigger number. Caps only ever

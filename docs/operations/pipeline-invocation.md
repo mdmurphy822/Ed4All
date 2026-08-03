@@ -399,25 +399,32 @@ prepare HTML:
   chapter count and per-chapter section counts match the real book before committing to a
   multi-hour synthesis.
 
-### 6.2 Assembling a pre-converted page corpus into a full-book source
+### 6.2 Importing a documentation tree as a source corpus
 
-When the source is already a set of **per-page accessible HTML** (a vendor/web export, or
-one JSON-per-page corpus) rather than a PDF, you don't need the SemantiK cascade —
-concatenate the pages into one `*_accessible.html` and feed it via `--skip-conversion
---semantik-output-dir <dir>`. Rules that make the assembled doc extract cleanly:
+For a Markdown or MDX documentation tree, use the deterministic, LLM-free
+`ed4all import-docs` workflow. It emits one clean accessible-HTML page per source
+document plus an `import_manifest.json`; when `mkdocs.yml` is present, its navigation
+defines reading order, with unlisted documents appended in a stable order.
 
-- Group pages into chapters; wrap each chapter under a single `h2`; demote page-body
-  headings so section titles land at `h3` (the §6.1 contract).
-- **Exclude non-content pages** — chapter-level answer-key / "Try It" exercise dumps,
-  term `index`, `preface`. Their aggregated or duplicated headings corrupt the structure
-  (and the answer-key text contaminates `chapter_text`).
-- Staging accepts **plain accessible HTML**; the `data-semantik-*` provenance markers are
-  **optional** (the `stage_semantik_outputs` sidecars `_synthesized.json` / `.quality.json`
-  are `if …exists()`), needed only for the post-`course_planning` `source_refs` gate.
-- Precedent importers live under gitignored `inputs/*-import/` (co-located with their
-  source materials; each reuses the tracked `scripts/nvidia_corpus_to_semantik.py` helpers).
-  Keep the importer and its outputs under `inputs/` — never commit source-corpus content
-  or hard-coded course slugs.
+```bash
+ed4all import-docs ./<docs-tree> --output ./<imported-corpus>
+ed4all run textbook-to-course --corpus ./<imported-corpus> \
+  --course-name <course-name>
+```
+
+Before starting the pipeline:
+
+- Keep one meaningful document title per source page and use nested headings for its
+  sections. The importer preserves that hierarchy for downstream structure extraction.
+- Remove navigation-only pages, duplicated boilerplate, generated indexes, answer keys,
+  and other non-instructional material that would contaminate `chapter_text`.
+- Inspect `import_manifest.json` for the resolved document order and any escaped-markup
+  leak markers. Correct the source and re-import when the manifest reports a leak.
+- Use `--source-name`, `--license-note`, and `--provenance-tag` when the corresponding
+  manifest metadata is appropriate. Use neutral, publishable values; never embed private
+  corpus names, course slugs, machine paths, or source identities in tracked files.
+- Keep source material and generated corpus artifacts in ignored operator-data locations.
+  Only the generic importer and public operating instructions belong in version control.
 
 ### 6.3 Inspect what actually feeds the model
 
