@@ -201,11 +201,3 @@ def test_session_isolation_repoints_default_constants():
     assert os.environ.get("ED4ALL_STATE_RUNS_DIR"), (
         "ED4ALL_STATE_RUNS_DIR should be set by the session isolation fixture"
     )
-
-
-@pytest.mark.real_libv2_archive
-def test_real_archive_marker_restores_real_defaults():
-    """A test marked ``real_libv2_archive`` sees the REAL in-tree
-    defaults (the function-scoped opt-out fixture restores them)."""
-    assert paths.LIBV2_PATH == REAL_LIBV2
-    assert paths.TRAINING_DIR == REAL_CAPTURES

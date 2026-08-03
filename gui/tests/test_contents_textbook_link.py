@@ -11,10 +11,9 @@ on — its presence is a pure function of these two endpoints:
 * ``GET /api/learn/source/<slug>?item_path=<doc>.html`` → the served accessible
   textbook page (the link target resolves + serves).
 
-Two paths: a SYNTHETIC tmp-path course (deterministic; reuses the existing
-source-materials builder), and a DYNAMIC-discovery smoke over the real
-``LibV2/courses`` (skips when no real course carries an accessible source doc —
-no slug is ever hardcoded). Skipped on a default install without the ``gui`` extra.
+The tests use deterministic synthetic tmp-path courses and never inspect an
+operator's private ``LibV2/courses`` archive. Skipped on a default install
+without the ``gui`` extra.
 """
 
 from __future__ import annotations
@@ -86,55 +85,3 @@ def test_contents_link_absent_for_chunks_only_course(client, libv2_root):
     inv = client.get("/api/courses/gamma-303/source-materials").json()
     assert inv["enabled"] is True
     assert inv["dart_docs"] == []
-
-
-# --------------------------------------------------------------------------- #
-# Dynamic-discovery smoke over the REAL LibV2 (skip if none)
-# --------------------------------------------------------------------------- #
-
-
-def _discover_real_course_with_source() -> str | None:
-    """Return a real LibV2 course slug carrying an accessible source doc, or None.
-
-    Globs ``LibV2/courses/*`` and probes each for an archived ``*.html`` under
-    the archived source roots — never pins a slug. Returns the first hit (deterministic by
-    sort order) so the smoke is reproducible; ``None`` → the caller skips.
-    """
-    from gui.services import source_materials as sm
-    from lib.paths import LIBV2_PATH
-
-    courses = Path(LIBV2_PATH) / "courses"
-    if not courses.is_dir():
-        return None
-    for entry in sorted(courses.iterdir()):
-        if not entry.is_dir() or not sm._SLUG_RE.match(entry.name):
-            continue
-        for rel in sm._DART_ROOTS:
-            root = entry / rel
-            if root.is_dir() and any(root.glob("*.html")):
-                return entry.name
-    return None
-
-
-@pytest.mark.real_libv2_archive
-def test_real_course_contents_link_resolves():
-    """End-to-end over a discovered real course (no isolating fixture).
-
-    Skips when no real course carries an accessible source doc. When one exists,
-    the inventory must list it AND the learner source route must serve the
-    contents-link target — the exact two-call contract the Studio section uses.
-    """
-    slug = _discover_real_course_with_source()
-    if slug is None:
-        pytest.skip("no real LibV2 course with an accessible source doc")
-
-    client = TestClient(create_app())
-    inv = client.get(f"/api/courses/{slug}/source-materials").json()
-    if not inv.get("enabled") or not inv.get("dart_docs"):
-        pytest.skip(f"source materials disabled / empty for {slug}")
-    doc = inv["dart_docs"][0]["doc"]
-    resp = client.get(
-        f"/api/learn/source/{slug}", params={"item_path": f"{doc}.html"}
-    )
-    assert resp.status_code == 200
-    assert resp.headers["content-type"].startswith("text/html")

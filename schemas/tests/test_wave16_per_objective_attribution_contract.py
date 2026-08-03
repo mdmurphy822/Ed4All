@@ -450,51 +450,20 @@ def test_2_anti_silent_degradation_unresolved_ref_consistency_walk(
 # --------------------------------------------------------------------------- #
 
 
-def _discover_legacy_archive_path() -> "Path | None":
-    """First LibV2 course carrying an ``objectives.json``.
-
-    Resolves the LibV2 root via the ``ED4ALL_LIBV2_ROOT`` convention
-    (``lib.paths.libv2_path``) so the back-compat gate binds to whatever
-    archived corpus is on disk rather than a pinned course slug.
-    """
-    try:
-        from lib.paths import libv2_path
-
-        courses_root = libv2_path() / "courses"
-    except Exception:
-        courses_root = PROJECT_ROOT / "LibV2" / "courses"
-    if not courses_root.is_dir():
-        return None
-    for course in sorted(p for p in courses_root.iterdir() if p.is_dir()):
-        objectives = course / "objectives.json"
-        if objectives.exists():
-            return objectives
-    return None
-
-
-_LEGACY_ARCHIVE_PATH = _discover_legacy_archive_path()
-
-
 def test_3_anti_silent_degradation_legacy_corpora_validate() -> None:
-    """Test 3 — the live LibV2 archive validates clean
-    against the W1.6.A bumped schema.
+    """A neutral legacy-shaped archive validates against the bumped schema.
 
-    Self-contained: reads the archive file directly, no fixture
-    dependency on per-worker test files. ``pytest.skip()`` on a clean
-    checkout where the archive isn't present so CI doesn't fail.
-
-    Catches the regression class where a future schema author tightens
-    the ``oneOf`` ``List[str]`` arm and silently breaks every existing
-    archive on the RDF/SHACL calibration corpus.
+    Operator archives are always private and never test inputs. This fixture
+    preserves the compatibility contract that matters: terminal outcomes may
+    omit ``source_refs`` while component objectives may carry ``List[str]``.
     """
-    if _LEGACY_ARCHIVE_PATH is None or not _LEGACY_ARCHIVE_PATH.exists():
-        pytest.skip(
-            "no LibV2 course objectives.json present; "
-            "skipping back-compat gate (clean-checkout path)."
-        )
     jsonschema = _require_jsonschema()
-
-    archive = json.loads(_LEGACY_ARCHIVE_PATH.read_text(encoding="utf-8"))
+    archive = {
+        "terminal_outcomes": [_to_payload(drop_field=True)],
+        "component_objectives": [
+            _co_payload(["semantik:{document-slug}#block-0001"])
+        ],
+    }
 
     schema_doc = _load_objectives_schema()
     to_def = schema_doc["definitions"]["TerminalOutcome"]
@@ -509,7 +478,7 @@ def test_3_anti_silent_degradation_legacy_corpora_validate() -> None:
     terminal_outcomes = archive.get("terminal_outcomes") or []
     component_objectives = archive.get("component_objectives") or []
 
-    # Plan §4 Test 3 contract: the live archive carries TOs with NO
+    # Plan §4 Test 3 contract: the legacy shape carries TOs with NO
     # source_refs at all, and COs with legacy List[str] source_refs.
     # Both shapes MUST validate clean against the bumped definitions.
     for to in terminal_outcomes:
@@ -539,11 +508,11 @@ def test_3_anti_silent_degradation_legacy_corpora_validate() -> None:
                 mixed_shape_hits.append(f"CO {co.get('id')!r}: shapes={shapes}")
 
     assert not failures, (
-        "live legacy archive entries regressed against the bumped oneOf "
+        "neutral legacy archive entries regressed against the bumped oneOf "
         "schema:\n  " + "\n  ".join(failures)
     )
     assert not mixed_shape_hits, (
-        "live legacy archive entries fired the mixed-shape rejection "
+        "neutral legacy archive entries fired the mixed-shape rejection "
         "path (should be impossible — schema's oneOf forbids mixed "
         "lists, and the synthesizer never emits them):\n  "
         + "\n  ".join(mixed_shape_hits)
@@ -554,11 +523,11 @@ def test_3_anti_silent_degradation_legacy_corpora_validate() -> None:
     # against. A future archive layout shift that drops one of the two
     # collections would silently no-op this gate without this check.
     assert terminal_outcomes, (
-        "live archive carries no terminal_outcomes — Test 3's TO arm "
+        "neutral archive carries no terminal_outcomes — Test 3's TO arm "
         "had nothing to validate against; archive shape may have shifted."
     )
     assert component_objectives, (
-        "live archive carries no component_objectives — Test 3's CO arm "
+        "neutral archive carries no component_objectives — Test 3's CO arm "
         "had nothing to validate against; archive shape may have shifted."
     )
 
