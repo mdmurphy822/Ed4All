@@ -16,7 +16,7 @@ placeholders — substitute your own.
 | Topic | Doc |
 |---|---|
 | Per-stage invocation, timeout knobs, corpus-prep gotchas, graceful-stop semantics | [`pipeline-invocation.md`](pipeline-invocation.md) |
-| Serving the large local models (vLLM / Ollama) | [`nemotron-spark-serving.md`](nemotron-spark-serving.md) |
+| Installing local-model capabilities and configuring operator-managed seats | [`installation.md`](installation.md), [`seat-scripts.md`](seat-scripts.md) |
 | License-clean provider routing for training data | [`license-clean-run.md`](license-clean-run.md), [`../LICENSING.md`](../LICENSING.md) |
 | Container topology (GUI + ollama sidecar, LibV2 bind mount) | [`docker.md`](docker.md) |
 | Backup / restore | [`backup-restore.md`](backup-restore.md) |
@@ -187,10 +187,11 @@ Phases 13–20 (`post_rewrite_validation` through `finalization`) declare an
 schedule may stop every vLLM seat and hand the whole card to the in-process
 NLI / embedding models those validator phases actually need.
 
-Logical names map to URLs and containers through env registries — see
-[`seat-schedule.env.example`](seat-schedule.env.example) for the full recipe and
-[`nemotron-spark-serving.md`](nemotron-spark-serving.md) for how to launch the
-servers themselves.
+Logical names map to operator-provisioned endpoints through environment
+registries. Install the required serving capabilities as described in
+[`installation.md`](installation.md), then use the portable seat contract in
+[`seat-scripts.md`](seat-scripts.md). Keep actual endpoint, container, model,
+and launch values in the ignored local seat configuration.
 
 ### 1.2 The COHERENCE-PROBE rule
 

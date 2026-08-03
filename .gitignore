@@ -475,7 +475,6 @@ ed4all-backup*.tar.gz
 !/docs/operations/library-versioning.md
 !/docs/operations/license-clean-run.md
 !/docs/operations/nemotron-lora-canary.md
-!/docs/operations/nemotron-spark-serving.md
 !/docs/operations/pipeline-invocation.md
 !/docs/operations/reject-mined-dpo-negatives.md
 !/docs/operations/run-env.example.sh
