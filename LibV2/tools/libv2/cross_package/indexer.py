@@ -1,9 +1,9 @@
-"""Cross-package concept index builder (Worker G).
+"""Build the cross-package concept index used for library-wide navigation.
 
 Scans every course under ``<repo_root>/LibV2/courses/*/graph/`` and aggregates
 which concept node IDs appear in which courses. When a course additionally
-carries a Worker F ``concept_graph_semantic.json``, typed edges whose endpoints
-are shared with at least one *other* course are surfaced as
+carries ``concept_graph_semantic.json``, typed edges whose endpoints are shared
+with at least one *other* course are surfaced as
 ``cross_package_edges`` so downstream tools can navigate typed relationships
 that genuinely cross package boundaries.
 
@@ -26,10 +26,10 @@ CATALOG_VERSION = 1
 
 
 def _load_json(path: Path) -> Optional[Dict[str, Any]]:
-    """Load JSON from *path*, returning ``None`` if the file is missing or
-    unreadable. We deliberately swallow parse errors so a single corrupt file
-    cannot sink the whole index build; callers can detect degradation via the
-    ``course_count`` field in the emitted artifact.
+    """Load a JSON object, omitting missing or unreadable graph inputs.
+
+    The index remains available when one graph is corrupt; ``course_count``
+    exposes how many course graphs contributed to the emitted artifact.
     """
     if not path.exists():
         return None
@@ -79,8 +79,7 @@ def build_cross_package_index(repo_root: Path) -> Dict[str, Any]:
     courses_root = repo_root / "LibV2" / "courses"
     course_dirs = _iter_course_graph_dirs(courses_root)
 
-    # Per-course data we assemble in a single pass so later steps can be
-    # driven off an in-memory view rather than re-reading graphs.
+    # Retain each course graph in memory for shared-concept edge extraction.
     course_records: List[Dict[str, Any]] = []
     concepts_by_id: Dict[str, Dict[str, Any]] = {}
 
@@ -89,7 +88,7 @@ def build_cross_package_index(repo_root: Path) -> Dict[str, Any]:
         untyped = _load_json(course_dir / "graph" / "concept_graph.json") or {}
         typed = _load_json(course_dir / "graph" / "concept_graph_semantic.json")
 
-        # Build lookup of concept id -> (label, frequency) for this course.
+        # Normalize the course graph into a concept-to-metadata lookup.
         nodes: Dict[str, Dict[str, Any]] = {}
         for node in untyped.get("nodes", []):
             node_id = node.get("id")
@@ -100,18 +99,18 @@ def build_cross_package_index(repo_root: Path) -> Dict[str, Any]:
                 "frequency": int(node.get("frequency", 0) or 0),
             }
 
-        # Accumulate per-concept per-course presence.
+        # Record each course that contributes the concept and its local frequency.
         for node_id, info in nodes.items():
             concept = concepts_by_id.setdefault(
                 node_id,
                 {
                     "label": info["label"],
-                    "courses": {},  # slug -> {frequency, label}
-                    "typed_edges": [],  # raw per-course typed edges; filtered later
+                    "courses": {},  # Maps each course slug to frequency and label.
+                    # Holds candidates until shared concept IDs are known.
+                    "typed_edges": [],
                 },
             )
-            # Prefer the first non-empty label we saw; keep concepts_by_id[id]["label"]
-            # stable across runs by only overwriting a missing/empty label.
+            # Preserve the first non-empty label for deterministic catalog output.
             if not concept.get("label"):
                 concept["label"] = info["label"]
             concept["courses"][slug] = {
@@ -125,17 +124,12 @@ def build_cross_package_index(repo_root: Path) -> Dict[str, Any]:
             "typed": typed,
         })
 
-    # Determine the set of concepts shared across >=2 courses. Only shared
-    # concepts can carry cross_package_edges (an edge where both endpoints
-    # are present in at least one OTHER course's untyped graph).
+    # Cross-package edges require both endpoint concepts in at least two courses.
     shared_concept_ids = {
         cid for cid, c in concepts_by_id.items() if len(c["courses"]) >= 2
     }
 
-    # For each course that has a typed semantic graph, collect edges whose
-    # BOTH endpoints are shared concepts AND at least one endpoint appears in
-    # a DIFFERENT course (guaranteed true when both endpoints are in >=2
-    # courses, since that includes the current course plus at least one more).
+    # Collect typed edges whose endpoints both satisfy cross-course membership.
     for record in course_records:
         typed = record["typed"]
         if not typed:
@@ -158,13 +152,12 @@ def build_cross_package_index(repo_root: Path) -> Dict[str, Any]:
                 entry["confidence"] = edge["confidence"]
             if "weight" in edge:
                 entry["weight"] = edge["weight"]
-            # Attach to the source-concept's bucket so a reader can pivot by
-            # the concept they are investigating.
+            # Index edges by source concept for direct reader traversal.
             concepts_by_id[source]["typed_edges"].append(entry)
 
-    # Shape the final per-concept payload with deterministic ordering.
+    # Shape the public concept payload in deterministic coverage order.
     out_concepts: Dict[str, Dict[str, Any]] = {}
-    # Sort concept ids by (total_courses desc, id asc).
+    # Rank broadest course coverage first, then use the concept ID as tie-breaker.
     ordered_ids = sorted(
         concepts_by_id.keys(),
         key=lambda cid: (-len(concepts_by_id[cid]["courses"]), cid),
@@ -179,7 +172,7 @@ def build_cross_package_index(repo_root: Path) -> Dict[str, Any]:
             }
             for slug, info in sorted(concept["courses"].items())
         ]
-        # Deterministic edge ordering: by (target, type, course_slug).
+        # Stabilize edges by target, relationship type, and source course.
         edges_sorted = sorted(
             concept["typed_edges"],
             key=lambda e: (
@@ -195,9 +188,7 @@ def build_cross_package_index(repo_root: Path) -> Dict[str, Any]:
             "cross_package_edges": edges_sorted,
         }
 
-    # ``generated_at`` is the one non-deterministic field; tests that need
-    # byte-stable output should ignore it (see
-    # ``test_deterministic_ordering`` for the canonicalisation helper).
+    # Keep build time as the only non-deterministic catalog field.
     return {
         "catalog_version": CATALOG_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),

@@ -1,17 +1,11 @@
-"""Cross-package concept discovery (consumer of Worker-G's index).
+"""Discover courses and concept relationships from the library-wide index.
 
-The Worker-G builder (``cross_package_indexer.py``) emits
-``<repo_root>/LibV2/catalog/cross_package_concepts.json`` — an aggregation of
-which concept node IDs appear in which courses, plus the typed
-``cross_package_edges`` that genuinely cross package boundaries. Historically
-that artifact was WRITTEN but read by nobody (dead data per the LibV2 audit).
-
-This module is the READ side: a pure, deterministic, filesystem-only discovery
-helper that turns the index into a library-wide routing surface. Given a topic
-query it answers "which courses in the library teach this?" — the candidate-set
-step a library-wide ask fans out over (compose ``discover_courses`` with a
-per-course ``libv2 ask`` / ``answer-grounded``). No LLM, no network, no
-retrieval-engine dependency.
+The cross-package index aggregates the concept node IDs found in each course
+and records typed relationships that cross course-package boundaries. This
+module provides the deterministic, filesystem-only read surface for that
+artifact. Given a topic query, it identifies which courses teach matching
+concepts so a library-wide question can be routed to per-course ``libv2 ask``
+or ``answer-grounded`` calls. It requires no LLM, network, or retrieval engine.
 
 Anti-fabrication contract: every concept / course / edge returned is present
 verbatim in the on-disk index. This helper NEVER invents a concept, a course
@@ -19,9 +13,8 @@ slug, or a cross-course association — it only surfaces (with provenance: slug 
 frequency + label) associations the index already recorded. Read-only: it does
 not mutate the index or any course data.
 
-The consumer is purely additive: no existing write path changes, so the default
-on-disk output stays byte-identical. Discovery is opt-in (invoked only via the
-new ``libv2 cross-discover`` command or a direct import).
+Discovery is read-only and runs only when invoked through
+``libv2 cross-discover`` or imported directly.
 """
 
 from __future__ import annotations
@@ -46,9 +39,9 @@ class CrossPackageIndexUnreadable(CrossPackageIndexError):
 def default_index_path(repo_root: Path) -> Path:
     """Return the canonical on-disk location of the cross-package index.
 
-    Mirrors the writer default in ``cli.py::cross_index`` /
-    ``cross_package_indexer.write_cross_package_index`` so the reader and the
-    writer never disagree about where the artifact lives.
+    Uses the writer default from ``cli.py::cross_index`` and
+    ``cross_package.indexer.write_cross_package_index`` so both surfaces resolve
+    the same artifact location.
     """
     return Path(repo_root) / "LibV2" / "catalog" / "cross_package_concepts.json"
 

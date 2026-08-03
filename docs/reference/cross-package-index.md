@@ -1,12 +1,16 @@
 # Cross-package concept index
 
-The **cross-package concept index** is a LibV2-level catalog artifact that records which concepts appear across which courses. It is produced by the indexer added in Worker G (`worker-g/cross-package-index`) and lives at:
+The **cross-package concept index** is a LibV2-level catalog artifact that records which concepts appear across which courses. The indexer writes it to:
 
 ```
 LibV2/catalog/cross_package_concepts.json
 ```
 
-The artifact is a **read-only derivative** of each course's `graph/concept_graph.json` (and, when present, Worker F's `graph/concept_graph_semantic.json`). Nothing in the retrieval pipeline or course-import pipeline mutates it; it is rebuilt on demand from the committed course graphs.
+The artifact is a **read-only derivative** of each course's
+`graph/concept_graph.json` and, when present,
+`graph/concept_graph_semantic.json`. Nothing in the retrieval pipeline or
+course-import pipeline mutates it; it is rebuilt on demand from the available
+course graphs.
 
 ## Why it exists
 
@@ -53,7 +57,7 @@ Concepts are keyed by their canonical id (e.g. `accessibility`, `screen-reader`)
 Integer that bumps on any breaking shape change. Consumers should hard-fail on an unknown value rather than silently downgrading.
 
 **`generated_at`**
-UTC ISO-8601 timestamp of the build. This is the one non-deterministic field in the document; tests that want byte-stable comparisons strip it via `canonical_payload()` in `cross_package_indexer.py`.
+UTC ISO-8601 timestamp of the build. This is the one non-deterministic field in the document; tests that want byte-stable comparisons strip it via `canonical_payload()` in `cross_package/indexer.py`.
 
 **`repo_root`**
 Absolute path the indexer resolved against at build time. Useful for debugging which checkout produced a given artifact; never load-bearing for correctness.
@@ -74,9 +78,15 @@ Count of courses in which this concept id appeared with any non-zero frequency.
 Per-course presence list, sorted alphabetically by `slug`. Each entry carries `{slug, frequency, label}` where `frequency` is the raw per-course count from that course's `concept_graph.json`.
 
 **`concepts.<id>.cross_package_edges[]`**
-Typed edges (from Worker F's `concept_graph_semantic.json`, when present) that originate at this concept and target another concept that is **also shared across at least two courses**. Each entry carries `{source_concept, target_concept, type, course_slug, confidence?, weight?}`. Edges whose endpoints are single-course concepts are filtered out — by definition they do not cross package boundaries.
+Typed edges from `concept_graph_semantic.json`, when present, that originate at
+this concept and target another concept that is **also shared across at least
+two courses**. Each entry carries `{source_concept, target_concept, type,
+course_slug, confidence?, weight?}`. Edges whose endpoints are single-course
+concepts are filtered out because they do not cross package boundaries.
 
-When none of the included courses carry a semantic graph (the case for any course built before Worker F landed), `cross_package_edges` is an empty list on every concept. That is a graceful degradation, not an error.
+When none of the included courses carry a semantic graph,
+`cross_package_edges` is an empty list on every concept. The base concept index
+remains valid because semantic edges are optional enrichment.
 
 ## Example use case
 
@@ -103,6 +113,6 @@ If `entry["cross_package_edges"]` is non-empty, the caller can additionally trav
 ## Non-goals
 
 - **No LLM involvement.** The index is a pure aggregation of committed JSON.
-- **No chunk-schema change.** Worker G adds a catalog artifact; it does not touch chunk files or their schema version.
+- **No chunk-schema change.** The catalog artifact does not touch chunk files or their schema version.
 - **No retrieval-engine change.** Consumers read the JSON; the retriever itself is unchanged.
 - **No cross-repo federation.** The index covers one `LibV2/courses/` tree per build.

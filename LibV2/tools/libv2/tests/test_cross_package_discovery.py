@@ -1,9 +1,4 @@
-"""Tests for the cross-package concept discovery consumer.
-
-Exercises the READ side that turns Worker-G's (previously dead) cross-package
-index into a library-wide course-routing surface. Pure filesystem/JSON — no
-LLM, no network, no retrieval engine.
-"""
+"""Tests for filesystem-backed cross-package concept discovery and routing."""
 
 from __future__ import annotations
 
@@ -17,7 +12,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[4]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from LibV2.tools.libv2.cross_package_discovery import (  # noqa: E402
+from LibV2.tools.libv2.cross_package.discovery import (  # noqa: E402
     CrossPackageIndexMissing,
     CrossPackageIndexUnreadable,
     courses_for_concept,
@@ -27,7 +22,7 @@ from LibV2.tools.libv2.cross_package_discovery import (  # noqa: E402
     related_concepts,
     search_concepts,
 )
-from LibV2.tools.libv2.cross_package_indexer import (  # noqa: E402
+from LibV2.tools.libv2.cross_package.indexer import (  # noqa: E402
     write_cross_package_index,
 )
 

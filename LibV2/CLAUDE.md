@@ -446,7 +446,12 @@ and wipe the index.
 
 OP4 (stage 2): `libv2 migrate [<slug>|--all] [--apply]` is the on-disk `library_format_version` migration framework (`LibV2/tools/libv2/migrate.py`). Dry-run by default (`plan_course_migration` never writes); `--apply` backs up `manifest.json` to a timestamped `.bak` sibling BEFORE writing, re-runs the LibV2 validate check on the migrated course, and **rolls the manifest back** on validation failure (never a silent half-migrated course). A manifest with no `library_format_version` is the pre-1.0 `legacy` baseline; the baseline step registered is `legacy -> 1.0` (stamp-only, no directory-layout change). An already-current course plans as the empty "already current" plan.
 
-W4.5: the cross-package concept index (`catalog/cross_package_concepts.json`, written by `libv2 cross-index`) is now CONSUMED by `LibV2/tools/libv2/cross_package_discovery.py` (via the additive `libv2 cross-discover` command) — no longer dead data. Additive read-only consumption: no env flag, no config/workflows.yaml/gate/schema change, and the `cross-index` writer path stays byte-identical.
+The cross-package concept index (`catalog/cross_package_concepts.json`, written
+by `libv2 cross-index`) is consumed by
+`LibV2/tools/libv2/cross_package/discovery.py` through the read-only
+`libv2 cross-discover` command. Discovery adds no environment flag, workflow
+phase, validation gate, or schema change, and the index writer remains
+deterministic apart from its documented generation timestamp.
 
 **Fresh-eval bridge (Wave-92 deferral CLOSED).** `libv2 models eval <slug> <model_id>` prints the cached `eval_report.json` the training harness wrote alongside the model card. Adding `--fresh` re-runs a NEW evaluation from the saved adapter via `LibV2/tools/libv2/evaluation/model_bridge.py::run_fresh_eval` — it rebuilds an `AdapterCallable` from the model dir (`model_card.json` `base_model.{huggingface_repo,name,revision}` + `eval_config` gen knobs) and scores it with Trainforge's `SLMEvalHarness`. The fresh report is NON-destructive by default: it lands at `models/<model_id>/eval_report.fresh-<ts>.json` under the model dir. `--replace` instead overwrites the canonical `eval_report.json` after a `.json.bak` backup, so `get_model_eval_report` / `EvalGatingValidator` only pick up fresh scores deliberately (the canonical report stays training-time unless replaced). `--smoke` runs the harness in smoke mode (N=3 probes/stage). A real fresh run needs `pip install -e '.[training]'` and, on a shared-GPU box, the `scripts/ops/gpu_guard.sh run --task libv2-fresh-eval -- libv2 models eval <slug> <model_id> --fresh` wrap (`ED4ALL_GPU_LIFECYCLE` only sweeps inside `ed4all run`, not a standalone CLI). `libv2 eval run <slug> <model_id>` (default `--judge none`) now dispatches the SAME fresh bridge; `--judge anthropic` / `--judge local_nli` remain scaffold (the qualitative scorer is not yet wired). `run_fresh_eval` emits one best-effort `fresh_eval_invocation` decision-capture event (rationale interpolates `model_id`, `course_slug`, base repo, profile, `smoke`, gen knobs, `replace`, output name).
 
@@ -553,7 +558,7 @@ These are stored in `<project-root>/schemas/taxonomies/` and referenced in cours
 - Query decomposition: `query_decomposer.py`, `query_decomposition.py`; Q&A log: `query_log.py`
 - Eval: `evaluation/generator.py`, `evaluation/harness.py`, `evaluation/model_bridge.py` (legacy module shims remain during the deprecation window)
 - Concepts / outcomes: `concept_vocabulary.py`, `outcome_linker.py`, `_bloom_verbs.py`
-- Cross-package: `cross_package_indexer.py` (writer), `cross_package_discovery.py` (reader)
+- Cross-package: `cross_package/indexer.py` (writer), `cross_package/discovery.py` (reader)
 - Export: `rdf_export.py`, `jsonld_emit.py`
 - Format migration: `migrate.py`
 - Operator scripts: `scripts/` — staged-chunkset backfill for legacy archives

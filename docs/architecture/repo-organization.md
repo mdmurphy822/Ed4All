@@ -58,6 +58,13 @@ is the design review.
 
 Per-dir placement rules (purpose / belongs / **never**):
 
+- Code comments and docstrings explain the current purpose, contract, or
+  non-obvious behavior of the code they accompany. Never: authoring history,
+  worker or wave attribution, review circumstances, or commentary about how
+  the implementation came to exist. Durable design history belongs in an ADR
+  or git history; temporary investigation notes belong under gitignored
+  `plan/`.
+
 - `lib/` — cross-cutting Python. New code goes in a **subpackage**
   (`lib/<topic>/`); a new flat `lib/*.py` is a guard violation (ratchet frozen
   at today's set). Never: subsystem-specific logic (belongs in the subsystem),
@@ -329,10 +336,12 @@ risk. Completed items are marked below.
    identity-preserving aliases. The exact loose-module cap remains 18 with
    eight supported aliases. Assessment and deterministic-program families
    remain candidates for later bounded moves.
-8. **`LibV2/tools/libv2/` — IN PROGRESS.** Evaluation implementations now
-   live under `evaluation/`. Three documented compatibility modules remain at
-   the package root through their deprecation window, so the exact flat cap
-   stays 28 while internal imports use the canonical paths.
+8. **`LibV2/tools/libv2/` — IN PROGRESS.** Evaluation implementations live
+   under `evaluation/`, with three documented compatibility modules retained
+   at the package root through their deprecation window. Cross-package concept
+   indexing and discovery live under `cross_package/`; their former private
+   implementation paths had no compatibility obligation. The exact flat cap
+   is now 26.
 9. **`lib/validators/` — 115 loose.** Largest number in the tree but the
    *weakest* case: it is a genuine package whose flat module list is the
    registry `docs/validation/gates.md` maps onto. Listed for completeness;

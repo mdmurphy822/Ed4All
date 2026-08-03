@@ -1763,9 +1763,9 @@ def eval_compare(ctx, baseline: str, comparison: str):
 def cross_index(ctx, repo_root: Optional[str], output: Optional[str]):
     """Build the cross-package concept index.
 
-    Scans every ``LibV2/courses/*/graph/concept_graph.json`` (and the
-    optional Worker-F ``concept_graph_semantic.json``) and emits a catalog
-    of which concepts appear across which courses.
+    Scans every ``LibV2/courses/*/graph/concept_graph.json`` and optional
+    ``concept_graph_semantic.json`` to catalog which concepts appear across
+    which courses.
 
     Examples:
 
@@ -1773,7 +1773,7 @@ def cross_index(ctx, repo_root: Optional[str], output: Optional[str]):
 
         libv2 cross-index --repo-root /path/to/Ed4All --output catalog.json
     """
-    from .cross_package_indexer import write_cross_package_index
+    from .cross_package.indexer import write_cross_package_index
 
     # Precedence: explicit --repo-root wins; otherwise fall back to whatever
     # the top-level ``libv2 --repo`` option (auto-detected by default) resolved.
@@ -1835,7 +1835,7 @@ def cross_discover(ctx, query: str, repo_root: Optional[str], index_path: Option
         libv2 cross-discover accessibility
         libv2 cross-discover "universal design" --limit 5 --min-courses 2 -o json
     """
-    from .cross_package_discovery import (
+    from .cross_package.discovery import (
         CrossPackageIndexError,
         discover_courses,
         load_cross_package_index,

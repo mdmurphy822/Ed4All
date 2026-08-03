@@ -1,4 +1,4 @@
-"""Tests for the Worker-G cross-package concept index builder."""
+"""Tests for the cross-package concept index builder."""
 
 from __future__ import annotations
 
@@ -17,16 +17,12 @@ _REPO_ROOT = Path(__file__).resolve().parents[4]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from LibV2.tools.libv2.cross_package_indexer import (  # noqa: E402
+from LibV2.tools.libv2.cross_package.indexer import (  # noqa: E402
     CATALOG_VERSION,
     build_cross_package_index,
     canonical_payload,
     write_cross_package_index,
 )
-
-# ---------------------------------------------------------------------------
-# Fixture helpers
-# ---------------------------------------------------------------------------
 
 
 def _write_course(
@@ -73,11 +69,6 @@ def _semantic(nodes: list[tuple[str, str, int]], edges: list[dict]) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
-
 def test_concept_in_both_courses_lists_both_slugs(tmp_path: Path) -> None:
     """Concept observed in two courses must list both slugs in ``courses``."""
     _write_course(
@@ -99,11 +90,11 @@ def test_concept_in_both_courses_lists_both_slugs(tmp_path: Path) -> None:
     assert acc["total_courses"] == 2
     slugs = sorted(c["slug"] for c in acc["courses"])
     assert slugs == ["course-a", "course-b"]
-    # Per-course frequency is preserved verbatim.
+    # Verify the index preserves source frequency for each course.
     by_slug = {c["slug"]: c for c in acc["courses"]}
     assert by_slug["course-a"]["frequency"] == 10
     assert by_slug["course-b"]["frequency"] == 7
-    # No semantic graphs supplied anywhere -> empty edge list.
+    # Courses without semantic graphs cannot contribute typed edges.
     assert acc["cross_package_edges"] == []
 
 
@@ -154,8 +145,7 @@ def test_semantic_graph_populates_cross_package_edges(tmp_path: Path) -> None:
                         "rule_version": 1,
                     },
                 },
-                # An edge whose endpoints are NOT shared across courses must
-                # be filtered out.
+                # This single-course target must not become a cross-package edge.
                 {
                     "source": "accessibility",
                     "target": "only-in-a",
@@ -207,11 +197,10 @@ def test_deterministic_ordering(tmp_path: Path) -> None:
     second_blob = json.dumps(second, indent=2, sort_keys=False)
     assert first_blob == second_blob
 
-    # Ordering: shared concepts (2 courses) before singletons; ties broken
-    # alphabetically by id.
+    # Shared concepts rank before singletons, with concept IDs breaking ties.
     ids_in_order = list(first["concepts"].keys())
-    assert ids_in_order[0] == "alpha"  # total_courses=2, wins
-    # The two singletons ("beta", "gamma") follow in alphabetical order.
+    assert ids_in_order[0] == "alpha"
+    # Singleton concepts retain alphabetical tie-breaking.
     assert ids_in_order[1:] == ["beta", "gamma"]
 
 
@@ -255,12 +244,6 @@ def test_empty_repo_yields_empty_index(tmp_path: Path) -> None:
     assert artifact["concepts"] == {}
 
 
-# ---------------------------------------------------------------------------
-# Staleness check (lives in lib.libv2_fsck; exercised here because it depends
-# on the catalog shape decided by the indexer).
-# ---------------------------------------------------------------------------
-
-
 def test_staleness_check_returns_issue_when_graph_newer(tmp_path: Path) -> None:
     from lib.libv2_fsck import check_cross_package_index_freshness
 
@@ -271,7 +254,7 @@ def test_staleness_check_returns_issue_when_graph_newer(tmp_path: Path) -> None:
     )
     catalog_path = tmp_path / "LibV2" / "catalog" / "cross_package_concepts.json"
     catalog_path.parent.mkdir(parents=True, exist_ok=True)
-    # Write a catalog with an explicit old ``generated_at`` timestamp.
+    # An old catalog timestamp makes the newer graph detectably stale.
     catalog_path.write_text(
         json.dumps({
             "catalog_version": CATALOG_VERSION,
@@ -283,7 +266,7 @@ def test_staleness_check_returns_issue_when_graph_newer(tmp_path: Path) -> None:
         }),
         encoding="utf-8",
     )
-    # Touch the course graph AFTER writing the catalog so its mtime is newer.
+    # Give the graph a newer modification time than the catalog artifact.
     graph_file = course_a / "graph" / "concept_graph.json"
     now = time.time()
     os.utime(graph_file, (now, now))
@@ -299,7 +282,7 @@ def test_staleness_check_returns_none_when_catalog_absent(tmp_path: Path) -> Non
     from lib.libv2_fsck import check_cross_package_index_freshness
 
     _write_course(tmp_path, "course-a", _untyped([("x", "X", 1)]))
-    # No catalog file at all.
+    # An absent optional catalog has no freshness state to validate.
     assert check_cross_package_index_freshness(tmp_path) is None
 
 
@@ -309,8 +292,7 @@ def test_staleness_check_returns_none_when_catalog_fresh(tmp_path: Path) -> None
     _write_course(tmp_path, "course-a", _untyped([("x", "X", 1)]))
     catalog_path = tmp_path / "LibV2" / "catalog" / "cross_package_concepts.json"
     catalog_path.parent.mkdir(parents=True, exist_ok=True)
-    # Catalog generated "now" — definitely newer than the graph files we just
-    # wrote.
+    # A current generation timestamp keeps the catalog newer than its graph input.
     catalog_path.write_text(
         json.dumps({
             "catalog_version": CATALOG_VERSION,

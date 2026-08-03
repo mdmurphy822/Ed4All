@@ -107,7 +107,7 @@ libflat:write_facade.py
 # Seeded at dirs holding >=8 loose files; see repo-organization.md § 7.
 
 flatcap:Courseforge/generators=2
-flatcap:LibV2/tools/libv2=28
+flatcap:LibV2/tools/libv2=26
 flatcap:MCP/tools=11
 flatcap:SemantiK/scripts=3
 flatcap:SemantiK/semantik_structure=49
