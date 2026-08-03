@@ -131,13 +131,13 @@ def document_had_live_post() -> bool:
     return getattr(_session, "live_posts", 0) > 0
 
 
-# --- Per-page Markdown disk cache (glm_ocr_cache.py pattern) ----------------
+# --- Per-page Markdown disk cache (GLM-OCR region cache pattern) ------------
 
 
 def _cache_root(cache_dir: Path | str | None) -> Path:
     if cache_dir is not None:
         return Path(cache_dir)
-    # CWD-independent cache root (mirrors glm_ocr_cache.DEFAULT_CACHE_DIR).
+    # CWD-independent cache root (mirrors region_enrichment.cache.DEFAULT_CACHE_DIR).
     return _semantik_paths.resolve_cache("vlm_extract_cache")
 
 
@@ -174,8 +174,8 @@ def _cache_put(path: Path, payload: dict) -> None:
 @functools.lru_cache(maxsize=32)
 def _document_sha_cached(path_str: str, size: int, mtime: int) -> str:
     # Memoized on (path, size, mtime) so a 400-page document hashes the PDF
-    # bytes once, not per page. Mirrors glm_ocr_cache.sha256_file.
-    from .glm_ocr_cache import sha256_file
+    # bytes once, not per page. Mirrors region_enrichment.cache.sha256_file.
+    from .glmocr.region_enrichment.cache import sha256_file
 
     return sha256_file(Path(path_str))
 
@@ -360,7 +360,7 @@ def _post_chat_completion(
                 ],
             },
         ],
-        # Greedy → deterministic → cache-safe (the glm_ocr_cache rationale).
+        # Greedy → deterministic → cache-safe (the GLM-OCR cache rationale).
         "temperature": 0,
     }
     _mt = resolve_vlm_max_tokens()

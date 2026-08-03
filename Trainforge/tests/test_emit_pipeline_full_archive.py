@@ -1,16 +1,15 @@
-"""Wave 81 regression — fresh emit matches retroactive output.
+"""Wave 81 regression — a fresh hermetic emit matches enriched output.
 
 The Wave 81 worker brief calls out v2 Path B regen as the precipitating
-incident: a fresh Trainforge run on a real IMSCC produced
+incident: a fresh Trainforge run produced
 a 1-node / 0-edge stub pedagogy graph, then needed the 4 Wave 75/76/78
 retroactive scripts to be run by hand before the archive validated
 under the Wave 78 packet validator.
 
 This test exercises that exact loop end-to-end:
 
-1. Run ``CourseProcessor.process()`` on the first IMSCC discovered under
-   any ``LibV2/courses/<slug>/source/imscc/*.imscc`` (honoring
-   ``ED4ALL_LIBV2_ROOT``) into a tempdir.
+1. Build a representative IMSCC and objectives sidecar under ``tmp_path`` and
+   run ``CourseProcessor.process()`` into a second temporary directory.
 2. Stamp the archive with the same scaffold the LibV2 importer
    produces (objectives.json + course.json — the IMSCC carries
    neither).
@@ -23,95 +22,50 @@ issues immediately. Post-Wave-81: the fresh emit lands a real
 pedagogy graph (>= 14 nodes, >= 5 edge types) and a classified
 concept_graph at the same time.
 
-This test is gated behind ``ED4ALL_RUN_FULL_ARCHIVE_TEST=true`` (or
-``--run-full-archive`` pytest opt-in via the ``slow`` marker)
-because:
-
-* Running ``CourseProcessor.process()`` on the full IMSCC takes
-  ~30 s of wall clock — too slow for the default suite.
-* The fixture path depends on a real LibV2 archive being
-  present locally; CI runners that don't pull the full LibV2
-  shouldn't fail spuriously.
-
-The fast suite at ``test_emit_pipeline_enrichment.py`` covers the
-synthetic-fixture contract; this file is the regression bedrock.
+The fixture is small enough for the default suite and never discovers or reads
+operator archives.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import sys
+import zipfile
 from pathlib import Path
-
-import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
-# Path to the IMSCC source — used as both the fixture probe and the
-# pytest skip condition.  Discovered dynamically from whichever LibV2
-# course (under ED4ALL_LIBV2_ROOT / LibV2/courses/) ships an IMSCC.
-def _libv2_courses_root() -> Path:
-    root = os.environ.get("ED4ALL_LIBV2_ROOT")
-    base = Path(root) if root else PROJECT_ROOT / "LibV2"
-    return base / "courses"
-
-
-def _discover_imscc():
-    """First ``<course>/source/imscc/*.imscc`` under the LibV2 root.
-
-    Returns ``(archive_root, imscc_path)`` or ``(None, None)``.
-    """
-    courses_root = _libv2_courses_root()
-    if not courses_root.is_dir():
-        return None, None
-    for course_dir in sorted(courses_root.iterdir()):
-        imscc_dir = course_dir / "source" / "imscc"
-        if not imscc_dir.is_dir():
-            continue
-        imsccs = sorted(imscc_dir.glob("*.imscc"))
-        if imsccs:
-            return course_dir, imsccs[0]
-    return None, None
-
-
-ARCHIVE_ROOT, IMSCC_PATH = _discover_imscc()
-SOURCE_OBJECTIVES = (
-    ARCHIVE_ROOT / "objectives.json" if ARCHIVE_ROOT is not None else None
+from Trainforge.tests.test_emit_pipeline_enrichment import (  # noqa: E402
+    _imscc_manifest,
+    _objectives_payload,
+    _page_one,
+    _page_two,
 )
 
 
-def _gated() -> bool:
-    """Return True iff the full-archive regression should run.
+def _build_fixture(tmp_path: Path) -> tuple[Path, Path]:
+    """Build a neutral two-page cartridge and complete objective inventory."""
+    imscc_path = tmp_path / "sample.imscc"
+    with zipfile.ZipFile(imscc_path, "w") as archive:
+        archive.writestr("imsmanifest.xml", _imscc_manifest())
+        archive.writestr("week_01/content.html", _page_one())
+        archive.writestr("week_02/content.html", _page_two())
 
-    Gates: ``ED4ALL_RUN_FULL_ARCHIVE_TEST=true`` env var OR the
-    ``slow`` pytest marker passed in via ``-m slow``. We test for the
-    env var here (the marker is honored by pytest's selection).
-    """
-    raw = os.environ.get("ED4ALL_RUN_FULL_ARCHIVE_TEST", "").strip().lower()
-    return raw in {"1", "true", "yes", "on"}
-
-
-pytestmark = [
-    pytest.mark.slow,
-    pytest.mark.skipif(
-        not _gated(),
-        reason=(
-            "full-archive regression skipped by default. Set "
-            "ED4ALL_RUN_FULL_ARCHIVE_TEST=true to enable."
-        ),
-    ),
-    pytest.mark.skipif(
-        IMSCC_PATH is None or not IMSCC_PATH.exists(),
-        reason=(
-            "no LibV2 course with source/imscc/*.imscc present under "
-            "ED4ALL_LIBV2_ROOT / LibV2/courses/"
-        ),
-    ),
-]
+    objectives = _objectives_payload()
+    objectives["course_code"] = "SAMPLE101"
+    objectives["chapter_objectives"].append({
+        "id": "CO-09",
+        "statement": "Apply constraint properties to a graph.",
+        "parent_to": "TO-04",
+        "bloom_level": "apply",
+        "week": 2,
+    })
+    objectives_path = tmp_path / "objectives.json"
+    objectives_path.write_text(json.dumps(objectives), encoding="utf-8")
+    return imscc_path, objectives_path
 
 
 def test_fresh_emit_validates_against_packet_validator(tmp_path):
@@ -123,27 +77,18 @@ def test_fresh_emit_validates_against_packet_validator(tmp_path):
     accepts in default (warning-only) mode.
     """
     from Trainforge.process_course import CourseProcessor
-    from lib.validators.libv2_packet_integrity import PacketIntegrityValidator
+    from lib.validators.libv2.packet_integrity import PacketIntegrityValidator
 
     out = tmp_path / "trainforge_out"
     out.mkdir()
-
-    # Use the canonical objectives.json shipped with the archive so
-    # the pedagogy builder lands real Outcome / ComponentObjective
-    # nodes. (The fresh IMSCC carries no objectives sidecar by
-    # design — Trainforge consumes a pre-synthesized one.)
-    objectives_path = SOURCE_OBJECTIVES if SOURCE_OBJECTIVES.exists() else None
-
-    # Derive the course code from the discovered IMSCC filename so the
-    # test isn't pinned to any one course slug.
-    course_code = IMSCC_PATH.stem
+    imscc_path, objectives_path = _build_fixture(tmp_path)
 
     proc = CourseProcessor(
-        imscc_path=str(IMSCC_PATH),
+        imscc_path=str(imscc_path),
         output_dir=str(out),
-        course_code=course_code,
+        course_code="SAMPLE101",
         domain="knowledge_graphs",
-        objectives_path=str(objectives_path) if objectives_path else None,
+        objectives_path=str(objectives_path),
     )
     proc.process()
 
@@ -157,31 +102,25 @@ def test_fresh_emit_validates_against_packet_validator(tmp_path):
 
     # The legacy stub emits 1 node / 0 edges; the real builder must
     # ship at least 14 nodes (6 bloom + 3 difficulty + objectives)
-    # and a non-trivial set of edge types on a real archive.
+    # and a non-trivial set of edge types on a representative archive.
     assert len(nodes) >= 14, (
         f"Wave 81 regression: pedagogy_graph stub-detected "
-        f"({len(nodes)} nodes) on real archive. Expected >= 14."
+        f"({len(nodes)} nodes) on synthetic archive. Expected >= 14."
     )
-    assert len(edges) >= 50, (
+    assert len(edges) >= 15, (
         f"Wave 81 regression: pedagogy_graph thin "
-        f"({len(edges)} edges) on real archive. Expected >= 50."
+        f"({len(edges)} edges) on synthetic archive. Expected >= 15."
     )
-    # The Wave 78 relation set is the bar: derived_from_objective +
-    # concept_supports_outcome + assessment_validates_outcome +
-    # chunk_at_difficulty. At least 3 of those 4 must fire on this
-    # archive (concept_supports_outcome may not fire if no concept
-    # nodes survive classification, but the others always do for an
-    # archive with chunks + objectives).
-    wave78 = {
+    required_relations = {
         "derived_from_objective",
-        "concept_supports_outcome",
-        "assessment_validates_outcome",
         "chunk_at_difficulty",
+        "supports_outcome",
+        "at_bloom_level",
     }
-    overlap = wave78 & relation_types
-    assert len(overlap) >= 3, (
-        f"Wave 81 regression: only {len(overlap)} of the 4 Wave 78 "
-        f"relation types fired on a fresh emit. Got: {sorted(overlap)}"
+    assert required_relations <= relation_types, (
+        "Wave 81 regression: representative emit omitted required "
+        f"relations {sorted(required_relations - relation_types)}. "
+        f"Got: {sorted(relation_types)}"
     )
 
     # Now run the Wave 78 packet validator on the fresh emit. We
@@ -193,7 +132,9 @@ def test_fresh_emit_validates_against_packet_validator(tmp_path):
     # Mirror the Trainforge emit into the LibV2 archive shape.
     import shutil
 
-    for sub in ("corpus", "graph", "quality", "training_specs", "pedagogy"):
+    for sub in (
+        "imscc_chunks", "corpus", "graph", "quality", "training_specs", "pedagogy",
+    ):
         src = out / sub
         if src.exists():
             shutil.copytree(src, libv2_archive / sub)

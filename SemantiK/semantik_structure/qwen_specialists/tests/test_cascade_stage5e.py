@@ -431,7 +431,7 @@ def test_in_box_table_enriched_by_glm_ocr_predicate(monkeypatch):
     monkeypatch.setenv("SEMANTIK_UNIT_REGROUP_TABLE", "on")
     regions, fbs = _unit_with_table()
     out, _ = resegment_blocks(regions, fbs, _EmptyState(), runtime=None)
-    # Mirror glm_ocr_enrich.py:421 exactly.
+    # Mirror region_enrichment/pipeline.py's overlap predicate exactly.
     enrich_eligible = [
         r for r in out if r.kind == "table" and r.source_region_id is not None
     ]

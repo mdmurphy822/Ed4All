@@ -327,7 +327,7 @@ def confirm_table_candidates(
     Public entry point for callers that want to filter pdfplumber
     TableCandidates by Structure-council agreement before doing
     expensive downstream work (e.g. running GLM-OCR only on confirmed
-    bboxes — see :func:`semantik_structure.glm_ocr_enrich.enrich_via_council_gate`).
+    bboxes — see :func:`semantik_structure.glmocr.region_enrichment.pipeline.enrich_via_council_gate`).
 
     Candidates whose Structure signals are missing entirely
     (``signal_present=False``) are NOT included in the result. Callers

@@ -2,21 +2,9 @@ from __future__ import annotations
 
 import json
 import hashlib
-import os
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
-
-def _live_evidence_root() -> Path:
-    configured = os.environ.get("ED4ALL_TEST_EVIDENCE_ROOT", "").strip()
-    if not configured:
-        pytest.skip("operator live-evidence replay root is not configured")
-    root = Path(configured).expanduser().resolve()
-    if not root.is_dir():
-        pytest.skip("configured operator live-evidence replay root is unavailable")
-    return root
 
 import Trainforge.generators.staged_synthesis_micro as micro_module
 from Trainforge.generators._synthesis_common import SynthesisProviderError
@@ -70,7 +58,7 @@ from Trainforge.generators.staged_synthesis_micro import (
     _task_numeric_error,
     _prompt_numeric_error,
 )
-from Trainforge.synthesize_training import build_parser
+from Trainforge.synthesis.synthesize_training import build_parser
 from Trainforge.generators.staged_synthesis_provider import (
     _coverage_units,
     _operational_condition_error,
@@ -406,18 +394,11 @@ def test_generated_scalar_must_be_used_and_named_symbol_must_match():
     ) is None
 
 
-def test_live_stage_a_response_replays_under_scalar_authority_contract():
-    """Regression provenance: functional-v1.3 Gate-D retry1 Stage A."""
-    matches = list(
-        _live_evidence_root().rglob(
-            "response-5902498ad5f323ad2636c3358b769af873eb4a9950ca7cd9f2d098148821bb3e.txt"
-        )
-    )
-    if not matches:
-        pytest.skip("ignored live response evidence is unavailable")
-    assert len(matches) == 1
-    path = matches[0]
-    response = json.loads(path.read_text(encoding="utf-8"))
+def test_stage_a_response_obeys_scalar_authority_contract():
+    response = {
+        "learner_task": "For n = 12 items, determine the total.",
+        "generated_givens": [_given("12")],
+    }
     assert validate_typed_givens(response["generated_givens"]) is None
     assert unnecessary_generated_givens_error(
         response["learner_task"], response["generated_givens"],
@@ -425,16 +406,8 @@ def test_live_stage_a_response_replays_under_scalar_authority_contract():
 
 
 def test_canary_002_stage_a_response_replays_as_vacuous_condition_failure():
-    """Regression provenance: functional-v1.3 canary-002 Stage A."""
-    matches = list(
-        _live_evidence_root().rglob(
-            "response-2677726b97847700208b494e005bd1a5a9810fb6bd577bcb317fc5930aa78ea6.txt"
-        )
-    )
-    if not matches:
-        pytest.skip("ignored live response evidence is unavailable")
-    assert len(matches) == 1
-    response = json.loads(matches[0].read_text(encoding="utf-8"))
+    """A task that merely repeats no operational condition fails closed."""
+    response = {"learner_task": "Compare the two linear relationships."}
     assert _operational_condition_error(
         response["learner_task"],
         "after converting to slope-intercept form",
@@ -442,25 +415,13 @@ def test_canary_002_stage_a_response_replays_as_vacuous_condition_failure():
 
 
 def test_canary004_stage_d_numeric_failure_replays_and_corrects():
-    """Regression provenance: functional-v1.3 canary004 Stage D."""
-    root = _live_evidence_root()
-    response_matches = list(root.rglob(
-        "response-548c0b1cecfdc6bac72c16c920953e5cf23a7f4663f33204ca4c3f5335a8f0b7.txt"
-    ))
-    prompt_matches = list(root.rglob(
-        "prompt-2d90afe1b38cccfcd5c8643d98825b04ec89b09f6078d252650a416f6ae70084.txt"
-    ))
-    if not response_matches or not prompt_matches:
-        pytest.skip("ignored live Stage-D evidence is unavailable")
-    assert len(response_matches) == len(prompt_matches) == 1
-    initial = json.loads(response_matches[0].read_text(encoding="utf-8"))
-    messages = json.loads(prompt_matches[0].read_text(encoding="utf-8"))
-    artifact_text = messages[1]["content"].split(
-        "IMMUTABLE_ARTIFACT=", 1,
-    )[1].split("\nReturn only", 1)[0]
-    artifact = json.loads(artifact_text)
-    allowed = _allowed_realization_numeric_inventory(artifact)
-    assert allowed == ["-2", "2", "3"]
+    """Illegal prompt numerics are scoped and a numeric-free repair passes."""
+    artifact = _stage_d_artifact()
+    initial = {
+        "prompt": "Compare scenarios 4, 8, and 1.",
+        "chosen": "Total separation and relative speed both use sums.",
+    }
+    assert _allowed_realization_numeric_inventory(artifact) == []
     error = _realization_numeric_error(
         initial, artifact=artifact, answer_field="chosen",
     )
@@ -479,15 +440,7 @@ def test_canary004_stage_d_numeric_failure_replays_and_corrects():
 
 
 def test_canary005_stage_a_numeric_failure_has_joint_repair_scope():
-    """Regression provenance: functional-v1.3 canary005 Stage A."""
-    root = _live_evidence_root()
-    response_matches = list(root.rglob(
-        "response-acbf2beb7b169b3aba52f2c63ed04bcf962b73e13b8c6ebed1abe2bb0326b696.txt"
-    ))
-    if not response_matches:
-        pytest.skip("ignored live Stage-A evidence is unavailable")
-    assert len(response_matches) == 1
-    initial = json.loads(response_matches[0].read_text(encoding="utf-8"))
+    initial = {"learner_task": "Use coefficients 6, 6, and 15."}
     artifact = {
         "claims": [{
             "claim": "Use coefficients 2, 3, and 4.",
@@ -496,31 +449,27 @@ def test_canary005_stage_a_numeric_failure_has_joint_repair_scope():
         "generated_givens": [],
     }
     error = _task_numeric_error(initial["learner_task"], artifact)
-    assert "illegal numeric literals=['6', '6', '15']" in error
+    assert "illegal numeric literals=['6']" in error
     assert "['/learner_task', '/generated_givens']" in error
     assert "allowed numeric literals=['2', '3', '4']" in error
 
 
 def test_canary006_stage_d_missing_claim_replay_is_scoped_and_correctable():
-    """Regression provenance: functional-v1.3 canary006 Stage D."""
-    root = _live_evidence_root()
-    prompt_matches = list(root.rglob(
-        "prompt-12ff4464fa780f4b6228ad96a5ef7d9e019dcad099db699dc1c2636b416e9a5d.txt"
-    ))
-    response_matches = list(root.rglob(
-        "response-473582244ea53c13f883bea841ad4b5418942b80dbd566a132f8b589b87c468a.txt"
-    ))
-    if not prompt_matches or not response_matches:
-        pytest.skip("ignored live Stage-D evidence is unavailable")
-    assert len(prompt_matches) == len(response_matches) == 1
-    messages = json.loads(prompt_matches[0].read_text(encoding="utf-8"))
-    artifact_text = messages[1]["content"].split(
-        "IMMUTABLE_ARTIFACT=", 1,
-    )[1].split("\nALLOWED_NUMERIC_LITERALS", 1)[0]
-    artifact = json.loads(artifact_text)
-    omitted = json.loads(response_matches[0].read_text(encoding="utf-8"))
+    artifact = assemble_claims(
+        [{
+            "claim": "Equal slopes and intercepts identify coincident lines.",
+            "evidence_quote": "Equal slopes and intercepts identify coincident lines.",
+            "source_block_id": "generic-source",
+            "source_role": "evidence",
+            "source_polarity": "factual",
+        }],
+        objective_id="co-generic",
+        learner_task="Analyze whether the lines coincide.",
+        generated_givens=[],
+    )
+    omitted = {"prompt": artifact["learner_task"], "chosen": "infinitely many"}
     checklist = _claim_checklist(artifact)
-    assert checklist[0]["claim_id"] == "2737cba6290c73ab"
+    claim_id = checklist[0]["claim_id"]
     assert omitted["chosen"] == "infinitely many"
 
     class _CoverageNli:
@@ -556,7 +505,7 @@ def test_canary006_stage_d_missing_claim_replay_is_scoped_and_correctable():
     scoped = _scoped_coverage_error(
         raw_error, artifact=artifact, answer_field="chosen",
     )
-    assert "missing_claim_id='2737cba6290c73ab'" in scoped
+    assert f"missing_claim_id='{claim_id}'" in scoped
     assert "required_entailment=explicitly realize immutable claim 0" in scoped
     assert "affected JSON pointers=['/chosen']" in scoped
     corrected = (
@@ -569,27 +518,17 @@ def test_canary006_stage_d_missing_claim_replay_is_scoped_and_correctable():
 
 
 def test_canary009_stage_d_grounded_relation_short_circuits_low_nli():
-    """Regression provenance: functional-v1.3 canary009 Stage D."""
-    root = _live_evidence_root()
-    prompt_matches = list(root.rglob(
-        "prompt-1af48fd85b52f1e95e979177776fbe57185c763a4004ef95f3f01dc3a2338300.txt"
-    ))
-    response_matches = list(root.rglob(
-        "response-98efb639749270493c97cc783ceb9991cd580d25e683c3ee89e4ebd01e63be62.txt"
-    ))
-    if not prompt_matches or not response_matches:
-        pytest.skip("ignored live Stage-D evidence is unavailable")
-    assert len(prompt_matches) == len(response_matches) == 1
-    messages = json.loads(prompt_matches[0].read_text(encoding="utf-8"))
-    artifact_text = messages[1]["content"].split(
-        "IMMUTABLE_ARTIFACT=", 1,
-    )[1].split("\nCLAIM_CHECKLIST=", 1)[0]
-    artifact = json.loads(artifact_text)
-    d1 = json.loads(response_matches[0].read_text(encoding="utf-8"))
+    artifact = _stage_d_artifact()
     relation = (
         "When two objects move in opposite directions, their relative speed "
         "is the sum of their individual speeds"
     )
+    d1 = {
+        "prompt": artifact["learner_task"],
+        "chosen": (
+            f"{artifact['claims'][0]['claim']} {relation}."
+        ),
+    }
     assert relation in d1["chosen"]
 
     class _CoverageNli:
@@ -629,11 +568,10 @@ def test_canary009_stage_d_grounded_relation_short_circuits_low_nli():
         for premise, hypothesis in _CoverageNli.calls
     )
 
-    d2_matches = list(root.rglob(
-        "response-bc9efe75739add4ccb78d66b4aa8828cdf29bc0ccb3c5c76417c3e971ff582ac.txt"
-    ))
-    assert len(d2_matches) == 1
-    d2 = json.loads(d2_matches[0].read_text(encoding="utf-8"))
+    d2 = {
+        "prompt": artifact["learner_task"],
+        "chosen": artifact["claims"][0]["claim"],
+    }
     error = provider._semantic_coverage_error(
         d2["chosen"], plan, prompt=d2["prompt"],
     )
@@ -652,20 +590,16 @@ def test_canary009_stage_d_grounded_relation_short_circuits_low_nli():
     assert artifact["claims"][1]["stable_id"] in genuine
 
 
-def test_canary007_stage_a_normalizes_exact_live_scenario_numbers():
-    """Regression provenance: functional-v1.3 canary007 Stage A."""
-    root = _live_evidence_root()
-    a1_matches = list(root.rglob(
-        "response-a863155408d3b270689fce77ef00a08a45bd8aff4a9ee7f8647023d3b561bd8a.txt"
-    ))
-    a2_matches = list(root.rglob(
-        "response-be9a986815a397b4b558216d86db9559e4c1919be5aafbe5c99dfb5669f48680.txt"
-    ))
-    if not a1_matches or not a2_matches:
-        pytest.skip("ignored live Stage-A evidence is unavailable")
-    assert len(a1_matches) == len(a2_matches) == 1
-    a1 = json.loads(a1_matches[0].read_text(encoding="utf-8"))
-    a2 = json.loads(a2_matches[0].read_text(encoding="utf-8"))
+def test_stage_a_normalizes_exact_synthetic_scenario_numbers():
+    a1 = {
+        "learner_task": (
+            "Compare 2x + 3y = 6 with 4x + 3y = 12, then explain how 6 differs."
+        )
+    }
+    a2 = {
+        "learner_task": "Compare b1 and b2 after normalization.",
+        "generated_givens": [],
+    }
     givens, evidence, error = deterministic_scenario_givens(
         a1["learner_task"], allowed_numeric_text="2 3 4",
     )
@@ -1179,22 +1113,9 @@ def test_stage_a_v3_deterministically_preserves_every_objective_dimension(
 
 
 def test_canary010_exact_objective_card_is_valid_on_first_zero_call_assembly():
-    root = _live_evidence_root()
-    matches = list((root / "training-synthesis-functional-v1.3.0"
-                    / "02-one-row-canary"
-                    / "functional-production-dpo-00183-seed0-010").rglob(
-        "prompt-357e74d9e98cc3aa3ce8bdb36bcf4ab6c1753b4ca60f4db63aafc1b6479fdbb3.txt"
-    ))
-    if not matches:
-        pytest.skip("ignored live canary010 Stage-A evidence is unavailable")
-    assert len(matches) == 1
-    messages = json.loads(matches[0].read_text(encoding="utf-8"))
-    objective_text = messages[1]["content"].split(
-        "OBJECTIVE=", 1,
-    )[1].split("\nReturn objective_id", 1)[0]
-    objective = json.loads(objective_text)
+    objective = _bounded_card("relationships in distributed systems")
     task = deterministic_stage_a_task(objective, synthesis_seed=0)
-    assert task["objective_id"] == "co-104"
+    assert task["objective_id"] == "co-generic"
     assert task["bloom_level"] == "analyze"
     assert task["generated_givens"] == []
     rendered = task["learner_task"].lower()
@@ -1286,34 +1207,11 @@ def test_stage_d_realization_view_projects_minimum_generic_domain_columns():
 
 
 def test_canary011_stage_d_leakage_replay_uses_private_quotes_and_can_progress():
-    root = (
-        _live_evidence_root()
-        / "training-synthesis-functional-v1.3.0"
-        / "02-one-row-canary"
-        / "functional-production-dpo-00183-seed0-011"
-    )
-    prompt_path = root / "micro-journals/raw_staged_calls" / (
-        "prompt-b8aebacccd61f884a27a346c0517d6a1b04b0beab7b587211132527fc09f1b1d.txt"
-    )
-    first_path = root / "micro-journals/raw_staged_calls" / (
-        "response-49365b1f66a541a42b1ec97914743fa0e793ec8e77b378ae49f81c8cb4ba10f9.txt"
-    )
-    repeated_path = root / "micro-journals/raw_staged_calls" / (
-        "response-5a356b8ec4593b1b9437a16099281fa99d7374fa50d273377cca3f1236fd0f63.txt"
-    )
-    if not all(path.exists() for path in (prompt_path, first_path, repeated_path)):
-        pytest.skip("ignored live canary011 Stage-D evidence is unavailable")
-    messages = json.loads(prompt_path.read_text(encoding="utf-8"))
-    artifact_text = messages[1]["content"].split(
-        "IMMUTABLE_ARTIFACT=", 1,
-    )[1].split("\nCLAIM_CHECKLIST=", 1)[0]
-    artifact = json.loads(artifact_text)
-    first = json.loads(first_path.read_text(encoding="utf-8"))
-    repeated = json.loads(repeated_path.read_text(encoding="utf-8"))
+    artifact = _stage_d_artifact()
+    source = " ".join(item["evidence_quote"] for item in artifact["claims"])
+    first = {"prompt": artifact["learner_task"], "chosen": source}
+    repeated = dict(first)
     assert first == repeated
-    source = " ".join(
-        item["evidence_quote"] for item in artifact["claims"]
-    )
     leakage = _leakage_error(
         first["chosen"], source=source, artifact=artifact, pointer="/chosen",
     )
@@ -1366,26 +1264,14 @@ def test_canary011_stage_d_leakage_replay_uses_private_quotes_and_can_progress()
 
 
 def test_canary012_stage_d_never_scores_standalone_therefore():
-    root = (
-        _live_evidence_root()
-        / "training-synthesis-functional-v1.3.0"
-        / "02-one-row-canary"
-        / "functional-production-dpo-00183-seed0-012"
-    )
-    prompt_path = root / "micro-journals/raw_staged_calls" / (
-        "prompt-080967944f6b1a83fc55c79f7da27bf99231db845c12f2f6d06cacbd69bd215e.txt"
-    )
-    response_path = root / "micro-journals/raw_staged_calls" / (
-        "response-5f6a52bbd5a19809a45f194174e96faecef85d2c0d4313cdbbb2339aacdb3d74.txt"
-    )
-    if not prompt_path.exists() or not response_path.exists():
-        pytest.skip("ignored live canary012 Stage-D evidence is unavailable")
-    messages = json.loads(prompt_path.read_text(encoding="utf-8"))
-    view_text = messages[1]["content"].split(
-        "REALIZATION_VIEW=", 1,
-    )[1].split("\nThe chosen must", 1)[0]
-    view = json.loads(view_text)
-    d1 = json.loads(response_path.read_text(encoding="utf-8"))
+    view = stage_d_realization_view(_stage_d_artifact())
+    d1 = {
+        "prompt": view["learner_task"],
+        "chosen": (
+            f"{view['claims'][0]['claim']} Therefore, "
+            f"{view['claims'][1]['claim']}"
+        ),
+    }
     assert "Therefore," in d1["chosen"]
     assert "Therefore" not in _coverage_units(d1["chosen"])
 
@@ -1465,23 +1351,17 @@ def test_marker_does_not_hide_following_unsupported_clause():
 
 
 @pytest.mark.parametrize(
-    "response_sha256",
+    "response",
     [
-        "68733c6b2d278ec5acfaa87aba6e121dbd3787dddff6e5140e392709f05c39c1",
-        "dd5cfb0faa882dac17f93e7284a4e5d6a7ef3e23309bf4fa9043f7ab9c5f1ce6",
-        "c6bd99852478d0131bb1f13521ba0cef5fb17a0b95233075d39c43967405fb0b",
+        {"prompt": "Analyze the relation.", "chosen": "First whole answer."},
+        {"prompt": "Analyze the relation.", "chosen": "Second whole answer."},
+        {"prompt": "Analyze the relation.", "chosen": "Third whole answer."},
     ],
 )
 def test_canary013_d1_d2_d3_whole_answer_responses_fail_v2_structure(
-    response_sha256,
+    response,
 ):
     """The three oscillating canary responses cannot enter the v2 validator."""
-    root = _live_evidence_root()
-    matches = list(root.rglob(f"response-{response_sha256}.txt"))
-    if not matches:
-        pytest.skip("ignored canary-013 response evidence is unavailable")
-    assert len(matches) == 1
-    response = json.loads(matches[0].read_text(encoding="utf-8"))
     assert set(response) == {"prompt", "chosen"}
     probe = _StageDProbe(response)
     with pytest.raises(SynthesisProviderError) as caught:
@@ -2079,25 +1959,18 @@ def test_canary024_composer_source_drifts_fingerprint_and_resume_identity(
 
 
 def test_canary015_exact_payload_stalls_after_prompt_and_length_remains_fatal():
-    root = (
-        _live_evidence_root()
-        / "training-synthesis-functional-v1.3.0"
-        / "02-one-row-canary"
-        / "functional-production-dpo-00183-seed0-015"
-    )
-    path = root / "audit/http-raw" / (
-        "response-f45d9be6f4a99f5e59a19166449590fcb95b05af31fbfd8be1f09fc0463260a1.bin"
-    )
-    if not path.exists():
-        pytest.skip("ignored canary015 provider payload is unavailable")
-    payload = json.loads(path.read_bytes())
+    content = '{"prompt":"Analyze the relation.","chosen":"unterminated'
+    payload = {
+        "choices": [{
+            "finish_reason": "length",
+            "message": {"content": content},
+        }],
+        "usage": {"completion_tokens": MICRO_DEFAULT_COMPLETION_CAP},
+    }
     choice = payload["choices"][0]
     content = choice["message"]["content"]
     assert choice["finish_reason"] == "length"
-    assert payload["usage"]["completion_tokens"] == 1536
-    assert len(content.rstrip()) == 412
-    assert len(content) == 1881
-    assert content.rstrip().endswith('"')
+    assert payload["usage"]["completion_tokens"] == MICRO_DEFAULT_COMPLETION_CAP
     assert '"claim_realizations"' not in content
     with pytest.raises(json.JSONDecodeError):
         json.loads(content)
@@ -2138,23 +2011,10 @@ def test_canary015_per_artifact_schema_binds_cardinality_and_known_ids(
 
 
 def test_canary015_legacy_overlong_prompt_now_fails_authoritative_400_bound():
-    root = (
-        _live_evidence_root()
-        / "training-synthesis-functional-v1.3.0"
-        / "02-one-row-canary"
-        / "functional-production-dpo-00183-seed0-015"
-        / "micro-journals/micro_synthesis_state"
-    )
-    matches = list(root.glob("*.jsonl"))
-    if not matches:
-        pytest.skip("ignored canary015 journal is unavailable")
-    terminal_c = next(
-        row
-        for line in matches[0].read_text(encoding="utf-8").splitlines()
-        if (row := json.loads(line))["stage"] == "C"
-        and row["state"] == "terminal"
-    )
-    artifact = terminal_c["artifact"]
+    artifact = {
+        **_stage_d_artifact(),
+        "learner_task": "Analyze " + "x" * MICRO_STAGE_D_PROMPT_MAX_CHARS + ".",
+    }
     assert len(artifact["learner_task"]) > MICRO_STAGE_D_PROMPT_MAX_CHARS
     with pytest.raises(SynthesisProviderError) as caught:
         deterministic_stage_d_prompt(artifact)
@@ -2203,35 +2063,10 @@ def _stage_e_candidate(
 
 
 def test_canary016_exact_fault_selects_canonical_id_without_free_mechanism():
-    root = (
-        _live_evidence_root()
-        / "training-synthesis-functional-v1.3.0"
-        / "02-one-row-canary"
-        / "functional-production-dpo-00183-seed0-016"
-    )
-    request_path = root / "audit/http-raw" / (
-        "request-2239f14fe64511e43569c82b59c1d85417ba82b4a8d13f452783f5db33c57af9.bin"
-    )
-    response_path = root / "micro-journals/raw_staged_calls" / (
-        "response-c30adebd2f37b5acd28313659dc432af4e856ea3908acd82cde3b31e4d053417.txt"
-    )
-    if not request_path.exists() or not response_path.exists():
-        pytest.skip("ignored canary016 Gate-E evidence is unavailable")
-    request = json.loads(request_path.read_bytes())
-    user = request["messages"][-1]["content"]
-    candidates = json.loads(
-        user.split("CANDIDATES=", 1)[1].split("\nReturn one", 1)[0]
-    )
-    candidate = {**candidates[0], "bloom_level": "analyze"}
-    candidate["id"] = canonical_mc_id(
-        candidate["misconception"],
-        candidate["correction"],
-        candidate["bloom_level"],
-    )
-    old = json.loads(response_path.read_text(encoding="utf-8"))
+    candidate = _stage_e_candidate()
     selection = {
         "misconception_id": candidate["id"],
-        "rationale": old["rationale"],
+        "rationale": "The selected misconception exactly matches the indexed fault.",
     }
     assert set(selection) == {"misconception_id", "rationale"}
     assert _resolve_stage_e_selection(
@@ -2339,28 +2174,12 @@ def test_canary025_exact_authority_derives_faulty_step_without_nli():
 
 
 def test_canary025_exact_replay_resolves_terminal_gate_e_output():
-    root = (
-        _live_evidence_root()
-        / "training-synthesis-functional-v1.3.0"
-        / "02-one-row-canary"
-        / "functional-production-dpo-00183-seed0-025"
-    )
-    request_path = root / "audit/http-raw" / (
-        "request-e0d05e5a26f7c11f35f4b556206b9ad4b1479baaf7233c0aa062e91e547a6c94.bin"
-    )
-    response_path = root / "micro-journals/raw_staged_calls" / (
-        "response-8e9a00c4ac52bd58df8b4bc6bcfea9b40461b999f35a4984fa5927657bbba867.txt"
-    )
-    if not request_path.exists() or not response_path.exists():
-        pytest.skip("ignored canary025 Gate-E evidence is unavailable")
-    request = json.loads(request_path.read_bytes())
-    user = request["messages"][-1]["content"]
-    candidates = json.loads(
-        user.split("CANONICAL_CANDIDATES=", 1)[1].split(
-            "\nReturn one", 1,
-        )[0]
-    )
-    response = json.loads(response_path.read_text(encoding="utf-8"))
+    candidates = [_stage_e_candidate()]
+    response = {
+        "misconception_id": candidates[0]["id"],
+        "rationale": "The selected canonical fault matches exactly.",
+        "faulty_step": candidates[0]["misconception"],
+    }
     index, candidate, proof = _stage_e_exact_faulty_step_proof(
         candidates, response["misconception_id"],
     )

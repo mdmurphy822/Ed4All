@@ -9,7 +9,7 @@ the KG-quality review (plans/kg-quality-review-2026-04):
     with a warn-log default.
   - schemas/knowledge/courseforge_jsonld_v1.schema.json — formalizes the
     Courseforge JSON-LD contract. Not hooked into runtime validation yet;
-    this file only tests the schema + real-page validation.
+    this file tests the schema with hermetic page fixtures.
 
 Both schemas $ref Worker F's taxonomy files (merged in PR #20) for enum
 safety. Tests build a local schema store so $id URIs resolve offline.
@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import sys
 from pathlib import Path
@@ -32,8 +31,6 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-
-from lib.libv2_storage import resolve_imscc_chunks_path  # noqa: E402
 
 SCHEMAS_DIR = PROJECT_ROOT / "schemas"
 CHUNK_SCHEMA_PATH = SCHEMAS_DIR / "knowledge" / "chunk_v4.schema.json"
@@ -96,84 +93,6 @@ def _build_validator(schema_path: Path):
         return schema, Draft202012Validator(schema, resolver=resolver)
 
 
-def _libv2_courses_root() -> Path:
-    """LibV2 courses dir, honoring the ``ED4ALL_LIBV2_ROOT`` override."""
-    root = os.environ.get("ED4ALL_LIBV2_ROOT")
-    base = Path(root) if root else PROJECT_ROOT / "LibV2"
-    return base / "courses"
-
-
-def _find_real_chunks_jsonl() -> Optional[Path]:
-    """Locate a real chunks.jsonl from LibV2 for regression testing.
-
-    Discovers the first LibV2 course (sorted) carrying a resolvable
-    ``chunks.jsonl``. No course slug is hardcoded: the archives live under
-    the gitignored ``LibV2/courses/`` tree (honors ``ED4ALL_LIBV2_ROOT``).
-    Each course's chunks are resolved via ``resolve_imscc_chunks_path`` so
-    the ``imscc_chunks/`` → ``semantik_chunks/`` → legacy ``dart_chunks/`` →
-    legacy ``corpus/`` layouts are all found. Returns None if no corpus is
-    present in the checkout.
-    """
-    courses_root = _libv2_courses_root()
-    if not courses_root.is_dir():
-        return None
-    for course_dir in sorted(courses_root.iterdir()):
-        if not course_dir.is_dir():
-            continue
-        candidate = resolve_imscc_chunks_path(course_dir, "chunks.jsonl")
-        if candidate.is_file():
-            return candidate
-    return None
-
-
-def _export_jsonld_pages(export_dir: Path) -> List[Path]:
-    """``03_content_development/*.html`` pages for one export, or []."""
-    content_dir = export_dir / "03_content_development"
-    if not content_dir.is_dir():
-        return []
-    return sorted(content_dir.rglob("*.html"))
-
-
-def _find_conformant_jsonld_pages() -> List[Path]:
-    """Locate a Courseforge export whose embedded JSON-LD conforms.
-
-    Discovers dynamically under ``Courseforge/exports/`` rather than
-    pinning a project name: enumerates export dirs and returns the
-    ``03_content_development/*.html`` pages of the first export whose
-    embedded JSON-LD validates against the v1 contract at >=95% (the
-    test's precondition). Older / regressed export generations that
-    predate the current JSON-LD shape are skipped over so the test
-    validates a real conformant export rather than hard-failing on a
-    stale one. Returns an empty list when no conformant export is present
-    (the default on a clean checkout) → callers skip.
-    """
-    exports_root = PROJECT_ROOT / "Courseforge" / "exports"
-    if not exports_root.is_dir():
-        return []
-    try:
-        _, validator = _build_validator(JSONLD_SCHEMA_PATH)
-    except Exception:  # pragma: no cover — validator unavailable
-        return []
-    for export_dir in sorted(exports_root.iterdir()):
-        if not export_dir.is_dir():
-            continue
-        pages = _export_jsonld_pages(export_dir)
-        if not pages:
-            continue
-        total = 0
-        valid = 0
-        for page in pages:
-            data = _extract_jsonld(page.read_text())
-            if data is None:
-                continue
-            total += 1
-            if not list(validator.iter_errors(data)):
-                valid += 1
-        if total > 0 and (valid / total) >= 0.95:
-            return pages
-    return []
-
-
 _JSONLD_RE = re.compile(
     r'<script type="application/ld\+json">\s*(\{.*?\})\s*</script>',
     re.S,
@@ -214,6 +133,32 @@ def _make_valid_chunk() -> Dict[str, Any]:
     }
 
 
+def _make_valid_jsonld(page_id: str = "week_01_content") -> Dict[str, Any]:
+    """Construct a minimal Courseforge JSON-LD page contract."""
+    return {
+        "@context": "https://ed4all.dev/ns/courseforge/v1",
+        "@type": "CourseModule",
+        "courseCode": "SAMPLE101",
+        "weekNumber": 1,
+        "moduleType": "content",
+        "pageId": page_id,
+    }
+
+
+def _write_jsonld_pages(tmp_path: Path, count: int = 20) -> List[Path]:
+    """Write deterministic HTML pages carrying valid embedded JSON-LD."""
+    pages = []
+    for index in range(count):
+        page = tmp_path / f"page_{index:02d}.html"
+        payload = json.dumps(_make_valid_jsonld(f"page-{index:02d}"))
+        page.write_text(
+            f'<script type="application/ld+json">{payload}</script>',
+            encoding="utf-8",
+        )
+        pages.append(page)
+    return pages
+
+
 # ---------------------------------------------------------------------------
 # Schema self-validation (sanity: the schema itself parses as a valid JSON
 # Schema Draft 2020-12 document).
@@ -235,25 +180,22 @@ def test_jsonld_schema_self_valid():
 
 
 # ---------------------------------------------------------------------------
-# Regression: existing production chunks/JSON-LD validate against the new
+# Regression: representative chunk/JSON-LD batches validate against the new
 # schemas at or above the master-plan's 95% threshold.
 # ---------------------------------------------------------------------------
 
 
-def test_existing_libv2_chunks_validate():
+def test_representative_chunk_batch_validates():
     _require_jsonschema()
-    chunks_path = _find_real_chunks_jsonl()
-    if chunks_path is None:
-        pytest.skip("No LibV2 chunks.jsonl present in this checkout")
-
     _, validator = _build_validator(CHUNK_SCHEMA_PATH)
     chunks = []
-    with open(chunks_path) as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                chunks.append(json.loads(line))
-    assert chunks, f"chunks.jsonl at {chunks_path} is empty"
+    for index in range(20):
+        chunk = _make_valid_chunk()
+        chunk["id"] = f"sample_chunk_{index:05d}"
+        chunk["follows_chunk"] = (
+            None if index == 0 else f"sample_chunk_{index - 1:05d}"
+        )
+        chunks.append(chunk)
 
     valid = 0
     failures: List[Tuple[str, str]] = []
@@ -274,11 +216,9 @@ def test_existing_libv2_chunks_validate():
     )
 
 
-def test_existing_courseforge_jsonld_validates():
+def test_representative_courseforge_jsonld_validates(tmp_path: Path):
     _require_jsonschema()
-    pages = _find_conformant_jsonld_pages()
-    if not pages:
-        pytest.skip("No conformant Courseforge export present in this checkout")
+    pages = _write_jsonld_pages(tmp_path)
 
     _, validator = _build_validator(JSONLD_SCHEMA_PATH)
     total = 0

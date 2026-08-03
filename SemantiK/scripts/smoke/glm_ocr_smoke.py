@@ -129,7 +129,7 @@ def main() -> None:
 
     # ---------- GLM-OCR ----------
     import time
-    from semantik_structure.glm_ocr import (
+    from semantik_structure.glmocr.region_enrichment.model import (
         load_glm_ocr, ocr_image, unload_glm_ocr,
         PROMPT_TEXT, PROMPT_FORMULA, PROMPT_TABLE,
     )

@@ -28,14 +28,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .glm_ocr import (
+from .model import (
     PROMPT_FORMULA,
     PROMPT_TABLE,
     PROMPT_TEXT,
     ocr_image,
 )
-from .glm_ocr_cache import CacheKey, get as cache_get, put as cache_put, sha256_file
-from .region_detection import (
+from .cache import CacheKey, get as cache_get, put as cache_put, sha256_file
+from ...region_detection import (
     Region,
     detect_low_conf_tesseract_regions,
     detect_math_regions,
@@ -56,7 +56,7 @@ DEFAULT_MAX_NEW_TOKENS = 2048
 
 
 def _render_page(pdf_path: Path, page_num: int, scale: float):
-    from .extract_shared import _pypdfium2_render_page_to_image
+    from ...extract_shared import _pypdfium2_render_page_to_image
     return _pypdfium2_render_page_to_image(pdf_path, page_num, scale=scale)
 
 
@@ -307,7 +307,7 @@ def enrich_via_council_gate(
     """
     # Lazy import to avoid pulling council into the dataset-build path
     # when only the bbox-list API is needed.
-    from .council.cross_reranker import confirm_table_candidates
+    from ...council.cross_reranker import confirm_table_candidates
 
     kwargs: dict[str, Any] = {}
     if threshold is not None:
@@ -366,7 +366,7 @@ def enrich_table_regions_with_glm_ocr(
     import dataclasses
 
     from .council.cross_reranker import confirm_table_candidates
-    from .region_detection import TableCandidate
+    from ...region_detection import TableCandidate
 
     # Map source_region_id -> TableCandidate so we can look up the
     # bbox / pages for each Stage-5 table Region.
@@ -457,7 +457,7 @@ def glm_ocr_regions_as_feature_blocks(shared: dict):
     This is how stage 3a gets to "review" GLM-OCR output before it
     reaches Qwen (stage 3b).
     """
-    from .types import FeatureBlock, RawBlock
+    from ...types import FeatureBlock, RawBlock
     fbs = []
     refs = []
     for pg in shared.get("pages") or []:

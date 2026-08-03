@@ -288,7 +288,12 @@ risk. Completed items are marked below.
 4. **`SemantiK/data/` — DONE.** Dataset utilities now live under `alignment/`,
    `augmentation/`, `builders/`, `common/`, and `sources/`; two package-level
    entry modules remain flat and the exact cap is 2.
-5. **`lib/validators/` — 115 loose.** Largest number in the tree but the
+5. **`SemantiK/semantik_structure/` — IN PROGRESS.** Region-targeted legacy
+   GLM enrichment now lives under `glmocr/region_enrichment/`, reducing the
+   core package's exact loose-module cap from 52 to 49. Extraction and figure
+   families remain candidates for later bounded moves; the current GLM-OCR SDK
+   lane and the legacy region-enrichment lane stay explicitly distinct.
+6. **`lib/validators/` — 115 loose.** Largest number in the tree but the
    *weakest* case: it is a genuine package whose flat module list is the
    registry `docs/validation/gates.md` maps onto. Listed for completeness;
    the recommendation is to leave it flat and let the cap hold the line.

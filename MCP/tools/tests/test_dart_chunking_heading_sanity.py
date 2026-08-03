@@ -1,6 +1,6 @@
-"""Live-path integration test for the chunk heading-sanity filter.
+"""Hermetic integration test for the chunk heading-sanity filter.
 
-Re-chunks a real staged accessible-HTML conversion output through the live
+Re-chunks a synthetic accessible-HTML document through the live
 ``MCP/tools/pipeline_tools.py::_run_dart_chunking`` path (via the
 ``run_dart_chunking`` tool-registry entry) and asserts the CORPUS-AGNOSTIC
 structural invariants of the ``lib/chunk_heading_sanity.py`` contract:
@@ -17,9 +17,8 @@ structural invariants of the ``lib/chunk_heading_sanity.py`` contract:
   chunk carries the ``heading_suspect`` flag (back-compat — the filter never
   mutates a heading when the gate is off).
 
-The input HTML lives under the gitignored ``inputs/`` tree (no course-data
-references in tracked code), so the test DISCOVERS it dynamically and
-``pytest.skip()``s when absent — CI on a clean checkout stays green.
+The input is generated under ``tmp_path`` and deliberately includes both a
+clean heading and a suspect donor heading. No operator input is discovered.
 """
 
 from __future__ import annotations
@@ -33,25 +32,29 @@ import pytest
 
 from lib.paths import PROJECT_ROOT
 
-def _resolve_input_html() -> Path:
-    """Discover a real accessible-HTML conversion output under ``inputs/``.
-
-    The corpus lives under the gitignored ``inputs/`` tree (no course-data
-    references in tracked code), so the path is DISCOVERED at runtime — glob
-    every ``*/dart_in/*_accessible.html`` conversion output and take the first
-    (sorted for determinism). ``pytest.skip()`` when none is present so a clean
-    checkout stays green rather than erroring.
-    """
-    candidates = sorted(
-        (PROJECT_ROOT / "inputs").glob("*/dart_in/*_accessible.html")
+def _write_input_html(tmp_path: Path) -> Path:
+    """Write a deterministic SemantiK-shaped accessible HTML fixture."""
+    source = tmp_path / "sample_accessible.html"
+    source.write_text(
+        """<!doctype html>
+<html lang="en"><head><title>Graph Concepts</title></head><body>
+<main>
+  <h1>Graph Concepts</h1>
+  <section data-semantik-block-id="block-1" data-semantik-pages="1">
+    <h2>Foundational Relationships</h2>
+    <p>Graph statements connect a subject, predicate, and object. This clean
+    section supplies enough explanatory prose for deterministic chunking.</p>
+  </section>
+  <section data-semantik-block-id="block-2" data-semantik-pages="2">
+    <h2>Charles Koch Foundation The Stuart Family Foundation</h2>
+    <p>This paragraph sits below a deliberately suspect donor-style heading
+    so the enabled filter must repair it to a clean ancestor or flag it.</p>
+  </section>
+</main></body></html>
+""",
+        encoding="utf-8",
     )
-    if candidates:
-        return candidates[0]
-    pytest.skip(
-        "no staged accessible-HTML conversion output present under "
-        "inputs/*/dart_in/ (gitignored corpus) — skipping live-path "
-        "heading-sanity test"
-    )
+    return source
 
 
 def _build_registry():
@@ -115,13 +118,12 @@ def _heading(chunk) -> str:
 def test_heading_sanity_structural_invariants(tmp_path):
     """The filter holds its contract on ANY corpus (structural, slug-agnostic).
 
-    Asserts only invariants that hold for any discovered conversion output —
-    no corpus-specific noise/real-heading literals (the discovered file is
-    arbitrary, so content-specific expectations are not sound).
+    Asserts corpus-agnostic invariants against the deterministic fixture; no
+    operator-specific heading or source literal participates.
     """
     from lib.chunk_heading_sanity import is_suspect_section_heading
 
-    src = _resolve_input_html()
+    src = _write_input_html(tmp_path)
     staging = _stage_html(tmp_path, src)
 
     on_chunks = _run_chunking(tmp_path, staging, flag_on=True)
@@ -190,7 +192,7 @@ def test_flag_off_byte_identical_headings(tmp_path):
     i.e. the off run is byte-identical to legacy behavior — the filter never
     mutates a heading when the gate is off.
     """
-    src = _resolve_input_html()
+    src = _write_input_html(tmp_path)
     staging = _stage_html(tmp_path, src)
 
     off_a = _run_chunking(tmp_path, staging, flag_on=False)
@@ -218,8 +220,7 @@ def _build_chunk_v4_validator():
 
     schemas_dir = PROJECT_ROOT / "schemas"
     schema_path = schemas_dir / "knowledge" / "chunk_v4.schema.json"
-    if not schema_path.exists():
-        pytest.skip("chunk_v4.schema.json not found")
+    assert schema_path.is_file(), f"chunk_v4 schema missing: {schema_path}"
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
 
     id_to_schema = {}
@@ -241,7 +242,7 @@ def _build_chunk_v4_validator():
 
 def test_on_run_chunks_schema_valid(tmp_path):
     """Every chunk emitted with the filter on still validates against v4."""
-    src = _resolve_input_html()
+    src = _write_input_html(tmp_path)
     staging = _stage_html(tmp_path, src)
     on_chunks = _run_chunking(tmp_path, staging, flag_on=True)
 

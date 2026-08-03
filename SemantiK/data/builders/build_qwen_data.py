@@ -361,7 +361,7 @@ def process_pair_cpu(pair_path_str: str,
 
     if use_glm_ocr:
         try:
-            from semantik_structure.glm_ocr_enrich import enrich_from_cache
+            from semantik_structure.glmocr.region_enrichment.pipeline import enrich_from_cache
             enrich_from_cache(shared, pdf_path)
         except Exception as exc:
             return {"pair_path": pair_path_str, "error": f"glm_ocr_cache: {exc}"}
@@ -645,13 +645,21 @@ def _glm_ocr_prepass(pair_paths: list[Path], model_path: str) -> None:
     Idempotent.
     """
     from semantik_structure.extract_shared import extract_shared_cached
-    from semantik_structure.glm_ocr_cache import CacheKey, get as cache_get, sha256_file
+    from semantik_structure.glmocr.region_enrichment.cache import (
+        CacheKey,
+        get as cache_get,
+        sha256_file,
+    )
     from semantik_structure.region_detection import (
         detect_low_conf_tesseract_regions,
         detect_math_regions,
         detect_table_regions,
     )
-    from semantik_structure.glm_ocr import PROMPT_FORMULA, PROMPT_TABLE, PROMPT_TEXT
+    from semantik_structure.glmocr.region_enrichment.model import (
+        PROMPT_FORMULA,
+        PROMPT_TABLE,
+        PROMPT_TEXT,
+    )
 
     def _prompt_for(kind: str) -> str:
         return {"math": PROMPT_FORMULA,
@@ -703,8 +711,8 @@ def _glm_ocr_prepass(pair_paths: list[Path], model_path: str) -> None:
         return
 
     # Phase 2: OCR the misses
-    from semantik_structure.glm_ocr import load_glm_ocr, unload_glm_ocr
-    from semantik_structure.glm_ocr_enrich import enrich_shared
+    from semantik_structure.glmocr.region_enrichment.model import load_glm_ocr, unload_glm_ocr
+    from semantik_structure.glmocr.region_enrichment.pipeline import enrich_shared
     print(f"[glm-ocr] loading {model_path}", file=sys.stderr)
     glm = load_glm_ocr(model_path)
     try:

@@ -55,7 +55,8 @@ def run_pipeline(pdf_path: Path,
                    fire and ambiguous blocks default to PARAGRAPH.
     `reasoner`   — dict from reason.load_reasoner(path). If None, stage 3b
                    is skipped; distilbert's labels pass through unchanged.
-    `glm_ocr`    — dict from glm_ocr.load_glm_ocr(). If provided, stage 1
+    `glm_ocr`    — dict from region_enrichment.model.load_glm_ocr(). If provided,
+                   stage 1
                    is augmented with region-targeted OCR on every detected
                    math / table region, plus full-page OCR for any page
                    that had to fall back to Tesseract. Results cached to
@@ -72,7 +73,7 @@ def run_pipeline(pdf_path: Path,
     try:
         shared = extract_shared(pdf_path)
         if glm_ocr is not None:
-            from .glm_ocr_enrich import enrich_shared
+            from .glmocr.region_enrichment.pipeline import enrich_shared
             enrich_shared(shared, pdf_path, glm_ocr)
         raw = blocks_from_shared(shared)
     except Exception as exc:

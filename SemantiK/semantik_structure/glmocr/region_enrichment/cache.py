@@ -18,7 +18,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import paths as _semantik_paths
+from ... import paths as _semantik_paths
 
 # Anchored under the SemantiK cache root (CWD-independent) instead of the legacy
 # CWD-relative ``data/glm_ocr_cache`` literal. Byte-stable to the historic

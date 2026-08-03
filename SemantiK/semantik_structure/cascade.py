@@ -1364,7 +1364,7 @@ def run_full_cascade(
     Stage 5b (``enable_glm_ocr_stage``) is OPT-IN. When enabled, runs
     GLM-OCR on table regions whose underlying TableCandidate the
     Structure council confirmed (see
-    :func:`semantik_structure.glm_ocr_enrich.enrich_table_regions_with_glm_ocr`).
+    :func:`semantik_structure.glmocr.region_enrichment.pipeline.enrich_table_regions_with_glm_ocr`).
     With ``glm_ocr_runtime=None`` the stage runs in cache-only mode
     (cache hits get injected into payload; misses are silently skipped
     — caller should log a banner so the active mode is visible).
@@ -1804,7 +1804,7 @@ def run_full_cascade(
         )
         t = time.perf_counter()
         from .extract_shared import extract_shared_cached
-        from .glm_ocr_enrich import enrich_table_regions_with_glm_ocr
+        from .glmocr.region_enrichment.pipeline import enrich_table_regions_with_glm_ocr
 
         shared = extract_shared_cached(pdf_path)
         before_with_text = sum(
