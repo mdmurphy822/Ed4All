@@ -251,7 +251,7 @@ and shared service surfaces.
 - [Pipeline flow](docs/architecture/pipeline-flow.md)
 - [Validation gates](docs/validation/gates.md)
 - [Licensing and ToS posture](docs/LICENSING.md)
-- Component guides: [SemantiK](SemantiK/README.semantic.md),
+- Component guides: [SemantiK](SemantiK/README.md),
   [Courseforge](Courseforge/README.md), [Trainforge](Trainforge/README.md), and
   [LibV2](LibV2/README.md)
 

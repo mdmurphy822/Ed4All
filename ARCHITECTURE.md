@@ -53,7 +53,7 @@ those references instead of treating generated course content as detached prose.
 **Outputs:** semantic HTML, block-level provenance, and quality reports.
 
 **Deep dive:** [SemantiK architecture](SemantiK/architecture.md) and
-[SemantiK overview](SemantiK/README.semantic.md).
+[SemantiK overview](SemantiK/README.md).
 
 ### Courseforge: accessible HTML to a digital course
 
