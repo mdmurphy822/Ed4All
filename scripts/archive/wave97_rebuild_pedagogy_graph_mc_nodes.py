@@ -25,7 +25,7 @@ other edge type, and the per-relation edge counts byte-identical.
 
 Usage::
 
-    python scripts/wave97_rebuild_pedagogy_graph_mc_nodes.py \\
+    python scripts/archive/wave97_rebuild_pedagogy_graph_mc_nodes.py \\
         --course <course-slug>
 
 Run from repo root. Writes:

@@ -15,7 +15,7 @@ directory containing ``graph/``) flagged by an external review as
 75% noise.
 
 This complements (and supersedes for that archive)
-``scripts/wave75_classify_concept_graph.py``: Wave 75 stamped a
+``scripts/archive/wave75_classify_concept_graph.py``: Wave 75 stamped a
 ``class`` field on every node but kept the noisy ones in the graph.
 Wave 76 now actually deletes them. Backups taken by Wave 76 are written
 with the suffix ``.wave76.bak`` so they don't clobber the Wave 75 ones.

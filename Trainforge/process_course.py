@@ -68,7 +68,7 @@ from Trainforge.rag.wcag_canonical_names import canonicalize_sc_references
 # / TARGET_CHUNK_SIZE / CANONICAL_CHUNK_TYPES) are aliased to the
 # chunker module so the chunker + Trainforge can never drift; the
 # module-level + class-attribute aliases are preserved for back-compat
-# with external imports (e.g. scripts/wave81_reclassify_chunks.py
+# with external imports (e.g. scripts/archive/wave81_reclassify_chunks.py
 # imports CANONICAL_CHUNK_TYPES from this module).
 from Trainforge.chunker import (
     CANONICAL_CHUNK_TYPES as _PKG_CANONICAL_CHUNK_TYPES,
@@ -124,7 +124,7 @@ CHUNK_SCHEMA_VERSION = "v4"
 #
 # Phase 7a Subtask 6: lifted into the Trainforge.chunker package
 # (``Trainforge.chunker.chunker.CANONICAL_CHUNK_TYPES``). Re-exported here so
-# external importers (``scripts/wave81_reclassify_chunks.py``) keep
+# external importers (``scripts/archive/wave81_reclassify_chunks.py``) keep
 # working without modification.
 CANONICAL_CHUNK_TYPES = _PKG_CANONICAL_CHUNK_TYPES
 
@@ -4069,7 +4069,7 @@ class CourseProcessor:
                 # Strip the ``course_id:`` prefix when SCOPE_CONCEPT_IDS
                 # is on so the builder sees the bare slug it was
                 # designed against (mirrors the helper in
-                # scripts/wave75_classify_concept_graph.py). Also key
+                # scripts/archive/wave75_classify_concept_graph.py). Also key
                 # by the full ID so the builder's lookups land
                 # regardless of scoping mode.
                 slug = raw_id.split(":", 1)[-1]

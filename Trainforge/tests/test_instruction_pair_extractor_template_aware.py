@@ -358,7 +358,7 @@ def test_run_extraction_dispatches_template_aware_methods(tmp_path):
 
 # Wave-79-C template chunk_types the extractor's template-aware methods
 # fire on. The real-corpus test requires a corpus whose chunks carry these
-# (i.e. one that has run scripts/wave81_reclassify_chunks.py); newer
+# (i.e. one that has run scripts/archive/wave81_reclassify_chunks.py); newer
 # general-textbook corpora are all-explanation and don't qualify.
 _TEMPLATE_CHUNK_TYPES = {
     "procedure",
@@ -418,7 +418,7 @@ _CORPUS_PATH = _discover_corpus_chunks()
     reason=(
         "no LibV2 course carrying Wave-79-C template chunk_types present "
         "under ED4ALL_LIBV2_ROOT / LibV2/courses/ (run "
-        "scripts/wave81_reclassify_chunks.py on a corpus first)"
+        "scripts/archive/wave81_reclassify_chunks.py on a corpus first)"
     ),
 )
 def test_real_corpus_archive_yields_template_aware_methods(tmp_path):
@@ -448,5 +448,5 @@ def test_real_corpus_archive_yields_template_aware_methods(tmp_path):
     assert len(fired) >= 4, (
         f"Wave 81 expected ≥4 unique template-aware extraction methods on "
         f"the discovered archive; got {fired}. Run "
-        f"scripts/wave81_reclassify_chunks.py first."
+        f"scripts/archive/wave81_reclassify_chunks.py first."
     )

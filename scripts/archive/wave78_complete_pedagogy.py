@@ -41,10 +41,10 @@ synthesized_objectives.json when ``<archive>/objectives.json`` is absent.
 
 Usage::
 
-    python scripts/wave78_complete_pedagogy.py --archive LibV2/courses/<slug>
-    python scripts/wave78_complete_pedagogy.py --archive LibV2/courses/<slug> \\
+    python scripts/archive/wave78_complete_pedagogy.py --archive LibV2/courses/<slug>
+    python scripts/archive/wave78_complete_pedagogy.py --archive LibV2/courses/<slug> \\
         --synthesized <path>/synthesized_objectives.json
-    python scripts/wave78_complete_pedagogy.py --archive LibV2/courses/<slug> \\
+    python scripts/archive/wave78_complete_pedagogy.py --archive LibV2/courses/<slug> \\
         --dry-run
 """
 from __future__ import annotations

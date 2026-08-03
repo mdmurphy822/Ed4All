@@ -35,9 +35,9 @@ restored without re-running content generation. It:
 
 Usage::
 
-    python scripts/wave81_harvest_pitfall_misconceptions.py \\
+    python scripts/archive/wave81_harvest_pitfall_misconceptions.py \\
         --archive LibV2/courses/<course-slug>
-    python scripts/wave81_harvest_pitfall_misconceptions.py \\
+    python scripts/archive/wave81_harvest_pitfall_misconceptions.py \\
         --archive LibV2/courses/<course-slug> --dry-run
 """
 from __future__ import annotations
