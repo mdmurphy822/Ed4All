@@ -1,75 +1,184 @@
-# Canonical Helpers & Validators
+# Validator Catalog
 
-> Long-form home for per-validator status and optional dependency detail. Root `CLAUDE.md § Canonical Helpers` carries one-line bullets per helper; this file carries the canonical paragraph-bullet for each validator.
+> **What this page is:** a user-facing map of Ed4All’s validation layers.
+> For workflow placement, severity, actions, and configured thresholds, use
+> [Validation Gates](gates.md). For execution and result flow, use
+> [Validation Architecture](../architecture/validation-architecture.md).
 
-## Single-source-of-truth loaders (`lib/ontology/`)
+Validators inspect artifacts and return structured results. Gates decide when
+those validators run and whether a result warns, regenerates, blocks, or is
+reported for review. Keeping those responsibilities separate makes validation
+behavior visible without duplicating workflow policy here.
 
-- `lib/ontology/bloom.py` — Bloom verb / level / cognitive-domain detection.
-- `lib/ontology/slugs.py::canonical_slug` — unified slug helper.
-- `lib/ontology/teaching_roles.py` — `(component, purpose) → role` mapper.
-- `lib/ontology/taxonomy.py::load_taxonomy(name)` — generic JSON-taxonomy loader, reads from `schemas/taxonomies/`.
+## How validation fits together
 
-## Validators (`lib/validators/`)
+```mermaid
+flowchart LR
+    A[Pipeline artifact] --> B[Validator input builder]
+    B --> C[Validator]
+    C --> D[Structured result<br/>passed · score · issues]
+    D --> E[Gate manager]
+    E --> F[Continue]
+    E --> G[Warn or regenerate]
+    E --> H[Block]
 
-See `docs/validation/gates.md` for the wiring (workflow → phase → gate_id → validator).
+    classDef input fill:#E8F1FF,stroke:#173B70,color:#081B33,stroke-width:2px;
+    classDef check fill:#FFF4CC,stroke:#6B5200,color:#241C00,stroke-width:2px;
+    classDef result fill:#E7F7ED,stroke:#176438,color:#092A19,stroke-width:2px;
+    classDef stop fill:#FFE8E8,stroke:#8A1C1C,color:#350909,stroke-width:2px;
+    class A,B input;
+    class C check;
+    class D,E,F,G result;
+    class H stop;
+```
 
-- `lib/validators/page_objectives.py` — objective coverage per page.
-- `lib/validators/content_type.py` — content_type enum enforcement (gated).
-- `lib/validators/evidence.py` — per-rule evidence discriminator loader; strict mode drops FallbackProvenance.
-- `lib/validators/assessment_objective_alignment.py` — fail-loud gate keeping every assessment question's `objective_id` covered by at least one chunk's `learning_outcome_refs`.
-- `lib/validators/source_refs.py` — verifies every emitted Courseforge `sourceId` resolves against the staging manifest (the SemantiK conversion output staged for Courseforge; `data-semantik-*` / `semantik:{slug}#{block_id}` provenance preserved, with legacy-prefix acceptance retained on the READ side for unmigrated corpora).
-- `lib/validators/libv2_manifest.py` — validates LibV2 manifest JSON, scaffold completeness, and on-disk artifact hash/size agreement.
-- `lib/validators/libv2_model.py` — validates emitted `model_card.json` against `schemas/models/model_card.schema.json`. Critical: schema match, weights file presence + size + sha256 agreement, `pedagogy_graph_hash` resolves to extant graph in same course. Warning: missing eval scores, missing license, malformed HF repo regex. Wired as the `libv2_model` gate.
-- `lib/validators/libv2/course_completeness.py::CourseCompletenessValidator` — **"true full course" archival-completeness** gate (deterministic; no embedding/model load — counts JSONL records + reads `vector_index/{id_map,manifest}.json`). Catches the incomplete-archive shapes that pollute `LibV2/courses/` while passing BOTH valid archive shapes (a full generated course OR a chunk-only retrieval import). Flags `ARCHIVE_NO_CHUNKS` / `ARCHIVE_TOO_THIN` (below the `ED4ALL_MIN_CHUNKS` floor, default 20) / `ARCHIVE_NO_INDEX` (no `vector_index/embeddings.npy`) / `ARCHIVE_INDEX_MISMATCH` (index vector count ≠ source chunkset count) / `ARCHIVE_FAKE_INDEX` (`fake` provider without `ED4ALL_EMBEDDING_ALLOW_FAKE`). Objectives/content-pages are deliberately NOT required (a chunk-only import must pass). Reuses the `_build_libv2_manifest` input shape (resolves chunks + index from `course_dir`). Warning-day-1; the opt-in `ED4ALL_ARCHIVE_REQUIRE_FULL_COURSE` strict mode flips incompleteness to critical/blocking (mirrors the W2.3 `ED4ALL_REQUIRE_ARCHIVED_OBJECTIVES` posture). Emits one `validation_result` decision. Wired `course_completeness` at `libv2_archival` in `textbook_to_course`; `# TODO(calibration)` deferred critical-flip.
-- `lib/validators/kg_quality.py` — KG-quality report (completeness / consistency / accuracy / coverage); thin wrapper over `Trainforge/rag/kg_quality_report.py::KGQualityReporter`. Thresholds: 0.95 / 0.95 / 0.95 / 0.5. **Optional `ED4ALL_KG_PREREQ_HEALTH` prereq-DAG health sub-signals (default OFF, ride this same `kg_quality_report` gate — no new gate row):** three deterministic stdlib passes over `concept_graph_semantic.json` — (W3.2) ACYCLICITY (iterative Tarjan SCC over the `prerequisite` edge set — including Lane P's content-derived `prerequisite_from_definition_mention` federation TO→TO edges — → warning `KG_PREREQ_CYCLE_DETECTED`, reported as a `acyclicity.score` signal NOT folded into the 4-dim composite mean); (W3.4) CENTRALITY (concept in-degree centrality, LO/TO endpoints excluded, top-10 informational); (W3.6) DANGLING (a prerequisite TARGET concept never taught/introduced → warning `KG_PREREQ_DANGLING_BACKGROUND`). Both warning-day-1 with `# TODO(calibration)` deferred critical-flip; NEVER flip `passed`. Emits one `validation_result` decision per `validate()` distinct from the primary `kg_quality_report_check`. Anti-fabrication: reads only real node ids/edge endpoints. Off → byte-identical (no `prereq_health` metadata key).
-- `lib/validators/min_edge_count.py` — Pre-synthesis gate: critical-fails on pedagogy graph with <100 edges, <4 distinct edge types, or concept graph with <50 nodes. Closes the silent zero-edge regression class for the synthesis surface.
-- `lib/validators/synthesis_diversity.py` — Post-synthesis gate: critical-fails when top-3 templates >60% of pairs, single template >35%, or distinct templates <8. Warns when total pairs <100.
-- `lib/validators/synthesis_leakage.py` — Post-synthesis gate covering two contamination vectors: (a) verbatim-span leakage from `chunk.text` (default 5% rate / 50-char span); (b) assessment-outline scaffolding patterns like `Question N (XX-NN, Bloom: ...)` (default 0% — zero tolerance, structural contamination). Tunable via gate `config.thresholds.leak_rate_threshold`, `leak_span_chars`, `assessment_scaffold_rate_threshold`.
-- `lib/validators/objective_assessment_similarity.py` — Cosine-similarity floor between every assessment-item block stem and its referenced learning-objective text. Default `min_cosine = 0.55` (calibrated against the embedder's intrinsic similarity floor — topically-related but not semantically-aligned pairs cluster below ~0.40). Below threshold emits `action="regenerate"`. Wired symmetrically as `outline_objective_assessment_similarity` (inter_tier_validation) and `rewrite_objective_assessment_similarity` (post_rewrite_validation).
-- `lib/validators/concept_example_similarity.py` — Cosine-similarity floor between every concept-block definition and its illustrating example. Default `min_cosine = 0.50` — strictly looser than the objective↔assessment gate's 0.55 because examples are intentionally more concrete than the abstract concept they illustrate.
-- `lib/validators/objective_roundtrip_similarity.py` — Cosine-similarity floor between the rewrite-tier learning-objective paraphrase and the source objective. Default `min_cosine = 0.70` — strictly tighter than the prior two gates because a paraphrase MUST preserve meaning; below 0.70 indicates semantic drift, not just surface-form variation.
-- `lib/validators/courseforge_outline_shacl.py` — Statistical-tier wrapper around the `schemas/context/courseforge_v1.shacl-rules.ttl` shape constraints, applied to outline-tier Block emit before the rewrite tier sees it.
-- `lib/validators/bloom/classifier_disagreement.py` — Warning-level Bloom-claim audit. No reliable Bloom classifier is provisioned: legacy ensemble dispatch is unimplemented and always abstains. The MultiBERT/Ed4All heads selected by `ED4ALL_BLOOM_TRIVOTE_HEADS` are a staged, unproven training path over synthesized corpus labels, awaiting validation and provisioned weights. Under the current default (`ED4ALL_BLOOM_TRIVOTE=off`) the gate records abstention rather than a model vote, disagreement, or regeneration verdict. The old `lib/validators/bloom_classifier_disagreement.py` import remains a compatibility shim.
-- `lib/validators/chunk_wcag_status.py::ChunkWcagStatusValidator` — **IB4.2** chunk-level WCAG-status gate. Audits the data-only `wcag_block_status` / `figure_alt` chunk_v4 fields (harvested from `data-semantik-wcag` / `<figcaption>`). Emits warning `CHUNK_WCAG_FLAGGED` (a flagged source region shipped without remediation — the `passed=False` driver) + warning `CHUNK_FIGURE_NO_ALT` (figure / `<img>`-bearing chunk with empty `figure_alt`). Legacy corpora with neither field present skip clean with warning `WCAG_FIELDS_ABSENT` (passed=True) — the byte-stable pre-SemantiK path. Deterministic, no embeddings. Wired `chunk_wcag_status` at `chunking` + `imscc_chunking` (warning day-1; deferred critical-flip).
-- `lib/validators/udl_coverage.py::UdlCoverageValidator` — **IB4.5** UDL multiple-means coverage gate (QA-13 / 4.5 Rule 6 / D7). Per content-bearing block (skips `chrome` / `objective`): `n_representations ≥ 2` (the Representation/Recognition floor; warning `UDL_SINGLE_REPRESENTATION`). Per week (grouped by `page_id` week prefix): ≥1 block carries a non-empty `response_formats` OR a non-`None` `engagement_affordance` (the autonomy floor; warning `UDL_NO_AUTONOMY_AFFORDANCE`). Derives `(n_representations, response_formats, engagement_affordance)` ON READ via `blocks._derive_udl_coverage` when the Block fields are empty, so it works before the emit-side `ED4ALL_BLOCK_A11Y` flag populates them. **Deterministic v1 — never short-circuits on missing `[embedding]` extras**; the docstring documents the statistical-tier graceful-degrade contract (`EMBEDDING_DEPS_MISSING` warning-`passed=True` + `TRAINFORGE_REQUIRE_EMBEDDINGS` fail-closed flip) a FUTURE embedding-backed autonomy check MUST inherit. Feeds IB6's Engagement + Accessibility/UDL quality dimensions. Wired `udl_coverage` at `inter_tier_validation` + `post_rewrite_validation` in both `course_generation` + `textbook_to_course` (warning day-1; deferred critical-flip of `UDL_SINGLE_REPRESENTATION`).
-- `lib/validators/key_terms_definition_quality.py::KeyTermsDefinitionQualityValidator` — **W1.5** glossary definition-quality gate (deterministic tier, no model/embedding deps). Audits key-terms vocab cards (`template_type == "key_terms"` or `block_type == "vocab_card"`), reading the term + definition off explicit `display`/`term` + `definition` fields, else parsing the pre-rendered vocab-card HTML via `lib/generation/key_terms.py::extract_card_term_html` / `extract_card_definition_html`. Three pure-deterministic checks: `KEYTERM_DEF_CIRCULAR` (the term's own surface form appears as a whole word inside its definition), `KEYTERM_DEF_TOO_LONG` (definition len > `_block_rubric_helpers.resolve_body_char_ceiling(block_type="vocab_card")` == 200 — a glossary entry is a one-line definition), `KEYTERM_DEF_NOT_DISTINCT` (two terms on the page resolved to the SAME normalized definition — a copy-paste/wrong-chunk gloss). All WARNING, `action="regenerate"`; issue list capped at 50. Testing seams: `keyterm_def_quality_enabled` / `body_char_ceiling` input overrides. Rides `ED4ALL_KEYTERM_DEF_QUALITY` — strict no-op (passed=True + a `KEYTERM_DEF_QUALITY_DISABLED` info issue) + byte-stable when unset. Emits one `content_structure_check` decision per validate. Builder `_build_block_input_rewrite`. Wired `key_terms_definition_quality` at `post_rewrite_validation` in both `course_generation` + `textbook_to_course` (warning day-1; `# TODO(calibration)` deferred critical-flip).
-- `lib/validators/mayer_ctml.py::MayerCtmlValidator` — **Mayer CTML** multimedia-learning structural gate (deterministic tier, no embedding deps). Audits text+visual blocks (`multimedia` B04 / `diagram` B06 / `worked_example` B05, or any block whose rendered HTML carries `<figure>`/`<img>`/`<video>`) over a precision-first subset of Mayer's CTML principles reachable from static HTML: SIGNALING (`CTML_NO_SIGNALING` — substantive visual body with no `<figcaption>`/heading/emphasis cue), SPATIAL CONTIGUITY (`CTML_CAPTION_NOT_ADJACENT` — a visual with no caption inside its enclosing `<figure>`), REDUNDANCY (`CTML_REDUNDANT_NARRATION` — transcript/audio-description normalized-equal to the figcaption or each other), SEGMENTING (`CTML_NOT_SEGMENTED` — a media/worked-example body over `resolve_body_char_ceiling` with no `<details>`/`<ol>`/`<ul>`/sub-heading). Dual dict/str path (str-only contiguity/redundancy skipped on the outline-tier dict path). The remaining 8 CTML principles (temporal contiguity / pre-training / modality / personalization / voice / image / multimedia-vs-words / coherence) need audio/timing/page-render context a static-HTML validator cannot see and are documented out-of-scope in the module docstring (mirrors `block_a11y`'s structural-only rationale; never duplicates its reduced-motion check). Reuses `_block_rubric_helpers.resolve_body_char_ceiling`. Rides `ED4ALL_MAYER_CTML` — strict no-op (passed=True + a `MAYER_CTML_DISABLED` info issue) + byte-stable when unset. Emits one `mayer_ctml_check` decision per validate. Wired `mayer_ctml` at `post_rewrite_validation` in both `course_generation` + `textbook_to_course` (warning day-1; `# TODO(calibration)` deferred critical-flip).
-- `lib/validators/bloom_distribution.py::BloomDistributionValidator` — **course-level Bloom-distribution-vs-target-curve** gate (deterministic; no embedding deps). Counts the DECLARED Bloom level of every resolved synthesized objective (`bloom_level`/`bloomLevel`, or the canonical level of the declared `bloom_verb` — a real-field lookup, never free-text imputation) onto the canonical `lib/ontology/bloom.py::BLOOM_LEVELS` axis and compares the observed per-level shares to the checked-in generic curve `schemas/taxonomies/bloom_target_distribution.json` (operator-overridable via `ED4ALL_BLOOM_DISTRIBUTION_TARGET`). Flags `BLOOM_DISTRIBUTION_NO_HIGHER_ORDER` / `BLOOM_DISTRIBUTION_RECALL_HEAVY` / `BLOOM_DISTRIBUTION_TOP_HEAVY` / `BLOOM_DISTRIBUTION_OFF_TARGET` (L1 deviation above `ED4ALL_BLOOM_DISTRIBUTION_TOLERANCE`). Small-N floor `ED4ALL_BLOOM_DISTRIBUTION_MIN_LOS` (default 6) suppresses share verdicts on tiny courses. Block `target_bloom` is a SECONDARY metadata-only signal. Anti-fabrication: counts only declared levels (null skipped); graceful skip when no objectives resolve. Builder `_build_bloom_distribution`. Rides `ED4ALL_BLOOM_DISTRIBUTION` — strict no-op (passed=True + `BLOOM_DISTRIBUTION_DISABLED` info issue) + byte-stable when unset. Emits one `validation_result` decision per validate. Wired `bloom_distribution` at `post_rewrite_validation` in both `course_generation` + `textbook_to_course` (warning day-1; `# TODO(calibration)` deferred critical-flip).
-- `lib/validators/prereq_sequencing.py::PrereqSequencingValidator` — **prerequisite-sequencing** gate (deterministic; no embedding deps). Projects the concept `prerequisite` edges from the archived `concept_graph_semantic.json` onto a TO->TO dependency graph (concept<->TO binding via objective `key_concepts`, `canonical_slug`-normalized; reuses `lib/generation/prereq_sequencer.py::_build_to_edges`) and flags `PREREQ_ORDER_VIOLATION` when a DEPENDENT terminal objective precedes its PREREQUISITE in the emitted order. **W3.5: the audit is now TRANSITIVE** — a dependent TO must not precede ANY of its transitively-reachable prerequisites (`_transitive_ancestors`, DFS-visited cycle-safe), not just its direct-edge prerequisites, catching multi-hop ordering defects. Consumes Lane P's content-derived federation TO→TO `prerequisite` edges (`prerequisite_from_definition_mention`) automatically via `_build_to_edges` (which unions federation + concept-projected edges). Companion to the `lib/generation/prereq_sequencer.py::sequence_terminal_objectives` macro reorder hooked in `_run_content_generation_outline`. Builder `_build_prereq_sequencing` surfaces `{synthesized_objectives_path?, concept_graph_path?}` (unchanged — no routing change for the strengthened audit). Anti-fabrication: only audits real TO edges from real key_concepts + real prereq edges; graceful skip when off / no graph / no edges / no objectives. Rides `ED4ALL_PREREQ_SEQUENCING` — strict no-op (passed=True + `PREREQ_SEQUENCING_DISABLED` info issue) + byte-stable when unset. Emits one `validation_result` decision per validate. Wired `prerequisite_sequencing` at `inter_tier_validation` in `textbook_to_course` (warning day-1; `# TODO(calibration)` deferred critical-flip).
-- `lib/validators/recall_self_check.py::RecallSelfCheckFormatValidator` — **recall/cloze self-check format** gate (deterministic; no embedding deps). Audits `self_check_question` blocks stamped `recall_format` (free_recall/cloze) and enforces the recognition→recall contract: flags `RECALL_SELF_CHECK_OPTIONS_VISIBLE` (a recall-marked block still renders pre-enumerated radio options instead of a produce-the-answer prompt) and `RECALL_SELF_CHECK_ANSWER_INLINE` (the correct answer leaks into the visible body rather than sitting behind a `<details>` reveal). Anti-fabrication: audits only existing recall-stamped blocks; graceful skip otherwise. Builder `_build_block_input_rewrite`. Rides `ED4ALL_RECALL_SELF_CHECK` — strict no-op (passed=True + `RECALL_SELF_CHECK_DISABLED` info issue) + byte-stable when unset. Wired `recall_self_check_format` at `post_rewrite_validation` in both `course_generation` + `textbook_to_course` (warning day-1; `# TODO(calibration)` deferred critical-flip).
-- `lib/validators/misconception_productive_failure.py::MisconceptionProductiveFailureValidator` — **named-misconception + productive-failure** gate (deterministic; no embedding deps). Audits `misconception` blocks for a named faulty-model target (`mc-named-concept`/`data-cf-concept-id`/`conceptId`) and a predict-then-reveal-then-reconcile scaffold (`misconception-predict` + `misconception-reconcile`): flags `MISCONCEPTION_NO_NAMED_CONCEPT` and `MISCONCEPTION_NO_PRODUCTIVE_FAILURE`. Anti-fabrication: pure HTML inspection, invents nothing. Builder `_build_block_input_rewrite`. Rides `ED4ALL_MISCONCEPTION_RICH` — strict no-op (passed=True + `MISCONCEPTION_RICH_DISABLED` info issue) + byte-stable when unset. Wired `misconception_productive_failure` at `post_rewrite_validation` in `textbook_to_course` (warning day-1; `# TODO(calibration)` deferred critical-flip).
-- `lib/validators/difficulty_provenance.py::DifficultyProvenanceValidator` — **assessment difficulty-provenance scaffold** gate (deterministic; no embedding deps). Audits archived chunks carrying difficulty metadata and flags `DIFFICULTY_PROVENANCE_MISSING` (a difficulty value without a `difficulty_provenance` tag recording how it was derived) and `DIFFICULTY_IRT_WITHOUT_RESPONSES` (an honest-scaffold guard — a `difficulty_irt` block claimed without the minimum real item-responses backing it). Anti-fabrication: never imputes a difficulty or a calibration; reads provenance verbatim. Rides `TRAINFORGE_IRT_DIFFICULTY_SCAFFOLD` — strict no-op (passed=True + `DIFFICULTY_PROVENANCE_SCAFFOLD_DISABLED` info issue) + byte-stable when unset. Wired `difficulty_provenance` at `libv2_archival` in `textbook_to_course` (warning day-1; `# TODO(calibration)` deferred critical-flip).
-- `lib/validators/rewrite_html_shape.py::RewriteHtmlShapeValidator` (**IB4.1 extension**) — the existing critical post-rewrite HTML-shape sentinel gains a per-block WCAG 2.2 AA contract sub-check (`_check_block_a11y_contract`): alt text (1.1.1), keyboard-operable custom interaction + name/role/value (2.1.1 / 4.1.2), descriptive link text (2.4.4, reusing `WCAGValidator.GENERIC_LINK_TEXT`), and the dormant B04 captions/transcript stack. Emits a SEPARATE warning `REWRITE_BLOCK_A11Y_CONTRACT` (does NOT promote the critical `REWRITE_BLOCK_SHAPE_INVALID` path); no-op when `ED4ALL_BLOCK_A11Y` is unset (byte-stable). Emits one `rewrite_block_a11y_check` decision per audited block.
-- `lib/validators/synthesized_quiz_distractor.py::SynthesizedQuizDistractorValidator` — **W7.3** synthesized-quiz MCQ distractor-quality gate (deterministic; no embedding/model deps). Closes a real coverage gap: the W10 `assessment_synthesis` phase emits learner-facing QTI quizzes into `<export>/06_assessments/` that are gated for well-formedness + objective grounding, but their DISTRACTORS bypass every `lib/validators/distractor_*` gate (those run on Courseforge `Block` objects at the two-pass rewrite tier, not the Trainforge QTI item shape). Reads the emitted QTI docs (same three-form input contract as `QtiWellFormedValidator` — `inputs["qti_dir"]` / `["qti_paths"]` / `["qti_strings"]`; reuses `_build_qti_well_formed`), parses each via `Trainforge/parsers/qti_parser.py::QTIParser`, and audits every `multiple_choice`/`multiple_response` item's distractors for `SYNTH_QUIZ_DISTRACTOR_TOO_FEW` (< 2 distractors), `SYNTH_QUIZ_DISTRACTOR_EQUALS_KEY` (distractor text equals the correct answer), `SYNTH_QUIZ_DISTRACTOR_DUPLICATE` (identical distractors), `SYNTH_QUIZ_DISTRACTOR_PLACEHOLDER` (a padding template — "not supported by the source" / "option N" / "none of the above" / "n/a"). Normalizes choices (HTML-strip + lowercase + whitespace/punctuation collapse) before comparison; issue list capped at 50. Graceful no-op pass on no input (`SYNTH_QUIZ_NO_INPUT` info — QTI-existence is owned by `qti_well_formed`, never double-fails) or parser-import failure (`SYNTH_QUIZ_PARSER_MISSING` warning). Anti-fabrication: reads only the emitted QTI. Emits one aggregate `validation_result` decision per validate (rationale interpolates items audited + flagged + warning count). ALL issues warning-severity day-1 → `passed` always True. Wired `synthesized_quiz_distractor` at `assessment_synthesis` in both `course_generation` + `textbook_to_course` (warning day-1; `# TODO(calibration)` deferred critical-flip).
-- `lib/validators/terminal_objective_source_grounding.py::TerminalObjectiveSourceGroundingValidator` — **W7.5 (M-TO)** TERMINAL-objective source-grounding gate (embedding tier). No existing gate scores a TO against its SOURCE text — `terminal_objective_coverage` is a structural roll-up and `co_terminal_alignment` scores a CO against its assigned TO STATEMENT (statement↔statement), so a coherent-but-HALLUCINATED TO (the "insurance TO-15" class where a semantic-outlier CO seeds an invented course-wide competency — see `ED4ALL_TO_CLUSTER_GUARDS`) passes every gate. For each TO it gathers the source chunks its cluster cites — the AUTHORITATIVE planning-side `cluster_signals["to_source_chunk_assignments"]` map from `_derive_terminals_bottom_up` when present, else reconstructed from the objectives doc's `terminal_objectives[].source_refs[].chunk_ids` / child-CO `source_chunk_ids` — embeds the TO statement + each chunk text, takes the MAX cosine, and flags `TO_SOURCE_UNGROUNDED` (best supporting chunk below the 0.35 floor, or no supporting chunk resolved) + the aggregate `TO_SOURCE_UNGROUNDED_RATE_HIGH` (> 30% ungrounded). Anti-fabrication: reads only REAL cluster→chunk assignments + REAL chunk text; never invents a chunk/link. Reuses `_build_chapter_objective_coverage_inputs` (surfaces `synthesized_objectives_path` + the staged chunkset path). **Graceful-degrade**: unresolvable objectives → no-op pass; no chunkset → `TO_SOURCE_NO_CHUNKSET` warning; missing `[embedding]` extras → `EMBEDDING_DEPS_MISSING` warning (`passed=True`, unless `TRAINFORGE_REQUIRE_EMBEDDINGS=true` → strict fail-closed). Emits one `validation_result` decision per audited TO (rationale interpolates max_chunk_cosine, threshold, n_supporting_chunks, embedder_strict_mode, failure_code). Rides `ED4ALL_TO_SOURCE_GROUNDING` — strict no-op (`passed=True` + `TO_SOURCE_GROUNDING_DISABLED` info issue) + byte-stable when unset. ALL issues warning-severity → `passed` always True. **Device caveat**: an unavailable `ED4ALL_EMBEDDING_DEVICE` is NOT part of that degrade — `EmbeddingModelUnavailable` propagates and the gate manager returns `passed=False` + critical `EMBEDDING_MODEL_UNAVAILABLE` regardless of `on_error: warn`, so `passed` is *not* unconditionally True; see `docs/architecture/validation-architecture.md` § 4.2. Wired `terminal_objective_source_grounding` at `course_planning` in `textbook_to_course` (warning day-1; `# TODO(calibration)` deferred critical-flip).
+The diagram is intentionally redundant in text: an artifact is normalized by
+an input builder, inspected by a validator, returned as a structured result,
+and interpreted by the gate manager.
 
-### W2.1 gate-runner CUDA-OOM handling (not a validator — gate-manager error path)
+## Catalog at a glance
 
-Not a validator class: `MCP/hardening/validation_gates.py::ValidationGateManager` (the gate RUNNER) now catches a CUDA out-of-memory raised INSIDE any validator (`lib/llm/oom.py::is_cuda_oom` — matches `torch.cuda.OutOfMemoryError` by isinstance when torch is present, else by class-name/`"CUDA out of memory"` message so no torch import is forced) and routes it through `_build_oom_gate_result` rather than the pre-fix silent auto-pass under `behavior_on_error=warn`. It emits a DISTINCT, greppable warning-severity `VALIDATOR_OOM` `GateIssue` + a `validation_result` DecisionCapture. `ED4ALL_VALIDATOR_FAIL_CLOSED_ON_OOM` (default OFF → honour `behavior_on_error`; truthy → fail the gate CLOSED/critical regardless) gates the escalation; parse-with-fallback. Rides existing gates — NO new gate row, no Active-Gates count change.
+| Layer | What it checks | Representative validators | Dependency behavior |
+|---|---|---|---|
+| **Deterministic** | Schemas, references, HTML structure, accessibility metadata, graph shape, coverage, ordering, provenance, and archive integrity | `page_objectives`, `content_type`, `source_refs`, `assessment_objective_alignment`, `libv2_manifest`, `libv2_model`, `course_completeness`, `min_edge_count`, `synthesis_diversity`, `synthesis_leakage`, `rewrite_html_shape`, `chunk_wcag_status`, `udl_coverage`, `key_terms_definition_quality`, `mayer_ctml`, `bloom_distribution`, `bloom_type_range`, `prereq_sequencing`, `recall_self_check`, `misconception_productive_failure`, `difficulty_provenance` | No embedding or language model is required. Missing or malformed required artifacts are reported through each validator’s structured issue codes. |
+| **Embedding** | Semantic similarity and source alignment | `objective_assessment_similarity`, `concept_example_similarity`, `objective_roundtrip_similarity`, `co_terminal_alignment`, `source_coverage`, `terminal_objective_source_grounding` | Missing optional packages produce `EMBEDDING_DEPS_MISSING`. A requested device that cannot initialize produces `EMBEDDING_MODEL_UNAVAILABLE` and fails closed. Per-item encoding failures use `EMBEDDING_ENCODE_ERROR`. |
+| **NLI** | Entailment, contradiction, claim support, and optional semantic grounding | `objective_entailment`, discussion/source grounding integrations, synthesis support checks, and the NLI signal used by Bloom trivote | Missing NLI support produces `NLI_DEPS_MISSING` or a validator-specific abstention. Strict modes fail closed where documented by the owning gate. DeBERTa is the active NLI engine; it is not a trained Bloom classifier. |
+| **Experimental or opt-in** | Additional quality signals that are disabled, warning-only, or explicitly unprovisioned by default | Bloom disagreement/trivote, prerequisite-health extensions, distribution checks, advanced multimedia and instructional-design checks | Disabled modes return their documented no-op or abstention result. Enabling a flag does not create model artifacts or bypass dependency checks. |
+
+This matrix is intentionally compact. The complete, live validator paths are
+declared in `config/workflows.yaml`; [Validation Gates](gates.md) renders that
+wiring into an operator-readable catalog.
+
+## Core deterministic families
+
+### Artifact and reference integrity
+
+- `page_objectives.py` and `assessment_objective_alignment.py` verify that
+  instructional and assessment content resolves to declared objectives.
+- `source_refs.py` verifies source provenance against the staged conversion
+  manifest. Its read path accepts the documented legacy provenance prefix for
+  existing artifacts; new output uses the canonical SemantiK form.
+- `libv2_manifest.py`, `libv2_model.py`, and
+  `libv2/course_completeness.py` verify archive structure, hashes, model-card
+  integrity, weights, graphs, chunks, and index consistency. Common public
+  issue codes include `ARCHIVE_NO_CHUNKS`, `ARCHIVE_TOO_THIN`,
+  `ARCHIVE_NO_INDEX`, `ARCHIVE_INDEX_MISMATCH`, and `ARCHIVE_FAKE_INDEX`.
+
+### Content, accessibility, and instructional structure
+
+- `rewrite_html_shape.py`, `chunk_wcag_status.py`, `udl_coverage.py`, and
+  `mayer_ctml.py` inspect structural accessibility and multimedia-learning
+  signals. User-visible codes include `REWRITE_BLOCK_SHAPE_INVALID`,
+  `REWRITE_BLOCK_A11Y_CONTRACT`, `CHUNK_WCAG_FLAGGED`,
+  `CHUNK_FIGURE_NO_ALT`, `WCAG_FIELDS_ABSENT`,
+  `UDL_SINGLE_REPRESENTATION`, `UDL_NO_AUTONOMY_AFFORDANCE`,
+  `CTML_NO_SIGNALING`, `CTML_CAPTION_NOT_ADJACENT`,
+  `CTML_REDUNDANT_NARRATION`, and `CTML_NOT_SEGMENTED`.
+- `key_terms_definition_quality.py`, `recall_self_check.py`, and
+  `misconception_productive_failure.py` inspect glossary, recall, and
+  misconception scaffolds. Their stable codes include `KEYTERM_DEF_CIRCULAR`,
+  `KEYTERM_DEF_TOO_LONG`, `KEYTERM_DEF_NOT_DISTINCT`,
+  `RECALL_SELF_CHECK_OPTIONS_VISIBLE`, `RECALL_SELF_CHECK_ANSWER_INLINE`,
+  `MISCONCEPTION_NO_NAMED_CONCEPT`, and
+  `MISCONCEPTION_NO_PRODUCTIVE_FAILURE`.
+
+### Graph, synthesis, and training-package quality
+
+- `kg_quality.py` delegates graph scoring to Trainforge’s KG reporter.
+  Optional prerequisite-health output uses `KG_PREREQ_CYCLE_DETECTED` and
+  `KG_PREREQ_DANGLING_BACKGROUND`; it does not change the primary composite.
+- `min_edge_count.py` protects synthesis from structurally empty graphs.
+- `synthesis_diversity.py` and `synthesis_leakage.py` inspect generated pair
+  diversity and contamination without invoking a model.
+- `difficulty_provenance.py` reports `DIFFICULTY_PROVENANCE_MISSING` and
+  `DIFFICULTY_IRT_WITHOUT_RESPONSES` when calibration claims lack evidence.
+
+## Statistical dependency contracts
+
+### Embeddings
+
+Embedding validators distinguish three states:
+
+1. **Packages unavailable:** return `EMBEDDING_DEPS_MISSING`; the configured
+   gate policy decides whether that warning is blocking.
+2. **Packages present, requested device unavailable:** the gate manager emits
+   `EMBEDDING_MODEL_UNAVAILABLE` and fails closed. There is no automatic CPU
+   fallback; select CPU explicitly with `ED4ALL_EMBEDDING_DEVICE=cpu`.
+3. **A specific encode operation fails:** the validator reports
+   `EMBEDDING_ENCODE_ERROR` for the affected comparison according to its
+   documented result contract.
+
+`TRAINFORGE_REQUIRE_EMBEDDINGS` is the strict dependency switch used by the
+statistical tier. It changes failure posture; it does not install packages or
+provision a device.
+
+### NLI
+
+NLI validators use `lib/classifiers/nli_classifier.py`. The active model is
+DeBERTa-based entailment infrastructure shared across groundedness and support
+checks. Missing support is surfaced as `NLI_DEPS_MISSING` or a structured
+abstention; it is never evidence that a claim passed.
 
 ## Bloom classifier status
 
-No Bloom classifier is currently reliable and provisioned. The `cip29` model
-was not reliable enough for this role, and the legacy ensemble dispatch is
-unimplemented and always abstains. `ED4ALL_BLOOM_TRIVOTE` and
-`TRAINFORGE_REQUIRE_BERT_ENSEMBLE` remain configuration identifiers, but they
-do not turn the absent legacy classifier into an operational vote. The
-`ED4ALL_BLOOM_TRIVOTE_HEADS` branch preserves the staged MultiBERT/Ed4All-head
-training configuration over synthesized corpus labels. It is unproven and no
-weights are provisioned, so it cannot supply a current verdict. The gate
-therefore remains warning-level and reports abstention under current defaults.
+> **Default status: no trained or provisioned Bloom classifier.**
+>
+> The default compatibility path loads no reliable classifier members and
+> returns structured abstention. The Bloom taxonomy, verb ontology, declared
+> levels, distribution checks, and type-range checks remain active
+> deterministic features; classifier abstention does not disable them.
 
-DeBERTa NLI is separate and active as an entailment heuristic. It supplies
-entailment and grounding validators through `NliClassifier`; it must not be
-described as a working Bloom ensemble member or evidence that Bloom
-classification is enabled.
+| Mode | Signals | Current behavior |
+|---|---|---|
+| Default | Legacy classifier compatibility surface | No trained/provisioned member is available. The disagreement validator abstains rather than inventing a vote. |
+| `ED4ALL_BLOOM_TRIVOTE=on` | Artifact’s asserted level + canonical verb detector + active DeBERTa NLI heuristic | This is an interpretable heuristic vote, not a trained Bloom classifier. Missing signals abstain; insufficient participation emits `BLOOM_TRIVOTE_INSUFFICIENT_VOTERS`. |
+| `ED4ALL_BLOOM_TRIVOTE_HEADS=on` | Replaces the trivote NLI heuristic only when a complete local head artifact loads | A fresh checkout ships no heads. The loader accepts only explicitly supplied local artifacts. When no complete artifact loads, the head backend abstains and trivote continues with its zero-shot NLI signal. |
+| `TRAINFORGE_REQUIRE_BERT_ENSEMBLE=on` | Strict availability policy | Fails closed with `BERT_ENSEMBLE_DEPS_MISSING` when the required classifier signal is unavailable. The flag provisions nothing and downloads nothing. |
 
-## Optional pyproject extras
+Disagreement and dispersion continue to use the public compatibility codes in
+the `BERT_ENSEMBLE_*` family. The narrow import shim at
+`lib/validators/bloom_classifier_disagreement.py` remains for older imports;
+the canonical implementation is
+`lib/validators/bloom/classifier_disagreement.py`.
 
-`pyproject.toml::[project.optional-dependencies]`:
+## Gate-manager error semantics
 
-- `embedding` — `sentence-transformers>=2.5,<4`, `transformers>=4.49,<4.50`, `torch>=2`, `numpy>=1.24`. Required for the eight statistical-tier validators above (`objective_assessment_similarity`, `concept_example_similarity`, `objective_roundtrip_similarity`, `co_terminal_alignment`, `source_coverage`, `rewrite_source_grounding`, `terminal_objective_source_grounding`, `distractor_misconception_alignment`). `pip install -e '.[embedding]'`. Kept out of the default install so CPU-only dev boxes do not pull in torch + transformers merely to run the orchestrator. Installing this extra does **not** provision or enable Bloom classification. Missing embedding extras degrade gracefully (warning-severity GateIssue, `passed=True`) unless `TRAINFORGE_REQUIRE_EMBEDDINGS=true` flips to fail-closed. A requested-but-absent **device** is a separate, always-fatal contract (`EmbeddingModelUnavailable`, `ED4ALL_EMBEDDING_DEVICE` — default `cuda`, no CUDA→CPU fallback): see `docs/architecture/validation-architecture.md` § 4.2. Pin `ED4ALL_EMBEDDING_DEVICE=cpu` on GPU-less hosts.
+`MCP/hardening/validation_gates.py::ValidationGateManager` loads only allowed
+validator modules, forwards configured thresholds, injects decision capture,
+and converts validator output into a common result shape.
 
-## Canonical LO helper
+- Ordinary exceptions become `VALIDATOR_ERROR`; the gate’s configured
+  `behavior.on_error` decides warn versus fail-closed behavior.
+- CUDA out-of-memory failures become the distinct `VALIDATOR_OOM` issue and a
+  decision-capture event. By default, pass/block still follows
+  `behavior.on_error`. `ED4ALL_VALIDATOR_FAIL_CLOSED_ON_OOM=on` always blocks.
+- Embedding device initialization failures become
+  `EMBEDDING_MODEL_UNAVAILABLE` and always fail closed, even for a gate whose
+  ordinary error policy is `warn`.
+- Missing embedding packages remain distinguishable as
+  `EMBEDDING_DEPS_MISSING`; strict dependency policy can promote them to a
+  blocking result.
 
-`lib/ontology/learning_objectives.py` owns the single source of truth for LO identity (`mint_lo_id`, `validate_lo_id`, `hierarchy_from_id`, `split_terminal_chapter`). Pattern `^[A-Z]{2,}-\\d{2,}$` mirrors `schemas/knowledge/courseforge_jsonld_v1.schema.json`. `schemas/knowledge/course.schema.json` is the canonical shape for Trainforge-emitted `course.json` consumed by LibV2.
+These rules prevent infrastructure failures from masquerading as validator
+success while preserving each gate’s declared policy.
+
+## Canonical ontology helpers
+
+Validators should reuse these authorities instead of maintaining local copies:
+
+- `lib/ontology/bloom.py` — Bloom levels, verbs, and cognitive domains.
+- `lib/ontology/slugs.py::canonical_slug` — canonical identifier formatting.
+- `lib/ontology/teaching_roles.py` — component/purpose to teaching-role map.
+- `lib/ontology/taxonomy.py::load_taxonomy` — checked-in taxonomy loader.
+- `lib/ontology/misconception_id.py::canonical_mc_id` — stable misconception
+  identity across graphs and training pairs.
+
+## Finding the exact policy
+
+Use this page to identify the validator family, then follow the source of truth:
+
+- **Where and when does it run?** See [Validation Gates](gates.md).
+- **How are inputs, results, retries, and decisions handled?** See
+  [Validation Architecture](../architecture/validation-architecture.md).
+- **What threshold or action applies?** Read the gate entry in
+  `config/workflows.yaml`; do not infer it from a validator default.
