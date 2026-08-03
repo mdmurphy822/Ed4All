@@ -63,7 +63,7 @@ EDGE_KIND_INFERRED: Final[str] = "inferred"
 #             pedagogical-ordering inference, co-occurrence weight,
 #             LLM proposal)
 _RULE_KIND_REGISTRY: Final[Dict[str, str]] = {
-    # ----- asserted: rule materializes an explicit upstream pointer
+    # Asserted rules materialize explicit upstream pointers.
     "assesses_from_question_lo": EDGE_KIND_ASSERTED,
     "derived_from_lo_ref": EDGE_KIND_ASSERTED,
     "misconception_of_from_misconception_ref": EDGE_KIND_ASSERTED,
@@ -75,19 +75,12 @@ _RULE_KIND_REGISTRY: Final[Dict[str, str]] = {
     "corrected_by_from_chunk_misconception": EDGE_KIND_ASSERTED,
     "detected_by_from_distractor_misconception_id": EDGE_KIND_ASSERTED,
     "interferes_with_outcome_from_misconception_lo": EDGE_KIND_ASSERTED,
-    # ----- inferred: heuristic / statistical / pattern-match / LLM
+    # Inferred rules derive relationships from content or structural signals.
     "is_a_from_key_terms": EDGE_KIND_INFERRED,
     "exemplifies_from_example_chunks": EDGE_KIND_INFERRED,
     "prerequisite_from_lo_order": EDGE_KIND_INFERRED,
-    # Content-dependency (definition-in-TO_a assumed-in-TO_b) TO->TO
-    # prerequisite edges. A deterministic no-LLM CONTENT signal (concept
-    # first-mention/definition anchor), NOT an explicit upstream pointer, so
-    # it classifies as inferred alongside prerequisite_from_lo_order. Producer:
-    # lib/generation/prerequisite_from_definition_mention.py (gated by
-    # TRAINFORGE_PREREQ_DEFINITION_MENTION). NB: this rule module lives under
-    # lib/generation/, not Trainforge/rag/inference_rules/, so the
-    # inference_rules-discovery test does not auto-cover it; the entry must be
-    # declared here by hand.
+    # Definition-to-mention dependencies infer prerequisite direction from
+    # content anchors rather than materializing an explicit upstream pointer.
     "prerequisite_from_definition_mention": EDGE_KIND_INFERRED,
     "related_from_cooccurrence": EDGE_KIND_INFERRED,
     "llm_typed_edge": EDGE_KIND_INFERRED,
@@ -105,8 +98,7 @@ def edge_kind_for_rule(rule_name: str) -> Optional[str]:
         ``"asserted"`` when the rule materializes an explicit upstream
         pointer; ``"inferred"`` when the rule is heuristic / statistical
         / LLM-based; ``None`` when the rule is not in the registry
-        (legacy / future-rule path — caller decides on graceful
-        degradation vs fail-closed).
+        (the caller owns the policy for an unregistered rule).
     """
     if not isinstance(rule_name, str):
         return None
@@ -119,7 +111,7 @@ def known_rule_names() -> frozenset[str]:
     Exposed so test suites can assert coverage against the set of
     ``RULE_NAME`` values exported by ``Trainforge/rag/inference_rules/``
     modules; any new rule landing without a registry entry trips the
-    classification unit test before the silent-default behavior ships.
+    classification unit test.
     """
     return frozenset(_RULE_KIND_REGISTRY.keys())
 

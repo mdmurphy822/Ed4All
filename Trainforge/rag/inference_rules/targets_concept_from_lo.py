@@ -1,7 +1,7 @@
-"""Rule: derive ``targets-concept`` edges from LO targetedConcepts[] (Wave 66).
+"""Rule: derive ``targets-concept`` edges from LO ``targetedConcepts[]``.
 
-Wave 57 added the ``targetedConcepts[]`` field on Courseforge-emitted
-LearningObjectives: a Bloom-qualified LO→concept edge list carrying
+Courseforge-emitted learning objectives can carry a Bloom-qualified
+LO-to-concept edge list in ``targetedConcepts[]``, with
 ``{concept, bloomLevel}`` per entry. This rule materializes those
 entries as first-class typed edges in the concept graph, one edge per
 ``(lo_id, concept_slug)`` pair, with the Bloom level recorded on the
@@ -28,8 +28,8 @@ Each entry may have:
 Missing fields silently skip: LOs without ``targetedConcepts`` produce
 no edges; entries missing ``concept`` or ``bloomLevel`` are dropped with
 a logged warning. This matches the defensive pattern of the other
-inference rules so a legacy corpus without the Wave 57 emit produces
-an empty edge list rather than a crash.
+inference rules so inputs without this optional field produce an empty
+edge list rather than a crash.
 
 Confidence is ``1.0`` — the edge is explicit in the emit, not inferred.
 
@@ -37,7 +37,7 @@ Deterministic: output sorted by (source, target); duplicates within
 the same LO's targetedConcepts (same concept slug appearing twice) are
 collapsed to a single edge. When the same (lo_id, concept_id) appears
 across multiple LOs, the first wins — matching the dedup pattern of
-the Wave 5.2 ``derived_from_lo_ref`` rule.
+the ``derived_from_lo_ref`` rule's deterministic deduplication contract.
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ RULE_NAME = "targets_concept_from_lo"
 RULE_VERSION = 1
 EDGE_TYPE = "targets-concept"
 
-# Wave 11 convention: opt-in provenance-source flag. When true, copy
+# When source provenance is enabled, copy
 # page-level sourceReferences[] from the emitting LO onto the evidence.
 SOURCE_PROVENANCE = os.getenv("TRAINFORGE_SOURCE_PROVENANCE", "").lower() == "true"
 
@@ -87,7 +87,7 @@ def infer(
         concept_graph: Unused; endpoints reference external namespaces.
         **kwargs: Expects ``objectives_metadata`` — a list of LO dicts
             each potentially carrying a ``targetedConcepts[]`` field.
-            Missing ⇒ no edges (legacy corpus without Wave 57 emit).
+            Missing input produces no edges.
 
     Returns:
         Deterministically-ordered list of edge dicts. Empty when no

@@ -1,11 +1,9 @@
 """Rule: derive ``interferes-with-outcome`` edges from Misconception entities
 that declare an ``lo_id``.
 
-GPT Feedback (12 May 2026) item 4: ``misconception.lo_id`` is already
-an optional scalar field on the Misconception schema, but no rule
-materializes it as a typed edge. When the upstream pipeline (or a
-Wave-future author-side surface) populates ``lo_id``, this rule emits
-the explicit typed edge::
+``misconception.lo_id`` is an optional explicit pointer in the Misconception
+schema. When an authoring or enrichment surface populates it, this rule emits
+the corresponding typed edge::
 
     misconception_id --interferes-with-outcome--> lo_id
 
@@ -17,13 +15,8 @@ convention). No new node types are added to the concept-graph schema.
 
 Confidence is ``1.0`` — the reference is explicit.
 
-**Signal-availability caveat.** Misconceptions with populated
-``lo_id`` are not yet wired into ``_build_misconceptions_for_graph``;
-the field travels through ``misconceptions=[...]`` kwarg. When absent
-(current production state — chunks emit Bloom + concept routing but
-not LO routing), the rule emits ``[]`` gracefully. Mirrors the
-"signal-availability caveat" pattern in
-``misconception_of_from_misconception_ref.py``.
+The field travels through the ``misconceptions=[...]`` keyword argument.
+Missing or unpopulated input produces an empty edge list.
 
 Deterministic: output sorted by (source, target); duplicates on the
 same (misconception_id, lo_id) pair are collapsed.

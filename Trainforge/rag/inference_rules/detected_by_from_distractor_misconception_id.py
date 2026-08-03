@@ -1,8 +1,8 @@
 """Rule: derive ``detected-by-question`` edges from questions carrying a
 ``misconception_id`` pointer.
 
-GPT Feedback (12 May 2026) item 4: when an assessment question /
-distractor pair encodes an explicit misconception (the rejected branch
+When an assessment question or distractor pair encodes an explicit
+misconception (the rejected branch
 of a ``preference_pair`` shape, or the distractor of a generated
 multiple-choice question), the question DETECTS that misconception.
 This rule materializes that implicit pointer as an explicit typed
@@ -20,17 +20,12 @@ are added to the concept-graph schema.
 
 Confidence is ``1.0`` — the misconception reference is explicit.
 
-**Signal-availability caveat.** Questions are not currently threaded
-into ``build_semantic_graph``'s main call chain with the
-``misconception_id`` field populated. Both
+Questions reach this rule through the optional ``questions`` input. Both
 ``preference_pair.schema.json::misconception_id`` and the
 question-factory distractor surface carry the pointer, but
 ``_build_questions_for_graph`` (the call-site that constructs the
-``questions=`` kwarg) does NOT yet propagate it. When the upstream
-pipeline starts threading the field, this rule fires automatically;
-until then it emits ``[]`` gracefully — the same shape as the
-``misconception_of_from_misconception_ref`` rule prior to Wave-99 LO
-backfill.
+``questions=`` kwarg) must propagate it for the rule to emit edges. Missing
+or unpopulated input produces an empty edge list.
 
 Deterministic: output sorted by (source, target); duplicates on the
 same (misconception_id, question_id) pair are collapsed.

@@ -1,7 +1,7 @@
 """Rule: derive ``misconception-of`` edges from Misconception entities.
 
-Worker R (Wave 4) added a first-class Misconception schema with
-optional ``concept_id`` + ``lo_id`` fields:
+The first-class Misconception schema defines optional ``concept_id`` and
+``lo_id`` fields:
 ``schemas/knowledge/misconception.schema.json``. When upstream data
 populates ``misconception.concept_id``, this rule emits the explicit
 typed edge:
@@ -16,10 +16,9 @@ Confidence is ``1.0`` — the reference is explicit.
 
 **Signal-availability caveat.** Misconceptions are not currently threaded
 into ``build_semantic_graph``'s main call chain — the field travels
-through ``**kwargs`` as ``misconceptions=[...]``. When absent (current
-production state), the rule emits ``[]`` gracefully. A future wave will
-wire upstream pipelines to populate ``concept_id`` on misconceptions and
-thread them through the orchestrator.
+through ``**kwargs`` as ``misconceptions=[...]``. When absent, the rule emits
+``[]`` gracefully. Upstream callers must populate ``concept_id`` and thread
+the entities through the orchestrator for the rule to emit edges.
 
 Deterministic: output sorted by (source, target); duplicates on the
 same (misconception_id, concept_id) pair are collapsed.

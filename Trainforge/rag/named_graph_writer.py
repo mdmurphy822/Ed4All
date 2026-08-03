@@ -1,11 +1,10 @@
-"""Phase 3 of plans/rdf-shacl-enrichment-2026-04-26.md — TriG / named-graph
-writer for typed-edge inference.
+"""TriG named-graph writer for typed-edge inference.
 
 Builds an ``rdflib.Dataset`` where each inference rule's derived edges live
 in their own named graph IRI, scoped by ``(run_id, rule_name)``. Per-graph
 metadata (rule_version, generated_at, input_chunk_count, edge_count) is
 attached to the graph IRI in the dataset's *default* graph so SPARQL queries
-can detect regressions like Wave 82's zero-edge bug — a named graph with
+can detect a rule that unexpectedly stops emitting edges: a named graph with
 ``ed4all:edgeCount 0`` and an unchanged ``ed4all:ruleVersionApplied`` is an
 obvious diff.
 
@@ -14,7 +13,7 @@ module is never invoked from the orchestrator's emit path; ``EMIT_TRIG``
 is captured at import time. Tests that need to toggle should monkeypatch
 ``EMIT_TRIG`` directly (or ``importlib.reload`` this module).
 
-IRI scheme (sub-plan § 2): ``https://ed4all.io/run/<run_id>/rule/<rule_name>``.
+Graph IRIs use ``https://ed4all.io/run/<run_id>/rule/<rule_name>``.
 
    * Re-run-stable: same ``(run_id, rule_name)`` -> same graph IRI.
    * Distinct ``run_id`` -> disjoint graph IRIs, so two runs of the same
@@ -22,20 +21,19 @@ IRI scheme (sub-plan § 2): ``https://ed4all.io/run/<run_id>/rule/<rule_name>``.
    * Mirrors the project's other ``https://ed4all.io/`` IRI surfaces
      (``/concept/<slug>``, ``/lo/<id>``).
 
-Metadata predicates (sub-plan § 3): reuse ``ed4all:rule``,
+Metadata reuses ``ed4all:rule``,
 ``ed4all:ruleVersionApplied``, ``dcterms:created``, ``prov:wasGeneratedBy``
 from the existing concept_graph_semantic_v1.jsonld @context. Mints two
-new: ``ed4all:edgeCount`` and ``ed4all:inputChunkCount`` (flagged
-``_phase2_followup`` until folded into the @context). Graph IRI typed
+new: ``ed4all:edgeCount`` and ``ed4all:inputChunkCount``. Graph IRI typed
 ``ed4all:RuleProvenanceGraph a prov:Bundle``.
 
-Per-edge serialization inside each named graph (sub-plan § 4): dual emit.
+Each named graph uses dual edge serialization.
 Bare ``<source> <pred> <target>`` triple where ``<pred>`` is resolved via
 ``lib.ontology.edge_predicates.SLUG_TO_IRI`` (the asserted form a
 reasoner consumes), plus a reified ``ed4all:TypedEdge`` blank node
 carrying the per-edge provenance dict (the surface SPARQL queries can
-join on rule, evidence, confidence). Mirrors Worker A's
-concept_graph_semantic_v1.jsonld convention exactly.
+join on rule, evidence, confidence). This mirrors the
+``concept_graph_semantic_v1.jsonld`` convention.
 
 Design rationale: named graphs preserve rule-level provenance, support
 cross-run comparison, and keep inferred statements queryable without mixing
@@ -55,7 +53,7 @@ logger_name = __name__
 
 # Captured at module-import time; tests monkeypatch this attribute directly.
 EMIT_TRIG: bool = os.getenv("TRAINFORGE_EMIT_TRIG", "").lower() in {"true", "1"}
-"""Phase 3 opt-in flag. Default off keeps existing JSON consumers
+"""Opt-in TriG flag. Default off keeps existing JSON consumers
 byte-identical. When on, the orchestrator routes through
 ``build_dataset`` and emits a sibling ``concept_graph_semantic.trig``."""
 
@@ -66,7 +64,7 @@ RULE_GRAPH_BASE: str = "https://ed4all.io/run/"
 """Base for per-rule graph IRIs. Full scheme:
 ``{RULE_GRAPH_BASE}<run_id>/rule/<rule_name>``."""
 
-# Namespaces — must match concept_graph_semantic_v1.jsonld (Phase 1.1).
+# Namespaces must match ``concept_graph_semantic_v1.jsonld``.
 ED4ALL_NS: str = "https://ed4all.io/vocab/"
 ED4ALL_CONCEPT_BASE: str = "https://ed4all.io/concept/"
 PROV_NS: str = "http://www.w3.org/ns/prov#"
@@ -81,7 +79,7 @@ class RuleOutput:
     """One inference rule's emit summary, fed into ``build_dataset``.
 
     The orchestrator records per-rule output even when the rule produced
-    zero edges — that's the Wave 82 self-detection mechanism. ``edges``
+    zero edges so silent producer regressions remain observable. ``edges``
     carries the post-stamp pre-precedence edge dicts (each already
     decorated with ``run_id`` / ``created_at`` by the orchestrator's
     ``_stamp_provenance``).
@@ -98,7 +96,7 @@ _SLUG_RE = re.compile(r"[^A-Za-z0-9._-]+")
 def _slug_for_run_id(run_id: Optional[str], generated_at: str) -> str:
     """Return a URL-path-safe run identifier.
 
-    When ``run_id`` is missing (legacy callers, tests without a
+    When ``run_id`` is missing (callers without a
     ``DecisionCapture``), derive a deterministic local id from
     ``generated_at`` so the IRI scheme is always satisfiable. Tests pin
     ``run_id="test"`` to lock golden output.
@@ -253,7 +251,7 @@ def build_dataset(
     Deterministic: rule_outputs are processed in input order; rdflib
     blank nodes use the default skolem strategy. Tests pinning a fixed
     ``run_id`` + ``generated_at`` get a stable triple set modulo
-    blank-node identifier noise (sub-plan § 8 open question 1).
+    blank-node identifier noise.
 
     Raises ``ImportError`` if rdflib isn't available — callers should
     not invoke this when ``EMIT_TRIG`` is off.
@@ -280,8 +278,8 @@ def build_dataset(
         graph_iri_str = mint_rule_graph_iri(run_id, output.rule_name, generated_at)
         graph_iri = URIRef(graph_iri_str)
 
-        # Register the named graph even when edge_count == 0 — that's the
-        # Wave 82 self-detection mechanism. rdflib creates the context on
+        # Register the named graph even when edge_count == 0 so a silent
+        # producer regression remains observable. rdflib creates the context on
         # first .graph() call.
         named_graph = ds.graph(graph_iri)
 
@@ -289,7 +287,8 @@ def build_dataset(
         for edge in output.edges:
             edge_count += 1 if _add_edge_to_graph(rdflib, named_graph, edge) else 0
 
-        # Per-graph metadata in the *default* graph (sub-plan § 3).
+        # Store per-graph metadata in the default graph so graph IRIs remain
+        # directly queryable as provenance resources.
         default_graph.add(
             (graph_iri, URIRef(RDF_NS + "type"), URIRef(ED4ALL_NS + "RuleProvenanceGraph"))
         )

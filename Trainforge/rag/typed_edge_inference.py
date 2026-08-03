@@ -79,8 +79,8 @@ ARTIFACT_KIND = "concept_semantic"
 
 # Opt-in course-scoped concept IDs.
 # When TRAINFORGE_SCOPE_CONCEPT_IDS=true, every concept-node ID is emitted as
-# ``f"{course_id}:{slug}"`` instead of the flat slug. Default off → legacy
-# behaviour. The flag is captured at import time; tests that need to toggle
+# ``f"{course_id}:{slug}"`` instead of the flat slug. The default preserves
+# flat identifiers. The flag is captured at import time; tests that need to toggle
 # behaviour should monkeypatch ``SCOPE_CONCEPT_IDS`` directly (or
 # ``importlib.reload`` this module).
 SCOPE_CONCEPT_IDS = os.getenv("TRAINFORGE_SCOPE_CONCEPT_IDS", "").lower() == "true"
@@ -119,10 +119,8 @@ _PRECEDENCE: Dict[str, int] = {
     # cf:Concept instances. ``broader-than`` is what
     # ``is_a_from_key_terms`` emits when both endpoints are concept
     # nodes (the canonical case under the W3C-canonical SKOS pattern);
-    # ``narrower-than`` is reserved for the inverse-direction
-    # emit-side and held at the same tier so a future emitter that
-    # produces it doesn't get silently dropped against a
-    # ``related-to`` collision.
+    # ``narrower-than`` represents the inverse direction and shares the
+    # same tier so it is not dropped against a ``related-to`` collision.
     "broader-than": 3,
     "narrower-than": 3,
     "assesses": 2,
@@ -253,10 +251,9 @@ def _build_nodes(
     When ``run_id`` / ``created_at`` are provided, they are stamped onto
     each node so the semantic graph is time- and run-addressable.
     """
-    # Defensive backfill — an upstream concept_graph built before classifier
-    # wiring landed carries no ``class``, so classify on the fly and keep the
-    # field present on every node. Imported lazily so the rule library stays
-    # decoupled from lib/ontology at module import time.
+    # Classify nodes that do not carry an explicit class so semantic-graph
+    # consumers receive a consistent node contract. Import lazily to keep the
+    # rule library decoupled from lib/ontology at module import time.
     from lib.ontology.concept_classifier import classify_concept
 
     nodes: List[Dict[str, Any]] = []
@@ -276,8 +273,7 @@ def _build_nodes(
             node["occurrences"] = list(occurrences)
         # Carry ``class`` through so retrieval can filter pedagogical /
         # assessment / low-signal nodes uniformly across both graph
-        # artifacts. Backfill via the classifier when the source node
-        # lacks the field.
+        # artifacts. Classify the node when the source omits the field.
         klass = n.get("class")
         if not klass:
             # Strip course_id prefix when scoping is on so the classifier
@@ -949,14 +945,9 @@ def _build_semantic_graph_internal(
     else:
         resolved = rule_resolved
 
-    # Materialize a typed node for every resolved-edge endpoint that the
-    # co-occurrence node set didn't cover (chunk / question / objective /
-    # misconception IDs emitted by the pedagogical rules). This satisfies the
-    # LibV2 ``packet_integrity`` ``edge_endpoint_typing`` contract — the
-    # ``assesses`` source resolves to ``Chunk`` and its target to
-    # ``Outcome``/``ComponentObjective`` — instead of leaving the endpoints
-    # unclassified. Additive: when every endpoint already resolves (the rich
-    # concept-graph case) no nodes are added.
+    # Materialize typed nodes for resolved-edge endpoints absent from the
+    # co-occurrence graph. This satisfies LibV2's endpoint-typing contract;
+    # no nodes are added when every endpoint already resolves.
     nodes = _materialize_endpoint_nodes(
         nodes, resolved, effective_run_id, created_at
     )
@@ -968,8 +959,7 @@ def _build_semantic_graph_internal(
     course_id_for_hash = course.get("course_id") if isinstance(course, dict) else None
     resolved_course_package_version = course_package_version
     if resolved_course_package_version is None and isinstance(course, dict):
-        # Best-effort pickup from course.json. Courseforge doesn't emit
-        # a package_version today; the field stays null when absent.
+        # Use the course package version when supplied; otherwise retain null.
         cv = course.get("package_version")
         if isinstance(cv, str) and cv:
             resolved_course_package_version = cv

@@ -1,8 +1,7 @@
 """Rule: derive ``corrected-by-chunk`` edges from chunks' misconception lists.
 
-GPT Feedback (12 May 2026) item 4 promotes Misconception to a
-first-class learning target by materialising three implicit pointers
-that already live in the corpus as typed edges. This rule materialises
+Misconceptions are first-class learning targets whose implicit corpus
+pointers are materialized as typed edges. This rule materializes
 the chunk-corrects-misconception relation: every chunk that emits a
 misconception in ``chunk.misconceptions[]`` ALSO supplies a non-empty
 ``correction`` (required by ``chunk_v4.schema.json::Misconception``).
@@ -18,13 +17,9 @@ concept-graph schema.
 Confidence is ``1.0`` — the chunk emitting the misconception is
 explicit in the upstream artifact.
 
-**Signal availability.** Unlike the
-``misconception_of_from_misconception_ref`` rule (which depends on
-``misconception.concept_id`` being populated upstream — currently 0%
-in the RDF/SHACL calibration corpus per Wave 82's audit), this rule fires
-on every chunk that carries ``misconceptions[]``. Production
-corpora today emit those reliably, so this rule starts producing
-edges immediately on the next graph rebuild.
+**Signal availability.** This rule fires on every chunk that carries a
+complete ``misconceptions[]`` entry; unlike concept-linking rules, it does not
+depend on an optional ``misconception.concept_id`` pointer.
 
 Deterministic: output sorted by (source, target); duplicates on the
 same (misconception_id, chunk_id) pair are collapsed.
@@ -79,16 +74,15 @@ def infer(
                 # Non-Courseforge string-only misconceptions skip — there
                 # is no correction text to anchor the edge on.
                 continue
-            # Wave 74 alias: subagents may emit ``statement`` instead of
-            # ``misconception``. Mirror the chunk-schema anyOf.
+            # Accept both schema-approved statement keys.
             statement = (
                 entry.get("misconception") or entry.get("statement") or ""
             ).strip()
             correction = (entry.get("correction") or "").strip()
             if not statement or not correction:
                 continue
-            # Wave 72 lock-step: bloom_level participates in the seed
-            # whenever populated, matching ``_build_misconceptions_for_graph``.
+            # Include ``bloom_level`` in the identity seed when populated to
+            # match ``_build_misconceptions_for_graph``.
             bloom_level = (entry.get("bloom_level") or "").strip().lower()
             mc_id = canonical_mc_id(statement, correction, bloom_level)
             key = (mc_id, chunk_id)

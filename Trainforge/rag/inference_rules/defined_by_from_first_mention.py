@@ -1,7 +1,6 @@
-"""Rule: derive ``defined-by`` edges from Worker S's ``occurrences[]``.
+"""Rule: derive ``defined-by`` edges from concept ``occurrences[]``.
 
-Worker S (Wave 5.1, REC-LNK-01) added ``occurrences: List[str]`` to
-every concept-graph node — the set of chunk IDs that reference the
+Each concept-graph node may carry ``occurrences: List[str]``: chunk IDs that reference the
 concept, sorted ASC at emit time. This rule materializes the canonical
 "first mention" as a typed edge:
 
@@ -11,17 +10,17 @@ where ``chunk_id`` is ``occurrences[0]`` (first entry by ASC chunk-ID
 sort).
 
 Federation-by-convention: ``source`` is a concept node ID (flat slug or
-``{course_id}:{slug}`` under Worker O's scoped-ID mode); ``target`` is a
+``{course_id}:{slug}`` when scoped IDs are enabled); ``target`` is a
 raw chunk ID. No new node types are added.
 
 Confidence is ``0.7`` — first-mention-by-chunk-ID-sort-order isn't
 necessarily the pedagogical first-definition, but it's a stable,
-reasonable proxy until a dedicated "definition detector" lands.
+reasonable proxy for a definition anchor.
 
-Stability caveat (inherited from Worker S): under position-based chunk
+Stability caveat: under position-based chunk
 IDs (default), re-chunking invalidates ``occurrences[]`` entries and
 therefore this rule's output. Under ``TRAINFORGE_CONTENT_HASH_IDS=true``
-(Worker N's Wave 4 flag), occurrences survive re-chunks and this rule's
+occurrences survive re-chunks and this rule's
 edges are stable.
 
 Deterministic: output sorted by (source, target); concepts without
@@ -34,12 +33,11 @@ import os
 from typing import Any, Dict, List
 
 RULE_NAME = "defined_by_from_first_mention"
-# Wave 11 (Worker cc): bumped from 1 -> 2 to expose the optional
-# source_references[] emit shape on DefinedByEvidence.
+# This version includes optional ``source_references[]`` evidence.
 RULE_VERSION = 2
 EDGE_TYPE = "defined-by"
 
-# Wave 11: opt-in flag gates the evidence-arm source_references[] emission.
+# This opt-in flag gates ``source_references[]`` evidence emission.
 SOURCE_PROVENANCE = os.getenv("TRAINFORGE_SOURCE_PROVENANCE", "").lower() == "true"
 
 
@@ -64,7 +62,7 @@ def _lookup_source_references(
 ) -> List[Dict[str, Any]]:
     """Return deep-copied source_references[] for the given chunk_id.
 
-    Returns [] when the chunk isn't in the index (legacy) or has no refs.
+    Returns [] when the chunk isn't in the index or has no refs.
     """
     chunk = chunk_index.get(chunk_id)
     if not isinstance(chunk, dict):
@@ -100,7 +98,7 @@ def infer(
 
     Args:
         chunks: Unused; signal source is ``concept_graph.nodes[].occurrences``
-            (populated by Worker S's Wave 5.1 change to ``_build_tag_graph``).
+            (populated by ``_build_tag_graph``).
             Kept for interface parity.
         course: Unused; interface parity.
         concept_graph: The co-occurrence graph dict. Nodes may carry
@@ -111,10 +109,8 @@ def infer(
     """
     del course  # unused; interface parity
 
-    # Wave 11: build chunk lookup so the flag-on path can find source refs
-    # for each first-mention chunk. Pre-Wave-11, chunks were deleted here —
-    # now retained for the lookup. No behavioral change when the flag is off
-    # (the index is simply not consulted).
+    # Build the lookup only when source provenance is enabled; the default
+    # path does not consult chunk contents.
     chunk_index = _build_chunk_index(chunks) if SOURCE_PROVENANCE else {}
 
     edges: List[Dict[str, Any]] = []
@@ -125,16 +121,14 @@ def infer(
         occurrences = node.get("occurrences") or []
         if not occurrences:
             continue
-        # Worker S sorts occurrences ASC at emit time; defensive re-sort
-        # here in case an upstream fixture passes an unsorted list.
+        # Re-sort defensively because callers may supply unsorted occurrences.
         first_chunk = sorted(occurrences)[0]
         evidence: Dict[str, Any] = {
             "chunk_id": first_chunk,
             "concept_slug": _concept_slug(node_id),
             "first_mention_position": 0,
         }
-        # Wave 11: flag-gated source_references emit. Looks up the first-
-        # mention chunk in the index and copies its source_references[].
+        # Copy provenance from the first-mention chunk when enabled.
         if SOURCE_PROVENANCE:
             refs = _lookup_source_references(first_chunk, chunk_index)
             if refs:

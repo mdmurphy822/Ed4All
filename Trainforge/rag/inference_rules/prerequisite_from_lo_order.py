@@ -13,7 +13,7 @@ sorted by (source, target) before return. No randomness, no LLM.
 
 Quadratic-closure mitigation (opt-in, ``TRAINFORGE_PREREQ_LO_ADJACENT_ONLY``)
 ----------------------------------------------------------------------------
-Legacy behaviour emits an edge for EVERY co-occurring concept pair whose
+The default behaviour emits an edge for every co-occurring concept pair whose
 earliest-LO positions differ. On a dense corpus this is an O(n^2) transitive
 closure: a linear LO chain A(pos0) -> B(pos1) -> C(pos2) where all three
 co-occur emits A<-B, A<-C, B<-C — the redundant A<-C "skip" edge bloats the
@@ -34,7 +34,7 @@ graph (measured: 61% of the densest real graph; the sole source of
   stamped on the evidence, so the downstream edge-consensus pass starts the
   edge weaker instead of discovering the conflict later.
 
-The flag defaults OFF so legacy corpora regenerate byte-identically (the
+The flag defaults off so existing corpora regenerate byte-identically (the
 ``concept_graph_semantic.json`` and its sha256 are unchanged). ``RULE_VERSION``
 intentionally stays ``1`` — the flag-off path is the version-1 contract;
 the reduced output is an operator-selected variant, not a new rule revision.
@@ -110,8 +110,8 @@ def _first_positions_by_concept(
     confidence-demotion mitigation. Chunks arrive in document order, so a
     lower ``text_idx`` means the concept is introduced earlier in the text.
 
-    REC-ID-02 (Wave 4, Worker O): when ``TRAINFORGE_SCOPE_CONCEPT_IDS`` is
-    on, graph node IDs are composite ``{course_id}:{slug}``. Chunks store
+    When ``TRAINFORGE_SCOPE_CONCEPT_IDS`` is on, graph node IDs are composite
+    ``{course_id}:{slug}``. Chunks store
     raw (unscoped) slugs in ``concept_tags``; we scope each tag via the
     chunk's ``source.course_id`` before node-id lookup. Flag-off path is
     identity — behaviour unchanged.

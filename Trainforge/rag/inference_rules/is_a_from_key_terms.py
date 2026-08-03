@@ -26,8 +26,7 @@ from lib.ontology.slugs import canonical_slug
 from Trainforge.rag.wcag_canonical_names import canonicalize_sc_references
 
 RULE_NAME = "is_a_from_key_terms"
-# Wave 11 (Worker cc): bumped from 1 -> 2 to expose the optional
-# source_references[] emit shape on IsAEvidence. The emit is flag-gated
+# This version includes optional ``source_references[]`` evidence. The emit is gated
 # behind TRAINFORGE_SOURCE_PROVENANCE but the version bump is unconditional
 # so consumers see the schema-generation shift regardless of flag state.
 RULE_VERSION = 2
@@ -47,7 +46,7 @@ EDGE_TYPE = "is-a"
 # emission path filters out anyway.
 EDGE_TYPE_BROADER = "broader-than"
 
-# Wave 11: opt-in flag gates the evidence-arm source_references[] emission.
+# This opt-in flag gates ``source_references[]`` evidence emission.
 # Captured at module import time so tests that need to toggle should
 # monkeypatch SOURCE_PROVENANCE directly (or importlib.reload this module).
 SOURCE_PROVENANCE = os.getenv("TRAINFORGE_SOURCE_PROVENANCE", "").lower() == "true"
@@ -94,7 +93,7 @@ def _slugify(text: str) -> str:
     """Normalize a term to a concept-graph-style id.
 
     Two site-specific preprocessing steps sit on top of the shared
-    ``canonical_slug`` (REC-ID-03, Wave 4 Worker Q):
+    ``canonical_slug``:
 
     1. ``canonicalize_sc_references`` rewrites WCAG Success Criterion variants
        (e.g. ``"1.3.1"`` ↔ ``"SC 1.3.1"``) so that downstream substring matches
@@ -106,8 +105,8 @@ def _slugify(text: str) -> str:
 
     After those two steps the string contains only alnum, whitespace, and
     hyphens; ``canonical_slug`` then does the lowercase + kebab-case + edge
-    strip. A final multi-hyphen collapse matches the historical behavior of
-    this site (Courseforge's ``_slugify`` does not collapse interior runs of
+    strip. A final multi-hyphen collapse preserves this rule's canonical
+    output (Courseforge's ``_slugify`` does not collapse interior runs of
     hyphens; this rule does).
     """
     text = canonicalize_sc_references(text or "")
@@ -127,8 +126,8 @@ def _candidate_parent_ids(
     Checked in descending length order so multi-word nodes ("keyboard-trap")
     win over their single-word substrings ("trap").
 
-    REC-ID-02 (Wave 4, Worker O): when ``TRAINFORGE_SCOPE_CONCEPT_IDS=true``
-    is in effect, graph node IDs are composite ``{course_id}:{slug}``. The
+    When ``TRAINFORGE_SCOPE_CONCEPT_IDS=true``, graph node IDs are composite
+    ``{course_id}:{slug}``. The
     phrase-to-slug output must be scoped through ``_make_concept_id`` before
     lookup so the flag-on path actually finds matches. The substring scan
     continues to work against node IDs as-is — ``re.escape(nid)`` already
@@ -186,8 +185,8 @@ def infer(
         A deterministically-ordered list of edge dicts.
     """
     del course  # unused; interface parity
-    # REC-ID-02 (Wave 4, Worker O): scope child slugs through the
-    # course-scoping helper before node-id lookup. When flag is off this is
+    # Scope child slugs through the course-scoping helper before node-id
+    # lookup. When the flag is off this is
     # a no-op identity. When flag is on, node IDs in ``concept_graph`` are
     # composite ``{course_id}:{slug}`` and the per-chunk ``source.course_id``
     # supplies the scope.
@@ -244,9 +243,8 @@ def infer(
                     "definition_excerpt": definition[:200],
                     "pattern": pattern_str,
                 }
-                # Wave 11: flag-gated source_references emit. Only copy when
-                # the flag is on AND the originating chunk carries refs —
-                # otherwise omit the field (pre-Wave-10 corpora, legacy).
+                # Copy source references only when enabled and present on the
+                # originating chunk; absence represents unknown provenance.
                 if SOURCE_PROVENANCE:
                     refs = _chunk_source_references(chunk)
                     if refs:

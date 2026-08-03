@@ -13,10 +13,9 @@ Confidence is ``1.0`` — the reference is explicit.
 
 **Signal-availability caveat.** Questions are not currently threaded
 into ``build_semantic_graph``'s main call chain — the field travels
-through ``**kwargs`` as ``questions=[...]``. When absent (current
-production state), the rule emits ``[]`` gracefully. A future wave will
-wire upstream pipelines to populate ``objective_id`` on questions and
-thread them through the orchestrator.
+through ``**kwargs`` as ``questions=[...]``. When absent, the rule emits
+``[]`` gracefully. Upstream callers must populate ``objective_id`` and thread
+questions through the orchestrator for the rule to emit edges.
 
 Deterministic: output sorted by (source, target); duplicates on the
 same (question_id, objective_id) pair are collapsed.
@@ -28,12 +27,11 @@ import os
 from typing import Any, Dict, List, Tuple
 
 RULE_NAME = "assesses_from_question_lo"
-# Wave 11 (Worker cc): bumped from 1 -> 2 to expose the optional
-# source_references[] emit shape on AssessesEvidence.
+# This version includes optional ``source_references[]`` evidence.
 RULE_VERSION = 2
 EDGE_TYPE = "assesses"
 
-# Wave 11: opt-in flag gates the evidence-arm source_references[] emission.
+# This opt-in flag gates ``source_references[]`` evidence emission.
 SOURCE_PROVENANCE = os.getenv("TRAINFORGE_SOURCE_PROVENANCE", "").lower() == "true"
 
 
@@ -95,7 +93,7 @@ def infer(
     if not questions:
         return []
 
-    # Wave 11: build chunk lookup so the flag-on path can resolve
+# Build the chunk lookup only when source provenance is requested so the
     # source_chunk_id -> chunk.source.source_references[].
     chunk_index = _build_chunk_index(chunks) if SOURCE_PROVENANCE else {}
 
@@ -115,9 +113,9 @@ def infer(
         src_chunk = q.get("source_chunk_id")
         if src_chunk:
             evidence["source_chunk_id"] = src_chunk
-            # Wave 11: flag-gated source_references emit. Only when the
+# Copy source references only when the question points at a chunk that
             # question points at a chunk that actually exists and carries
-            # refs. Legacy questions without source_chunk_id emit no
+# carries them. Questions without ``source_chunk_id`` emit no
             # source_references (absence = unknown).
             if SOURCE_PROVENANCE:
                 refs = _lookup_source_references(src_chunk, chunk_index)

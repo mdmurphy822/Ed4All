@@ -27,12 +27,11 @@ import os
 from typing import Any, Dict, List, Tuple
 
 RULE_NAME = "exemplifies_from_example_chunks"
-# Wave 11 (Worker cc): bumped from 1 -> 2 to expose the optional
-# source_references[] emit shape on ExemplifiesEvidence.
+# This version includes optional ``source_references[]`` evidence.
 RULE_VERSION = 2
 EDGE_TYPE = "exemplifies"
 
-# Wave 11: opt-in flag gates the evidence-arm source_references[] emission.
+# This opt-in flag gates ``source_references[]`` evidence emission.
 SOURCE_PROVENANCE = os.getenv("TRAINFORGE_SOURCE_PROVENANCE", "").lower() == "true"
 
 
@@ -113,8 +112,7 @@ def infer(
                 "concept_slug": tag,
                 "content_type": content_type,
             }
-            # Wave 11: flag-gated source_references emit from the example
-            # chunk's source.source_references[].
+            # Copy source references from the example chunk when enabled.
             if SOURCE_PROVENANCE:
                 refs = _chunk_source_references(chunk)
                 if refs:

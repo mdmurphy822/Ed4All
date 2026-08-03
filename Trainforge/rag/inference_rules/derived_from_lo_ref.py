@@ -24,12 +24,11 @@ import os
 from typing import Any, Dict, List, Tuple
 
 RULE_NAME = "derived_from_lo_ref"
-# Wave 11 (Worker cc): bumped from 1 -> 2 to expose the optional
-# source_references[] emit shape on DerivedFromObjectiveEvidence.
+# This version includes optional ``source_references[]`` evidence.
 RULE_VERSION = 2
 EDGE_TYPE = "derived-from-objective"
 
-# Wave 11: opt-in flag gates the evidence-arm source_references[] emission.
+# This opt-in flag gates ``source_references[]`` evidence emission.
 SOURCE_PROVENANCE = os.getenv("TRAINFORGE_SOURCE_PROVENANCE", "").lower() == "true"
 
 
@@ -80,7 +79,7 @@ def infer(
                 "chunk_id": chunk_id,
                 "objective_id": ref,
             }
-            # Wave 11: flag-gated source_references emit.
+            # Copy source references into evidence when enabled.
             if SOURCE_PROVENANCE:
                 src_refs = _chunk_source_references(chunk)
                 if src_refs:

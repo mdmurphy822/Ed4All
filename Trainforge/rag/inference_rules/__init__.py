@@ -33,7 +33,7 @@ The orchestrator (``typed_edge_inference.py``) consumes these lists, applies
 the precedence policy (``is-a`` > tier-2 edges > ``related-to``) on
 ``(source, target)`` collisions, and writes the final artifact.
 
-Federation-by-convention (REC-LNK-04, Worker U Wave 5.2): edges may cross
+Federation-by-convention: edges may cross
 node-type namespaces. ``source`` / ``target`` are not restricted to
 concept-graph node IDs — they may also be LO IDs (``TO-NN``/``CO-NN``),
 chunk IDs, misconception IDs (``mc_*``), or question IDs. Consumers
@@ -72,13 +72,10 @@ from .related_from_cooccurrence import infer as infer_related
 from .targets_concept_from_lo import infer as infer_targets_concept
 
 
-# GPT Feedback v2 (May 12 / item 3): aggregate rulepack version.
-#
-# Mirrors the ``CHUNKER_SCHEMA_VERSION`` pattern from
-# ``Trainforge.chunker``: a single short deterministic string consumers
+# Aggregate rulepack version: a single short deterministic string consumers
 # can pin without enumerating every per-rule constant. Bumps
 # automatically whenever any rule module bumps its ``RULE_VERSION``,
-# so operators never forget to bump a top-level constant by hand.
+# without requiring a separate manually maintained version.
 #
 # Form: ``"v" + sha256(canonical_form)[:8]`` where ``canonical_form``
 # is the JSON-encoded sorted list of ``(RULE_NAME, RULE_VERSION)``
