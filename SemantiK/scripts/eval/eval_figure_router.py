@@ -43,7 +43,7 @@ from semantik_structure.figure_router import (  # noqa: E402 — torch-free impo
     SUBTYPE_ABSTAIN_THRESHOLD,
     SUBTYPES,
 )
-from scripts.train_figure_router import (  # noqa: E402
+from scripts.training.train_figure_router import (  # noqa: E402
     load_embedding_index,
     load_labels,
 )

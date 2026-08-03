@@ -374,7 +374,7 @@ def fallback_figure(region: Region, feature_blocks: Sequence[FeatureBlock]) -> s
         # name than a 256M VLM alt (which can hallucinate NON-numeric content the
         # numeric guard won't catch), so derive the short alt from the caption and
         # let the model contribute only the extended description. This matches
-        # scripts.eval_figure_captioner.route_figure — the path that scored the
+        # scripts.eval.eval_figure_captioner.route_figure — the path that scored the
         # SHIP verdict — so production no longer diverges from the gate.
         alt = alt_from_caption(cap)
     else:

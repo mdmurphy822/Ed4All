@@ -66,12 +66,12 @@ truncating required content. Quoted here so a future raise is deliberate.
 Usage::
 
     # REAL run on the GPU (loads SmolVLM2-256M):
-    .venv/bin/python -m scripts.eval_figure_captioner --tag v1
-    .venv/bin/python -m scripts.eval_figure_captioner --tag v1 --n 300
-    .venv/bin/python -m scripts.eval_figure_captioner --tag v1 --no-axe
+    .venv/bin/python -m scripts.eval.eval_figure_captioner --tag v1
+    .venv/bin/python -m scripts.eval.eval_figure_captioner --tag v1 --n 300
+    .venv/bin/python -m scripts.eval.eval_figure_captioner --tag v1 --no-axe
 
     # CPU self-test (stub captioner, synthetic rows, no GPU/model/network):
-    .venv/bin/python -m scripts.eval_figure_captioner --self-test
+    .venv/bin/python -m scripts.eval.eval_figure_captioner --self-test
 """
 from __future__ import annotations
 

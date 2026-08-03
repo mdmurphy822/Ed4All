@@ -31,8 +31,8 @@ Two modes:
         the cascade is robust to the Structure head changes.
 
 Usage:
-    .venv/bin/python -m scripts.eval_cascade_structure_to_semantic
-    .venv/bin/python -m scripts.eval_cascade_structure_to_semantic \\
+    .venv/bin/python -m scripts.eval.eval_cascade_structure_to_semantic
+    .venv/bin/python -m scripts.eval.eval_cascade_structure_to_semantic \\
         --mode endtoend --max-pairs 30 --per-source 5
 """
 from __future__ import annotations
@@ -320,7 +320,7 @@ def run_teacher_mode(
 
 
 def _structure_runtime():
-    """Mirrors scripts.eval_table_region_at_region_level.load_structure_runtime
+    """Mirrors scripts.eval.eval_table_region_at_region_level.load_structure_runtime
     but exposes the 5-head Structure (post-Phase-3f). Returns a dict
     with everything needed to compute cascade per span."""
     import torch  # noqa

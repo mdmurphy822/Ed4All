@@ -1035,7 +1035,7 @@ def main() -> None:
         "notes": {
             "split_function": (
                 "data.common._splits.stable_split_for_id (re-implementation of "
-                "scripts.build_semantic_preservation_dataset's). "
+                "scripts.datasets.build_semantic_preservation_dataset's). "
                 "train_frac=0.80, val_frac=0.10. Same arxiv_id -> "
                 "same split across all qwen_* and "
                 "semantic_preservation builders."

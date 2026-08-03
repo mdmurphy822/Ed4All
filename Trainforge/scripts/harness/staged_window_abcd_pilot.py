@@ -1180,7 +1180,7 @@ def apply_runtime_focus(
     objectives: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
     """Attach the exact runtime objective used by production synthesis."""
-    from Trainforge.synthesis_eligibility import (
+    from Trainforge.synthesis.synthesis_eligibility import (
         focus_chunk_on_canonical_objective,
     )
     result = focus_chunk_on_canonical_objective(
@@ -1248,7 +1248,7 @@ def build_pilot_manifest(
     """Build production-eligible rows plus an explicit exclusion audit."""
     if repetitions < 1:
         raise ValueError("repetitions must be positive")
-    from Trainforge.synthesis_eligibility import pair_eligibility
+    from Trainforge.synthesis.synthesis_eligibility import pair_eligibility
     from Trainforge.generators.staged_synthesis_micro import (
         micro_preference_eligibility,
     )

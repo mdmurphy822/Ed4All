@@ -28,8 +28,8 @@ scores are healthy, the nan was a loss-metric artifact, not a broken model.
 
 Usage::
 
-    .venv/bin/python -m scripts.eval_qwen_gap_fill_adapter            # full test
-    .venv/bin/python -m scripts.eval_qwen_gap_fill_adapter --n 300 --no-axe
+    .venv/bin/python -m scripts.eval.eval_qwen_gap_fill_adapter            # full test
+    .venv/bin/python -m scripts.eval.eval_qwen_gap_fill_adapter --n 300 --no-axe
 """
 from __future__ import annotations
 

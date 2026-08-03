@@ -22,7 +22,7 @@ imports live inside the backend functions).
 
 Usage::
 
-    python -m scripts.diff_qwen_eval_backends \\
+    python -m scripts.analysis.diff_qwen_eval_backends \\
         --safetensors-report data/eval_reports/qwen_math_adapter_safetensors.json \\
         --gguf-report        data/eval_reports/qwen_math_adapter_gguf.json
 """

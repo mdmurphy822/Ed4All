@@ -32,8 +32,8 @@ population-weighted — always read the per-class table alongside it.
 
 Usage::
 
-    .venv/bin/python -m scripts.eval_qwen_math_adapter --backend safetensors
-    .venv/bin/python -m scripts.eval_qwen_math_adapter --backend gguf \\
+    .venv/bin/python -m scripts.eval.eval_qwen_math_adapter --backend safetensors
+    .venv/bin/python -m scripts.eval.eval_qwen_math_adapter --backend gguf \\
         --gguf models/qwen_specialists/math/v1/math.q4_k_m.gguf
 """
 

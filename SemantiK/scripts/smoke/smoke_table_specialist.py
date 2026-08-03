@@ -9,7 +9,7 @@ Inline validation (4a + 4b in the spec):
     * Synthetic 3x3 grid → 9 cells, every layout 15-dim, every entry
       finite, ``(1,1).text`` contains ``[CELL]``.
     * Byte-equal parity with
-      ``scripts.eval_table_specialist_per_source._format_input`` for
+      ``scripts.eval.eval_table_specialist_per_source._format_input`` for
       cell ``(1, 1)`` of the synthetic grid.
 
 Usage:
@@ -45,7 +45,7 @@ def _run_inline_validation() -> None:
         LAYOUT_FEATURE_DIM_V3, build_cells,
     )
     from semantik_structure.region_detection import TableCandidate
-    from scripts.eval_table_specialist_per_source import _format_input
+    from scripts.eval.eval_table_specialist_per_source import _format_input
 
     grid = [
         ["", "Col A", "Col B"],

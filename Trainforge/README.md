@@ -15,10 +15,10 @@ Assessment generation also lives here, but in the current `textbook_to_course` p
 
 ```bash
 # As part of the full pipeline (steps 1-3; training is opt-in via --with-training):
-ed4all run textbook-to-course --corpus my_textbook.pdf --course-name MY_COURSE_101
+ed4all run textbook-to-course --corpus <CORPUS_PATH> --course-name <COURSE_NAME>
 
 # Standalone RAG training on an existing IMSCC:
-ed4all run rag_training --corpus path/to/course.imscc --course-name MY_COURSE_101
+ed4all run rag_training --corpus <IMSCC_PATH> --course-name <COURSE_NAME>
 
 # Train an adapter for an already-imported course (step 4):
 ed4all run trainforge_train --course-name <course-slug> --base-model <name>

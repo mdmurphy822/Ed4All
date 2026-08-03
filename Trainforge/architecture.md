@@ -89,7 +89,7 @@ Phases (logical, executed inside `CourseProcessor`):
 | Assessment generation | `assessments.json` | `Trainforge/generators/assessment_generator.py` + `question_factory.py`. |
 | Quality report | `quality/quality_report.json` | `Trainforge/rag/kg_quality_report.py::KGQualityReporter`. Includes the `assessments` dimension built by `Trainforge/generators/assessment_quality_report.py`. |
 | Alignment pass | enriched chunks | `Trainforge/align_chunks.py`. Adds `teaching_role`, `prereq_concepts`, `learning_outcome_refs` via TF-IDF + optional LLM (`CurriculumAlignmentProvider`). |
-| Training-pair synthesis | `training_specs/{instruction,preference}_pairs.jsonl` | `Trainforge/synthesize_training.py`. Provider-agnostic; see Provider Matrix below. |
+| Training-pair synthesis | `training_specs/{instruction,preference}_pairs.jsonl` | `Trainforge/synthesis/synthesize_training.py` (legacy CLI shim: `Trainforge/synthesize_training.py`). Provider-agnostic; see Provider Matrix below. |
 
 ### 2. Training Pipeline
 

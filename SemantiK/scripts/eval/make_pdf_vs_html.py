@@ -19,9 +19,9 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-# Make the repo root importable so `from scripts._html_structure_audit import ...`
+# Make the repo root importable for the shared analysis helper.
 # works when this file is run as a direct script (python scripts/eval/make_pdf_vs_html.py),
-# not just as a module (python -m scripts.make_pdf_vs_html). eval_v7_family.sh and
+# not just as a module (python -m scripts.eval.make_pdf_vs_html). eval_v7_family.sh and
 # the nohup runners invoke it as a direct script, where scripts/ — not the repo
 # root — is on sys.path, so the package import would otherwise ModuleNotFoundError.
 _REPO_ROOT = str(Path(__file__).resolve().parents[2])
@@ -141,7 +141,7 @@ def main() -> None:
     # Semantic-structure fidelity — measured on the output HTML for BOTH
     # engines (axe pass != correct structure). This is the second eval axis
     # the WCAG/axe verdict can't see.
-    from scripts._html_structure_audit import audit_structure
+    from scripts.analysis._html_structure_audit import audit_structure
 
     n_pages = _pdf_pages(args.pdf)
     audit = audit_structure(html, n_pages=n_pages)

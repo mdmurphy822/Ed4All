@@ -31,14 +31,14 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from Trainforge.synthesis_fresh_start import (
+from Trainforge.synthesis.synthesis_fresh_start import (
     MARKER_NAME,
     MARKER_SCHEMA_VERSION,
     SYNTHESIS_ARTIFACT_NAMES,
     fingerprint_files,
     sha256_file,
 )
-from Trainforge.synthesis_holdout import (
+from Trainforge.synthesis.synthesis_holdout import (
     holdout_exclusion_enabled,
     load_synthesis_holdout_registry,
 )

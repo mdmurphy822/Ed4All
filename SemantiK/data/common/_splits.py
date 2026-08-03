@@ -24,7 +24,7 @@ def stable_split_for_id(
     """Hash-based split. SHA1(arxiv_id) -> [0, 1) -> bucket.
 
     Identical implementation to
-    ``scripts.build_semantic_preservation_dataset.stable_split_for_id``;
+    ``scripts.datasets.build_semantic_preservation_dataset.stable_split_for_id``;
     duplicated as a tiny pure function so importing this utility does
     not transitively import the (heavy) semantic-preservation builder.
     A unit-test in ``tests/test_qwen_math_dataset_contract.py`` pins

@@ -22,8 +22,8 @@ provider dispatch:
    recovers each chunk's structured misconception cards (authored value wins;
    recovery reads only the chunk's own markup). Per-card Bloom rung is
    carried when ``TRAINFORGE_BLOOM_WINDOWS`` recovery populated one.
-2. :func:`Trainforge.synthesis_eligibility.focus_chunk_on_canonical_objective`
-   + :func:`Trainforge.synthesis_eligibility.pair_eligibility` (``kind=
+2. :func:`Trainforge.synthesis.synthesis_eligibility.focus_chunk_on_canonical_objective`
+   + :func:`Trainforge.synthesis.synthesis_eligibility.pair_eligibility` (``kind=
    "instruction"``) resolve the SAME canonical-objective focus and run the
    SAME shared content/LO/evidence-window/length gates every real pair goes
    through, before the preference-specific arm.
@@ -127,7 +127,7 @@ def project_dpo_yield(
     from Trainforge.generators.synthesis_window_contract import (
         resolve_chunk_misconceptions,
     )
-    from Trainforge.synthesis_eligibility import (
+    from Trainforge.synthesis.synthesis_eligibility import (
         focus_chunk_on_canonical_objective,
         pair_eligibility,
     )

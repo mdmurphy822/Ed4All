@@ -44,8 +44,8 @@ per-kind table alongside it.
 
 Usage::
 
-    .venv/bin/python -m scripts.eval_qwen_prose_adapter            # final vs checkpoint-7000
-    .venv/bin/python -m scripts.eval_qwen_prose_adapter \\
+    .venv/bin/python -m scripts.eval.eval_qwen_prose_adapter            # final vs checkpoint-7000
+    .venv/bin/python -m scripts.eval.eval_qwen_prose_adapter \\
         --checkpoint final=models/qwen_specialists/prose/v1/final \\
         --checkpoint ckpt7k=models/qwen_specialists/prose/v1/checkpoint-7000 \\
         --n 400 --no-axe        # skip the (slow) Chromium axe pass

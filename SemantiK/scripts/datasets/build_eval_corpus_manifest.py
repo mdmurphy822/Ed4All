@@ -54,7 +54,7 @@ from semantik_structure.prerender_cache import cache_path_for  # noqa: E402
 # Reuse the eval driver's held-out machinery verbatim — same dataset files,
 # same pair-id semantics — so the manifest and the eval can never disagree
 # about what "trained on" means.
-from scripts.eval_full_cascade import (  # noqa: E402
+from scripts.eval.eval_full_cascade import (  # noqa: E402
     _DATASET_FILES,
     _SIDE_BY_SIDE_DIRS,
     _build_trained_pair_id_set,

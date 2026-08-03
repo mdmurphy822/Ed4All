@@ -230,7 +230,7 @@ def prepare_workspace(
     from lib.validators.pair.objective_delivery import (
         _load_synthesized_objectives_for_w4c,
     )
-    from Trainforge.synthesis_eligibility import (
+    from Trainforge.synthesis.synthesis_eligibility import (
         focus_chunk_on_canonical_objective,
         pair_eligibility,
     )
@@ -830,7 +830,7 @@ def run_pilot(
         raise FileExistsError(f"run output already exists: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    from Trainforge.synthesize_training import run_synthesis
+    from Trainforge.synthesis.synthesize_training import run_synthesis
 
     recorder = _RequestRecorder()
     retry_handler = _RetryLogCounter()

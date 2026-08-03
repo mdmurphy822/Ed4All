@@ -272,10 +272,11 @@ risk. Completed items are marked below.
    **`Trainforge/scripts/` is also DONE:** durable commands live in `ops/`,
    repeatable experiments in `harness/`, contract helpers in `maintenance/`,
    and retained one-use tooling in `archive/`; its loose-file cap is now zero.
-2. **`Trainforge/` root — 19 loose modules** with one obvious cluster: nine
-   `synthesis_*.py` plus `synthesize_training.py` want to be
-   `Trainforge/synthesis/`. Costs a compatibility shim per moved module
-   because `MCP/` dispatches into several by dotted path.
+2. **`Trainforge/` synthesis cluster — DONE.** The nine implementation
+   modules now live in `Trainforge/synthesis/`. Root-level compatibility
+   shims preserve the documented CLI/import surface and MCP dotted dispatch,
+   so the exact loose-module cap remains 19 until those legacy paths complete
+   their deprecation window; new code imports the canonical package paths.
 3. **`Trainforge/eval/` — 39 loose**, three subdirs already exist; the flat
    remainder should join them.
 4. **`SemantiK/data/` — 25 loose** dataset builders, several unreferenced.

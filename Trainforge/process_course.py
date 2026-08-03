@@ -5636,7 +5636,7 @@ def main():
     # Optional training-pair synthesis stage (Worker C)
     if args.synthesize:
         print("\n[Synthesis] Running training-pair synthesis stage...")
-        from Trainforge.synthesize_training import run_synthesis
+        from Trainforge.synthesis.synthesize_training import run_synthesis
         try:
             synth_stats = run_synthesis(
                 corpus_dir=Path(args.output),

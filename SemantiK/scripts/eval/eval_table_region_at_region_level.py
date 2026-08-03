@@ -19,11 +19,11 @@ NOT the Phase 3b training-time label, which conflates pdfplumber
 detection with HTML truth and would be circular here.
 
 Usage:
-    .venv/bin/python -m scripts.eval_table_region_at_region_level \\
+    .venv/bin/python -m scripts.eval.eval_table_region_at_region_level \\
         --limit 20 --source arxiv
 
     # Or by explicit pair id:
-    .venv/bin/python -m scripts.eval_table_region_at_region_level \\
+    .venv/bin/python -m scripts.eval.eval_table_region_at_region_level \\
         --pair-ids 1105_4789__13_formatted_lob_snapshots ...
 """
 from __future__ import annotations

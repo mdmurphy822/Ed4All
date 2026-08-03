@@ -13,8 +13,8 @@ test split IS evaluating the v2 adapter under realistic cascade
 inputs. What's new here is the per-source breakdown.
 
 Usage:
-    .venv/bin/python -m scripts.eval_table_specialist_per_source
-    .venv/bin/python -m scripts.eval_table_specialist_per_source \\
+    .venv/bin/python -m scripts.eval.eval_table_specialist_per_source
+    .venv/bin/python -m scripts.eval.eval_table_specialist_per_source \\
         --adapter-dir models/council/table_specialist/final_v2 \\
         --out-path data/eval_reports/table_specialist_v2_per_source.json
 """

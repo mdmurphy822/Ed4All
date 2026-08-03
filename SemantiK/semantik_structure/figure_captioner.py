@@ -114,7 +114,7 @@ def guard_figure_alt(alt: str, caption: str) -> str:
 # Caption-first label/sentence trim. ``Figure N:`` / ``Fig. N.`` prefix + first
 # sentence. Shared verbatim by the production emitter
 # (``assembler.fallbacks.fallback_figure``) and the acceptance eval
-# (``scripts.eval_figure_captioner.route_figure``) so the shipped behaviour and
+# (``scripts.eval.eval_figure_captioner.route_figure``) so the shipped behaviour and
 # the gate that scores it CANNOT drift — the whole point of wiring caption-first
 # into production (Plans/09 §5 gate 3).
 _FIG_LABEL_RE = re.compile(
@@ -323,7 +323,7 @@ def caption_figure_regions(regions: list[Any], *,
     caption-derived alt, a guarded model alt, or the honest ``TYPE_LEVEL_ALT``,
     all non-empty and axe-conformant; the only cost is mild screen-reader
     verbosity, never a WCAG failure or a wrong claim. The ``is_decorative`` /
-    ``route_figure`` logic stays in ``scripts.eval_figure_captioner`` as a
+    ``route_figure`` logic stays in ``scripts.eval.eval_figure_captioner`` as a
     forward-looking gate that lights up the moment a subtype-tagged build (or the
     N2 router) can flag decorative figures. Revisit with N2.
 

@@ -53,9 +53,9 @@ Metrics
 
 Usage::
 
-    .venv/bin/python -m scripts.eval_qwen_table_adapter            # final, all 459 rows
-    .venv/bin/python -m scripts.eval_qwen_table_adapter --no-axe   # skip Chromium
-    .venv/bin/python -m scripts.eval_qwen_table_adapter \\
+    .venv/bin/python -m scripts.eval.eval_qwen_table_adapter            # final, all 459 rows
+    .venv/bin/python -m scripts.eval.eval_qwen_table_adapter --no-axe   # skip Chromium
+    .venv/bin/python -m scripts.eval.eval_qwen_table_adapter \\
         --checkpoint final=models/qwen_specialists/table/v1/final \\
         --checkpoint ckpt1200=models/qwen_specialists/table/v1/checkpoint-1200
 """
