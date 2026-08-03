@@ -131,6 +131,7 @@ async def test_feature_flag_on_subagent_agent_routes_to_dispatcher(
 ):
     """Happy path — flag + dispatcher + classified agent → dispatch_task."""
     monkeypatch.setenv("ED4ALL_AGENT_DISPATCH", "true")
+    monkeypatch.delenv("COURSEFORGE_PROVIDER", raising=False)
     assert _agent_dispatch_enabled()
     dispatcher = DummyDispatcher(
         response={
@@ -234,6 +235,7 @@ async def test_feature_flag_truthy_variants(monkeypatch, state_runs_isolated):
     Uses ``generate_course_content`` with its minimal required
     ``project_id`` so parameter mapping passes; the assertion focuses
     on whether the dispatcher was invoked."""
+    monkeypatch.delenv("COURSEFORGE_PROVIDER", raising=False)
     dispatcher = DummyDispatcher()
     ex = _make_executor(dispatcher=dispatcher)
 
