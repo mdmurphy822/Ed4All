@@ -223,6 +223,7 @@ def check_hash_chains(runs_path: Path, verbose: bool = False) -> CheckResult:
         engine = None
 
     verified_count = 0
+    chain_count = 0
     for run_dir in run_dirs:
         run_id = run_dir.name
         chain_path = run_dir / "hash_chain.jsonl"
@@ -231,6 +232,8 @@ def check_hash_chains(runs_path: Path, verbose: bool = False) -> CheckResult:
             if verbose:
                 logger.info(f"  {run_id}: No hash chain (skipped)")
             continue
+
+        chain_count += 1
 
         try:
             if engine:
@@ -251,9 +254,14 @@ def check_hash_chains(runs_path: Path, verbose: bool = False) -> CheckResult:
         except Exception as e:
             result.errors.append(f"{run_id}: Error - {e}")
 
+    result.details["chain_count"] = chain_count
     result.details["verified_count"] = verified_count
     result.passed = len(result.errors) == 0
-    result.message = f"Verified {verified_count}/{len(run_dirs)} hash chains"
+    if chain_count == 0:
+        result.message = f"No hash chains found across {len(run_dirs)} runs"
+        result.warnings.append(result.message)
+    else:
+        result.message = f"Verified {verified_count}/{chain_count} hash chains"
     result.duration_seconds = time.time() - start_time
     return result
 
@@ -328,8 +336,13 @@ def check_tool_registry(verbose: bool = False) -> CheckResult:
         result.details["snapshot_hash"] = snapshot.get("snapshot_hash", "")[:12]
         result.details["tool_count"] = snapshot.get("tool_count", 0)
 
+        tool_count = len(registry.list_tools())
         result.passed = validation.valid
-        result.message = f"Registry valid: {len(registry.list_tools())} tools registered"
+        if tool_count == 0 and not registry.required_tools:
+            result.message = "Registry valid but empty; no required tools configured"
+            result.warnings.append(result.message)
+        else:
+            result.message = f"Registry valid: {tool_count} tools registered"
 
         if verbose:
             for tool in registry.list_tools():
@@ -337,8 +350,7 @@ def check_tool_registry(verbose: bool = False) -> CheckResult:
 
     except ImportError as e:
         result.message = f"Tool registry not available: {e}"
-        result.warnings.append(result.message)
-        result.passed = True  # Not a failure if module not available
+        result.errors.append(result.message)
 
     except Exception as e:
         result.errors.append(f"Registry error: {e}")
@@ -479,13 +491,12 @@ def check_sample_finalization(runs_path: Path, verbose: bool = False) -> CheckRe
 
         if verbose:
             logger.info(f"  Test run: {test_run.name}")
-            logger.info(f"  Hash chain valid: {report.hash_chain_valid}")
+            logger.info(f"  Hash chains valid: {report.all_chains_valid}")
             logger.info(f"  Artifacts: {report.artifact_count}")
 
     except ImportError as e:
         result.message = f"Run finalizer not available: {e}"
-        result.warnings.append(result.message)
-        result.passed = True
+        result.errors.append(result.message)
 
     except Exception as e:
         result.errors.append(f"Finalization error: {e}")
@@ -516,20 +527,20 @@ def check_path_security(verbose: bool = False) -> CheckResult:
         from lib.path_constants import (
             DISALLOW_PARENT_TRAVERSAL,
             MAX_PATH_LENGTH,
-            get_project_root,
             load_hardening_config,
         )
 
         result.details["max_path_length"] = MAX_PATH_LENGTH
         result.details["disallow_parent_traversal"] = DISALLOW_PARENT_TRAVERSAL
 
-        # Check project root resolution
-        try:
-            project_root = get_project_root()
-            result.details["project_root"] = str(project_root)
-            result.details["project_root_exists"] = project_root.exists()
-        except Exception as e:
-            result.warnings.append(f"Project root resolution: {e}")
+        # The integrity hook derives its root from its own location; verify that
+        # concrete root rather than importing a resolver that is not part of
+        # the path_constants public contract.
+        project_root = PROJECT_ROOT.resolve()
+        result.details["project_root"] = str(project_root)
+        result.details["project_root_exists"] = project_root.exists()
+        if not project_root.exists():
+            result.errors.append(f"Project root does not exist: {project_root}")
 
         # Check hardening config
         try:
@@ -537,10 +548,14 @@ def check_path_security(verbose: bool = False) -> CheckResult:
             result.details["hardening_config_loaded"] = True
             result.details["config_keys"] = list(config.keys()) if config else []
         except Exception as e:
-            result.warnings.append(f"Hardening config: {e}")
+            result.errors.append(f"Hardening config: {e}")
 
-        result.passed = True
-        result.message = "Path security constants verified"
+        result.passed = len(result.errors) == 0
+        result.message = (
+            "Path security constants verified"
+            if result.passed
+            else "Path security verification failed"
+        )
 
         if verbose:
             logger.info(f"  MAX_PATH_LENGTH: {MAX_PATH_LENGTH}")
@@ -548,8 +563,7 @@ def check_path_security(verbose: bool = False) -> CheckResult:
 
     except ImportError as e:
         result.message = f"Path constants not available: {e}"
-        result.warnings.append(result.message)
-        result.passed = True
+        result.errors.append(result.message)
 
     except Exception as e:
         result.errors.append(f"Path security error: {e}")
