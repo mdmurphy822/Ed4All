@@ -1,21 +1,16 @@
-"""Export a LibV2 course's JSON artifacts as RDF (Phase 1.5).
+"""Serialize an archived LibV2 course's JSON artifacts as RDF.
 
-The Wave 1+2 work added JSON-LD ``@context`` files at
-``schemas/context/*_v1.jsonld`` that bridge each per-course JSON
-artifact (``course.json``, ``concept_graph_semantic.json``,
-``pedagogy_graph.json``) to RDF without rewriting the data. This
-module consumes those contexts to materialize Turtle files on disk so
-downstream RDF tooling (Protégé, SPARQL stores, pyshacl pipelines) can
-ingest the package without a JSON-LD-aware parser.
+JSON-LD ``@context`` files under ``schemas/context/`` bridge each course,
+concept-graph, and pedagogy-graph artifact to RDF without rewriting the source
+data. This module materializes those projections for RDF tooling.
 
 The bridge is consumer-side: Trainforge still emits JSON. This module
 layers the matching ``@context`` on each artifact at export time and
 runs ``pyld.to_rdf`` → ``rdflib.parse`` → ``rdflib.serialize`` to
 produce ``.ttl`` (or ``.trig``) on disk.
 
-Why this is in LibV2 rather than Trainforge: the export is a read-side
-operation against an already-archived course, not part of the emit
-pipeline. LibV2 owns the post-archive surface.
+The export is a LibV2 read-side operation over an existing private archive; it
+does not participate in Trainforge emission.
 """
 
 from __future__ import annotations
@@ -23,22 +18,16 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import List, Tuple
 
-
-# Per-artifact registry: (relative path under courses/<slug>/, @context filename, anchor IRI suffix)
-# The anchor IRI prevents top-level metadata from landing on a blank
-# node; mirrors the pattern in test_concept_graph_jsonld_roundtrip.py.
+# Each row identifies an archived artifact, its context, and its anchor suffix.
 _ARTIFACT_REGISTRY: List[Tuple[str, str, str]] = [
     ("course.json", "course_v1.jsonld", "course"),
     ("graph/concept_graph_semantic.json", "concept_graph_semantic_v1.jsonld", "concept-graph"),
     ("graph/pedagogy_graph.json", "pedagogy_graph_v1.jsonld", "pedagogy-graph"),
 ]
 
-# Formats that require a context-aware (named-graph) store — must be
-# materialized as ``rdflib.Dataset`` rather than ``rdflib.Graph``,
-# otherwise rdflib raises "NQuads serialization only makes sense for
-# context-aware stores!" on serialize.
+# Named-graph formats require ``rdflib.Dataset`` rather than ``rdflib.Graph``.
 _CONTEXT_AWARE_FORMATS = {"nquads", "n-quads", "trig"}
 
 _ANCHOR_BASE = "https://ed4all.io/"
@@ -72,7 +61,7 @@ def _find_project_root(libv2_root: Path) -> Path:
         candidate = candidate.parent
     raise FileNotFoundError(
         f"Could not locate schemas/context/ above {libv2_root}; "
-        "rdf_export requires the project schemas tree."
+        "RDF serialization requires the project schemas tree."
     )
 
 
@@ -89,8 +78,8 @@ def _materialize_rdf_graph(
     trig). Imports rdflib + pyld lazily so the module is importable
     even when the dependencies aren't installed.
     """
-    from pyld import jsonld
     import rdflib
+    from pyld import jsonld
 
     with json_path.open() as f:
         artifact = json.load(f)

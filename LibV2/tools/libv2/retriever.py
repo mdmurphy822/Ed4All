@@ -156,12 +156,12 @@ class RetrievalResult:
         """RDF-compatible JSON-LD projection.
 
         Additive wrapper over :meth:`to_dict` — the legacy dict shape is
-        untouched. See :mod:`LibV2.tools.libv2.jsonld_emit` for the full
+        untouched. See :mod:`LibV2.tools.libv2.serialization.jsonld` for the full
         predicate alignment table.
         """
         # Local import so the (rarely-used) emit path doesn't get pulled
         # into every `from .retriever import ...` call.
-        from .jsonld_emit import retrieval_result_to_jsonld
+        from .serialization import retrieval_result_to_jsonld
 
         return retrieval_result_to_jsonld(self, context_url=context_url)
 

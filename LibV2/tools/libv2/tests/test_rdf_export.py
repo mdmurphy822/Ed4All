@@ -1,6 +1,6 @@
-"""Tests for the libv2 export-rdf CLI (Phase 1.5).
+"""Tests for LibV2 RDF serialization.
 
-Exercises ``LibV2/tools/libv2/rdf_export.py::export_course`` end-to-end:
+Exercises ``LibV2.tools.libv2.serialization.rdf.export_course`` end-to-end:
 reads per-course JSON artifacts under ``LibV2/courses/<slug>/``,
 applies the matching ``schemas/context/*_v1.jsonld`` @context, and
 asserts that Turtle (and other) serializations land on disk with
@@ -20,11 +20,10 @@ import pytest
 pyld = pytest.importorskip("pyld")
 rdflib = pytest.importorskip("rdflib")
 
-from LibV2.tools.libv2.rdf_export import (
+from LibV2.tools.libv2.serialization.rdf import (
     ExportResult,
     export_course,
 )
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 
@@ -32,7 +31,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[4]
 @pytest.fixture
 def synthetic_libv2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     root = tmp_path / "libv2"
-    course = root / "courses" / "sample-course"
+    course = root / "courses" / "course-a"
     graph = course / "graph"
     graph.mkdir(parents=True)
     outcomes = [
@@ -47,8 +46,8 @@ def synthetic_libv2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         for index in range(1, 7)
     ]
     (course / "course.json").write_text(json.dumps({
-        "course_code": "SAMPLE",
-        "title": "Synthetic Course",
+        "course_code": "COURSE_A",
+        "title": "Course A",
         "learning_outcomes": outcomes,
     }), encoding="utf-8")
     (graph / "concept_graph_semantic.json").write_text(json.dumps({
@@ -64,7 +63,7 @@ def synthetic_libv2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     }), encoding="utf-8")
     (graph / "pedagogy_graph.json").write_text(json.dumps({
         "kind": "PedagogyGraph",
-        "course_id": "sample-course",
+        "course_id": "course-a",
         "nodes": [
             {"id": "concept:concept-a", "class": "Concept", "label": "Concept A"},
             {"id": "co-01", "class": "LearningObjective", "label": "Outcome"},
@@ -76,10 +75,10 @@ def synthetic_libv2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     }), encoding="utf-8")
 
     monkeypatch.setattr(
-        "LibV2.tools.libv2.rdf_export._find_project_root",
+        "LibV2.tools.libv2.serialization.rdf._find_project_root",
         lambda _root: PROJECT_ROOT,
     )
-    return root, "sample-course"
+    return root, "course-a"
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +165,7 @@ class TestExportErrors:
     def test_missing_course_raises_file_not_found(self, tmp_path: Path):
         root = tmp_path / "libv2"
         with pytest.raises(FileNotFoundError):
-            export_course(root, "no-such-course-slug", tmp_path / "out")
+            export_course(root, "missing-course", tmp_path / "out")
 
     def test_output_directory_created_if_missing(self, tmp_path: Path, synthetic_libv2):
         root, slug = synthetic_libv2

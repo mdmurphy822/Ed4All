@@ -382,8 +382,9 @@ risk. Completed items are marked below.
    under `evaluation/`, with three documented compatibility modules retained
    at the package root through their deprecation window. Cross-package concept
    indexing and discovery live under `cross_package/`; their former private
-   implementation paths had no compatibility obligation. The exact flat cap
-   is now 26.
+   implementation paths had no compatibility obligation. Read-side JSON-LD and
+   RDF serializers now live under `serialization/`; their former internal paths
+   had no compatibility obligation. The exact flat cap is now 24.
 10. **`lib/validators/` — 115 loose.** Largest number in the tree but the
    *weakest* case: it is a genuine package whose flat module list is the
    registry `docs/validation/gates.md` maps onto. Listed for completeness;

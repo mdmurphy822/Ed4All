@@ -2325,7 +2325,7 @@ def queries_show(ctx, query_id: str, course: Optional[str], output: str):
 )
 @click.pass_context
 def export_rdf(ctx, slug: str, output_dir: Optional[str], output_format: str):
-    """Export a course's JSON artifacts as RDF using the Phase 1 JSON-LD contexts.
+    """Export a course's JSON artifacts as RDF using canonical JSON-LD contexts.
 
     Materializes Turtle (or TriG / N-Quads / etc.) files alongside the
     JSON artifacts so downstream RDF tooling (Protégé, SPARQL stores,
@@ -2337,10 +2337,10 @@ def export_rdf(ctx, slug: str, output_dir: Optional[str], output_format: str):
 
     \b
     Example:
-        libv2 export-rdf demo-course-1
-        libv2 export-rdf demo-course-1 --format trig -o /tmp/rdf-out/
+        libv2 export-rdf <course-slug>
+        libv2 export-rdf <course-slug> --format trig -o <output-dir>
     """
-    from .rdf_export import export_course
+    from .serialization import export_course
 
     repo_root: Path = ctx.obj["repo_root"]
     course_dir = repo_root / "courses" / slug

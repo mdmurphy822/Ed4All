@@ -1,4 +1,4 @@
-"""Wave 70 — JSON-LD emit for retrieval results.
+"""JSON-LD serialization for LibV2 retrieval results.
 
 Provides an RDF-compatible projection of a LibV2 ``RetrievalResult`` so
 downstream Pearson / LRMI / CASE consumers can pipe results into an RDF
@@ -28,10 +28,9 @@ than overloading ``schema:QuantitativeValue`` for the whole envelope and
 more expressive for downstream SHACL shapes that want to target the
 retrieval surface specifically.
 
-The default ``@context`` URL is the canonical Courseforge context. All
-terms used by the retrieval emit are defined there (Wave 62+67) — we
-piggyback on that vocabulary instead of minting a retrieval-specific
-one so a single document loader resolves the whole emit.
+The default ``@context`` URL is the canonical Courseforge context. The
+retrieval projection reuses that vocabulary so one document loader resolves
+the complete output.
 """
 
 from __future__ import annotations
@@ -39,7 +38,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Dict
 
 if TYPE_CHECKING:
-    from .retriever import RetrievalResult  # circular at runtime, fine at type
+    from ..retriever import RetrievalResult
 
 # Default canonical context URL — same URL Courseforge stamps on its
 # page metadata. Consumers with a local loader installed (e.g. via
@@ -48,7 +47,7 @@ DEFAULT_CONTEXT_URL = "https://ed4all.dev/ns/courseforge/v1"
 
 
 def retrieval_result_to_jsonld(
-    result: "RetrievalResult",
+    result: RetrievalResult,
     *,
     context_url: str = DEFAULT_CONTEXT_URL,
 ) -> Dict[str, Any]:
@@ -69,7 +68,7 @@ def retrieval_result_to_jsonld(
         fields are omitted so the emit stays compact and JSON-LD
         expansion doesn't see empty literals.
     """
-    # Build the payload. Order mirrors ``to_dict`` for readability.
+    # Keep field order aligned with ``RetrievalResult.to_dict`` for readability.
     out: Dict[str, Any] = {
         "@context": context_url,
         "@type": "ed4all:RetrievalResult",
@@ -83,35 +82,24 @@ def retrieval_result_to_jsonld(
     }
     if result.difficulty is not None:
         out["difficulty"] = result.difficulty
-    # concept_tags and learning_outcome_refs — always emit when non-empty
-    # so consumers see the @container:@set shape even for empty lists.
+    # Emit list-backed semantic fields only when they contain values.
     if result.concept_tags:
         # ``keywords`` is already a @set container in the Courseforge
         # context; passing a list keeps that semantics.
         out["keywords"] = list(result.concept_tags)
     if result.learning_outcome_refs:
-        # Mint stable IRIs for LO refs so ``derivedFromObjective`` is an
-        # IRI predicate (schema:competencyRequired / ed4all:derivedFromObjective).
-        # A short ed4all:lo/ prefix keeps the refs opaque but linkable.
+        # Mint linkable IRIs while preserving opaque learning-objective IDs.
         out["derivedFromObjective"] = [
             _lo_ref_to_iri(ref) for ref in result.learning_outcome_refs
         ]
     if result.bloom_level:
-        # The ``bloomLevel`` term maps to @type: @vocab over
-        # https://ed4all.dev/vocab/bloom# — pyld expands bare tokens
-        # ("apply", "remember", ...) to the full IRI automatically.
+        # Normalize the vocabulary token before JSON-LD expansion.
         out["bloomLevel"] = str(result.bloom_level).lower()
     if result.source:
-        # ``isBasedOn`` on schema.org accepts a node (not just a URL);
-        # keep the nested source dict as-is. Rdflib lifts it into a
-        # blank node when expanded.
+        # Preserve structured provenance as the node behind ``isBasedOn``.
         out["isBasedOn"] = dict(result.source)
 
-    # retrievalScore doesn't have a term in the Courseforge context —
-    # inject an inline key binding so pyld can expand it. The context
-    # merge is additive: consumers can still resolve the main @context
-    # URL, we just augment with the retrieval-specific predicate.
-    # Do this by replacing the plain-URL @context with a wrapper.
+    # Extend the canonical context with retrieval-specific predicates.
     out["@context"] = [
         context_url,
         {
@@ -144,7 +132,7 @@ def retrieval_result_to_jsonld(
 
 
 def _lo_ref_to_iri(lo_ref: str) -> str:
-    """Turn an LO id like ``TO-03`` / ``co-03`` into a stable IRI.
+    """Turn a learning-objective ID into a stable IRI.
 
     Uses the ed4all:lo/ namespace. Case is preserved (the @context
     doesn't downcase) but the canonical pattern matches

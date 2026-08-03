@@ -1,12 +1,12 @@
-"""Wave 70 — JSON-LD projection of RetrievalResult.
+"""JSON-LD serialization contracts for ``RetrievalResult``.
 
 Covers:
 
 * ``to_jsonld()`` emits ``@context`` and ``@type``, plus the expected
   Schema.org / ed4all: predicates for populated fields.
 * None-valued fields are omitted (keeps the emit compact).
-* ``pyld.expand`` resolves the @context without network (via the Wave 64
-  loader vendored as ``_shacl_validator.register_local_loader``) and
+* ``pyld.expand`` resolves the @context without network through
+  ``_shacl_validator.register_local_loader`` and
   produces fully-qualified IRI predicates.
 * CLI ``--output jsonld`` emits a JSON array of JSON-LD docs suitable
   for a JSON-LD processor.
@@ -48,7 +48,7 @@ def _full_result() -> RetrievalResult:
         chunk_id="chunk-abc-001",
         text="Newton's second law states F = ma",
         score=0.8532,
-        course_slug="course-jsonld-alpha",
+        course_slug="course-a",
         domain="physics",
         chunk_type="explanation",
         difficulty="intermediate",
@@ -65,7 +65,7 @@ def _minimal_result() -> RetrievalResult:
         chunk_id="chunk-xyz",
         text="Short text",
         score=0.5,
-        course_slug="demo",
+        course_slug="course-a",
         domain="general",
         chunk_type="summary",
         difficulty=None,
@@ -91,7 +91,7 @@ def test_to_jsonld_has_context_and_type():
 
 def test_to_jsonld_maps_fields_to_predicates():
     """Every populated RetrievalResult field must land on an aligned
-    JSON-LD key (per the predicate table in jsonld_emit.py)."""
+    JSON-LD key defined by the serializer's predicate table."""
     doc = _full_result().to_jsonld()
     assert doc["identifier"] == "chunk-abc-001"       # schema:identifier
     assert doc["text"] == "Newton's second law states F = ma"  # schema:text

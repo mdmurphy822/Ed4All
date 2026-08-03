@@ -559,7 +559,7 @@ These are stored in `<project-root>/schemas/taxonomies/` and referenced in cours
 - Eval: `evaluation/generator.py`, `evaluation/harness.py`, `evaluation/model_bridge.py` (legacy module shims remain during the deprecation window)
 - Concepts / outcomes: `concept_vocabulary.py`, `outcome_linker.py`, `_bloom_verbs.py`
 - Cross-package: `cross_package/indexer.py` (writer), `cross_package/discovery.py` (reader)
-- Export: `rdf_export.py`, `jsonld_emit.py`
+- Serialization: `serialization/rdf.py`, `serialization/jsonld.py`
 - Format migration: `migrate.py`
 - Operator scripts: `scripts/` — staged-chunkset backfill for legacy archives
 
