@@ -11,8 +11,8 @@ leading word into the following word ONLY when (a) it ABUTS the next word
 single-letter words ("I remember", "a way") sit at a real >= ~2pt word space
 with the SAME font, so they are never merged.
 
-Geometry below is taken verbatim from a measured real textbook-scan PEMDAS
-chart (ch.1, page 35): drop-cap splits sit at gap ~0.01 with a
+Geometry below is synthetic but preserves the measured shape of a drop-cap
+split: the letter and remainder sit at a near-zero gap with a
 Bold->Regular font change; genuine single-letter words sit at gap ~2.57 same
 font. CPU-only, no model load, no PDF IO.
 """

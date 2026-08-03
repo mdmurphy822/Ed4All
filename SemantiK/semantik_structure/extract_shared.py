@@ -128,8 +128,8 @@ _X_TOLERANCE_RATIO = 0.15
 # Max horizontal gap (pt) under which a single-character leading word is
 # treated as a *styled first letter that was split off its word body* (an
 # textbook colored / bold drop-cap: the Bold "S" of "Subtraction" becomes its
-# own pdfplumber word, ABUTTING "ubtraction"). Measured on a real textbook
-# order-of-operations chart page: every such split sits at a ~0pt gap
+# own pdfplumber word, ABUTTING "ubtraction"). Regression geometry shows such
+# splits at a near-zero gap
 # (-0.01..0.01) AND carries a font-name change (Bold→Regular), while every
 # genuine single-letter word ("I remember", "a way", articles "A"/"a"/"I"
 # across body pages) has a real word-space gap >= ~1.99pt. 0.5 is a safe
@@ -469,23 +469,22 @@ def _compute_extract_cache_key(pdf_path: Path) -> str:
     * ``fuse_key`` — SEMANTIK_VLM_FUSION (asymmetric, append-only-when-on): the
       P1 fusion rewrites the merged tesseract text; append-only keeps the
       flag-off key byte-identical to the P0 key. ``vlmfuse2``: the fusion-side
-      bbox sanitation (live-fire ch09 fix) changed what ``fuse_page`` can emit
+      bbox sanitation changed what ``fuse_page`` can emit
       — a cache written under ``vlmfuse1`` may carry unsanitized
       (out-of-page / inverted) interpolated-insert bboxes. ``vlmfuse3``: the
       Defect-1 document-level repeated-furniture strip (``vlm_furniture``) +
       Defect-2 markdown code-fence strip change what the fused blocks carry, so
-      a ``vlmfuse2`` cache is invalid. ``vlmfuse4``: the coordinator-follow-up
+      a ``vlmfuse2`` cache is invalid. ``vlmfuse4``: the follow-up
       Defect-A tesseract-side furniture detection (signatures now also voted by
       the y-sorted tesseract blocks and stripped from the tesseract source) +
       Defect-B ``\\section*{…}`` LaTeX sectioning-wrapper normalization change
       the fused/merged output again — a ``vlmfuse3`` cache still carries the 36
-      clean-OCR footer blocks and the wrapped apparatus headings. ``vlmfuse5``:
-      the ch02 literal-HTML-entity scrub (``vlm_fusion._strip_markdown_structure``
+      stale footer blocks and wrapped apparatus headings. ``vlmfuse5``: the
+      literal-HTML-entity scrub (``vlm_fusion._strip_markdown_structure``
       now decodes/drops ``&nbsp;`` / ``&amp;…;``-style entity text from VLM
       lines before fusion) changes the fused block text — a ``vlmfuse4`` cache
       may carry literal entity text (corrected downstream by the adapter-seam
-      scrub in ``lib/semantik/adapter.py``, so the CURRENT corpus deliberately
-      stays on its ``vlmfuse4`` caches; the salt protects future fresh
+      scrub in ``lib/semantik/adapter.py``; the salt protects future fresh
       conversions). ``vlmfuse6``: the Nemotron-Omni special-token strip
       (``vlm_fusion._strip_vlm_special_tokens`` now removes leaked
       ``<|ref|>…<|/ref|>`` / ``<|det|>[[…]]<|/det|>`` grounding tokens from VLM

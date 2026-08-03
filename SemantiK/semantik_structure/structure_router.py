@@ -417,7 +417,7 @@ def apply_structure_router(
 
     On-domain / no credible VLM (``bert_authoritative``) → the input list is
     returned UNCHANGED (byte-identical), so the caller's gate-off path plus this
-    natural no-op are the two-layer safety the campaign wants.
+    natural no-op provide the feature's two-layer safety contract.
     """
     decision = route_decision(regions, feature_blocks)
     diag: dict = {

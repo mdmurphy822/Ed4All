@@ -1196,14 +1196,14 @@ def test_latex_section_inline_mention_and_math_untouched():
 
 
 # --------------------------------------------------------------------------
-# ch02 defect — literal HTML-entity text scrubbed from VLM lines before fusion.
+# Literal HTML-entity text is scrubbed from VLM lines before fusion.
 # --------------------------------------------------------------------------
 
 
 def test_strip_markdown_structure_scrubs_nbsp_entity_runs():
     from semantik_structure.vlm_fusion import _strip_markdown_structure
 
-    # the audited ch02 shape: blank table spacing transcribed as entity runs
+    # blank table spacing transcribed as entity runs
     assert (
         _strip_markdown_structure("Divide. &nbsp; &nbsp; &nbsp; 45 by 9")
         == "Divide. 45 by 9"
@@ -1420,8 +1420,8 @@ from semantik_structure.vlm_fusion import (  # noqa: E402
 )
 
 
-# The four live-fire evidence lines (unrescued tesseract-only OCR garbage that
-# shipped verbatim into a scanned algebra textbook ch01 conversion).
+# Representative evidence lines: unrescued Tesseract-only OCR garbage that
+# would otherwise ship verbatim.
 _GARBAGE_EVIDENCE = [
     "TRY Tiss ® ©",
     "©) obi Dom -19",
@@ -1617,14 +1617,14 @@ def test_vlm_only_insert_strips_special_tokens():
 
 
 # --------------------------------------------------------------------------
-# FIX 2 — ®/© re-OCR duplicate-tail recognizer (ch01 exercises 207/208).
+# FIX 2 — ®/© re-OCR duplicate-tail recognizer.
 # --------------------------------------------------------------------------
 
 
 from semantik_structure.vlm_fusion import _looks_like_reocr_marker_garbage  # noqa: E402
 
 
-# The live-fire ch01 evidence: a clean-math head fused with a Tesseract re-OCR
+# Regression evidence: a clean-math head fused with a Tesseract re-OCR
 # tail enumerated by ®/© mis-reads + junk-glyph pipe-runs.
 _REOCR_TAIL_EVIDENCE = (
     "b $-|b|$ when $b = -12$ ® -Iq| when g = -33 © —|b| when b = —12 Add Integers"

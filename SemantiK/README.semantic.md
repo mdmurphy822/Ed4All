@@ -30,7 +30,7 @@ rules that produce conformance are visible code, not weights.
 | `MCP/tools/pipeline_tools.py` | The bridge wiring into the Ed4All pipeline |
 | [`architecture.md`](architecture.md) | **Canonical** cascade deep-dive (read this for the design) |
 | [`CLAUDE.md`](CLAUDE.md) | Subsystem guide for coding agents (runtime modes, flags, bridge, tests) |
-| [`docs/ontology.md`](docs/ontology.md) | Standards mapping for every emitted element (WAI-ARIA 1.2 APG, HTML Living Standard, ARIA-in-HTML, PDF/UA, EPUB Accessibility 1.1, WCAG 2.2 AA) |
+| [`schemas/ONTOLOGY.md`](../schemas/ONTOLOGY.md) | Canonical ontology and standards-facing semantic contracts |
 
 ## The cascade at a glance
 

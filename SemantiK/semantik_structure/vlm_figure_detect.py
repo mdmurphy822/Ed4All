@@ -2,10 +2,9 @@
 
 WHY THIS EXISTS
 ---------------
-On a page-raster scan (the page-arranger lane's usual input) there are **no
-sub-page image page-objects at all**. Measured on a real 10-chapter scanned
-textbook: 1,236 pages -> ZERO sub-page image objects; every image page-object is
-the FULL-PAGE RASTER (612x792pt, 100% of the page). The figures — diagrams,
+On a page-raster scan (the page-arranger lane's usual input) there may be **no
+sub-page image page-objects at all**: each image page-object can be the full-page
+raster. The figures — diagrams,
 number lines, charts, algebra-tile arrays — are *pixels inside the page image*.
 Object extraction cannot find them; only a VISION pass can.
 
@@ -88,7 +87,7 @@ The separating signal is **GRID STRUCTURE**, which is orthogonal to word count:
 * a **table** is a lattice — it has ruled COLUMN separators;
 * a **number line** is a single horizontal axis — it has none.
 
-Measured on the real ch01 crops (198-page scan), counting *thin* ruling lines
+Regression crops establish the useful signal by counting *thin* ruling lines
 inside the proposed box (a solid fill / photograph is excluded by the thinness
 test, so a dark photo cannot masquerade as a grid):
 
@@ -116,8 +115,8 @@ untouched. Two independent grid arms are used (either one rejects):
   ruling lines for the first arm to find.
 
 **Known residual (honest).** A badly-LOCALIZED proposal that clips text out of a
-ruled table without enclosing any of its rules (measured: 3 crops on ch01 p115,
-where the model boxed a decimal-point-move caret and sliced through the table's
+ruled table without enclosing any of its rules (for example, where the model
+boxes a decimal-point-move caret and slices through the table's
 prose) carries **no grid evidence inside the box** and is NOT caught here. The
 right fix is an arranger-overlap veto — a figure Region whose bbox lies inside a
 region the arranger already typed ``table`` is not a figure — which cannot be
@@ -213,7 +212,7 @@ _COVERAGE_MIN_AREA = 0.05
 # whitespace, so its AREA coverage measures BELOW a genuine figure's and no
 # coverage threshold can order the two. Word COUNT does.
 #
-# MEASURED on a real scanned-textbook chapter (production signal — words whose
+# Measured regression signal — words whose
 # text-block centre falls inside the proposed box):
 #     GENUINE chart / counters figure ....  1,  3 words   (coverage 0.08 / 0.22)
 #     GENUINE chapter photo .............. 15 words       (coverage 0.02)
@@ -238,8 +237,8 @@ _DEDUP_IOU = 0.55
 # A crop is a TABLE when it encloses a ruled LATTICE: at least this many COLUMN
 # separators plus at least one row rule. The column count is the load-bearing
 # half — a number line has a horizontal axis (h=1) but NEVER a column rule (v=0),
-# while the three ruled tables on the real ch01 scan measured v = 2 / 13 / 16 and
-# EVERY genuine figure measured v <= 1. Two is therefore the smallest threshold
+# ruled-table crops measured at least two vertical rules while genuine-figure
+# crops measured at most one. Two is therefore the smallest threshold
 # with a real margin on both sides.
 # TODO(calibration) — domain-agnostic geometry ("a table has columns, an axis does
 # not"), NOT a corpus target.
@@ -1201,10 +1200,10 @@ def _page_gray(image_b64: str):
     """The page raster as a 2-D uint8 grayscale array — the grid arm's input.
 
     Decodes the SAME JPEG the DETECT call was given, so the grid rejector costs
-    ZERO extra renders. Verified against a clean 144-DPI re-render of the real
-    ch01 pages: the thin-rule counts are identical on every crop that decides a
-    verdict (the ruled tables still measure v=2/13/11 vs a <=1 ceiling on every
-    genuine figure), so JPEG q88 does not blur a ruling line away.
+    ZERO extra renders. Regression comparison against clean 144-DPI renders
+    shows identical thin-rule verdicts: ruled tables retain multiple vertical
+    rules while genuine figures remain at or below one, so JPEG q88 does not
+    blur a ruling line away.
 
     Returns ``None`` (⇒ the raster arm no-ops, never false-rejects) when numpy /
     PIL are unavailable or the payload will not decode.

@@ -118,9 +118,9 @@ output) is in [`architecture.md`](architecture.md); the one-liner map:
   dispatched unconditionally) and drops furniture, emitting ops keyed by index,
   **never text** (verbatim source rides deterministic assembly; token-conservation
   fails closed). The 7B sees an edge-windowed view (head/tail tokens per block)
-  and returns `corrected_kind`. Live-validated on a 3-chapter algebra-textbook slice
-  (2026-06-27): **197 re-types, 0 text reverts** — all 35
-  council `code_block`s (which were "TRY IT" exercises) → `paragraph`/`math`;
+  and returns `corrected_kind`. Regression validation confirms that re-typing
+  preserves source text, including exercise-like blocks that the council may
+  initially classify as `code_block` before correction to `paragraph`/`math`;
   over-detected `table`s (prose callouts, single definitions) → `paragraph`,
   section titles → `heading`, while **real data tables stay `table`**.
 

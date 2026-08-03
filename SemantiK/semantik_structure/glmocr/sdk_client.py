@@ -73,7 +73,7 @@ def render_pdf_to_pngs(
     # rendered documents — pdftoppm pads page ordinals to the document's own
     # digit count, so a shorter document's stale "page-9.png" survives a
     # longer document's fresh "page-009.png" render and interleaves into the
-    # numeric sort (seen live: ch2-opener pages inside the ch01 conversion).
+    # numeric sort, potentially mixing pages from adjacent documents.
     out_dir = out_dir / pdf_path.stem
     out_dir.mkdir(parents=True, exist_ok=True)
     for stale in out_dir.glob("page*.png"):

@@ -14,9 +14,8 @@ label-factory writes) lives in :mod:`semantik_structure.page_arranger`.
 
 Ported VERBATIM (behavior-preserving) from the validated scratchpad prototype
 ``page_arranger_proto.py`` (contract v2: furniture bucket, alias coercion incl.
-the four ch01 failure-taxonomy extensions, 3-rung retry ladder, duplicate
-auto-repair, schema_version-2 training records) — 195/198 pages valid on the
-ch01 whole-book run.
+four observed failure-taxonomy extensions, 3-rung retry ladder, duplicate
+auto-repair, and schema-version-2 training records.
 
 Contract summary (per page):
   1. the model receives a page IMAGE + an id'd list of extracted text UNITS and
@@ -121,8 +120,7 @@ TYPE_ALIASES = {
     "running_head": "furniture",
     "running_header": "furniture",
     "watermark": "furniture",
-    # ch01-run failure-taxonomy extensions (2026-07-12): the four out-of-enum
-    # types the teacher actually invented at chapter scale (16 failed pages).
+    # Failure-taxonomy extensions: out-of-enum types observed at document scale.
     "section": "heading",
     "section-header": "heading",
     "section_header": "heading",

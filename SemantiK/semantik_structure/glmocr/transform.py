@@ -714,8 +714,8 @@ def _anchor_declared_sections(
     when the badge is detected as a separate image region the body opener
     heading comes through UNNUMBERED ("Multiply and Divide Integers"), falls
     to level-3 pending, and downstream structure extraction anchors the
-    section to its answer-key reprint instead (seen live on the ch01 canary:
-    7 of 10 sections). Deterministic, document-driven repair: harvest the
+    section to its answer-key reprint instead. Deterministic, document-driven
+    repair: harvest the
     document's own ToC declarations (runs of ≥3 consecutive plain-paragraph
     ``N.M Title`` entries), and for each declared section whose FIRST
     title-matching heading in document order is unnumbered and precedes any
@@ -779,8 +779,8 @@ def _anchor_declared_sections(
         return
     # One document = one chapter file: only the DOMINANT chapter's
     # declarations anchor sections. A scan slice can carry spillover pages
-    # from the next chapter (its ToC included — seen live: ch01 carries the
-    # ch2 opener); promoting foreign-major sections re-segments the article
+    # from the next chapter, including its ToC; promoting foreign-major
+    # sections re-segments the article
     # tree and breaks body-zone anchoring for the chapter that owns the file.
     _major_counts: Dict[str, int] = {}
     for num, _ in decls:

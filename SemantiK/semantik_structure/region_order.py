@@ -18,8 +18,8 @@ One flag, three modes (``SEMANTIK_REGION_ORDER``):
 
 Imports only :mod:`reading_order` helpers (stdlib-backed) → no import cycle
 (``structure_graph`` imports ``region_order``, never the reverse). NO LLM call
-site → NO DecisionCapture obligation (deterministic pass, flagged loudly per
-the campaign rules).
+site → NO DecisionCapture obligation (deterministic pass, stated explicitly
+for contract clarity).
 """
 from __future__ import annotations
 

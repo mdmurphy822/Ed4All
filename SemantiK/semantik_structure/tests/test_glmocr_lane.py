@@ -218,7 +218,7 @@ def test_parser_construction_serialized(monkeypatch):
 
 def test_render_dir_isolated_per_document(monkeypatch, tmp_path):
     """A prior document's leftover page renders must never leak into a later
-    document's page list (shared-dir glob poisoning, seen live on ch01)."""
+    document's page list through shared-directory glob poisoning."""
     import subprocess as sp
 
     from semantik_structure.glmocr import sdk_client as sc

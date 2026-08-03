@@ -227,7 +227,7 @@ def test_judgments_drop_out_of_range_indices():
 # ---------------------------------------------------------------------------
 # Off-contract verdict shapes must NOT kill the cascade.
 #
-# Live regression (2026-07-13, ch01-reval): a QC unit returned a FLOAT where the
+# Regression: a QC unit returned a FLOAT where the
 # contract says findings-list, and the unguarded ``for item in v.get(key) or ()``
 # raised TypeError("'float' object is not iterable") out of _absorb_window_findings
 # — killing a ~2h cascade at the final stitch, after every QC unit was paid for.

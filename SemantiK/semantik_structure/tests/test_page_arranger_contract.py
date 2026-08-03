@@ -1,7 +1,7 @@
 """Unit tests for the pure ARRANGE contract (page_arranger_contract).
 
 No env, no HTTP, no filesystem — the contract half is fully deterministic.
-Covers: alias coercion (incl. the 4 ch01 failure-taxonomy extensions), list-family
+Covers: alias coercion (including observed failure-taxonomy extensions), list-family
 context sensitivity both ways, duplicate auto-repair + emptied-block removal,
 validation (coverage / unknown-id / duplicate), the rung-3 message restating the
 full legal-id set, derive_relations_v2 shapes, and extract_json tolerance.
@@ -16,7 +16,7 @@ def _units(*ids_texts):
 
 
 # --- alias coercion --------------------------------------------------------
-def test_alias_coercion_four_ch01_extensions():
+def test_alias_coercion_observed_extensions():
     unit_by_id = {"a": {"id": "a", "text": "Foo"}}
     for raw, canon in [
         ("section", "heading"),

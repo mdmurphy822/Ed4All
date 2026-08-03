@@ -115,11 +115,11 @@ _CACHE_BASENAME = "page_arranger_cache"
 
 # --- ARRANGER-OVERLAP VETO (task #58) — see apply_figure_overlap_veto ---
 #
-# TODO(task #58, OPEN): the p115 images-of-text class is NOT closed by this veto
-# (measured: it vetoes 0 of 30 crops on ch01 — the defect region is typed
+# TODO(task #58, OPEN): the images-of-text class is NOT closed by this veto
+# because the defect region is typed
 # `paragraph`, not `table`; see apply_figure_overlap_veto's docstring).
 #
-# ROOT CAUSE, measured — the mechanism, not a threshold. The 3 bad p115 crops
+# ROOT CAUSE, measured — the mechanism, not a threshold. The bad regression crops
 # evade the text guards through a STRUCTURAL GAP, and both halves of it are
 # geometric:
 #
@@ -141,8 +141,8 @@ _CACHE_BASENAME = "page_arranger_cache"
 #   * page-level grid containment      — fired on only 1 of 6
 #   * padded-crop ruling lines         — broke p080 (fraction bars, a GOOD crop)
 #   * graphic-ink ratio                — fused OCR lines blanket figures -> 0.00
-#   * text-straddle                    — GOOD p135 straddles MORE than BAD p115
-#   * proposal overlap (IoU)           — GOOD p060 overlaps at the same IoU
+#   * text-straddle                    — good crops can straddle more than bad ones
+#   * proposal overlap (IoU)           — good crops can overlap at the same IoU
 #   * model confidence                 — a CONSTANT 0.9 on every proposal
 #   * arranger `table` overlap (HERE)  — the region is typed `paragraph`, not table
 #   * arranger `paragraph` overlap     — 1.000 on the number lines TOO -> fatal
@@ -161,8 +161,8 @@ _CACHE_BASENAME = "page_arranger_cache"
 # Fraction-of-FIGURE-covered at/above which a figure is judged to BE a piece of
 # the overlapping table rather than a figure beside it. TODO(calibration):
 # domain-agnostic geometry ("a figure is not a crop of a table"), NOT a corpus
-# target. Measured on the real 198-page ch01 scan: the images-of-text strips sit
-# far above this and every genuine figure — every number line included — sits at
+# target. Regression measurements show images-of-text strips sit far above this
+# while genuine figures — every number line included — sit at
 # 0.000, so the band is empty by a wide margin on both sides.
 _FIGURE_VETO_MIN_COVERED = 0.50
 # The arranger block types whose regions VETO an overlapping figure. `table` ONLY:
@@ -1089,9 +1089,8 @@ def apply_md_heading_promote(
 # ---------------------------------------------------------------------------
 # Part C4: SECTION-TITLE RESCUE (SEMANTIK_ARRANGER_TITLE_RESCUE).
 #
-# Measured root cause of the scan lane's section-heading recall gap (ch01 vendor
-# A/B: 6/10 section titles, and 2 of the 6 "hits" were only recovered from the
-# end-of-chapter summary, not the section start):
+# Root cause of the scan lane's section-heading recall gap: some apparent hits
+# were recovered only from an end-of-chapter summary, not the section start.
 #
 #   EXTRACTION is CLEAN — the running header / folio and the section title arrive
 #   as SEPARATE units ("Chapter 1 Foundations 41" then "1.3 Add and Subtract
@@ -1135,8 +1134,8 @@ def apply_furniture_unit_peel(
     * **remainder-must-be-a-title** — otherwise the peel would SHRINK an over-long
       prose block back under ``SEMANTIK_ARRANGER_HEADING_MAX_CHARS``, so
       :func:`apply_heading_sanity` would no longer demote it ``too_long`` and PROSE
-      would ship as a heading (measured: 8 junk headings on the real ch01 replay
-      before this guard). A block whose remainder is not a title is left ENTIRELY
+      would ship as a heading in regression replays before this guard. A block
+      whose remainder is not a title is left ENTIRELY
       alone → heading-sanity demotes it exactly as today (byte-identical).
     * **DEMOTE-VERDICT PRESERVATION** — the peel must never RESCUE a block that
       heading-sanity would have demoted (too_long / furniture-marker) just by
@@ -1452,8 +1451,8 @@ def apply_outline_title_carve(
 #: arranger already assigns to the section titles it gets right unaided.
 _SECTION_TITLE_LEVEL = 2
 #: Level a REPEATED section title (a chapter-summary / review restatement) takes.
-#: 4 → ``<h5>`` — again exactly what the vendor does (measured on the ch01 gold:
-#: each section title appears ONCE at ``<h3>`` at its section start and again at
+#: 4 → ``<h5>`` — matching the source hierarchy: each section title appears
+#: once at ``<h3>`` at its section start and again at
 #: ``<h5>`` under "Key Concepts", deliberately BELOW the h1-h3 nav band).
 _REPEAT_SECTION_TITLE_LEVEL = 4
 
@@ -2488,9 +2487,9 @@ def _split_list_items(texts: list[str]) -> list[str]:
 # cannot drift, and adds ONE lane-specific guard.
 #
 # THE PAGE-RASTER GUARD IS MANDATORY, not optional. The arranger lane fires on
-# the OCR/scan lane, i.e. a page-raster scan: measured on a real 198-page scanned
-# chapter, ALL 198 image page-objects covered >=90% of their page and ZERO were
-# genuine sub-page figures. A naive "one figure Region per image FB" would emit
+# the OCR/scan lane, i.e. a page-raster scan, where image page-objects can cover
+# nearly the whole page without representing genuine sub-page figures. A naive
+# "one figure Region per image FB" would emit
 # 198 <img>, each a photograph of an ENTIRE textbook page — a WCAG 1.4.5
 # images-of-text regression duplicating every body paragraph as pixels. The guard
 # (``structure_graph.is_page_raster_candidate``) excludes them; a genuine sub-page
@@ -2587,8 +2586,8 @@ def _page_norm_dims(shared: dict) -> "tuple[dict, dict]":
     (612x792). A text Region's bbox comes from OCR text FeatureBlocks, which on the
     scan lane are **IMAGE-PIXEL** space (1224x1584 at render scale 2.0). Comparing
     the two raw would place every figure in the top-left quadrant of the text
-    regions' frame and make the overlap measurement meaningless (measured on the
-    real ch01 scan: page dims 612x792 while text bboxes run to 1081x1453).
+    regions' frame and make the overlap measurement meaningless when raster and
+    text coordinate systems use different extents.
 
     So both are normalized to ``[0, 1]`` page fractions first, each by the dims of
     ITS OWN space: figures by the POINT dims, text regions by the extraction's
@@ -2640,8 +2639,8 @@ def _fraction_covered(fig: tuple, other: tuple) -> float:
     * **IoU is WRONG here.** The defect is a thin, sloppy strip slicing THROUGH a
       large table. Its intersection with the table is most of the STRIP but a small
       slice of the UNION (which the big table dominates), so IoU stays LOW and the
-      strip survives — IoU literally cannot see this defect. (Measured on ch01's 3
-      bad p115 crops: IoU vs their table is small while fraction-covered is ~1.0.)
+      strip survives — IoU literally cannot see this defect. In regression
+      crops, IoU remains small while fraction-covered approaches 1.0.
     * **Strict containment (frac == 1.0) is too brittle.** The bad boxes are sloppy
       and poke outside the table's bbox, so an exact-containment test misses them.
     * **Fraction-of-FIGURE-covered asks exactly the right question:** "how much of
@@ -2677,8 +2676,8 @@ def apply_figure_overlap_veto(
 
     THE SIGNAL (task #58). The VLM figure-DETECT lane's last residual defect is a
     badly-LOCALIZED proposal that clips text out of a ruled table WITHOUT enclosing
-    any of its rules — measured: 3 crops on ch01 p115, where the model boxed a
-    decimal-point-move caret and drew sloppy strips that slice through the table's
+    any of its rules — for example, when the model boxes a decimal-point-move
+    caret and draws sloppy strips that slice through the table's
     PROSE. They carry **no grid evidence inside the box**, so no crop-local signal
     can see them: the grid rejector finds no rules, the word guard must ignore
     digits (or it kills number lines), the coverage arm saturates on small figures.
@@ -2699,11 +2698,11 @@ def apply_figure_overlap_veto(
     order. So the veto cannot be wired from ``vlm_figure_detect``; it must be a
     POST-ARRANGEMENT pass, here, once the arrangement exists and regions are typed.
 
-    **MEASURED OUTCOME — READ THIS BEFORE EXTENDING THE VETO (task #58).** On the
-    real 198-page ch01 scan this pass is a **no-op: it vetoes 0 of 30 accepted
-    figures, and it does NOT close the p115 defect it was designed for.** The
-    arranger emits 139 ``table`` regions document-wide, so the machinery is live —
-    but **on p115 there is no ``table`` region at all**: the arranger types that
+    **MEASURED OUTCOME — READ THIS BEFORE EXTENDING THE VETO (task #58).** In
+    regression evaluation this pass is a **no-op for accepted figures and does
+    not close the localization defect it targets.** The table-region machinery
+    remains active, so
+    but in the open defect there is no ``table`` region at all: the arranger types that
     entire ruled step-table as ONE ``paragraph`` (it is a worked example's Solution
     body), spanning most of the page. Measured coverage of the 3 bad crops:
     ``table`` **0.000**, ``paragraph`` **1.000**. So the premise "the arranger typed
@@ -2719,7 +2718,7 @@ def apply_figure_overlap_veto(
 
     So this pass is kept as a CORRECT, SAFE, defense-in-depth arm (a figure landing
     inside a genuinely table-typed region is still a table crop and still dies), NOT
-    as the fix for p115. The p115 class remains OPEN — see the module TODO.
+    as the fix for this class. The class remains OPEN — see the module TODO.
 
     THE METRIC is fraction-of-FIGURE-covered (:func:`_fraction_covered`), NOT IoU —
     see that function for why IoU structurally cannot see this defect. Both boxes

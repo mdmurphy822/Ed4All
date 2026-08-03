@@ -1406,8 +1406,8 @@ def is_page_raster_candidate(
     FB, so it inherits the pixel-space dims while the bbox stays point-space) makes
     a FULL-PAGE raster measure as (612*792)/(1224*1584) = 25% coverage — under any
     sane threshold — so every page raster silently passes the guard and ships as a
-    figure. Measured on a real 198-page scanned chapter: 198/198 page rasters
-    slipped through that way.
+    figure. Regression coverage confirms that full-page rasters can all slip
+    through that way.
 
     **Fail-open** — unknown page / missing or degenerate dims return ``False``
     (KEEP the candidate; never silently drop a real figure).

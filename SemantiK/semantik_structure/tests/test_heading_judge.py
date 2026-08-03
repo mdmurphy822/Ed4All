@@ -1002,7 +1002,7 @@ def test_unhealed_coverage_gap_blocks_caching(tmp_path, monkeypatch):
     assert m == {1: 4}
     # gap 1 of 2 pendings > tolerance max(1, 2//50)=1? gap==1 <= 1 → tolerated.
     # So this verdict is WITHIN tolerance and may cache — assert the boundary:
-    # with 2 pendings a 1-id gap is honest fail-open (matches live ch01 0.3%).
+    # with 2 pendings a 1-id gap is an honest fail-open boundary.
     assert len(list((tmp_path / "heading_judge_cache").rglob("*.json"))) == 1
 
 

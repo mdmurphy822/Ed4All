@@ -256,8 +256,8 @@ def resolve_keep_ordered_markers_mode() -> bool:
     In a textbook exercise/answer bank the VLM emits one exercise per line
     ("425. $\\frac{6}{13}+\\frac{5}{13}$"), and the legacy single-marker strip
     branch in :func:`_strip_markdown_structure` deleted the leading "425." as a
-    markdown list marker — silently losing the exercise IDENTIFIER (38 numbers
-    lost on the audited scanned-algebra-textbook ch01). When this mode is ON the
+    markdown list marker — silently losing the exercise identifier. When this
+    mode is ON the
     single-marker strip is SKIPPED, so the number survives as content; genuine
     markdown-list semantics still reach P2 via the untouched raw ``vlm_md`` hint
     channel. **NO-OP without VLM fusion** (:func:`_strip_markdown_structure` is
@@ -274,8 +274,8 @@ def resolve_fusion_line_units_mode() -> bool:
     """Whether a multi-VLM-line fused unit emits ONE block PER line (default ON).
 
     Fix B for the unit-boundary destruction that glued a worked example's label,
-    stem, "Solution", table, and TRY IT lines into single mega-blocks (audited
-    scanned-algebra-textbook ch01 run-on exercise blobs). Reads
+    stem, "Solution", table, and practice lines into single mega-blocks.
+    Reads
     ``SEMANTIK_FUSION_LINE_UNITS`` with the **default-ON** parse posture of
     :func:`resolve_collapse_repetition_mode`: only an explicit falsey value
     (``0`` / ``false`` / ``no`` / ``off``) disables it; unset / truthy / garbage
@@ -306,8 +306,8 @@ def resolve_fusion_line_units_mode() -> bool:
 # ("x + x + x + …", "0 0 0 0 …", "- - - - …"). Because the fused text ships
 # verbatim as prose (`raw_text` → the accessible HTML `<p>` AND the retrieval
 # chunk), one such figure produced an 8k-word mega-chunk of pure retrieval
-# poison (2026-07 scanned algebra textbook ch01 scan audit — a single region
-# carried ~4,047 repetitions of the `x +` cycle).
+# poison when a single region carries thousands of repetitions of a short
+# token cycle.
 #
 # This tripwire is DOMAIN-AGNOSTIC (it keys on the STRUCTURE — a repeated UNIT,
 # never on any specific token like `x`/`+` or any specific sentence) and
@@ -325,7 +325,7 @@ def resolve_fusion_line_units_mode() -> bool:
 #     `_REPEAT_MIN_SENTENCE_CYCLES` (6) consecutive times. This closes the
 #     sentence-granularity blind spot the token arm misses (the VLM looping a
 #     whole SENTENCE ~33× into a ~15 KB blob that the chunker then windowed into
-#     byte-identical chunks — 2026-07 scanned algebra textbook ch01 re-audit).
+#     byte-identical chunks in a regression replay).
 #
 # Both arms err toward KEEPING. A repeated SENTENCE is a far stronger degeneracy
 # signal than a repeated word, so its cycle floor (6) is small — but to stay
@@ -503,8 +503,8 @@ def _collapse_degenerate_repetition(text: str) -> str:
 # — deleted real content). Real content lands on the VLM-aligned / rescued path,
 # never here; and this predicate never even looks at a line carrying a math span.
 #
-# The four live-fire evidence lines it MUST catch (unrescued tesseract-only
-# blocks that shipped verbatim into a scanned algebra textbook ch01 conversion):
+# Representative evidence lines it MUST catch (unrescued Tesseract-only OCR
+# garbage that would otherwise ship verbatim):
 #   "TRY Tiss ® ©"      (junk-symbol-dominated fragment)
 #   "©) obi Dom -19"    (leading junk glyph + word soup)
 #   "© Solution No."    (leading junk glyph + fragment)
@@ -532,7 +532,7 @@ _GARBAGE_MAX_CHARS = 40
 _GARBAGE_MAX_TOKENS = 6
 
 # ---------------------------------------------------------------------------
-# ®/© re-OCR duplicate-tail recognizer (ch01 exercises 207/208).
+# ®/© re-OCR duplicate-tail recognizer.
 # ---------------------------------------------------------------------------
 #
 # A clean VLM-transcribed exercise block sometimes ships with a Tesseract
@@ -785,10 +785,10 @@ _MD_FENCE_INLINE_RE = re.compile(r"`{3,}[A-Za-z0-9_+-]*")
 _LATEX_SECTION_WRAP_RE = re.compile(
     r"^\\(?:sub){0,2}section\*?\{(?P<inner>[^{}]*)\}\s*$"
 )
-# ch02 audit (2026-07-04) — the VLM transcribes blank table spacing as LITERAL
+# The VLM may transcribe blank table spacing as literal
 # ``&nbsp;`` HTML-entity TEXT in its markdown (runs of ``&nbsp; &nbsp; …``,
 # sometimes double-escaped ``&amp;nbsp;``); fusion previously carried them into
-# block text verbatim (520 visible "nbsp" occurrences in the audited ch02).
+# block text verbatim across long entity runs.
 # Entities are markup syntax, not content → decode the common ones to their
 # character (nbsp→space, amp→&, lt→<, gt→>) and DROP any other literal
 # ``&[a-z]+;`` entity to a space. ``(?:amp;)*`` unwraps the double-escaped form
@@ -835,7 +835,7 @@ def _strip_markdown_structure(line: str) -> str:
         s = _MD_ORDERED_RE.sub("", s)
     # Bold wrappers only (single * / _ can be multiplication / subscript).
     s = s.replace("**", "").replace("__", "")
-    # Literal HTML entities (ch02 nbsp defect): decode the common ones, drop
+    # Literal HTML entities: decode the common ones, drop
     # the rest, then collapse the whitespace runs the decode leaves behind.
     # Guarded so entity-free lines stay byte-identical.
     if "&" in s and _HTML_ENTITY_RE.search(s):

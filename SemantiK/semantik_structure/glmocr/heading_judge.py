@@ -92,9 +92,8 @@ _WINDOW_CONCURRENCY = 4
 
 # OUTPUT-side window cap: the ladder above was input-token driven only, so a
 # chapter whose digest FITS the input budget still packed every pending heading
-# into ONE window — measured live (scan ch01: 308 pending), the response
-# (308 judgments + thinking) exhausted max_tokens (finish=length) and the
-# doubled retry (prompt + ~23k completion) overflowed the seat's context
+# into ONE window. A large set of judgments plus reasoning can exhaust
+# max_tokens (finish=length), while a doubled retry can overflow the seat's context
 # window entirely (vLLM 400 → retry-ladder exhaustion). Windows are therefore
 # ALSO capped by pending count. _MAX_PENDING_PER_WINDOW is the HARD ceiling;
 # the EFFECTIVE cap is budget-derived (resolve_pending_window_cap below).
@@ -2671,8 +2670,8 @@ def _fan_halves(
     depth: int,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Judge two half-windows CONCURRENTLY (an exhausting window costs
-    first-POST + max(halves), not + sum(halves); the seat batches them —
-    measured ch02: serial halves stretched the chapter to 78 min). Bounded:
+    first-POST + max(halves), not + sum(halves); the seat batches them).
+    Bounded:
     ≤2 threads per split, depth ≤ resolve_heading_judge_max_split_depth().
     Returns
     ``(merged_levels, aggregated_flags)``."""

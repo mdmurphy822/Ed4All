@@ -15,17 +15,10 @@
 > links here; the wire contract + cross-venv bridge are §12–§14 below.
 
 This document is the canonical reference for the structure of the pipeline.
-For the WCAG / standards mapping that governs each output element, see
-[`docs/ontology.md`](docs/ontology.md). For the historical eight-stage refactor
-that this design supersedes, see [`docs/refactor_plan.md`](docs/refactor_plan.md).
-
-> **Both of those files are missing from this tree** — neither
-> `SemantiK/docs/ontology.md` nor `SemantiK/docs/refactor_plan.md` has ever
-> been committed (verified against full git history 2026-08-01;
-> `SemantiK/docs/` holds only `running-on-8gb.md`). This matters more than a
-> dead link: `ontology.md` is cited *normatively* at ten points below — "per
-> `docs/ontology.md` §7", "§6 must NOT include theta", "§2.3" — so those
-> claims currently have no readable source. Treat the assertions in this file
+For the canonical ontology and standards-facing semantic contracts, see
+[`schemas/ONTOLOGY.md`](../schemas/ONTOLOGY.md). This architecture supersedes
+the earlier eight-stage design; the current implementation and contracts in
+this file are authoritative. Treat the assertions in this file
 > as the operative ones until the ontology doc lands, and don't add new
 > deferrals to it.
 
@@ -157,7 +150,7 @@ PDF
 │      TOC pattern; <aside class="legal|copyright"> for legal-or-      │
 │      copyright; <address> for author                                 │
 │    · body-scope <header> and <footer> are NOT emitted by assembler   │
-│      — page template owns them (per docs/ontology.md §7). Semantic   │
+│      — page template owns them (per the canonical ontology).        │
 │      `footer` doc-role drops to artifact (same as `metadata`).       │
 │    · list-continuation: 4-clause merge (kind + marker + adjacency    │
 │      + no-heading-interruption); figure interruptions tolerated      │
@@ -558,7 +551,7 @@ burden — and emits a per-dimension report.
   attach a `meaning-preservation review recommended` flag.
 - Theta is a **developer-facing and consumer-facing internal diagnostic**,
   not a public marketing metric. The conformance statement template in
-  [`docs/ontology.md`](docs/ontology.md) §6 must NOT include theta.
+  [`schemas/ONTOLOGY.md`](../schemas/ONTOLOGY.md) must NOT include theta.
 - Theta is **omitted** on the non-certified-stamp exit
   (`theta_score: null, wcag_status: "failed"`).
 
@@ -620,7 +613,7 @@ caps cost and matches the gate-failure retry policy.
 Some valid WCAG remediations *legitimately* lower theta:
 
 - Flattening a sidebar into linear flow is correct WCAG (per
-  [`docs/ontology.md`](docs/ontology.md) §2.3) but raises fragmentation_penalty.
+  [`schemas/ONTOLOGY.md`](../schemas/ONTOLOGY.md)) but raises fragmentation_penalty.
 - Splitting a multi-column layout-merged paragraph into two `<p>` elements
   raises fragmentation_penalty.
 - Emitting native MathML for an image-of-equation raises diff-from-source.
@@ -644,7 +637,8 @@ Specific guards live in `theta/config.yaml`.
 }
 ```
 
-Full schema in [`Plans/03_theta_investigation.md`](Plans/03_theta_investigation.md) §5.
+The implemented schema lives in
+[`semantik_structure/theta/types.py`](semantik_structure/theta/types.py).
 
 ### 6.6 v1 implementation status (Stage 12)
 
@@ -902,8 +896,7 @@ simultaneously. Adapter swap is fast (LoRA matrices are small).
 
 ## 10. Relationship to the legacy 8-stage pipeline
 
-The pre-existing layout described in [`README.md`](README.md) and
-[`docs/refactor_plan.md`](docs/refactor_plan.md) was an **eight-stage
+The superseded design was an **eight-stage
 deterministic pipeline with one trained model** (a per-block role classifier
 at stage 3). The model encoded in that doc is preserved in this new
 architecture as a subset of BERT-Structure.
@@ -916,12 +909,12 @@ Mapping from the legacy stages to the new ones:
 | 2. features | Stage 2 (unchanged — feeds layout features into BERTs) |
 | 3. classify (rules + DistilBERT) | Stage 3 BERT council (BERT-Structure subsumes the role classifier; six new BERTs added) |
 | 4. hierarchy | Stage 9 (deterministic assembler — heading hierarchy normalization) |
-| 5. ontology_map | Stages 5 + 9 (structure-graph generation + assembler — driven by [`docs/ontology.md`](docs/ontology.md)) |
+| 5. ontology_map | Stages 5 + 9 (structure-graph generation + assembler — aligned with [`schemas/ONTOLOGY.md`](../schemas/ONTOLOGY.md)) |
 | 6. enrich | Stage 6 Qwen region specialists (prose / table / math) + Stage 9 assembler-driven Qwen-GapFill |
 | 7. validate | Stages 7 + 10 (per-region and document-level hard gates) |
 | 8. escalate | Stage 12 ThetaEvaluator (new — post-WCAG quality score) + Stage 13 exits (ship-with-confidence / ship-with-flag / offline-Qwen lane / non-certified stamp; no human escalation) |
 
-The ontology in [`docs/ontology.md`](docs/ontology.md) remains the
+The ontology in [`schemas/ONTOLOGY.md`](../schemas/ONTOLOGY.md) remains the
 authoritative WCAG / standards mapping for every emitted element. The new
 architecture is the *structural* layer that decides what to emit; the
 ontology is the *standards* layer that decides how each emission must look.
@@ -975,14 +968,14 @@ The following are decided. Changes require an explicit revision of this doc.
   are deferred to v2 (combinatorial trap).
 - **Math wins matrix arbitration** in the cross-BERT reranker.
 - **Qwen specialist runtime is llama.cpp** (not transformers, not Ollama). Council BERTs stay on transformers + PEFT because llama.cpp targets decoder-only models. Training uses HF/PEFT for both; only Qwen specialist *inference* is llama.cpp.
-- **Page template owns body-scope `<header>`/`<footer>`** (per [`docs/ontology.md`](docs/ontology.md) §7). The assembler emits `<main>`, `<nav>`, `<aside>` (legal/copyright), and `<address>` (author); it does NOT wire body-scope `<header>` or `<footer>`. BERT-Semantic's `footer` doc-role is treated as a page artifact and dropped from visible content.
+- **Page template owns body-scope `<header>`/`<footer>`** (per [`schemas/ONTOLOGY.md`](../schemas/ONTOLOGY.md)). The assembler emits `<main>`, `<nav>`, `<aside>` (legal/copyright), and `<address>` (author); it does NOT wire body-scope `<header>` or `<footer>`. BERT-Semantic's `footer` doc-role is treated as a page artifact and dropped from visible content.
 - **No scalar confidence number in v1.** A heuristic confidence would be uncalibrated; theta_score is the single quality number on the wire. Calibrated confidence deferred until held-out calibration data exists.
 - **ThetaEvaluator (Stage 12)** is post-WCAG quality reporting, not a gate.
   One learned dimension (semantic preservation, DeBERTa-v3-small cross-
   encoder); seven deterministic dimensions. Three of the seven reuse
   Stage 11's emitted axis scores. Theta MUST NOT override a failed WCAG
   hard gate. Theta is internal-diagnostic; **conformance statements in
-  [`docs/ontology.md`](docs/ontology.md) §6 must NOT include theta**.
+  [`schemas/ONTOLOGY.md`](../schemas/ONTOLOGY.md) must NOT include theta**.
 - **Theta retry policy** is capped at one offline retry on
   `theta_score < TAU_THETA_RETRY` (calibrated 0.75, `theta-config-2.0`);
   no second retry.
@@ -1198,4 +1191,4 @@ Honest constraints an operator should know going in:
 (version 2026-05-03), superseding the "two trained models, Qwen as single
 decision-maker" design; §12–§14 document the live output contract, cross-venv
 bridge, and honest limitations of the conversion engine. WCAG / standards
-mapping continues to live in [`docs/ontology.md`](docs/ontology.md).*
+mapping continues to live in [`schemas/ONTOLOGY.md`](../schemas/ONTOLOGY.md).*

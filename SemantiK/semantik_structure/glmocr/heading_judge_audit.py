@@ -29,9 +29,8 @@ Three arms:
   ADVISORY for human/owner review and NEVER normalizes or mutates — and it
   NEVER contributes to ``flagged_chapters``.
 
-**DETERMINISTIC → NO LLM call site → NO DecisionCapture** (stated loudly per the
-campaign's loud-no-exception rule: a pure function over persisted artifacts
-emits no capture). **Cross-venv clean:** ZERO Ed4All ``lib/`` imports (stdlib
+**DETERMINISTIC → NO LLM call site → NO DecisionCapture**: a pure function over
+persisted artifacts emits no capture. **Cross-venv clean:** ZERO Ed4All ``lib/`` imports (stdlib
 only), mirroring the ``stop_seam`` / ``heading_judge`` twin posture, so it runs
 in the SemantiK venv beside the cascade. **Best-effort / fail-open:** the audit
 is a pure READ pass — it never mutates a sidecar or HTML, and the

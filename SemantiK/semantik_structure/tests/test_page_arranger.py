@@ -1198,7 +1198,7 @@ def test_build_figure_region_from_candidate_shape():
 # (n) SECTION-TITLE RESCUE (SEMANTIK_ARRANGER_TITLE_RESCUE) — the measured
 # scan-lane section-heading recall gap.
 #
-# ROOT CAUSE (traced on a real 198-page scan): extraction is CLEAN — the running
+# ROOT CAUSE: extraction is clean — the running
 # header / folio and the section title arrive as SEPARATE units — but the ARRANGE
 # MODEL groups them into ONE block, after which every existing mechanism damages
 # the title. The four shapes below are the four REAL broken titles, pinned:
@@ -1541,7 +1541,7 @@ def _table_region(fb_idx, bbox_px):
 
 
 def test_veto_kills_the_strip_sliced_through_a_table():
-    """The p115 defect: a sloppy strip lying INSIDE the table's rectangle."""
+    """A sloppy strip lying inside a table's rectangle is rejected."""
     # table covers the middle of the page, in PIXEL space (1224x1584)
     table = _table_region(10, (120.0, 400.0, 1100.0, 1000.0))
     # a strip fully inside it, in POINT space (612x792) -> normalized ~same place

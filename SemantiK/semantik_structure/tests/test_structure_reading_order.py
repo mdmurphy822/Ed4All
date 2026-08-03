@@ -4,8 +4,8 @@
 headings, Pass-3 tables/math, Pass-5 paragraphs, ...) and never re-sorts to
 reading order, so the flat Region list is SEGREGATED by kind (every heading
 clustered at the front, every body paragraph at the back) rather than
-monotone in document order. On a real textbook ch1-3 capture that surfaces as EXAMPLE
-labels (council=heading) at byte-4% and their bodies (paragraph) at byte-40%.
+monotone in document order. A representative failure places apparatus labels
+(council=heading) early and their bodies (paragraph) much later.
 
 The fix is a final STABLE sort by ``min(feature_block_indices)`` at the exit
 of ``build_structure_graph``, gated behind ``SEMANTIK_READING_ORDER_FIX``
