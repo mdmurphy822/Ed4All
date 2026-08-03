@@ -5,12 +5,8 @@ temporarily while they are reviewed and moved to the ignored regression shelf.
 They are not production tools, supported CLI entry points, or templates for new
 repair work.
 
-Two files remain here because tracked references must be resolved first:
-
-- `wave75_classify_concept_graph.py` is imported directly by
-  `Trainforge/tests/test_concept_graph_classification.py`.
-- `wave81_reclassify_chunks.py` still has tracked legacy references that must be
-  removed or redirected before it is shelved.
+`wave81_reclassify_chunks.py` remains here until its tracked legacy references
+are removed or redirected.
 
 New supported repair behavior belongs in a purpose-named directory under
 `Trainforge/scripts/ops/`, `Trainforge/scripts/maintenance/`, or
