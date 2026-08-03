@@ -8,13 +8,10 @@ from pathlib import Path
 
 import pytest
 
-# Add module path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'component-applier'))
+# Import the supported standalone operator command from its canonical location.
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'ops'))
 
-try:
-    from component_applier import ComponentApplier
-except ImportError:
-    pytest.skip("component_applier module not available", allow_module_level=True)
+from component_applier import ComponentApplier
 
 
 class TestComponentApplier:

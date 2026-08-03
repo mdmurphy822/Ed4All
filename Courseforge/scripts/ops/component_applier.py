@@ -5,17 +5,14 @@ Component Applier - Transform HTML Content with Interactive Components
 This script applies Bootstrap 4.3.1 components from the Courseforge template
 library to enhance plain HTML content with interactive, accessible elements.
 
-Features:
-- Pattern-based content detection
-- AI-assisted component recommendation (with Claude API)
-- Bootstrap 4.3.1 compatible output
-- WCAG 2.2 AA accessibility compliance
-- Brightspace D2L compatibility
+The utility uses deterministic content-pattern matching and emits Bootstrap
+4.3.1-compatible components with accessibility-oriented markup.
 
 Usage:
-    python component_applier.py --input content.html --output styled.html
-    python component_applier.py --input-dir <INPUT_DIR> --output-dir <OUTPUT_DIR>
-    python component_applier.py --mapping mapping.json --input-dir <INPUT_DIR>
+    python3 Courseforge/scripts/ops/component_applier.py \
+        --input <PRIVATE_INPUT_HTML> --output <PRIVATE_OUTPUT_HTML>
+    python3 Courseforge/scripts/ops/component_applier.py \
+        --input-dir <PRIVATE_INPUT_DIR> --output-dir <PRIVATE_OUTPUT_DIR>
 """
 
 import argparse
@@ -31,8 +28,8 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 
 from bs4 import BeautifulSoup
 
-# Add Ed4All lib to path for decision capture
-ED4ALL_ROOT = Path(__file__).resolve().parents[3]  # scripts/component-applier/component_applier.py → Ed4All/
+# Resolve repository-owned imports and private runtime logging from this command.
+ED4ALL_ROOT = Path(__file__).resolve().parents[3]
 if str(ED4ALL_ROOT) not in sys.path:
     sys.path.insert(0, str(ED4ALL_ROOT))
 
@@ -74,7 +71,7 @@ class ComponentType(Enum):
     TABS = "tabs"
     PROGRESS_BAR = "progress_bar"
     ACTIVITY_CARD = "activity_card"
-    # New interactive components
+    # Self-guided learning components.
     SELF_CHECK = "self_check"
     REVEAL_CONTENT = "reveal_content"
     INLINE_QUIZ = "inline_quiz"
@@ -104,7 +101,7 @@ class ApplicationResult:
     error: Optional[str] = None
 
 
-# Content detection patterns (fallback when AI unavailable)
+# Deterministic patterns used to select component transformations.
 CONTENT_PATTERNS = {
     ComponentType.TIMELINE: [
         r'step\s*\d',
@@ -224,7 +221,8 @@ class ComponentApplier:
         Initialize the component applier.
 
         Args:
-            use_ai: Whether to use Claude API for content analysis
+            use_ai: Reserved compatibility input. It is currently non-operative;
+                component selection remains deterministic.
             template_dir: Path to template directory
             capture: Optional DecisionCapture for logging component decisions
         """
@@ -627,8 +625,7 @@ class ComponentApplier:
 
     def _apply_flip_card(self, soup: BeautifulSoup, section: dict):
         """Create flip card component"""
-        # This would need more sophisticated content analysis
-        # For now, basic implementation
+        # Present the section title as the prompt and its content as the reveal.
         flip_card = soup.new_tag('div', attrs={
             'class': 'flip-card',
             'tabindex': '0',
@@ -1290,7 +1287,10 @@ def main():
     parser.add_argument('--output', '-o', help='Output HTML file')
     parser.add_argument('--input-dir', '-d', help='Input directory')
     parser.add_argument('--output-dir', help='Output directory')
-    parser.add_argument('--mapping', help='Component mapping JSON file')
+    parser.add_argument(
+        '--mapping',
+        help='Reserved compatibility option; currently accepted but not applied',
+    )
     parser.add_argument('--json', action='store_true', help='Output JSON report')
     parser.add_argument('-v', '--verbose', action='count', default=0,
                        help='Verbose output (-vv for debug)')

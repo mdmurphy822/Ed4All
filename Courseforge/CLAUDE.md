@@ -120,11 +120,11 @@ Courseforge/
 ├── schemas/                     # IMSCC and content schemas
 ├── imscc-standards/             # Brightspace/IMSCC technical specs
 ├── scripts/
+│   ├── ops/                     # Standalone operator commands
 │   ├── rendering/               # Course-page generation
 │   ├── packaging/               # IMSCC packaging
 │   ├── validation/              # Structural checks
 │   ├── imscc-extractor/         # Cross-LMS IMSCC extraction
-│   ├── component-applier/       # Interactive component application
 │   ├── accessibility-validator/ # Accessibility checks
 │   ├── remediation-validator/   # Final quality validation
 │   └── tests/                   # Shared conftest + responsibility packages
@@ -698,11 +698,12 @@ Courseforge can import and remediate IMSCC packages from:
 | Script | Location | Purpose |
 |--------|----------|---------|
 | `imscc_extractor.py` | `scripts/imscc-extractor/` | Cross-LMS IMSCC parsing + source-LMS detection |
-| `component_applier.py` | `scripts/component-applier/` | Interactive component application |
+| `component_applier.py` | `scripts/ops/` | Standalone deterministic interactive-component application; not an MCP remediation dispatch target. |
 | `accessibility_validator.py` | `scripts/accessibility-validator/` | Accessibility checks over remediated HTML |
 | `remediation_validator.py` | `scripts/remediation-validator/` | Final quality validation (`RemediationValidator` / `ValidationReport` / `ValidationSeverity`) |
 
-These are library modules invoked by the remediation agents, not the gate suite.
+These are standalone Courseforge utilities, not the gate suite. The component
+applier is an operator command and is not invoked by remediation-agent dispatch.
 Blocking quality enforcement lives in `config/workflows.yaml::validation_gates`
 (`wcag_compliance`, `cartridge_conformance`, and the rest); the
 `remediation-validator` *agent* itself routes to `get_courseforge_status`.
