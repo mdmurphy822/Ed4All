@@ -1085,6 +1085,11 @@ def test_decision_capture_rationale():
         "completion_jaccard=", "n_claims=",
     ):
         assert signal in per_row["rationale"], signal
+    alternatives = per_row.get("alternatives_considered") or []
+    assert alternatives
+    assert all(isinstance(item, dict) for item in alternatives)
+    assert all(item.get("option") for item in alternatives)
+    assert all(CHUNK in item.get("reason_rejected", "") for item in alternatives)
     assert rows[0]["decision_capture_id"] == per_row["event_id"]
 
     summary = events[1]

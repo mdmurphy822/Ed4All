@@ -592,6 +592,8 @@ def test_decision_rationales_pass_quality_gate(libv2_root: Path):
     )
     result = runner.run()
 
+    from lib.validation import validate_decision
+
     records: List[Dict[str, Any]] = []
     with result.decision_capture_path.open("r", encoding="utf-8") as fh:
         for line in fh:
@@ -641,6 +643,15 @@ def test_decision_rationales_pass_quality_gate(libv2_root: Path):
             f"populated; the centralized quality gate will rate this "
             f"'developing'."
         )
+        for alternative in rec.get("alternatives_considered") or []:
+            assert isinstance(alternative, dict), (
+                f"{dt}: alternative must be an object, got {alternative!r}"
+            )
+            assert alternative.get("option"), dt
+            assert alternative.get("reason_rejected"), dt
+
+        valid, issues = validate_decision(rec, tool="trainforge", strict=True)
+        assert valid, f"{dt}: strict schema validation failed: {issues}"
 
         # 4. Quality gate flag present + true.
         meta = rec.get("metadata") or {}

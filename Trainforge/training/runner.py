@@ -620,10 +620,22 @@ class TrainingRunner:
                 f"is fully replayable post-hoc."
             ),
             alternatives_considered=[
-                "Reuse an existing model_id (rejected: every retrain mints a "
-                "new id keyed off provenance hashes)",
-                "Skip dry-run scaffolding (rejected: tests need card emit "
-                "without GPU)",
+                {
+                    "option": "Reuse an existing model identifier",
+                    "reason_rejected": (
+                        f"This run resolved model_id={model_id!r} from current "
+                        f"provenance for course={self.course_slug!r}; reusing "
+                        "another identifier would merge distinct training runs."
+                    ),
+                },
+                {
+                    "option": "Skip dry-run artifact scaffolding",
+                    "reason_rejected": (
+                        f"dry_run={self.dry_run} still requires replayable "
+                        f"artifacts under {run_dir.name!r} so planning and card "
+                        "emission can be verified without loading a model."
+                    ),
+                },
             ],
         )
 
@@ -655,13 +667,24 @@ class TrainingRunner:
                 f"(dry_run={self.dry_run})."
             ),
             alternatives_considered=[
-                f"Larger base ({BaseModelRegistry.list_supported()}): "
-                f"rejected — sub-2B {self.base_model!r} is the calibrated "
-                f"baseline for {instr_count}-pair corpora at lora_rank="
-                f"{self.config.lora_rank}.",
-                f"Floating revision ('main' on {self.spec.huggingface_repo!r}): "
-                f"rejected — would break the model_card provenance contract "
-                f"on every HF repo update.",
+                {
+                    "option": "Select a different registered base model",
+                    "reason_rejected": (
+                        f"The requested base={self.base_model!r} resolves to "
+                        f"{self.spec.huggingface_repo!r} for {instr_count} "
+                        f"instruction pairs at lora_rank={self.config.lora_rank}; "
+                        f"supported alternatives are "
+                        f"{BaseModelRegistry.list_supported()}."
+                    ),
+                },
+                {
+                    "option": "Use the repository's floating main revision",
+                    "reason_rejected": (
+                        f"The selected revision={self.spec.default_revision!r} "
+                        f"pins {self.spec.huggingface_repo!r}; floating main "
+                        "would make model-card provenance change upstream."
+                    ),
+                },
             ],
         )
 
@@ -703,17 +726,34 @@ class TrainingRunner:
                 f"{self.config.max_seq_length})."
             ),
             alternatives_considered=[
-                f"Higher rank (lora_rank={self.config.lora_rank * 2}): "
-                f"rejected — doubles adapter weights without measurable gain "
-                f"on a {instr_count}-pair corpus.",
-                f"Higher LR (5x → "
-                f"{self.config.learning_rate * 5:.0e}): rejected — "
-                f"TRL/QLoRA literature reports loss instability above ~1e-3 "
-                f"on small-corpus sub-3B fine-tunes.",
-                f"More epochs (2x → {self.config.epochs * 2}): rejected — "
-                f"~{effective_steps * 2} steps risks overfit on "
-                f"{instr_count}-pair corpus; preferred regularization "
-                f"is rank/alpha tuning.",
+                {
+                    "option": f"Double LoRA rank to {self.config.lora_rank * 2}",
+                    "reason_rejected": (
+                        f"The configured rank={self.config.lora_rank} and "
+                        f"alpha={self.config.lora_alpha} match the selected "
+                        f"base recipe for this {instr_count}-pair corpus."
+                    ),
+                },
+                {
+                    "option": (
+                        f"Raise learning rate to "
+                        f"{self.config.learning_rate * 5:.0e}"
+                    ),
+                    "reason_rejected": (
+                        f"The base recipe selects learning_rate="
+                        f"{self.config.learning_rate} for "
+                        f"{self.base_model!r}; the higher value is outside the "
+                        "pinned run configuration."
+                    ),
+                },
+                {
+                    "option": f"Double epochs to {self.config.epochs * 2}",
+                    "reason_rejected": (
+                        f"Configured epochs={self.config.epochs} yields about "
+                        f"{effective_steps} steps from {instr_count} pairs; "
+                        "doubling would exceed the selected replayable recipe."
+                    ),
+                },
             ],
         )
 
@@ -796,17 +836,26 @@ class TrainingRunner:
             ),
             rationale=rationale,
             alternatives_considered=[
-                f"Force DPO regardless of pair count "
-                f"(raw={pref_count}, filtered={filtered_pref_count}): "
-                f"rejected — this run requires min_dpo_pairs="
-                f"{self.config.min_dpo_pairs} after the "
-                f"{self.config.dpo_preference_filter!r} filter for stable "
-                f"preference gradients on {self.base_model!r}.",
-                f"Skip DPO unconditionally on {self.course_slug!r} "
-                f"({instr_count} SFT pairs / {pref_count} preference pairs): "
-                f"rejected when filtered count={filtered_pref_count} clears "
-                f"the configured threshold because it wastes the curated "
-                f"misconception/correction signal.",
+                {
+                    "option": "Force DPO regardless of eligible pair count",
+                    "reason_rejected": (
+                        f"raw={pref_count} and filtered={filtered_pref_count} "
+                        f"must be evaluated against min_dpo_pairs="
+                        f"{self.config.min_dpo_pairs} with filter="
+                        f"{self.config.dpo_preference_filter!r} for "
+                        f"base={self.base_model!r}."
+                    ),
+                },
+                {
+                    "option": "Skip DPO unconditionally",
+                    "reason_rejected": (
+                        f"Course={self.course_slug!r} has "
+                        f"filtered_count={filtered_pref_count}, "
+                        f"raw_count={pref_count}, and SFT_count={instr_count}; "
+                        "the configured threshold must decide whether the "
+                        "curated preference signal is usable."
+                    ),
+                },
             ],
         )
 

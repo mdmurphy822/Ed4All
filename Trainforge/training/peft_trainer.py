@@ -692,8 +692,23 @@ class PEFTTrainer:
                     f"{baseline if baseline is not None else 'not-applicable'}."
                 ),
                 alternatives_considered=[
-                    "Promote the final epoch without downstream comparison",
-                    "Promote a DPO checkpoint that regresses from SFT",
+                    {
+                        "option": "Promote the final epoch without comparison",
+                        "reason_rejected": (
+                            f"The downstream {metric} probe selected step "
+                            f"{selected.step} at {selected_score:.6f}; using the "
+                            "final epoch would ignore the configured selection "
+                            "evidence."
+                        ),
+                    },
+                    {
+                        "option": "Promote a DPO checkpoint below the SFT baseline",
+                        "reason_rejected": (
+                            f"Stage={stage} is evaluated against SFT baseline "
+                            f"{baseline if baseline is not None else 'not-applicable'} "
+                            f"on {metric}; promotion cannot bypass that comparison."
+                        ),
+                    },
                 ],
             )
         return _promote_selected_checkpoint(selected.checkpoint_dir, output_dir)

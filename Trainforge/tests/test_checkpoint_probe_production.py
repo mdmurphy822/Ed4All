@@ -138,6 +138,12 @@ def test_improved_dpo_selects_and_promotes_from_isolated_namespace(tmp_path):
             return {"gold_keypoint_coverage": scores[str(path)]}
         return probe
 
+    decisions = []
+
+    class Capture:
+        def log_decision(self, **kwargs):
+            decisions.append(kwargs)
+
     trainer = PEFTTrainer(
         base_model="qwen2.5-1.5b",
         training_config={
@@ -145,6 +151,7 @@ def test_improved_dpo_selects_and_promotes_from_isolated_namespace(tmp_path):
             "early_stopping_patience": 2,
         },
         course_dir=course,
+        decision_capture=Capture(),
         checkpoint_probe_factory=factory,
     )
     sft_selected = trainer._select_and_promote_checkpoint(
@@ -165,6 +172,19 @@ def test_improved_dpo_selects_and_promotes_from_isolated_namespace(tmp_path):
     assert json.loads(
         (dpo1.parent / "checkpoint_selection.json").read_text()
     )["selected_step"] == 30
+    assert len(decisions) == 2
+    for event in decisions:
+        alternatives = event.get("alternatives_considered") or []
+        assert alternatives
+        assert all(isinstance(item, dict) for item in alternatives)
+        assert all(item.get("option") for item in alternatives)
+        assert all(item.get("reason_rejected") for item in alternatives)
+        assert any(
+            str(signal) in " ".join(
+                item["reason_rejected"] for item in alternatives
+            )
+            for signal in (10, 20, 30, "gold_keypoint_coverage")
+        )
 
 
 @pytest.mark.parametrize(

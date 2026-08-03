@@ -1423,9 +1423,24 @@ def select_mined_pairs(
                     "than template-junk-vs-prose."
                 ),
                 alternatives_considered=[
-                    "emit nothing for this chunk (no near-miss reject)",
-                    "synthesize or template a chosen side (forbidden: "
-                    "inverts the trap — DPO would learn to prefer templates)",
+                    {
+                        "option": "Emit no DPO pair for this chunk",
+                        "reason_rejected": (
+                            f"Chunk {item.chunk_id} supplied near-miss reject "
+                            f"variant {item.candidate.variant_index} at rank "
+                            f"{rank}/{len(selected)}, so omitting it would "
+                            "discard a qualifying groundedness contrast."
+                        ),
+                    },
+                    {
+                        "option": "Synthesize or template a chosen side",
+                        "reason_rejected": (
+                            f"Accepted variant {item.anchor_variant} already "
+                            f"anchors chunk {item.chunk_id}; replacing it with "
+                            "a template would teach template preference rather "
+                            "than the observed grounded-versus-drift contrast."
+                        ),
+                    },
                 ],
                 context=(
                     f"chunk_id={item.chunk_id}; "
