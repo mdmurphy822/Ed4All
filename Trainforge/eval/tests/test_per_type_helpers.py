@@ -14,14 +14,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.eval._per_type_helpers import (
+from Trainforge.eval.metrics._per_type_helpers import (
     RELEVANT_QUESTION_TYPES,
     attach_relevance,
     bucket_per_question_records,
     normalize_question_type,
 )
-from Trainforge.eval.answerable_rate import AnswerableRateEvaluator
-from Trainforge.eval.placeholder_rate import PlaceholderRateEvaluator
+from Trainforge.eval.metrics.answerable_rate import AnswerableRateEvaluator
+from Trainforge.eval.metrics.placeholder_rate import PlaceholderRateEvaluator
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +101,7 @@ def test_attach_relevance_marks_distractor_entropy_mc_only() -> None:
 def test_load_prompts_for_metrics_threads_question_type(tmp_path: Path) -> None:
     """A 3-question fixture round-trips question_type values via the
     harness prompt-loader projection."""
-    from Trainforge.eval.slm_eval_harness import SLMEvalHarness
+    from Trainforge.eval.runners.slm_eval_harness import SLMEvalHarness
 
     course_dir = tmp_path / "course"
     course_dir.mkdir()

@@ -3687,7 +3687,7 @@ def _project_synthesized_objectives_to_course_json(
             (``01_learning_objectives/synthesized_objectives.json``).
         course_json_path: Path to the target packaging-shaped
             ``course.json`` (``03_content_development/course.json``).
-        course_code: Stable course identifier (e.g. ``PHYS_101``).
+        course_code: Stable course identifier (e.g. ``FIXTURE_ALPHA``).
         course_title: Human-readable course title.
 
     Returns:
@@ -8617,7 +8617,7 @@ async def create_textbook_pipeline(
 
     Args:
         pdf_paths: Comma-separated PDF paths OR directory containing PDFs
-        course_name: Course identifier (e.g., "PHYS_101")
+        course_name: Course identifier (e.g., "FIXTURE_ALPHA")
         objectives_path: Optional external objectives file to merge
         duration_weeks: Course duration in weeks (default: 12)
         generate_assessments: Run Trainforge phase (default: True)
@@ -9408,7 +9408,7 @@ def register_pipeline_tools(mcp):
         and RAG corpus together under a single course slug.
 
         Args:
-            course_name: Course identifier (e.g., "PHYS_101")
+            course_name: Course identifier (e.g., "FIXTURE_ALPHA")
             domain: Primary domain (e.g., "physics", "computer-science")
             division: Division classification ("STEM" or "ARTS", default: "STEM")
             pdf_paths: Comma-separated paths to original PDF inputs
@@ -9441,7 +9441,7 @@ def register_pipeline_tools(mcp):
             # an archive dir and every other consumer of the slug agree
             # byte-for-byte. ``libv2_course_slug`` is byte-identical to the old
             # inline ``.lower().replace("_","-").replace(" ","-")`` for the
-            # common ``PHYS_101`` / spaced-name cases AND additionally
+            # common ``FIXTURE_ALPHA`` / spaced-name cases AND additionally
             # normalises punctuation (e.g. a stray ``:``) that the inline
             # transform leaked into the dir name.
             from lib.ontology.slugs import libv2_course_slug as _libv2_course_slug  # noqa: PLC0415

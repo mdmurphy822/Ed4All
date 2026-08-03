@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ed4all.dev/ns/eval/v1/generation_quality_curve.schema.json",
   "title": "Ed4All generation_quality_curve.json",
-  "description": "C0..C5 technique-curve report (W5 §6.2). Per-arm generation-quality headline + success_condition, plus per-technique deltas (how much each lever buys on 7B) and a C5 ceiling block reserving a Spark C5-70b row. Built by Trainforge/eval/generation_curve_runner.py::run_generation_curve, modeled on Trainforge/eval/ablation_runner.py + headline_delta.py.",
+  "description": "C0..C5 technique-curve report (W5 §6.2). Per-arm generation-quality headline + success_condition, plus per-technique deltas (how much each lever buys on 7B) and a C5 ceiling block reserving a Spark C5-70b row. Built by Trainforge/eval/runners/generation_curve_runner.py::run_generation_curve, modeled on Trainforge/eval/runners/ablation_runner.py + headline_delta.py.",
   "type": "object",
   "additionalProperties": false,
   "required": [

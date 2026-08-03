@@ -8,7 +8,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.eval.answerable_rate import AnswerableRateEvaluator
+from Trainforge.eval.metrics.answerable_rate import AnswerableRateEvaluator
 
 
 def test_answerable_case_passes_threshold() -> None:

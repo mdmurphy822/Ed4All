@@ -15,7 +15,7 @@ silently fail the eval probe (and vice-versa).
 
 Aggregate output is folded into ``eval_report.json`` under the top-level
 ``answerable_rate`` block by
-``Trainforge.eval.slm_eval_harness.SLMEvalHarness._run_answerable_rate``.
+``Trainforge.eval.runners.slm_eval_harness.SLMEvalHarness._run_answerable_rate``.
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from lib.validators.assessment_retrieval_grounding import (
     _content_tokens,
     _jaccard,
 )
-from Trainforge.eval._per_type_helpers import (
+from Trainforge.eval.metrics._per_type_helpers import (
     attach_relevance,
     bucket_per_question_records,
 )

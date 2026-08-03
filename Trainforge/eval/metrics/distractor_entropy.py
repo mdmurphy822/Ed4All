@@ -12,7 +12,7 @@ signal stays bytewise-aligned with the synthesis-time gate.
 
 Aggregate output is folded into ``eval_report.json`` under the
 top-level ``distractor_entropy`` block by
-``Trainforge.eval.slm_eval_harness.SLMEvalHarness._run_distractor_entropy``.
+``Trainforge.eval.runners.slm_eval_harness.SLMEvalHarness._run_distractor_entropy``.
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ import math
 from typing import Any, Dict, List
 
 from lib.validators.distractor_plausibility import _tokenise
-from Trainforge.eval._per_type_helpers import (
+from Trainforge.eval.metrics._per_type_helpers import (
     attach_relevance,
     bucket_per_question_records,
 )

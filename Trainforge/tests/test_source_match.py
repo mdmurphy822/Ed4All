@@ -41,7 +41,7 @@ def _write_holdout_split(path: Path, edges):
 
 
 def test_source_match_perfect_score(tmp_path):
-    from Trainforge.eval.source_match import SourceMatchEvaluator
+    from Trainforge.eval.retrieval.source_match import SourceMatchEvaluator
 
     holdout = tmp_path / "holdout_split.json"
     edges = [
@@ -64,7 +64,7 @@ def test_source_match_perfect_score(tmp_path):
 
 
 def test_source_match_filters_non_chunk_edges(tmp_path):
-    from Trainforge.eval.source_match import SourceMatchEvaluator
+    from Trainforge.eval.retrieval.source_match import SourceMatchEvaluator
 
     holdout = tmp_path / "holdout_split.json"
     edges = [
@@ -89,7 +89,7 @@ def test_source_match_filters_non_chunk_edges(tmp_path):
 
 
 def test_source_match_partial(tmp_path):
-    from Trainforge.eval.source_match import SourceMatchEvaluator
+    from Trainforge.eval.retrieval.source_match import SourceMatchEvaluator
 
     holdout = tmp_path / "holdout.json"
     edges = [
@@ -120,7 +120,7 @@ def test_source_match_partial(tmp_path):
 
 def test_source_match_accepts_bracket_form(tmp_path):
     """Wave 105: form 1 — canonical [chunk_NNNN] still works."""
-    from Trainforge.eval.source_match import SourceMatchEvaluator
+    from Trainforge.eval.retrieval.source_match import SourceMatchEvaluator
 
     holdout = tmp_path / "h.json"
     edges = [
@@ -142,7 +142,7 @@ def test_source_match_accepts_single_quoted_short_form(tmp_path):
     (e.g. 'demo_course_1_chunk_00270') so source-match must not
     discount it.
     """
-    from Trainforge.eval.source_match import SourceMatchEvaluator
+    from Trainforge.eval.retrieval.source_match import SourceMatchEvaluator
 
     holdout = tmp_path / "h.json"
     edges = [
@@ -159,7 +159,7 @@ def test_source_match_accepts_single_quoted_short_form(tmp_path):
 def test_source_match_accepts_single_quoted_full_corpus_id(tmp_path):
     """Wave 105: form 3 — 'demo_course_1_chunk_NNNN' single-quoted
     full corpus ID, normalized to ``chunk_NNNN``."""
-    from Trainforge.eval.source_match import SourceMatchEvaluator
+    from Trainforge.eval.retrieval.source_match import SourceMatchEvaluator
 
     holdout = tmp_path / "h.json"
     edges = [
@@ -175,7 +175,7 @@ def test_source_match_accepts_single_quoted_full_corpus_id(tmp_path):
 
 def test_source_match_scores_full_corpus_source_ids(tmp_path):
     """Full RDF/SHACL chunk IDs in holdout source must be scored."""
-    from Trainforge.eval.source_match import SourceMatchEvaluator
+    from Trainforge.eval.retrieval.source_match import SourceMatchEvaluator
 
     holdout = tmp_path / "h.json"
     edges = [
@@ -196,7 +196,7 @@ def test_source_match_scores_full_corpus_source_ids(tmp_path):
 
 def test_source_match_accepts_bare_token_form(tmp_path):
     """Wave 105: form 4 — bare ``chunk_NNNN`` without delimiters."""
-    from Trainforge.eval.source_match import SourceMatchEvaluator
+    from Trainforge.eval.retrieval.source_match import SourceMatchEvaluator
 
     holdout = tmp_path / "h.json"
     edges = [
@@ -214,7 +214,7 @@ def test_source_match_score_non_none_when_holdout_has_chunk_ids(tmp_path):
     """Wave 105: a ground-truth chunk_id present in the holdout means
     source-match returns a numeric score (not None) regardless of
     whether the model cites it."""
-    from Trainforge.eval.source_match import SourceMatchEvaluator
+    from Trainforge.eval.retrieval.source_match import SourceMatchEvaluator
 
     holdout = tmp_path / "h.json"
     edges = [
@@ -232,7 +232,7 @@ def test_source_match_score_non_none_when_holdout_has_chunk_ids(tmp_path):
 
 
 def test_source_match_handles_callable_error(tmp_path):
-    from Trainforge.eval.source_match import SourceMatchEvaluator
+    from Trainforge.eval.retrieval.source_match import SourceMatchEvaluator
 
     holdout = tmp_path / "holdout.json"
     edges = [

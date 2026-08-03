@@ -13,14 +13,14 @@ silently passing through.
 
 Aggregate output is folded into ``eval_report.json`` under the
 top-level ``single_correct_rate`` block by
-``Trainforge.eval.slm_eval_harness.SLMEvalHarness._run_single_correct_rate``.
+``Trainforge.eval.runners.slm_eval_harness.SLMEvalHarness._run_single_correct_rate``.
 
 Wave 7 W7.B: the input shape changed from ``List[str]`` to
 ``List[Tuple[str, str]]`` of ``(html, question_type)`` so the per-
 question records can carry their question_type label and the post-loop
 :func:`bucket_per_question_records` projection can emit a
 ``per_question_type`` block scoped to MC + TF (see
-:data:`Trainforge.eval._per_type_helpers.RELEVANT_QUESTION_TYPES`).
+:data:`Trainforge.eval.metrics._per_type_helpers.RELEVANT_QUESTION_TYPES`).
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ import logging
 import re
 from typing import Any, Dict, List, Tuple
 
-from Trainforge.eval._per_type_helpers import (
+from Trainforge.eval.metrics._per_type_helpers import (
     attach_relevance,
     bucket_per_question_records,
 )

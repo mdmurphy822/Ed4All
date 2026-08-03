@@ -17,7 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.eval.negative_grounding import NegativeGroundingEvaluator
+from Trainforge.eval.retrieval.negative_grounding import NegativeGroundingEvaluator
 
 
 def _write_split(tmp_path: Path) -> Path:

@@ -9,7 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.eval.bloom_alignment_rate import BloomAlignmentRateEvaluator
+from Trainforge.eval.metrics.bloom_alignment_rate import BloomAlignmentRateEvaluator
 
 
 def _make_stub_ensemble(verdicts):

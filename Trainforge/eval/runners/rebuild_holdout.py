@@ -7,9 +7,9 @@ have an empty `property_probes` array, which silently SKIPs the
 `min_per_property_accuracy` critical eval gate.
 
 Usage:
-    python -m Trainforge.eval.rebuild_holdout --course <course-slug>
-    python -m Trainforge.eval.rebuild_holdout --course-path LibV2/courses/<course-slug>
-    python -m Trainforge.eval.rebuild_holdout --course <course-slug> \\
+    python -m Trainforge.eval.runners.rebuild_holdout --course <course-slug>
+    python -m Trainforge.eval.runners.rebuild_holdout --course-path LibV2/courses/<course-slug>
+    python -m Trainforge.eval.runners.rebuild_holdout --course <course-slug> \\
         --holdout-pct 0.1 --seed 42
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ import logging
 import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 

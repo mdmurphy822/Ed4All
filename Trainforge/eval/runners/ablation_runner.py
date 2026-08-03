@@ -34,13 +34,13 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from Trainforge.eval.eval_config import LoadedEvalConfig, load_eval_config
-from Trainforge.eval.evidence_trace import (
+from Trainforge.eval.retrieval.evidence_trace import (
     EvidenceTrace,
     TraceWriter,
     classify_failure_mode,
     extract_citations,
 )
-from Trainforge.eval.chunk_ids import chunk_ids_match, is_chunk_id, normalize_chunk_id
+from Trainforge.eval.retrieval.chunk_ids import chunk_ids_match, is_chunk_id, normalize_chunk_id
 
 
 logger = logging.getLogger(__name__)
@@ -223,7 +223,7 @@ class AblationRunner:
     def _default_harness_factory(
         self, course_path: Path, model_callable: Callable[[str], str],
     ):
-        from Trainforge.eval.slm_eval_harness import SLMEvalHarness
+        from Trainforge.eval.runners.slm_eval_harness import SLMEvalHarness
 
         return SLMEvalHarness(
             course_path=course_path,

@@ -7,7 +7,7 @@ produce schema-valid pairs in <30s without an LLM call.
 
 Use before committing to a full corpus rebuild: it confirms the
 generator surfaces are healthy on the real graph + manifest. Mirrors
-the `Trainforge/eval/slm_eval_harness.py --smoke` pattern: small N,
+the `Trainforge/eval/runners/slm_eval_harness.py --smoke` pattern: small N,
 sidecar output, schema-validate every emit, exit 0 on success / 1 on
 any failure.
 

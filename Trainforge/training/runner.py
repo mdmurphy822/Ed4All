@@ -910,7 +910,7 @@ class TrainingRunner:
         """Invoke the SLM eval harness and return canonical eval scores.
 
         Wave 101 wires the bridge: build an
-        :class:`Trainforge.eval.adapter_callable.AdapterCallable`
+        :class:`Trainforge.eval.retrieval.adapter_callable.AdapterCallable`
         around the saved adapter dir, hand it to
         :class:`SLMEvalHarness`, parse the resulting
         ``eval_report.json``, and (optionally) run the
@@ -928,10 +928,10 @@ class TrainingRunner:
         """
         import os
 
-        from Trainforge.eval.adapter_callable import AdapterCallable
+        from Trainforge.eval.retrieval.adapter_callable import AdapterCallable
         from Trainforge.eval.eval_config import load_eval_config
         from Trainforge.eval.hf_model_index import write_hf_readme
-        from Trainforge.eval.slm_eval_harness import SLMEvalHarness
+        from Trainforge.eval.runners.slm_eval_harness import SLMEvalHarness
 
         if adapter_path is None:
             raise FileNotFoundError(
@@ -1069,13 +1069,13 @@ class TrainingRunner:
             )
             return None
 
-        from Trainforge.eval.ablation_runner import AblationRunner, AblationSetup
-        from Trainforge.eval.adapter_callable import (
+        from Trainforge.eval.runners.ablation_runner import AblationRunner, AblationSetup
+        from Trainforge.eval.retrieval.adapter_callable import (
             AdapterCallable,
             AdapterDisabledCallable,
         )
         from Trainforge.eval.eval_config import load_eval_config
-        from Trainforge.eval.rag_callable import RAGCallable
+        from Trainforge.eval.retrieval.rag_callable import RAGCallable
 
         adapter_dir = (
             Path(adapter_path).parent

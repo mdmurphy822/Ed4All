@@ -1,6 +1,6 @@
 """C0..C5 generation-quality curve runner (W5 §6).
 
-Models the arm-comparison pattern of ``Trainforge/eval/ablation_runner.py`` +
+Models the arm-comparison pattern of ``Trainforge/eval/runners/ablation_runner.py`` +
 ``headline_delta.py``: a list of technique modes → per-arm
 ``generation_quality_eval`` report → a per-technique delta table answering "how
 much does each lever buy on 7B." The ``ceiling`` block reports the C5 numbers

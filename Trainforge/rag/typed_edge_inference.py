@@ -334,7 +334,7 @@ def _build_nodes(
 # arms are unconditional, not flag-gated.
 
 # Compiled once: a corpus chunk ID carries a ``chunk_`` token (matches
-# ``Trainforge.eval.chunk_ids.is_chunk_id``). A synthetic question ID is
+# ``Trainforge.eval.retrieval.chunk_ids.is_chunk_id``). A synthetic question ID is
 # ``q_<chunk_id>_<lo_id>`` — it ALSO carries a ``chunk_`` token, so the chunk
 # check below covers it (a question authored from an assessment_item chunk is a
 # ``Chunk`` endpoint for the ``assesses`` contract). A misconception ID is

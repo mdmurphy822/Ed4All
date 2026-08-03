@@ -3,10 +3,10 @@
 Wave 92 deferred the "run a fresh evaluation from an imported adapter"
 half of ``libv2 models eval`` (Wave 93 only surfaced the *cached*
 ``eval_report.json``). Wave 101 shipped the heavy machinery in
-Trainforge — :class:`Trainforge.eval.adapter_callable.AdapterCallable`
+Trainforge — :class:`Trainforge.eval.retrieval.adapter_callable.AdapterCallable`
 (loads the base model in 4-bit + applies the saved PEFT adapter,
 exposing ``__call__(prompt) -> str``) and
-:class:`Trainforge.eval.slm_eval_harness.SLMEvalHarness` (takes any
+:class:`Trainforge.eval.runners.slm_eval_harness.SLMEvalHarness` (takes any
 ``model_callable`` and scores it). This module wires those two together
 against a LibV2 course tree: the imported model dir
 (``courses/<slug>/models/<model_id>/``) is a copytree of the training
@@ -116,7 +116,7 @@ def build_adapter_callable(
     Returns:
         An :class:`AdapterCallable` (a ``Callable[[str], str]``).
     """
-    from Trainforge.eval.adapter_callable import AdapterCallable
+    from Trainforge.eval.retrieval.adapter_callable import AdapterCallable
 
     card = _load_model_card(Path(model_dir))
     base = card.get("base_model") or {}
@@ -191,7 +191,7 @@ def run_fresh_eval(
         raise FreshEvalError(f"Model not found: {model_dir}")
 
     from Trainforge.eval.eval_config import load_eval_config
-    from Trainforge.eval.slm_eval_harness import SLMEvalHarness
+    from Trainforge.eval.runners.slm_eval_harness import SLMEvalHarness
 
     loaded_eval_config = load_eval_config(course_dir)
 

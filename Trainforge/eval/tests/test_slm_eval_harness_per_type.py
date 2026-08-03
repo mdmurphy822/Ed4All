@@ -31,7 +31,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.eval._per_type_helpers import RELEVANT_QUESTION_TYPES
+from Trainforge.eval.metrics._per_type_helpers import RELEVANT_QUESTION_TYPES
 
 
 _CANONICAL_QUESTION_TYPES = {
@@ -190,7 +190,7 @@ def _build_eval_report(course_dir: Path) -> Dict[str, Any]:
     Bypasses ``__init__`` so the test does not need a real model
     callable / holdout split / pyproject training extras.
     """
-    from Trainforge.eval.slm_eval_harness import SLMEvalHarness
+    from Trainforge.eval.runners.slm_eval_harness import SLMEvalHarness
 
     harness = SLMEvalHarness.__new__(SLMEvalHarness)
     harness.course_path = course_dir  # type: ignore[attr-defined]

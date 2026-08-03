@@ -36,7 +36,7 @@ def _build_report(*, base_acc, base_faith, adapter_acc, adapter_faith):
 
 
 def _make_traces(*, n_total: int, n_empty: int) -> List:
-    from Trainforge.eval.evidence_trace import EvidenceTrace
+    from Trainforge.eval.retrieval.evidence_trace import EvidenceTrace
 
     traces = []
     for i in range(n_total - n_empty):

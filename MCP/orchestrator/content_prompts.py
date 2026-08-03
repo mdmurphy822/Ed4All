@@ -18,7 +18,7 @@ Design rules
 ------------
 
 * Prompts must NOT leak corpus-specific identifiers. Placeholders
-  (e.g. ``PHYS_101``, ``INT_101``) are only used in tests and doc
+  (e.g. ``FIXTURE_ALPHA``, ``FIXTURE_INTRO``) are only used in tests and doc
   strings; the builders themselves interpolate whatever the caller
   provides.
 * Every prompt carries a **schema contract** section enumerating the

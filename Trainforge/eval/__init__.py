@@ -31,7 +31,7 @@ Public API:
     )
 """
 from Trainforge.eval.baseline_compare import BaselineComparator  # noqa: F401
-from Trainforge.eval.calibration import CalibrationEvaluator  # noqa: F401
+from Trainforge.eval.metrics.calibration import CalibrationEvaluator  # noqa: F401
 from Trainforge.eval.disambiguation import DisambiguationEvaluator  # noqa: F401
 from Trainforge.eval.faithfulness import FaithfulnessEvaluator  # noqa: F401
 from Trainforge.eval.holdout_builder import (  # noqa: F401
@@ -43,9 +43,9 @@ from Trainforge.eval.invariants import (  # noqa: F401
     MisconceptionRejectionInvariant,
     PrerequisiteOrderInvariant,
 )
-from Trainforge.eval.key_term_precision import KeyTermPrecisionEvaluator  # noqa: F401
+from Trainforge.eval.metrics.key_term_precision import KeyTermPrecisionEvaluator  # noqa: F401
 from Trainforge.eval.regression import RegressionEvaluator  # noqa: F401
-from Trainforge.eval.slm_eval_harness import EvalReport, SLMEvalHarness  # noqa: F401
+from Trainforge.eval.runners.slm_eval_harness import EvalReport, SLMEvalHarness  # noqa: F401
 from Trainforge.eval.teaching_role_alignment import (  # noqa: F401
     TeachingRoleAlignmentEvaluator,
 )

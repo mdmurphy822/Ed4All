@@ -17,14 +17,14 @@ harness. Mirrors the surface used by
 
 Aggregate output is folded into ``eval_report.json`` under the
 top-level ``bloom_alignment_rate`` block by
-``Trainforge.eval.slm_eval_harness.SLMEvalHarness._run_bloom_alignment_rate``.
+``Trainforge.eval.runners.slm_eval_harness.SLMEvalHarness._run_bloom_alignment_rate``.
 """
 from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List, Optional
 
-from Trainforge.eval._per_type_helpers import (
+from Trainforge.eval.metrics._per_type_helpers import (
     attach_relevance,
     bucket_per_question_records,
 )

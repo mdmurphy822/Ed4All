@@ -31,7 +31,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.eval.slm_eval_harness import SLMEvalHarness, main as harness_main  # noqa: E402
+from Trainforge.eval.runners.slm_eval_harness import SLMEvalHarness, main as harness_main  # noqa: E402
 
 
 def _build_course(tmp_path: Path) -> Path:
@@ -120,7 +120,7 @@ def _stub_adapter_module(monkeypatch):
     main() can run end-to-end without torch / transformers / a real
     adapter directory.
     """
-    import Trainforge.eval.slm_eval_harness as harness_mod  # noqa: F401
+    import Trainforge.eval.runners.slm_eval_harness as harness_mod  # noqa: F401
 
     fake_callable = _mock_model
 
@@ -151,7 +151,7 @@ def _stub_adapter_module(monkeypatch):
 
     # Patch the late imports inside main().
     monkeypatch.setattr(
-        "Trainforge.eval.adapter_callable.AdapterCallable",
+        "Trainforge.eval.retrieval.adapter_callable.AdapterCallable",
         _FakeAdapter,
         raising=True,
     )

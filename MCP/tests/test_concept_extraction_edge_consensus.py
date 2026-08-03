@@ -94,7 +94,7 @@ def _run(tmp_path: Path, chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
     result = asyncio.run(
         tool(
             project_id="",
-            course_name="LINALG_CONSENSUS",
+            course_name="FXEDGE_CONSENSUS",
             staging_dir="",
             dart_chunks_path=str(chunks_path),
             libv2_root=str(custom_libv2),

@@ -6650,9 +6650,9 @@ class WorkflowRunner:
         ``outline_dir`` accepts either:
 
         * The Courseforge project export root, e.g.
-          ``Courseforge/exports/PROJ-PHYS_101-20260502/``.
+          ``Courseforge/exports/PROJ-FIXTURE_ALPHA-20260502/``.
         * The ``01_outline/`` subdirectory inside that project, e.g.
-          ``Courseforge/exports/PROJ-PHYS_101-20260502/01_outline``.
+          ``Courseforge/exports/PROJ-FIXTURE_ALPHA-20260502/01_outline``.
 
         In either case we resolve to the project_path. ``project_config.json``
         at the project root supplies course_name + staging_dir.

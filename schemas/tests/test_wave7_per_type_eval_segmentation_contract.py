@@ -6,7 +6,7 @@ Authored 2026-05-07 against the closing 6-test gate enumerated in
 
 Predecessors landing:
 
-* W7.A — :mod:`Trainforge.eval._per_type_helpers` ships
+* W7.A — :mod:`Trainforge.eval.metrics._per_type_helpers` ships
   :data:`RELEVANT_QUESTION_TYPES`, :func:`normalize_question_type`,
   :func:`bucket_per_question_records`, :func:`attach_relevance` —
   the shared per-question-type bucketing surface consumed by every
@@ -61,7 +61,7 @@ Tests:
    would warning-fire on a structural zero.
 3. ``test_load_prompts_for_metrics_threads_question_type`` — the
    W7.A loader-boundary contract:
-   :meth:`Trainforge.eval.slm_eval_harness.SLMEvalHarness._load_prompts_for_metrics`
+   :meth:`Trainforge.eval.runners.slm_eval_harness.SLMEvalHarness._load_prompts_for_metrics`
    threads ``question_type`` from ``assessments.json`` into the
    prompt-dict shape, including the QTI ``type`` fallback. Bypasses
    ``__init__`` via ``__new__`` per the W7.C precedent at
@@ -99,7 +99,7 @@ Drift notes vs plan §4:
   reads only ``self.course_path`` so the bypass is sufficient.
 * Test 6 plan snippet uses ``"mean_distractor_entropy": 0.0`` at the
   per-bucket level. The actual per-bucket emit field key is
-  ``"distractor_entropy_mean"`` per ``Trainforge/eval/distractor_entropy.py:143``
+  ``"distractor_entropy_mean"`` per ``Trainforge/eval/metrics/distractor_entropy.py:143``
   (note: corpus-wide top-level field IS ``mean_distractor_entropy``,
   but the per-bucket field reverses the word order). This matches
   the W7.D ``PER_TYPE_METRIC_CONFIG`` ``value_field`` at
@@ -139,7 +139,7 @@ def test_per_type_helpers_canonical_keys_match_w6_validator() -> None:
     this test. Also asserts every metric's relevant set is non-empty
     (an empty set would silently disable the gate for that metric).
     """
-    from Trainforge.eval._per_type_helpers import RELEVANT_QUESTION_TYPES
+    from Trainforge.eval.metrics._per_type_helpers import RELEVANT_QUESTION_TYPES
     from lib.validators.assessment import _PER_QUESTION_TYPE_THRESHOLDS
 
     canonical = set(_PER_QUESTION_TYPE_THRESHOLDS.keys())
@@ -176,7 +176,7 @@ def test_distractor_entropy_relevant_only_for_multiple_choice() -> None:
     introduce the structural-zero false-positive class on every non-MC
     bucket.
     """
-    from Trainforge.eval._per_type_helpers import RELEVANT_QUESTION_TYPES
+    from Trainforge.eval.metrics._per_type_helpers import RELEVANT_QUESTION_TYPES
 
     assert RELEVANT_QUESTION_TYPES["distractor_entropy"] == {
         "multiple_choice"
@@ -220,7 +220,7 @@ def test_load_prompts_for_metrics_threads_question_type(
     ``_load_prompts_for_metrics`` reads only ``self.course_path`` so
     the bypass is sufficient.
     """
-    from Trainforge.eval.slm_eval_harness import SLMEvalHarness
+    from Trainforge.eval.runners.slm_eval_harness import SLMEvalHarness
 
     course_path = tmp_path / "course"
     course_path.mkdir()
@@ -296,8 +296,8 @@ def test_eval_report_per_metric_carries_per_question_type_block() -> None:
     external deps (``answerable_rate`` is pure Jaccard, ``placeholder_rate``
     is pure regex) so this test runs cleanly on a bare CI checkout.
     """
-    from Trainforge.eval.answerable_rate import AnswerableRateEvaluator
-    from Trainforge.eval.placeholder_rate import PlaceholderRateEvaluator
+    from Trainforge.eval.metrics.answerable_rate import AnswerableRateEvaluator
+    from Trainforge.eval.metrics.placeholder_rate import PlaceholderRateEvaluator
 
     prompts = [
         {
@@ -459,7 +459,7 @@ def test_eval_gating_skips_per_type_when_irrelevant_or_deps_missing(
         short-circuit at ``lib/validators/eval_gating.py:316``).
 
     Note on the per-bucket field name: the actual W7.B emit at
-    ``Trainforge/eval/distractor_entropy.py:143`` uses
+    ``Trainforge/eval/metrics/distractor_entropy.py:143`` uses
     ``distractor_entropy_mean`` per bucket (corpus-wide top-level
     field is ``mean_distractor_entropy`` — word order reversed). The
     W7.D ``PER_TYPE_METRIC_CONFIG`` ``value_field`` at

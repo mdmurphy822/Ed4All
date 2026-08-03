@@ -19,7 +19,7 @@ Public surface:
 - :class:`EmbeddingCache` — content-addressed LRU on disk (Subtask 6).
 - :func:`try_load_embedder` — returns a ``SentenceEmbedder`` or ``None``.
 - :func:`cosine_similarity` — port of the helper in
-  ``Trainforge/eval/key_term_precision.py``, np.ndarray-aware.
+  ``Trainforge/eval/metrics/key_term_precision.py``, np.ndarray-aware.
 
 The embedding-provider registry (``lib.embedding.providers``) adds the
 retrieval-index embedding surface: a registry-driven

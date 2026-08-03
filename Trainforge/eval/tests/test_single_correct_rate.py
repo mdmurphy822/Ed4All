@@ -9,7 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.eval.single_correct_rate import SingleCorrectRateEvaluator
+from Trainforge.eval.metrics.single_correct_rate import SingleCorrectRateEvaluator
 
 
 # Wave 7 W7.B: input shape is now List[Tuple[str, str]] of
@@ -179,7 +179,7 @@ def test_single_correct_rate_drops_empty_qtype_bucket_from_per_type_emit() -> No
 
 def test_load_rendered_html_for_metrics_returns_tuples(tmp_path: Path) -> None:
     """Harness loader returns ``List[Tuple[str, str]]`` of (html, qt)."""
-    from Trainforge.eval.slm_eval_harness import SLMEvalHarness
+    from Trainforge.eval.runners.slm_eval_harness import SLMEvalHarness
 
     harness = SLMEvalHarness.__new__(SLMEvalHarness)
     harness.course_path = tmp_path  # type: ignore[attr-defined]

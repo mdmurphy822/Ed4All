@@ -105,8 +105,8 @@ def _tagged_callable(key: str, *, mean_latency_ms: float = None):
 
 def test_per_probe_traces_emitted_one_per_probe_per_setup(tmp_path):
     """One EvidenceTrace per probe per setup; not just one aggregate."""
-    from Trainforge.eval.ablation_runner import AblationRunner, AblationSetup
-    from Trainforge.eval.evidence_trace import load_traces
+    from Trainforge.eval.runners.ablation_runner import AblationRunner, AblationSetup
+    from Trainforge.eval.retrieval.evidence_trace import load_traces
 
     n = 5
     payloads = {
@@ -148,7 +148,7 @@ def test_per_probe_traces_emitted_one_per_probe_per_setup(tmp_path):
 
 def test_consolidated_eval_report_json_written_next_to_ablation(tmp_path):
     """eval_report.json must be emitted next to ablation_report.json."""
-    from Trainforge.eval.ablation_runner import AblationRunner, AblationSetup
+    from Trainforge.eval.runners.ablation_runner import AblationRunner, AblationSetup
 
     payloads = {
         "base":         _per_question_payload(n=3, coverage=0.4, setup_label="base"),
@@ -188,7 +188,7 @@ def test_consolidated_eval_report_json_written_next_to_ablation(tmp_path):
 
 def test_latency_picked_up_from_eval_report_when_callable_lacks_it(tmp_path):
     """Latency surfaces from harness output when the callable lacks it."""
-    from Trainforge.eval.ablation_runner import AblationRunner, AblationSetup
+    from Trainforge.eval.runners.ablation_runner import AblationRunner, AblationSetup
 
     headline_payload = _per_question_payload(n=2, setup_label="adapter+rag")
     method_payload = _per_question_payload(
@@ -230,8 +230,8 @@ def test_latency_picked_up_from_eval_report_when_callable_lacks_it(tmp_path):
 def test_rag_recorder_chunks_match_per_probe(tmp_path):
     """Verify per-probe chunk attachment with a harness that calls the
     wrapped callable for each probe."""
-    from Trainforge.eval.ablation_runner import AblationRunner, AblationSetup
-    from Trainforge.eval.evidence_trace import load_traces
+    from Trainforge.eval.runners.ablation_runner import AblationRunner, AblationSetup
+    from Trainforge.eval.retrieval.evidence_trace import load_traces
 
     n = 4
 
@@ -308,7 +308,7 @@ def test_rag_inert_health_flag_when_majority_empty(tmp_path, caplog):
     probes is flagged with ``health="rag_inert"`` and triggers a
     CRITICAL log line."""
     import logging as _logging
-    from Trainforge.eval.ablation_runner import AblationRunner, AblationSetup
+    from Trainforge.eval.runners.ablation_runner import AblationRunner, AblationSetup
 
     n = 6  # 4/6 = 66% empty -> trips the threshold
 
@@ -383,7 +383,7 @@ def test_rag_inert_health_flag_when_majority_empty(tmp_path, caplog):
 def test_rag_health_not_flagged_when_chunks_present(tmp_path):
     """When the +rag setup returns chunks for ≥50% of probes, no
     ``health`` field is stamped on the row."""
-    from Trainforge.eval.ablation_runner import AblationRunner, AblationSetup
+    from Trainforge.eval.runners.ablation_runner import AblationRunner, AblationSetup
 
     n = 4
 
@@ -440,8 +440,8 @@ def test_rag_health_not_flagged_when_chunks_present(tmp_path):
 
 def test_aggregate_fallback_still_used_when_no_per_question(tmp_path):
     """Backwards compat: legacy fixtures emit one synthetic row per setup."""
-    from Trainforge.eval.ablation_runner import AblationRunner, AblationSetup
-    from Trainforge.eval.evidence_trace import load_traces
+    from Trainforge.eval.runners.ablation_runner import AblationRunner, AblationSetup
+    from Trainforge.eval.retrieval.evidence_trace import load_traces
 
     aggregate_only = {
         "faithfulness": 0.5,

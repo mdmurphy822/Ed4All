@@ -1,7 +1,7 @@
 """Math helpers for embedding similarity.
 
 ``cosine_similarity`` is the np.ndarray-aware port of the stdlib helper
-at ``Trainforge/eval/key_term_precision.py:74-80``. The original works
+at ``Trainforge/eval/metrics/key_term_precision.py:74-80``. The original works
 on plain ``Sequence[float]`` inputs; the embedding-tier callers operate
 on numpy vectors that the SentenceTransformer model emits, so this
 helper accepts ``np.ndarray`` directly and short-circuits zero-norm
@@ -26,7 +26,7 @@ def cosine_similarity(a: "Any", b: "Any") -> float:
 
     Accepts ``np.ndarray`` or any sequence-of-floats. Zero-norm
     vectors return ``0.0`` to mirror the precedent at
-    ``Trainforge/eval/key_term_precision.py:74-80``.
+    ``Trainforge/eval/metrics/key_term_precision.py:74-80``.
 
     The runtime path uses numpy when available (the canonical case
     when the embedding extras are installed); falls back to a pure-

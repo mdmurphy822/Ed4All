@@ -82,7 +82,7 @@ async def test_synthesize_training_produces_jsonl_pairs(tmp_path):
 
     result_raw = await tool(
         corpus_dir=str(corpus_dir),
-        course_code="MINI_TRAINING_101",
+        course_code="FIXTURE_MINI_TRAINING",
         provider="mock",
         seed=17,
     )
@@ -147,7 +147,7 @@ async def test_synthesize_training_resolves_corpus_from_assessments_path(
 
     result_raw = await tool(
         assessments_path=str(fake_assessments),
-        course_name="MINI_TRAINING_101",
+        course_name="FIXTURE_MINI_TRAINING",
         provider="mock",
     )
     result = json.loads(result_raw)

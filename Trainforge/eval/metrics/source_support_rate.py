@@ -13,7 +13,7 @@ Wave 2 W2.F) so the eval and the validator surfaces stay aligned on
 the same pinned model revision.
 
 Sibling — not replacement — to
-:class:`Trainforge.eval.source_match.SourceMatchEvaluator`. Source-match
+:class:`Trainforge.eval.retrieval.source_match.SourceMatchEvaluator`. Source-match
 checks citation presence (did the model emit a chunk_id?);
 source-support checks semantic entailment (do the cited chunks
 actually support the answer?). A model can pass source-match while
@@ -26,14 +26,14 @@ warning log instead of crashing the harness.
 
 Aggregate output is folded into ``eval_report.json`` under the
 top-level ``source_support_rate`` block by
-``Trainforge.eval.slm_eval_harness.SLMEvalHarness._run_source_support_rate``.
+``Trainforge.eval.runners.slm_eval_harness.SLMEvalHarness._run_source_support_rate``.
 """
 from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List, Optional
 
-from Trainforge.eval._per_type_helpers import (
+from Trainforge.eval.metrics._per_type_helpers import (
     attach_relevance,
     bucket_per_question_records,
 )

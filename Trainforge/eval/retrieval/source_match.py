@@ -29,7 +29,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from Trainforge.eval.chunk_ids import (
+from Trainforge.eval.retrieval.chunk_ids import (
     chunk_ids_match,
     is_chunk_id,
     normalize_chunk_id,

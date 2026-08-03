@@ -18,7 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.eval.slm_eval_harness import SLMEvalHarness  # noqa: E402
+from Trainforge.eval.runners.slm_eval_harness import SLMEvalHarness  # noqa: E402
 
 
 SCHEMA_PATH = PROJECT_ROOT / "schemas" / "models" / "model_card.schema.json"
@@ -401,7 +401,7 @@ def test_eval_stage_checkpoint_unlinked_on_clean_exit(tmp_path):
 def test_eval_stage_checkpoint_resume_skips_cached_stages(tmp_path):
     """Pre-seed the checkpoint with a fake stage result; the harness
     must skip the lambda for that stage and replay the cached value."""
-    from Trainforge.eval.slm_eval_harness import (
+    from Trainforge.eval.runners.slm_eval_harness import (
         _append_eval_stage_checkpoint,
         _load_eval_stage_checkpoint,
     )
@@ -489,7 +489,7 @@ def test_eval_stage_checkpoint_malformed_lines_tolerated(tmp_path):
 def test_eval_stage_checkpoint_helpers_no_path_noop(tmp_path):
     """Direct helper-level test: None path returns empty cache, append
     is a no-op."""
-    from Trainforge.eval.slm_eval_harness import (
+    from Trainforge.eval.runners.slm_eval_harness import (
         _append_eval_stage_checkpoint,
         _load_eval_stage_checkpoint,
     )
@@ -500,7 +500,7 @@ def test_eval_stage_checkpoint_helpers_no_path_noop(tmp_path):
 def test_eval_stage_checkpoint_appended_per_stage(tmp_path):
     """After a clean run, a fresh checkpoint built from the same input
     contains one record per evaluator stage (before unlink)."""
-    from Trainforge.eval.slm_eval_harness import (
+    from Trainforge.eval.runners.slm_eval_harness import (
         _append_eval_stage_checkpoint,
         _load_eval_stage_checkpoint,
     )

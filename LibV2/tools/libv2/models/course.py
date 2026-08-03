@@ -275,7 +275,7 @@ class CourseManifest:
     source_artifacts: Optional[SourceArtifacts] = None  # Enhanced source tracking
     arxiv_metadata: Optional[ArxivMetadata] = None  # Arxiv paper metadata
     # Wave 132c: explicit Trainforge eval-harness profile selector. Read by
-    # Trainforge.eval.slm_eval_harness._resolve_default_profile in
+    # Trainforge.eval.runners.slm_eval_harness._resolve_default_profile in
     # preference to the substring-sniff over classification fields.
     eval_profile: Optional[str] = None
 

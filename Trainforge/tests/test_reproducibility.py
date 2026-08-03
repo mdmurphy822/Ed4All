@@ -120,7 +120,7 @@ def test_write_reproduce_script_falls_back_when_no_commit(tmp_path):
 
 
 def test_verify_eval_passes_when_stored_matches_actual(tmp_path):
-    from Trainforge.eval.verify_eval import verify
+    from Trainforge.eval.runners.verify_eval import verify
 
     card_path = tmp_path / "model_card.json"
     eval_path = tmp_path / "eval_report.json"
@@ -136,7 +136,7 @@ def test_verify_eval_passes_when_stored_matches_actual(tmp_path):
 
 
 def test_verify_eval_flags_drift_outside_tolerance(tmp_path):
-    from Trainforge.eval.verify_eval import verify
+    from Trainforge.eval.runners.verify_eval import verify
 
     card_path = tmp_path / "model_card.json"
     eval_path = tmp_path / "eval_report.json"
@@ -157,7 +157,7 @@ def test_verify_eval_flags_drift_outside_tolerance(tmp_path):
 
 
 def test_verify_eval_flags_ablation_table_row_count_drift(tmp_path):
-    from Trainforge.eval.verify_eval import verify
+    from Trainforge.eval.runners.verify_eval import verify
 
     card = _build_card()
     card["eval_scores"]["headline_table"] = [
@@ -191,7 +191,7 @@ def test_verify_eval_flags_ablation_table_row_count_drift(tmp_path):
 def test_end_to_end_reproduce_then_verify(tmp_path):
     """Synthetic run dir round-trip: write the script + run the verifier."""
     from Trainforge.eval.reproducibility import write_reproduce_script
-    from Trainforge.eval.verify_eval import verify
+    from Trainforge.eval.runners.verify_eval import verify
 
     card = _build_card()
     card_path = tmp_path / "model_card.json"
@@ -216,7 +216,7 @@ def test_end_to_end_reproduce_then_verify(tmp_path):
 
 def test_verify_eval_main_cli_exit_code(tmp_path):
     """The CLI entry point exits 0 on OK and 1 on drift."""
-    from Trainforge.eval.verify_eval import main
+    from Trainforge.eval.runners.verify_eval import main
 
     card = _build_card()
     card_path = tmp_path / "model_card.json"

@@ -17,7 +17,7 @@ Two SHA-256 hashes flow into ``model_card.json::eval_scores``:
 * ``eval_config_hash`` over the canonical-JSON serialisation of the
   loaded config dict.
 
-``Trainforge.eval.verify_eval`` re-reads the on-disk template/config
+``Trainforge.eval.runners.verify_eval`` re-reads the on-disk template/config
 and asserts that the hashes recorded on the model card still match.
 """
 from __future__ import annotations

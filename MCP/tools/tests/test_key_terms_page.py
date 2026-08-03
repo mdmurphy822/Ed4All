@@ -306,7 +306,9 @@ def test_flag_falsey_values(monkeypatch, val):
 
 
 def test_packager_groups_key_terms_page():
-    from package_multifile_imscc import _iter_week_groups  # noqa: PLC0415
+    from Courseforge.scripts.packaging.package_multifile_imscc import (  # noqa: PLC0415
+        _iter_week_groups,
+    )
 
     d = Path(tempfile.mkdtemp())
     for name in (
@@ -334,7 +336,7 @@ def test_packager_groups_key_terms_page():
 
 
 def test_render_key_terms_section_emits_cards_and_links():
-    import generate_course as gc  # noqa: PLC0415
+    from Courseforge.scripts.rendering import generate_course as gc  # noqa: PLC0415
 
     terms = [
         {

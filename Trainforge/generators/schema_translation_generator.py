@@ -1911,7 +1911,7 @@ def validate_form_data_contract(
     # the canonical tokenizer + Jaccard implementation already in use
     # by the eval pipeline so this validator and key-term-precision
     # eval share one tokenization contract.
-    from Trainforge.eval.key_term_precision import _jaccard, _tokenize
+    from Trainforge.eval.metrics.key_term_precision import _jaccard, _tokenize
 
     manifest_set = list(manifest_curies)
     manifest_curie_set = set(manifest_set)

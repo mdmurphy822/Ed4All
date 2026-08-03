@@ -33,7 +33,7 @@ def _build_cli_runner(chunks: List[Dict[str, Any]]):
 
 
 def test_rag_callable_formats_prelude_with_numbered_chunks():
-    from Trainforge.eval.rag_callable import RAGCallable
+    from Trainforge.eval.retrieval.rag_callable import RAGCallable
 
     seen_prompts: List[str] = []
 
@@ -72,7 +72,7 @@ def test_rag_callable_uses_snippet_body_from_real_ask_shape():
     the retrieved body under ``snippet`` (plus ``section_heading``) and
     NO ``text``/``excerpt`` key. The model context — and the trace — must
     contain the passage body, not just the section heading."""
-    from Trainforge.eval.rag_callable import RAGCallable
+    from Trainforge.eval.retrieval.rag_callable import RAGCallable
 
     seen_prompts: List[str] = []
 
@@ -111,7 +111,7 @@ def test_rag_callable_uses_snippet_body_from_real_ask_shape():
 
 
 def test_rag_callable_records_latency_per_call_and_mean():
-    from Trainforge.eval.rag_callable import RAGCallable
+    from Trainforge.eval.retrieval.rag_callable import RAGCallable
 
     chunks = [{"rank": 1, "chunk_id": "chunk_a", "text": "x"}]
     rag = RAGCallable(
@@ -132,7 +132,7 @@ def test_rag_callable_records_latency_per_call_and_mean():
 
 
 def test_rag_callable_invalid_method_raises():
-    from Trainforge.eval.rag_callable import RAGCallable
+    from Trainforge.eval.retrieval.rag_callable import RAGCallable
 
     with pytest.raises(ValueError) as exc:
         RAGCallable(
@@ -144,7 +144,7 @@ def test_rag_callable_invalid_method_raises():
 
 
 def test_rag_callable_invalid_limit_raises():
-    from Trainforge.eval.rag_callable import RAGCallable
+    from Trainforge.eval.retrieval.rag_callable import RAGCallable
 
     with pytest.raises(ValueError):
         RAGCallable(
@@ -163,7 +163,7 @@ def test_rag_callable_invalid_limit_raises():
 
 
 def test_rag_callable_empty_retrieval_falls_back_to_bare_prompt():
-    from Trainforge.eval.rag_callable import RAGCallable
+    from Trainforge.eval.retrieval.rag_callable import RAGCallable
 
     seen: List[str] = []
 
@@ -185,7 +185,7 @@ def test_rag_callable_empty_retrieval_falls_back_to_bare_prompt():
 def test_rag_callable_passes_method_and_limit_to_cli():
     """The CLI invocation must carry --method and --limit so LibV2
     routes through the chosen retrieval preset."""
-    from Trainforge.eval.rag_callable import RAGCallable
+    from Trainforge.eval.retrieval.rag_callable import RAGCallable
 
     captured_args: List[List[str]] = []
 
@@ -231,7 +231,7 @@ class _FakeEvalConfig:
 
 def test_rag_callable_passes_default_snippet_chars_to_cli():
     """The eval default (1200) reaches libv2 ask via --snippet-chars."""
-    from Trainforge.eval.rag_callable import RAGCallable
+    from Trainforge.eval.retrieval.rag_callable import RAGCallable
 
     captured_args: List[List[str]] = []
 
@@ -255,7 +255,7 @@ def test_rag_callable_passes_default_snippet_chars_to_cli():
 def test_rag_callable_eval_config_overrides_snippet_chars():
     """eval_config.snippet_chars overrides the constructor default and is
     threaded into the CLI invocation."""
-    from Trainforge.eval.rag_callable import RAGCallable
+    from Trainforge.eval.retrieval.rag_callable import RAGCallable
 
     captured_args: List[List[str]] = []
 
@@ -279,7 +279,7 @@ def test_rag_callable_eval_config_overrides_snippet_chars():
 def test_rag_callable_eval_config_absent_snippet_chars_keeps_default():
     """An eval_config that lacks snippet_chars leaves the constructor
     default in place (back-compat with existing per-course configs)."""
-    from Trainforge.eval.rag_callable import RAGCallable
+    from Trainforge.eval.retrieval.rag_callable import RAGCallable
 
     captured_args: List[List[str]] = []
 
@@ -300,7 +300,7 @@ def test_rag_callable_eval_config_absent_snippet_chars_keeps_default():
 
 
 def test_rag_callable_invalid_snippet_chars_raises():
-    from Trainforge.eval.rag_callable import RAGCallable
+    from Trainforge.eval.retrieval.rag_callable import RAGCallable
 
     with pytest.raises(ValueError):
         RAGCallable(
@@ -327,7 +327,7 @@ def test_rag_callable_records_last_retrieved_chunks_on_each_call():
     """Wave 105: after every __call__ the RAGCallable must expose the
     chunks that were actually retrieved so the trace writer in the
     AblationRunner can attach them to the EvidenceTrace."""
-    from Trainforge.eval.rag_callable import RAGCallable
+    from Trainforge.eval.retrieval.rag_callable import RAGCallable
 
     chunks = [
         {"rank": 1, "chunk_id": "chunk_aaa", "text": "RDF is a triple model.", "score": 5.2},
@@ -353,7 +353,7 @@ def test_rag_callable_records_last_retrieved_chunks_on_each_call():
 
 def test_rag_callable_truncates_long_chunk_text_in_snippet():
     """Snippets must be clipped so trace files stay reasonable in size."""
-    from Trainforge.eval.rag_callable import RAGCallable
+    from Trainforge.eval.retrieval.rag_callable import RAGCallable
 
     long_text = "x " * 500  # 1000 chars
     chunks = [{"chunk_id": "chunk_a", "text": long_text, "score": 1.0}]
@@ -371,7 +371,7 @@ def test_rag_callable_truncates_long_chunk_text_in_snippet():
 
 def test_rag_callable_last_retrieved_chunks_overwritten_per_call():
     """Each new call replaces the previous retrieval — no accumulation."""
-    from Trainforge.eval.rag_callable import RAGCallable
+    from Trainforge.eval.retrieval.rag_callable import RAGCallable
 
     sequence = [
         [{"chunk_id": "chunk_a", "text": "first"}],
@@ -398,7 +398,7 @@ def test_rag_callable_last_retrieved_chunks_overwritten_per_call():
 
 def test_rag_callable_last_retrieved_chunks_empty_on_failure():
     """When the CLI returns no chunks, last_retrieved_chunks is []."""
-    from Trainforge.eval.rag_callable import RAGCallable
+    from Trainforge.eval.retrieval.rag_callable import RAGCallable
 
     rag = RAGCallable(
         base_callable=lambda p: "",

@@ -1,7 +1,7 @@
 """EvalGatingValidator.
 
 Reads ``<model_dir>/eval/eval_report.json`` (the artifact emitted by
-:class:`Trainforge.eval.slm_eval_harness.SLMEvalHarness`) and decides
+:class:`Trainforge.eval.runners.slm_eval_harness.SLMEvalHarness`) and decides
 whether the run is allowed to promote into ``models/_pointers.json``.
 
 Critical-severity gates (any one fails the result):
@@ -294,7 +294,7 @@ class EvalGatingValidator:
         #     structurally meaningless for that question_type (e.g.
         #     distractor entropy on a non-MC item), so scoring it would
         #     manufacture a false below-floor warning. See
-        #     ``Trainforge/eval/_per_type_helpers.py::RELEVANT_QUESTION_TYPES``.
+        #     ``Trainforge/eval/metrics/_per_type_helpers.py::RELEVANT_QUESTION_TYPES``.
         per_type_below: List[tuple] = []
         for (
             metric_name,

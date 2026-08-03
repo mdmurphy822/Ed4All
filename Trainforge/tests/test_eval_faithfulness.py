@@ -149,7 +149,7 @@ def test_format_probe_scrubs_chunk_id_via_label_resolver() -> None:
     not the raw `shacl_551_chunk_NNNNN` string. This is what zeroed
     adapter+RAG faithfulness on the cc07cc76 run.
     """
-    from Trainforge.eval.chunk_labels import ChunkLabelResolver
+    from Trainforge.eval.retrieval.chunk_labels import ChunkLabelResolver
     from Trainforge.eval.faithfulness import _format_probe
 
     resolver = ChunkLabelResolver(labels={
@@ -171,7 +171,7 @@ def test_relation_template_path_scrubs_chunk_id_with_resolver_label() -> None:
     label, not the raw `<corpus>_chunk_NNNNN` string. The
     `_RELATION_TEMPLATES` dict has a `teaches` entry, so this exercises
     the relation-template branch (not the generic fallback)."""
-    from Trainforge.eval.chunk_labels import ChunkLabelResolver
+    from Trainforge.eval.retrieval.chunk_labels import ChunkLabelResolver
     from Trainforge.eval.faithfulness import _RELATION_TEMPLATES, _format_probe
 
     assert "teaches" in _RELATION_TEMPLATES, (
@@ -213,7 +213,7 @@ def test_format_probe_passes_through_non_chunk_sources(
     path so an unknown relation_type doesn't silently mangle non-chunk
     node IDs either.
     """
-    from Trainforge.eval.chunk_labels import ChunkLabelResolver
+    from Trainforge.eval.retrieval.chunk_labels import ChunkLabelResolver
     from Trainforge.eval.faithfulness import _format_probe
 
     resolver = ChunkLabelResolver(labels={})

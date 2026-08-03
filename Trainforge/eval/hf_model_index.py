@@ -1,7 +1,7 @@
 """Wave 101 - HuggingFace model-index converter for eval reports.
 
 Converts the Wave 92 ``eval_report.json`` shape produced by
-:class:`Trainforge.eval.slm_eval_harness.SLMEvalHarness` into the
+:class:`Trainforge.eval.runners.slm_eval_harness.SLMEvalHarness` into the
 HuggingFace Hub ``model-index`` results[] schema, then renders a
 README.md with the corresponding YAML frontmatter so the upload-target
 adapter shows leaderboard-readable scores on its HF model page.
@@ -656,7 +656,7 @@ def _render_headline_result_block(
         lines.append(
             "_Eval ablation has not been run yet for this adapter. "
             "Headline numbers will populate after `python -m "
-            "Trainforge.eval.ablation_runner` lands an "
+            "Trainforge.eval.runners.ablation_runner` lands an "
             "`ablation_report.json` next to this card._"
         )
         lines.append("")
@@ -815,7 +815,7 @@ def _render_reproducing_section(model_card: Dict[str, Any]) -> List[str]:
     lines.append(
         "Run `bash reproduce_eval.sh` from this directory. The script "
         "pins the commit SHA, model id, and eval profile, then invokes "
-        "`python -m Trainforge.eval.verify_eval` against the stored "
+        "`python -m Trainforge.eval.runners.verify_eval` against the stored "
         "`eval_report.json` + `ablation_report.json`. Verification "
         "re-reads the metrics rather than re-running the model, so no "
         "GPU is required."

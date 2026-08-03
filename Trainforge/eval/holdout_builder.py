@@ -49,7 +49,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from Trainforge.eval.chunk_labels import ChunkLabelResolver
+    from Trainforge.eval.retrieval.chunk_labels import ChunkLabelResolver
 
 logger = logging.getLogger(__name__)
 
@@ -153,7 +153,7 @@ class HoldoutBuilder:
         # gets the multi-citation ground_truth_chunk_ids set.
         # Audit 2026-04-30: thread a chunk-label resolver so probe text
         # carries human-readable labels instead of chunk-ID literals.
-        from Trainforge.eval.chunk_labels import ChunkLabelResolver
+        from Trainforge.eval.retrieval.chunk_labels import ChunkLabelResolver
         label_resolver = ChunkLabelResolver.from_course(self.course_path)
         probes = self._build_probes(
             withheld,

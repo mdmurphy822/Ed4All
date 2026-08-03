@@ -18,7 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.eval.chunk_labels import ChunkLabelResolver
+from Trainforge.eval.retrieval.chunk_labels import ChunkLabelResolver
 
 
 def _write_chunks(tmp_path: Path, records: list) -> Path:

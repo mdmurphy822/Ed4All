@@ -17,7 +17,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from Trainforge.eval.generation_curve_runner import (  # noqa: E402
+from Trainforge.eval.runners.generation_curve_runner import (  # noqa: E402
     CURVE_SCHEMA_VERSION,
     DEFAULT_MODES,
     run_generation_curve,

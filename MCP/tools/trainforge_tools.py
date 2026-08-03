@@ -239,7 +239,7 @@ def register_trainforge_tools(mcp):
         flagging.
 
         Args:
-            course_id: Course identifier (e.g., INT_101)
+            course_id: Course identifier (e.g., FIXTURE_INTRO)
             objective_ids: Comma-separated learning objective IDs to assess
             bloom_levels: Comma-separated Bloom's levels to target
                          (remember, understand, apply, analyze, evaluate, create)

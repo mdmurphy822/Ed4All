@@ -27,7 +27,7 @@ _EXPECTED_FIELDS = {
 
 
 def test_trace_writer_emits_jsonl_with_all_fields(tmp_path):
-    from Trainforge.eval.evidence_trace import (
+    from Trainforge.eval.retrieval.evidence_trace import (
         EvidenceTrace, TraceWriter, load_traces,
     )
 
@@ -68,7 +68,7 @@ def test_trace_writer_emits_jsonl_with_all_fields(tmp_path):
 
 
 def test_extract_citations_pulls_bracketed_ids():
-    from Trainforge.eval.evidence_trace import extract_citations
+    from Trainforge.eval.retrieval.evidence_trace import extract_citations
 
     out = extract_citations("answer with [chunk-1] and [chunk_2] cites.")
     assert out == ["chunk-1", "chunk_2"]
@@ -81,7 +81,7 @@ def test_extract_citations_pulls_bracketed_ids():
 
 
 def test_classify_failure_mode_clean_pass():
-    from Trainforge.eval.evidence_trace import classify_failure_mode
+    from Trainforge.eval.retrieval.evidence_trace import classify_failure_mode
 
     label = classify_failure_mode(
         retrieved_at_top_k=True,
@@ -93,7 +93,7 @@ def test_classify_failure_mode_clean_pass():
 
 
 def test_classify_failure_mode_retrieval_miss():
-    from Trainforge.eval.evidence_trace import classify_failure_mode
+    from Trainforge.eval.retrieval.evidence_trace import classify_failure_mode
 
     label = classify_failure_mode(
         retrieved_at_top_k=False,
@@ -105,7 +105,7 @@ def test_classify_failure_mode_retrieval_miss():
 
 
 def test_classify_failure_mode_retrieval_hit_no_cite():
-    from Trainforge.eval.evidence_trace import classify_failure_mode
+    from Trainforge.eval.retrieval.evidence_trace import classify_failure_mode
 
     label = classify_failure_mode(
         retrieved_at_top_k=True,
@@ -117,7 +117,7 @@ def test_classify_failure_mode_retrieval_hit_no_cite():
 
 
 def test_classify_failure_mode_model_ignored_context():
-    from Trainforge.eval.evidence_trace import classify_failure_mode
+    from Trainforge.eval.retrieval.evidence_trace import classify_failure_mode
 
     label = classify_failure_mode(
         retrieved_at_top_k=True,
@@ -129,7 +129,7 @@ def test_classify_failure_mode_model_ignored_context():
 
 
 def test_trace_writer_close_is_idempotent(tmp_path):
-    from Trainforge.eval.evidence_trace import EvidenceTrace, TraceWriter
+    from Trainforge.eval.retrieval.evidence_trace import EvidenceTrace, TraceWriter
 
     out = tmp_path / "eval_traces.jsonl"
     writer = TraceWriter(out)

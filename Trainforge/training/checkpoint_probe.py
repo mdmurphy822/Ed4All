@@ -21,7 +21,7 @@ from lib.generation.stop_control import check_stop
 from lib.retrieval.answer_scoring import score_key_point_coverage
 from lib.utils import sha256_file
 
-from Trainforge.eval.adapter_callable import AdapterCallable
+from Trainforge.eval.retrieval.adapter_callable import AdapterCallable
 from Trainforge.training.base_models import BaseModelSpec
 
 

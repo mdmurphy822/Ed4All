@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from Trainforge.eval.chunk_labels import ChunkLabelResolver
+    from Trainforge.eval.retrieval.chunk_labels import ChunkLabelResolver
 
 logger = logging.getLogger(__name__)
 

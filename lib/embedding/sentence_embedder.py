@@ -12,7 +12,7 @@ of swallowing the import error. Mirrors the precedent in
 default, opt-in fail-closed).
 
 Default model: ``all-MiniLM-L6-v2`` (384-dim, ~80 MB on disk, the same
-model the precedent at ``Trainforge/eval/key_term_precision.py:66-71``
+model the precedent at ``Trainforge/eval/metrics/key_term_precision.py:66-71``
 uses for stdlib-fallback embedding similarity). This default is LIVE, not
 vestigial: every ``try_load_embedder()`` call that passes no model name —
 which is most of the embedding-tier validators — loads it.
@@ -567,7 +567,7 @@ def try_load_embedder(
 ) -> Optional[SentenceEmbedder]:
     """Return a :class:`SentenceEmbedder` or ``None`` when extras missing.
 
-    Mirrors ``Trainforge/eval/key_term_precision.py:66-71`` (the
+    Mirrors ``Trainforge/eval/metrics/key_term_precision.py:66-71`` (the
     in-tree precedent for graceful-degradation behavior on optional
     embedding deps).
 

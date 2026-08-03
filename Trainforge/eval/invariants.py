@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from Trainforge.eval.chunk_labels import ChunkLabelResolver
+    from Trainforge.eval.retrieval.chunk_labels import ChunkLabelResolver
 
 logger = logging.getLogger(__name__)
 
@@ -202,7 +202,7 @@ class BloomLevelInvariant:
         label_resolver: Optional["ChunkLabelResolver"] = None,
     ) -> None:
         # Build Bloom -> chunk_id mapping from the at_bloom_level edges.
-        from Trainforge.eval.chunk_labels import ChunkLabelResolver
+        from Trainforge.eval.retrieval.chunk_labels import ChunkLabelResolver
 
         graph = _load_pedagogy_graph(course_path)
         bloom_buckets: Dict[str, List[str]] = {}

@@ -118,7 +118,7 @@ def _textbook_structure(n_chapters: int = 3) -> Dict[str, Any]:
             ),
             "sections": [],
         })
-    return {"course_name": "LINALG_STAGE3", "chapters": chapters}
+    return {"course_name": "FXEDGE_STAGE3", "chapters": chapters}
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +224,7 @@ def _run(
     result = asyncio.run(
         tool(
             project_id="",
-            course_name="LINALG_STAGE3",
+            course_name="FXEDGE_STAGE3",
             staging_dir="",
             # ``dart_chunks_path`` is the tool's live kwarg name.
             dart_chunks_path=str(chunks_path),
@@ -554,7 +554,7 @@ def _deslug_structure() -> Dict[str, Any]:
             ),
             "sections": [],
         })
-    return {"course_name": "LINALG_STAGE3", "chapters": chapters}
+    return {"course_name": "FXEDGE_STAGE3", "chapters": chapters}
 
 
 def test_stage3_seed_compilation_emits_deslugged_alias() -> None:

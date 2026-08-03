@@ -72,7 +72,7 @@ class RAGCallable:
 
     Args:
         base_callable: Callable[[str], str] - the model surface to wrap.
-            Typically :class:`Trainforge.eval.adapter_callable.AdapterCallable`
+            Typically :class:`Trainforge.eval.retrieval.adapter_callable.AdapterCallable`
             or :class:`BaseOnlyCallable` (defined below).
         course_slug: LibV2 course slug to scope retrieval to.
         method: Retrieval-method preset. One of
@@ -227,7 +227,7 @@ class RAGCallable:
 class BaseOnlyCallable:
     """Callable that runs the base model with no PEFT adapter applied.
 
-    Mirrors :class:`Trainforge.eval.adapter_callable.AdapterCallable` shape
+    Mirrors :class:`Trainforge.eval.retrieval.adapter_callable.AdapterCallable` shape
     minus the PEFT load - the headline 4-row ablation needs the base
     model alone to compute the lift attributable to the adapter.
 
@@ -500,7 +500,7 @@ def _default_cli_runner(args: List[str]) -> Dict[str, Any]:
     # Locate the LibV2 directory; it sits at the project root.
     import os as _os
     from pathlib import Path as _Path
-    libv2_dir = _Path(__file__).resolve().parents[2] / "LibV2"
+    libv2_dir = _Path(__file__).resolve().parents[3] / "LibV2"
     fixed_args = list(args)
     # Rewrite the module path if the caller still passes the legacy
     # `LibV2.tools.libv2.cli` form (which only resolves when invoked

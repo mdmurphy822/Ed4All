@@ -611,13 +611,13 @@ python scripts/harness/retrieval_smoke.py \
 
 ```bash
 # 2-5 minute smoke first — loads the real adapter, caps each evaluator at N=3.
-python -m Trainforge.eval.slm_eval_harness \
+python -m Trainforge.eval.runners.slm_eval_harness \
   --course-path LibV2/courses/<COURSE_SLUG> \
   --adapter-path LibV2/courses/<COURSE_SLUG>/models/<MODEL_ID> \
   --base-model nemotron3-nano-30b --smoke
 
 # Full run, with the base-model ablation (~3x wall time).
-python -m Trainforge.eval.slm_eval_harness \
+python -m Trainforge.eval.runners.slm_eval_harness \
   --course-path LibV2/courses/<COURSE_SLUG> \
   --adapter-path LibV2/courses/<COURSE_SLUG>/models/<MODEL_ID> \
   --base-model nemotron3-nano-30b --with-ablation

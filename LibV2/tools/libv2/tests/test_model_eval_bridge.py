@@ -111,7 +111,7 @@ class _FakeHarness:
 @pytest.fixture
 def patch_harness(monkeypatch):
     """Replace SLMEvalHarness with the fake in the module run_fresh_eval imports."""
-    import Trainforge.eval.slm_eval_harness as harness_mod
+    import Trainforge.eval.runners.slm_eval_harness as harness_mod
     monkeypatch.setattr(harness_mod, "SLMEvalHarness", _FakeHarness)
     _FakeHarness.last_instance = None
     return _FakeHarness
@@ -271,7 +271,7 @@ class _RecorderCallable:
 
 
 def test_build_adapter_callable_maps_card_and_gen_knobs(tmp_path, monkeypatch):
-    import Trainforge.eval.adapter_callable as ac_mod
+    import Trainforge.eval.retrieval.adapter_callable as ac_mod
     from Trainforge.eval.eval_config import load_eval_config
     monkeypatch.setattr(ac_mod, "AdapterCallable", _RecorderCallable)
     _RecorderCallable.last_kwargs = None
@@ -297,7 +297,7 @@ def test_build_adapter_callable_maps_card_and_gen_knobs(tmp_path, monkeypatch):
 
 
 def test_build_adapter_callable_missing_card_raises(tmp_path, monkeypatch):
-    import Trainforge.eval.adapter_callable as ac_mod
+    import Trainforge.eval.retrieval.adapter_callable as ac_mod
     from Trainforge.eval.eval_config import load_eval_config
     monkeypatch.setattr(ac_mod, "AdapterCallable", _RecorderCallable)
 

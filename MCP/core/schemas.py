@@ -11,7 +11,7 @@ Usage:
         id="task_001",
         workflow_id="wf_001",
         agent_type="content-generator",
-        params={"course_code": "INT_101"}
+        params={"course_code": "FIXTURE_INTRO"}
     )
 
     result = TaskResult(
@@ -126,7 +126,7 @@ class Task(BaseModel):
                 "workflow_id": "wf_course_gen_001",
                 "agent_type": "content-generator",
                 "status": "PENDING",
-                "params": {"course_code": "INT_101", "week": 1},
+                "params": {"course_code": "FIXTURE_INTRO", "week": 1},
                 "dependencies": [],
             }
         }

@@ -14,7 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.eval.key_term_precision import (  # noqa: E402
+from Trainforge.eval.metrics.key_term_precision import (  # noqa: E402
     KeyTermPrecisionEvaluator,
     _extract_required_elements,
     _harvest_key_terms,

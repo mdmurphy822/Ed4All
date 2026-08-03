@@ -220,7 +220,7 @@ def test_init_loads_model_and_caches(
     """__init__ must load the base model, apply the adapter, and put
     the wrapped model in inference mode."""
     fake_mod, fake_tokenizer, fake_model = fake_transformers
-    from Trainforge.eval.adapter_callable import AdapterCallable
+    from Trainforge.eval.retrieval.adapter_callable import AdapterCallable
 
     callable_obj = AdapterCallable(
         adapter_dir=adapter_dir,
@@ -248,7 +248,7 @@ def test_nano_probe_loads_pinned_bf16_without_quantization(
         "Trainforge.training.peft_trainer._missing_mamba_kernel_packages",
         lambda: [],
     )
-    from Trainforge.eval.adapter_callable import AdapterCallable
+    from Trainforge.eval.retrieval.adapter_callable import AdapterCallable
 
     AdapterCallable(
         adapter_dir=adapter_dir,
@@ -271,7 +271,7 @@ def test_call_reuses_cached_model(
     """Subsequent ``__call__`` invocations reuse the cached model
     rather than re-loading from HF."""
     fake_mod, fake_tokenizer, fake_model = fake_transformers
-    from Trainforge.eval.adapter_callable import AdapterCallable
+    from Trainforge.eval.retrieval.adapter_callable import AdapterCallable
 
     callable_obj = AdapterCallable(
         adapter_dir=adapter_dir,
@@ -299,7 +299,7 @@ def test_call_applies_chat_template(
     """The prompt passed to the tokenizer must be wrapped in the
     base's chat template (chatml for qwen2.5-1.5b)."""
     fake_mod, fake_tokenizer, fake_model = fake_transformers
-    from Trainforge.eval.adapter_callable import AdapterCallable
+    from Trainforge.eval.retrieval.adapter_callable import AdapterCallable
 
     callable_obj = AdapterCallable(
         adapter_dir=adapter_dir,
@@ -322,7 +322,7 @@ def test_call_decodes_with_skip_special_tokens(
     """``decode`` must be invoked with ``skip_special_tokens=True``
     so the returned string is clean (no <|im_end|> leakage)."""
     fake_mod, fake_tokenizer, fake_model = fake_transformers
-    from Trainforge.eval.adapter_callable import AdapterCallable
+    from Trainforge.eval.retrieval.adapter_callable import AdapterCallable
 
     callable_obj = AdapterCallable(
         adapter_dir=adapter_dir,
@@ -340,7 +340,7 @@ def test_call_temperature_zero_disables_sampling(
 ):
     """Default temperature=0.0 -> generate() called with do_sample=False."""
     fake_mod, fake_tokenizer, fake_model = fake_transformers
-    from Trainforge.eval.adapter_callable import AdapterCallable
+    from Trainforge.eval.retrieval.adapter_callable import AdapterCallable
 
     callable_obj = AdapterCallable(
         adapter_dir=adapter_dir,
@@ -358,7 +358,7 @@ def test_call_temperature_nonzero_enables_sampling(
 ):
     """temperature > 0 -> do_sample=True with that temperature."""
     fake_mod, fake_tokenizer, fake_model = fake_transformers
-    from Trainforge.eval.adapter_callable import AdapterCallable
+    from Trainforge.eval.retrieval.adapter_callable import AdapterCallable
 
     callable_obj = AdapterCallable(
         adapter_dir=adapter_dir,
@@ -377,7 +377,7 @@ def test_missing_adapter_dir_raises(
 ):
     """A non-existent adapter dir surfaces a clear FileNotFoundError
     BEFORE the heavy ML imports run."""
-    from Trainforge.eval.adapter_callable import AdapterCallable
+    from Trainforge.eval.retrieval.adapter_callable import AdapterCallable
 
     with pytest.raises(FileNotFoundError) as exc:
         AdapterCallable(
@@ -392,7 +392,7 @@ def test_unknown_base_repo_raises(
     fake_torch, fake_transformers, fake_peft, adapter_dir,
 ):
     """A repo that doesn't match the registry surfaces a clear KeyError."""
-    from Trainforge.eval.adapter_callable import AdapterCallable
+    from Trainforge.eval.retrieval.adapter_callable import AdapterCallable
 
     with pytest.raises(KeyError) as exc:
         AdapterCallable(

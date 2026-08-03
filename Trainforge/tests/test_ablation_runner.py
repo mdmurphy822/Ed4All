@@ -89,7 +89,7 @@ def _metric_payload(
 
 
 def test_headline_table_emits_four_rows(tmp_path):
-    from Trainforge.eval.ablation_runner import AblationRunner, AblationSetup
+    from Trainforge.eval.runners.ablation_runner import AblationRunner, AblationSetup
 
     metrics = {
         "base":         _metric_payload(0.40, 0.50, 0.10),
@@ -129,7 +129,7 @@ def test_headline_table_emits_four_rows(tmp_path):
 
 
 def test_qualitative_column_omitted_when_judge_none(tmp_path):
-    from Trainforge.eval.ablation_runner import AblationRunner, AblationSetup
+    from Trainforge.eval.runners.ablation_runner import AblationRunner, AblationSetup
 
     metrics = {"base": _metric_payload(0.4, 0.5, 0.1)}
     factory = _build_fake_harness_factory(metrics)
@@ -150,7 +150,7 @@ def test_qualitative_column_omitted_when_judge_none(tmp_path):
 
 
 def test_qualitative_column_populated_when_judge_enabled(tmp_path):
-    from Trainforge.eval.ablation_runner import AblationRunner, AblationSetup
+    from Trainforge.eval.runners.ablation_runner import AblationRunner, AblationSetup
 
     class _FakeJudge:
         enabled = True
@@ -176,7 +176,7 @@ def test_qualitative_column_populated_when_judge_enabled(tmp_path):
 
 
 def test_retrieval_method_table_emits_five_rows(tmp_path):
-    from Trainforge.eval.ablation_runner import AblationRunner, AblationSetup
+    from Trainforge.eval.runners.ablation_runner import AblationRunner, AblationSetup
 
     # All five methods share metrics for simplicity; latency varies.
     method_payload = _metric_payload(0.7, 0.8, 0.4)
@@ -218,7 +218,7 @@ def test_retrieval_method_table_emits_five_rows(tmp_path):
 
 
 def test_retrieval_method_table_skipped_when_factory_missing(tmp_path):
-    from Trainforge.eval.ablation_runner import AblationRunner, AblationSetup
+    from Trainforge.eval.runners.ablation_runner import AblationRunner, AblationSetup
 
     metrics = {"base": _metric_payload(0.4, 0.5, 0.1)}
     factory = _build_fake_harness_factory(metrics)
@@ -237,7 +237,7 @@ def test_headline_delta_in_ablation_and_eval_report(tmp_path):
     carry the headline_delta block so the HF README writer + any
     downstream consumer (audit, dashboard) see the procurement claim
     without a second JSON load."""
-    from Trainforge.eval.ablation_runner import AblationRunner, AblationSetup
+    from Trainforge.eval.runners.ablation_runner import AblationRunner, AblationSetup
 
     # base hallucination 0.50 -> adapter+rag hallucination 0.12 = 76% reduction
     metrics = {

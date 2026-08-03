@@ -12,7 +12,7 @@ The script:
 * Pins ``pip install ed4all[training]`` (the canonical training
   install).
 * Pins the model_id, course_slug, and eval profile name.
-* Runs ``python -m Trainforge.eval.verify_eval --model-card
+* Runs ``python -m Trainforge.eval.runners.verify_eval --model-card
   <path>``, which re-loads the eval and ablation reports and asserts
   every metric matches its stored value within
   ``model_card.eval_scores.tolerance_band``. Exits non-zero on drift.
@@ -58,7 +58,7 @@ if command -v git >/dev/null 2>&1; then
 fi
 
 # 2. Verify the eval + ablation reports against the stored tolerance band.
-python -m Trainforge.eval.verify_eval \\
+python -m Trainforge.eval.runners.verify_eval \\
   --model-card "{model_card_path}" \\
   --eval-report "{eval_report_path}" \\
   --ablation-report "{ablation_report_path}"

@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Sequence
 
-from Trainforge.eval.evidence_trace import EvidenceTrace
+from Trainforge.eval.retrieval.evidence_trace import EvidenceTrace
 
 
 logger = logging.getLogger(__name__)
@@ -147,7 +147,7 @@ def detect_findings(
 
     Args:
         ablation_report: Output of
-            :class:`Trainforge.eval.ablation_runner.AblationRunner.run`
+            :class:`Trainforge.eval.runners.ablation_runner.AblationRunner.run`
             (the parsed ablation_report.json dict).
         traces: Iterable of :class:`EvidenceTrace` rows
             (typically read back via :func:`evidence_trace.load_traces`).
