@@ -352,8 +352,7 @@ and the phase-name dispatch override.
 `ToolCapability` registrations both live there; there is no
 `MCP/tools/file_tools.py`) — `list_directory` / `read_file` / `file_info` run
 in a READ_ONLY sandbox rooted at `ALLOWED_FILE_ROOT`; `write_file` in a
-RESTRICTED sandbox whose `allowed_paths` are `runtime/` and the top-level
-`state/` compat symlink.
+RESTRICTED sandbox whose writable `allowed_paths` are confined to `runtime/`.
 
 **SemantiK tools** — see `SemantiK/CLAUDE.md` (PDF→accessible-HTML conversion; emits the Source-Provenance `data-semantik-*` / `semantik:{slug}#{block_id}` contract).
 

@@ -242,7 +242,7 @@ def init_tool_registry() -> None:
             input_schema={"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}},
             output_schema={"type": "string"},
             sandbox_level=SandboxLevel.RESTRICTED,
-            allowed_paths=[str(ALLOWED_FILE_ROOT / "runtime"), str(ALLOWED_FILE_ROOT / "state")],
+            allowed_paths=[str(ALLOWED_FILE_ROOT / "runtime")],
             can_write_files=True,
             can_execute_subprocess=False,
             can_network=False

@@ -14,8 +14,8 @@ Features:
 
 Usage:
     python component_applier.py --input content.html --output styled.html
-    python component_applier.py --input-dir /content/ --output-dir /styled/
-    python component_applier.py --mapping mapping.json --input-dir /content/
+    python component_applier.py --input-dir <INPUT_DIR> --output-dir <OUTPUT_DIR>
+    python component_applier.py --mapping mapping.json --input-dir <INPUT_DIR>
 """
 
 import argparse
@@ -45,6 +45,8 @@ COURSEFORGE_PATH = Path(os.environ.get(
     Path(__file__).parent.parent.parent  # Default: relative to script location
 ))
 DEFAULT_TEMPLATE_DIR = COURSEFORGE_PATH / 'templates'
+_LOG_DIR = ED4ALL_ROOT / "runtime" / "logs"
+_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 # Configure logging
 logging.basicConfig(
@@ -52,7 +54,7 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler('component_applier.log')
+        logging.FileHandler(_LOG_DIR / 'component_applier.log')
     ]
 )
 logger = logging.getLogger(__name__)

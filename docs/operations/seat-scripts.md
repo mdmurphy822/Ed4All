@@ -16,10 +16,10 @@ never lands in git. `runtime/` is wholly gitignored; this doc and the sanitized
 reference. Copy the template into `runtime/seats/`, fill the
 `<PLACEHOLDERS>`, and keep your filled-in scripts local-only.
 
-> These scripts previously lived at the repo-root `seats/` dir (and before
-> that under the operator campaign harness). They now live in
-> `runtime/seats/`; a compat symlink remains at `seats/` so existing
-> `ED4ALL_SEAT_LAUNCH_SPECS` values keep resolving unchanged.
+> These scripts previously lived at the repo-root `seats/` directory (and
+> before that under the operator campaign harness). The only supported in-repo
+> location is now `runtime/seats/`; update `ED4ALL_SEAT_LAUNCH_SPECS` rather
+> than recreating a root compatibility link.
 
 ## The three seat registries
 

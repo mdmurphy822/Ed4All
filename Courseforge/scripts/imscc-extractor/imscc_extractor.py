@@ -13,7 +13,7 @@ Features:
 - Generate structured course object for downstream processing
 
 Usage:
-    python imscc_extractor.py --input package.imscc --output /path/to/extracted/
+    python imscc_extractor.py --input package.imscc --output <OUTPUT_DIR>
     python imscc_extractor.py --input package.imscc --analyze-only
 """
 
@@ -42,13 +42,16 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from lib.secure_paths import safe_extract_zip, validate_path_within_root  # noqa: E402
 
+_LOG_DIR = _PROJECT_ROOT / "runtime" / "logs"
+_LOG_DIR.mkdir(parents=True, exist_ok=True)
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler('imscc_extractor.log')
+        logging.FileHandler(_LOG_DIR / 'imscc_extractor.log')
     ]
 )
 logger = logging.getLogger(__name__)

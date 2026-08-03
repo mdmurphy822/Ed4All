@@ -7,9 +7,9 @@ recorded in [`../reference/repository-cleanup.md`](../reference/repository-clean
 `docs/` taxonomy, `ci/layout_guard.py`); the runtime-collapse phase landed the
 same day (owner decision): `state/`, `training-captures/`, `seats/`, `demo/`,
 `extracted/`, `testruns/`, `scratchpad/`, and `shots/` all live under the
-single gitignored `runtime/` root, with compat symlinks at `state`,
-`training-captures`, and `seats` until the paused run finishes and operator
-env files are updated. Phase 2 (`scripts/` re-taxonomy) landed 2026-08-02;
+single gitignored `runtime/` root. The temporary root compatibility symlinks
+were retired after persisted workflow and operator configuration audits found
+no references to them. Phase 2 (`scripts/` re-taxonomy) landed 2026-08-02;
 one campaign-specific root wrapper remains temporarily ratcheted pending its
 separate public-release disposition. The
 import-root moves stay **rejected** (§5). Phase 4 extended the schema
@@ -150,7 +150,7 @@ Four buckets, hard rule "no single-file dirs":
   alias assume current paths. Cost is weeks of churn; benefit is aesthetic.
 - ~~No renaming `state/ training-captures/`~~ — **superseded 2026-07-29 by
   owner decision**: both now nest under `runtime/` (executed with a full
-  tracked-reference sweep + compat symlinks; `ED4ALL_HOME` basenames
+  tracked-reference and persisted-state sweep; `ED4ALL_HOME` basenames
   unchanged). `inputs/` keeps its name and root position.
 - **No collapsing `Courseforge/exports/`, `SemantiK/output/`,
   `LibV2/courses/` into `runtime/`.** They are `ED4ALL_HOME` basename keys with

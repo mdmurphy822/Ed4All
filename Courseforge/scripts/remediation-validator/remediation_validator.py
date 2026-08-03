@@ -14,9 +14,9 @@ Features:
 - Before/after accessibility score comparison
 
 Usage:
-    python remediation_validator.py --course-dir /path/to/course/
-    python remediation_validator.py --course-dir /path/to/course/ --output report.json
-    python remediation_validator.py --before /original/ --after /remediated/ --compare
+    python remediation_validator.py --course-dir <COURSE_DIR>
+    python remediation_validator.py --course-dir <COURSE_DIR> --output report.json
+    python remediation_validator.py --before <ORIGINAL_DIR> --after <REMEDIATED_DIR> --compare
 """
 
 import argparse
@@ -31,13 +31,17 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from xml.etree import ElementTree as ET
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_LOG_DIR = _PROJECT_ROOT / "runtime" / "logs"
+_LOG_DIR.mkdir(parents=True, exist_ok=True)
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler('remediation_validator.log')
+        logging.FileHandler(_LOG_DIR / 'remediation_validator.log')
     ]
 )
 logger = logging.getLogger(__name__)
