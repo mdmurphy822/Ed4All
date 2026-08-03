@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 
 import pytest
 
 from ci.guards.repository_policy import (
+    ROOT,
     check_layout,
     check_privacy,
+    check_public_docs,
     check_release,
     classify,
     git_paths,
+    load_policy,
     load_private_tokens,
 )
 
@@ -31,6 +35,7 @@ def policy() -> dict:
         "sentinel_names": [".gitkeep"],
         "max_source_bytes": 64,
         "forbidden_generated_segments": ["build", "generated"],
+        "public_docs": [],
     }
 
 
@@ -122,6 +127,79 @@ def test_release_checks_secret_oversize_and_nested_repository(tmp_path) -> None:
         tmp_path, ["src/secret.py", "src/large.py", "src/vendor/module.py"], policy(), []
     )
     assert {"secret", "oversized", "nested_repository"} <= checks(result)
+
+
+def test_public_docs_exact_allowlist_accepts_listed_candidate() -> None:
+    cfg = policy()
+    cfg["public_docs"] = ["docs/guide.md"]
+    assert check_public_docs(["docs/guide.md"], cfg) == []
+
+
+def test_public_docs_reports_unlisted_and_stale_entries() -> None:
+    cfg = policy()
+    cfg["public_docs"] = ["docs/stale.md"]
+    result = check_public_docs(["docs/new.md"], cfg)
+    assert checks(result) == {
+        "unreviewed_public_doc",
+        "stale_public_doc_allowlist",
+    }
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [
+        ["/docs/absolute.md"],
+        ["docs/../private.md"],
+        ["docs/*.md"],
+        ["docs\\guide.md"],
+        ["README.md"],
+        ["docs/z.md", "docs/a.md"],
+        ["docs/a.md", "docs/a.md"],
+        [""],
+        [1],
+    ],
+)
+def test_load_policy_rejects_invalid_public_docs_entries(tmp_path, entries) -> None:
+    cfg = policy()
+    cfg["public_docs"] = entries
+    target = tmp_path / "policy.json"
+    target.write_text(json.dumps(cfg), encoding="utf-8")
+    with pytest.raises(ValueError, match="public_docs"):
+        load_policy(target)
+
+
+def test_load_policy_rejects_existing_public_docs_directory(tmp_path) -> None:
+    root = tmp_path
+    architecture = root / "docs" / "architecture"
+    architecture.mkdir(parents=True)
+    (root / "docs" / "guide").mkdir()
+    cfg = policy()
+    cfg["public_docs"] = ["docs/guide"]
+    target = architecture / "repository-layout.json"
+    target.write_text(json.dumps(cfg), encoding="utf-8")
+    with pytest.raises(ValueError, match="directory"):
+        load_policy(target)
+
+
+def test_tracked_docs_match_current_policy_allowlist() -> None:
+    cfg = load_policy()
+    tracked = git_paths(ROOT, candidates=False)
+    assert check_public_docs(tracked, cfg) == []
+
+
+def test_force_added_ignored_doc_remains_a_release_candidate(tmp_path) -> None:
+    _init_git(tmp_path)
+    (tmp_path / ".gitignore").write_text("docs/forced.md\n", encoding="utf-8")
+    target = tmp_path / "docs" / "forced.md"
+    target.parent.mkdir()
+    target.write_text("private draft", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", ".gitignore", "-f", "docs/forced.md"],
+        cwd=tmp_path,
+        check=True,
+    )
+    candidates = git_paths(tmp_path, candidates=True)
+    assert "unreviewed_public_doc" in checks(check_public_docs(candidates, policy()))
 
 
 def test_test_fixtures_do_not_raise_on_planted_secret_examples(tmp_path) -> None:

@@ -424,3 +424,70 @@ ed4all-backup*.tar.gz
 # the operator's gitignored inputs/<profile>/launch scripts and concrete seat
 # pins freely (tracked docs stay free of local-path references).
 /docs/operations/dgx-spark.md
+
+# =============================================================================
+# Public documentation allowlist — keep this final so precedence is explicit
+# =============================================================================
+# Documentation is private by default. A document becomes a source-release
+# candidate only after both this exact-path mirror and the repository policy's
+# public-doc allowlist approve it. Directory negations only let Git traverse
+# the four reviewed buckets; they do not publish arbitrary descendants.
+/docs/**
+!/docs/architecture/
+!/docs/operations/
+!/docs/reference/
+!/docs/validation/
+!/docs/LICENSING.md
+!/docs/architecture/ADR-001-pipeline-shape.md
+!/docs/architecture/ADR-002-retrieval-scope.md
+!/docs/architecture/ADR-003-two-pass-content-generation.md
+!/docs/architecture/ADR-004-phase-name-dispatch.md
+!/docs/architecture/ADR-005-gate-severity-blocking.md
+!/docs/architecture/aggregators.md
+!/docs/architecture/block-ontology.md
+!/docs/architecture/chunk-schema-v4.md
+!/docs/architecture/decision-capture.md
+!/docs/architecture/hybrid-vision-extraction.md
+!/docs/architecture/pipeline-flow.md
+!/docs/architecture/repo-organization.md
+!/docs/architecture/repository-layout.json
+!/docs/architecture/repository-layout.schema.json
+!/docs/architecture/retrieval-and-serving.md
+!/docs/architecture/typed-edges.md
+!/docs/architecture/validation-architecture.md
+!/docs/operations/backup-restore.md
+!/docs/operations/behavior-flags-courseforge.md
+!/docs/operations/behavior-flags-semantik.md
+!/docs/operations/behavior-flags-trainforge.md
+!/docs/operations/behavior-flags.md
+!/docs/operations/bloom-deberta-training.md
+!/docs/operations/convert-verb.md
+!/docs/operations/demo-course.md
+!/docs/operations/development-token-stats.md
+!/docs/operations/docker.md
+!/docs/operations/expanded-adapter-evaluation.md
+!/docs/operations/flow-metrics.md
+!/docs/operations/fresh-training-synthesis.md
+!/docs/operations/full-run-playbook.md
+!/docs/operations/installation.md
+!/docs/operations/launch-seat.example.sh
+!/docs/operations/launch-super-hj.sh.example
+!/docs/operations/learner-ui-manual-pass.md
+!/docs/operations/library-versioning.md
+!/docs/operations/license-clean-run.md
+!/docs/operations/nemotron-lora-canary.md
+!/docs/operations/nemotron-spark-serving.md
+!/docs/operations/pipeline-invocation.md
+!/docs/operations/reject-mined-dpo-negatives.md
+!/docs/operations/run-env.example.sh
+!/docs/operations/seat-schedule.env.example
+!/docs/operations/seat-scripts.md
+!/docs/operations/super-synthesis-benchmark.md
+!/docs/operations/support-bundle.md
+!/docs/operations/visual-review.md
+!/docs/reference/audit-trail.md
+!/docs/reference/cross-package-index.md
+!/docs/reference/development-token-stats.json
+!/docs/reference/reference-retrieval.md
+!/docs/validation/gates.md
+!/docs/validation/validators.md

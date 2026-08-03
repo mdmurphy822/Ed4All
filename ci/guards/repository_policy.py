@@ -52,6 +52,7 @@ def load_policy(path: Path = POLICY_PATH) -> dict:
     required = {
         "root_files", "roots", "overrides", "allowed_children", "source_roles",
         "sentinel_names", "max_source_bytes", "forbidden_generated_segments",
+        "public_docs",
     }
     if not required.issubset(value) or not isinstance(value["roots"], dict):
         raise ValueError("repository layout policy has an invalid structure")
@@ -60,6 +61,36 @@ def load_policy(path: Path = POLICY_PATH) -> dict:
     unknown = used - roles
     if unknown:
         raise ValueError(f"policy uses undeclared roles: {sorted(unknown)}")
+    public_docs = value["public_docs"]
+    if not isinstance(public_docs, list):
+        raise ValueError("policy public_docs must be a list")
+    if any(not isinstance(entry, str) or not entry for entry in public_docs):
+        raise ValueError("policy public_docs entries must be non-empty strings")
+    if public_docs != sorted(public_docs):
+        raise ValueError("policy public_docs must be sorted")
+    if len(public_docs) != len(set(public_docs)):
+        raise ValueError("policy public_docs entries must be unique")
+    for entry in public_docs:
+        candidate = PurePosixPath(entry)
+        if (
+            entry != candidate.as_posix()
+            or candidate.is_absolute()
+            or not candidate.parts
+            or candidate.parts[0] != "docs"
+            or any(part in {".", ".."} for part in candidate.parts)
+            or any(char in entry for char in "*?[\\")
+            or entry.endswith("/")
+        ):
+            raise ValueError(
+                "policy public_docs entries must be normalized, exact, "
+                f"repo-relative files under docs/: {entry!r}"
+            )
+        if path.parent.name == "architecture" and path.parent.parent.name == "docs":
+            root = path.parents[2]
+            if (root / entry).is_dir():
+                raise ValueError(
+                    f"policy public_docs entry names a directory: {entry!r}"
+                )
     return value
 
 
@@ -200,6 +231,32 @@ def check_privacy(path: str, data: bytes, private_tokens: Sequence[str]) -> list
     return findings
 
 
+def check_public_docs(paths: Sequence[str], policy: Mapping) -> list[Finding]:
+    """Require an exact policy decision for every release-candidate doc."""
+    candidates = set(paths)
+    allowed = set(policy["public_docs"])
+    findings = [
+        Finding(
+            "unreviewed_public_doc",
+            path,
+            "docs release candidate is absent from policy public_docs",
+        )
+        for path in sorted(
+            candidate for candidate in candidates if candidate.startswith("docs/")
+            and candidate not in allowed
+        )
+    ]
+    findings.extend(
+        Finding(
+            "stale_public_doc_allowlist",
+            path,
+            "policy public_docs entry is not a release candidate",
+        )
+        for path in sorted(allowed - candidates)
+    )
+    return findings
+
+
 def check_release(
     root: Path,
     paths: Sequence[str],
@@ -207,6 +264,7 @@ def check_release(
     private_tokens: Sequence[str],
 ) -> list[Finding]:
     findings = check_layout(paths, policy)
+    findings.extend(check_public_docs(paths, policy))
     max_bytes = int(policy["max_source_bytes"])
     source_roles = set(policy["source_roles"])
     for relative in paths:

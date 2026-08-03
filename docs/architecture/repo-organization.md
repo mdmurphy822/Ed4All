@@ -162,6 +162,21 @@ Four buckets, hard rule "no single-file dirs":
   and machine-specific runbooks stay local and gitignored. CLAUDE.md family
   remains navigation; public docs remain durable product content.
 
+Taxonomy and publication are separate decisions. A path can belong in one of
+the four documentation buckets and still be operator-local, private, generated,
+or unsuitable for a source release. Documentation is therefore ignored by
+default. A reviewed public document must appear as an exact file path in both
+the machine-readable public-doc allowlist in `repository-layout.json` and its
+final-order `.gitignore` negation mirror. Directory-wide publication patterns
+are forbidden: bucket negations exist only so Git can traverse to individually
+approved files. A new document remains local until both review surfaces are
+updated intentionally.
+
+Ignored operator documents remain in the working tree and never become build,
+test, link, or package dependencies. They do not use tracked `.gitkeep` files;
+the ignore rule itself preserves the private-by-default boundary without
+publishing evidence that a local document exists.
+
 ## 5. What we deliberately do NOT do (Phase 3 — REJECTED)
 
 - **No `src/` or `packages/` layout.** ~2,600 files across 8 import roots;
@@ -198,7 +213,8 @@ Revisit any of these only on a repo split or a 2.0 packaging change.
    the same PR to justify it.
 4. **Recursive source-release policy** —
    [`repository-layout.json`](repository-layout.json) classifies every root,
-   directory, and publishable file by role. Its companion
+   directory, and publishable file by role, and carries the exact public-doc
+   allowlist mirrored at the end of `.gitignore`. Its companion
    [`repository-layout.schema.json`](repository-layout.schema.json) validates
    the policy shape without duplicating policy values. The standalone
    `ci/guards/repository_policy.py` applies it to tracked files plus untracked,
@@ -207,6 +223,9 @@ Revisit any of these only on a repo split or a 2.0 packaging change.
    role combinations, non-sentinel tracked content in external-data roots,
    generated or oversized artifacts, common secret shapes, and nested source
    repositories. It also scans path segments for private run/export shapes.
+   A tracked or force-added document that is absent from the exact public-doc
+   allowlist is a release-policy violation; `.gitignore` is the local safety
+   boundary, not a substitute for checking the Git index.
    An operator can provide additional private course names and slugs through
    `ED4ALL_PRIVATE_TOKEN_FILE`; that vocabulary remains local, and an in-repo
    token file must itself be gitignored. The check is registered in
