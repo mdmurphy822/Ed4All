@@ -442,7 +442,7 @@ def test_pipeline_tools_routes_through_provider_when_env_set(
     monkeypatch.setattr(pipeline_tools, "COURSEFORGE_INPUTS", staging_root)
     monkeypatch.setattr(pipeline_tools, "_PROJECT_ROOT", tmp_path)
 
-    project_id = "PROJ-COURSEFORGE-PROVIDER-TEST"
+    project_id = "fixture-provider-project"
     project_path = (
         tmp_path / "Courseforge" / "exports" / project_id
     )

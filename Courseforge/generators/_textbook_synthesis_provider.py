@@ -551,8 +551,8 @@ _RECONCILE_SCHEMA: Dict[str, Any] = {
 }
 
 # WS1 — constrained-output schema for ``author_terminal_for_cluster``. One
-# terminal objective summarizing one CO cluster. Added after the
-# introalgebra-bc-02 attempt-5 finding: this was the last synthesis surface
+# terminal objective summarizing one CO cluster. Added after a constrained-output
+# regression exposed that this was the last synthesis surface
 # dispatching UNCONSTRAINED (no grammar payload, single parse attempt, no
 # retry), so one unparseable reply per run degraded a whole chapter's TO to
 # the "…the concepts and skills of…" template. The normaliser also accepts a

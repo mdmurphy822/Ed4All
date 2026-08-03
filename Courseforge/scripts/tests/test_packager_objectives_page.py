@@ -50,7 +50,7 @@ _OBJECTIVES = {
 @pytest.fixture
 def project(tmp_path: Path) -> Path:
     """Project layout: 01_learning_objectives/ + 03_content_development/week_01."""
-    proj = tmp_path / "PROJ-PHYS_101"
+    proj = tmp_path / "fixture-objectives-project"
     content = proj / "03_content_development"
     week = content / "week_01"
     week.mkdir(parents=True)

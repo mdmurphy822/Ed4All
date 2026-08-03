@@ -269,7 +269,7 @@ def _build_project(
     Returns ``(project_path, synthesized_objectives_path,
     content_course_json_path)``.
     """
-    project_path = tmp_path / "Courseforge" / "exports" / "PROJ-W2I3-01"
+    project_path = tmp_path / "Courseforge" / "exports" / "fixture-project"
     lo_dir = project_path / "01_learning_objectives"
     content_dir = project_path / "03_content_development"
     lo_dir.mkdir(parents=True, exist_ok=True)

@@ -308,11 +308,11 @@ def test_registry_provider_routes_through_wd12_backend(monkeypatch):
 def test_registry_provider_forwards_grammar_extra_payload(monkeypatch):
     """The W-D12 backend branch forwards ``extra_payload`` verbatim.
 
-    Regression (introalgebra-bc-02 attempt 4): the registry-provider branch of
+    Regression: the registry-provider branch of
     ``_dispatch_call`` dropped ``extra_payload``, so the grammar /
     ``response_format`` schema never reached the seat — window synthesis ran
-    UNCONSTRAINED and dense windows truncated (ch7#w1) or emitted unparseable
-    JSON (ch9#w0), each a §5.4 chapter-content loss.
+    UNCONSTRAINED and dense windows could truncate or emit unparseable JSON,
+    causing chapter-content loss.
     """
     monkeypatch.delenv(ENV_PROVIDER, raising=False)
     fake_registry = dict(tsp._OPENAI_COMPATIBLE_PROVIDERS)

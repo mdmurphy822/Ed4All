@@ -1,29 +1,77 @@
 # Courseforge
 
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![WCAG 2.2 AA](https://img.shields.io/badge/WCAG-2.2%20AA-green.svg)](https://www.w3.org/WAI/WCAG22/quickref/)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](../LICENSE)
 
-**Generate LMS-ready course packages from learning objectives or accessible textbook content.**
+**Turn learning materials into structured, portable digital courses.**
 
-Courseforge turns a set of objectives (and optional SemantiK-converted textbook HTML) into a complete, accessible, IMSCC-packaged online course. Output includes weekly modules with content pages, activities, self-checks, summaries, and discussions — all WCAG 2.2 AA compliant and ready to import into Brightspace, Canvas, Blackboard, or Moodle. Every page carries rich machine-readable metadata (Bloom's-aligned learning objectives, content types, key terms, misconceptions) so downstream tools can ground assessments and retrieval in cited source material. Courseforge can also ingest an existing IMSCC package from any supported LMS and remediate it to 100% WCAG 2.2 AA compliance.
+Courseforge is Ed4All's course-authoring and packaging engine. It combines
+learning objectives with accessible textbook HTML, maps source material into a
+teachable sequence, builds modular course pages and assessments, and packages
+the result as an IMS Common Cartridge for review and LMS import.
 
-## Quick example
-
-```bash
-# From the repo root, as part of the full Ed4All pipeline:
-ed4all run textbook-to-course --corpus my_textbook.pdf --course-name MY_COURSE_101
+```text
+OBJECTIVES + ACCESSIBLE SOURCE HTML
+                 │
+                 ▼
+        OUTLINE AND COURSE PLAN
+                 │
+                 ▼
+     MODULAR PAGES + ASSESSMENTS
+                 │
+                 ▼
+       VALIDATION + IMS CC 1.3
 ```
 
-Finished packages land under `Courseforge/exports/YYYYMMDD_HHMMSS_coursename/`. For remediation of an existing package, drop the IMSCC into `Courseforge/inputs/existing-packages/`.
+## What Courseforge delivers
 
-## LMS compatibility
+- A source-grounded course outline with canonical learning objectives.
+- Modular HTML lessons, activities, discussions, and self-checks.
+- Assessment resources and the metadata downstream Ed4All stages use for
+  retrieval and training-data preparation.
+- An IMS CC 1.3 package designed for standards-based LMS import.
+- Validation reports that make accessibility, structure, and package issues
+  visible before release.
 
-Brightspace / D2L, Canvas, Blackboard, Moodle, Sakai, and any LMS that supports IMSCC 1.1 or later.
+Courseforge's validators are quality gates, not a blanket guarantee. Review
+their reports and test the finished cartridge in the target LMS before
+publishing it to learners.
 
-## More
+## Run it
 
-See [`Courseforge/CLAUDE.md`](CLAUDE.md) for the full agent pipeline, metadata contract (`data-cf-*` + JSON-LD), template components, and quality standards.
+From the Ed4All repository root:
+
+```bash
+ed4all run textbook-to-course \
+  --corpus <CORPUS_PATH> \
+  --course-name <course-name>
+```
+
+The pipeline converts source material through SemantiK when needed, stages the
+accessible HTML for Courseforge, authors the course, runs the configured
+validation gates, and writes the finished project beneath
+`Courseforge/exports/`.
+
+For an existing cartridge, use the intake and remediation workflow described
+in the [workflow reference](docs/workflow-reference.md).
+
+## Explore the system
+
+- [Getting started](docs/getting-started.md) — prerequisites and first-run
+  guidance.
+- [Workflow reference](docs/workflow-reference.md) — creation, intake, and
+  remediation phases.
+- [Troubleshooting](docs/troubleshooting.md) — common packaging and validation
+  failures.
+- [Learning-objective contract](docs/per-week-learning-objectives.md) — how
+  page objectives stay aligned with course outcomes.
+- [Template-chrome contract](docs/template-chrome-roles.md) — how repeated page
+  furniture stays out of retrieval and training text.
+- [Local schema index](schemas/README.md) — Courseforge-specific rendering and
+  IMSCC contracts.
+
+Courseforge is one stage of Ed4All. See the [project overview](../README.md) for
+the complete accessible-content, course, retrieval, and training pipeline.
 
 ## License
 
-MIT
+Apache License 2.0. See [LICENSE](../LICENSE).
