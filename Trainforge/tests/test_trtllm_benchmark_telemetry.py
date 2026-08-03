@@ -3,12 +3,11 @@ from __future__ import annotations
 import io
 import json
 
-from Trainforge.generators.trtllm_benchmark_telemetry import (
+from Trainforge.generators.postprocessing.trtllm_benchmark_telemetry import (
     TrtllmTelemetrySampler,
     parse_trtllm_log,
     telemetry_preflight,
 )
-
 
 ITERATION = (
     "2026-07-27T14:44:57Z iter = 9, num_scheduled_requests: 3, "

@@ -399,6 +399,8 @@ Trainforge/
 │   ├── pairs/
 │   │   ├── instruction.py       # Canonical instruction-pair authoring
 │   │   └── preference.py        # Canonical preference-pair authoring
+│   ├── postprocessing/
+│   │   └── trtllm_benchmark_telemetry.py  # TRT-LLM log and GPU benchmark telemetry
 │   ├── instruction_factory.py   # Deprecated compatibility alias
 │   ├── preference_factory.py    # Deprecated compatibility alias
 │   ├── summary_factory.py

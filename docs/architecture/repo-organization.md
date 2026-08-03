@@ -323,8 +323,10 @@ risk. Completed items are marked below.
    module aliases preserve their documented import paths through the
    deprecation window. Instruction and preference authoring now live under
    `pairs/`, with two equivalent aliases preserving those documented import
-   paths. The exact loose-module cap remains 19 while these six aliases are
-   supported. Assessment, postprocessing, and deterministic-program families
+   paths. Internal benchmark telemetry now lives under `postprocessing/` with
+   all tracked callers using its canonical path, reducing the exact loose-
+   module cap from 19 to 18 while the six aliases remain supported.
+   Assessment, remaining postprocessing, and deterministic-program families
    remain candidates for later bounded moves.
 8. **`LibV2/tools/libv2/` — IN PROGRESS.** Evaluation implementations now
    live under `evaluation/`. Three documented compatibility modules remain at

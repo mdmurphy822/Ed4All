@@ -7,7 +7,9 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from Trainforge.generators.trtllm_benchmark_telemetry import parse_trtllm_log
+from Trainforge.generators.postprocessing.trtllm_benchmark_telemetry import (
+    parse_trtllm_log,
+)
 
 TELEMETRY_REPORT_SCHEMA = "ed4all.benchmark-telemetry-verification.v1"
 RECONCILIATION_REPORT_SCHEMA = "ed4all.http-reconciliation-verification.v1"
@@ -113,11 +115,12 @@ def read_call_intents(path: Path | str) -> tuple[list[dict[str, Any]], list[dict
         if row["kind"] != expected_kind:
             errors.append({"code": "intent_kind_invalid", "line": line_number})
         rows.append(row)
-    identity = lambda row: (
-        row["run_id"], row["cell_id"], row["unit"], row["stage"],
-        row["logical_attempt"], row["request_sha256"], row["model"],
-        row["contract_sha256"],
-    )
+    def identity(row: Mapping[str, Any]) -> tuple[Any, ...]:
+        return (
+            row["run_id"], row["cell_id"], row["unit"], row["stage"],
+            row["logical_attempt"], row["request_sha256"], row["model"],
+            row["contract_sha256"],
+        )
     counts = Counter(identity(row) for row in rows)
     if any(count != 1 for count in counts.values()):
         errors.append({"code": "intent_identity_duplicate"})
