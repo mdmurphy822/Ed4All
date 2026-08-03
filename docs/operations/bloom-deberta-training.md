@@ -1,7 +1,14 @@
-# Bloom DeBERTa heads — weight seeding + staged training
+# Bloom MultiBERT configuration — staged DeBERTa-head training recipe
 
-Operator runbook for producing the DeBERTa-v3 classifier head(s) that back
-the `bloom_classifier_disagreement` gate's optional fourth voter
+> **Status: future/operator-run; staged and unproven. Do not run this training
+> recipe now.** Ed4All does not currently provision Bloom head artifacts. This
+> document preserves the configured long-term recipe for a separately approved
+> training exercise; it is not a current runtime dependency or authorization to
+> train.
+
+Future operator runbook for producing the DeBERTa-v3 classifier heads intended
+to replace voter 2's zero-shot NLI heuristic in the
+`bloom_classifier_disagreement` gate
 (`ED4ALL_BLOOM_TRIVOTE_HEADS`, meaningful only alongside
 `ED4ALL_BLOOM_TRIVOTE`). `lib/classifiers/training/train_bloom_deberta.py`'s
 `--head` flag selects between two trained-artifact shapes
@@ -9,8 +16,8 @@ the `bloom_classifier_disagreement` gate's optional fourth voter
 on disk — see §6):
 
 * **`--head multiclass`** — ONE `num_labels=6` softmax head over all six
-  Bloom levels, trained in a single GPU run. **Train this first** — see the
-  Decision Protocol immediately below.
+  Bloom levels, trained in a single GPU run. **This is the first shape to
+  evaluate after separate operator approval** — see the decision protocol.
 * **`--head one-vs-rest`** (the original WI-05 shape, default for
   back-compat) — six SEPARATE per-level binary heads, one GPU run each
   (`--bloom-level <level>`).
@@ -21,22 +28,25 @@ run BY HAND, by an operator, on an idle card. No pipeline phase, workflow, or
 agent dispatches any of this — `train_bloom_deberta.py` is not registered in
 `AGENT_TOOL_MAPPING`, any `@mcp.tool()` surface, or `config/workflows.yaml`.
 
+Do not execute the commands below during ordinary development or pipeline
+runs. A future run requires separate operator approval of the data, base
+checkpoint, evaluation plan, and artifact-provisioning decision. Until then,
+the zero-shot DeBERTa-NLI Bloom comparison is a distinct heuristic and must not
+be described as a trained Bloom classifier.
+
 ---
 
-## Decision protocol — train multiclass FIRST
+## Future approval protocol — evaluate multiclass first
 
-The corpus is heavily imbalanced on the high end of the ladder (a measured
-harvest ran roughly 930 / 790 / 590 / 350 / 140 / 80 across
-understand..create) — a one-vs-rest `evaluate`/`create` head trains on only
-a low-hundreds tail of positives. Before committing to six separate one-vs-rest runs,
-train the single multiclass head first: it is ONE GPU run, not six, and it
-directly answers whether the six-head ladder is worth the other five runs
-at all.
+The staged label source may be imbalanced across the Bloom ladder. If training
+is approved later, evaluate the single multiclass head before authorizing six
+separate one-vs-rest runs. That bounded experiment determines whether the
+larger head set merits additional training.
 
 1. Stages §1–§3 below still apply first regardless of which head shape you
    train (pre-seed the base checkpoint, idle-check the card, provision the
    venv) — they are shared infrastructure, not one-vs-rest-specific.
-2. Run the staged multiclass command:
+2. After approval, use the staged multiclass command:
 
    ```bash
    python -m lib.classifiers.training.train_bloom_deberta \
@@ -84,7 +94,7 @@ Four stages, run in order:
 1. One-time weight pre-seed (§1)
 2. Idle-check every vLLM seat (§2)
 3. A light training venv — NOT `scripts/ops/bootstrap-training-env.sh` (§3)
-4. The multiclass command above (recommended first — see Decision Protocol),
+4. The multiclass command above (recommended first — see Future approval protocol),
    OR the six per-level one-vs-rest training commands + reading
    `summary.json` (§4, §5)
 
@@ -93,7 +103,7 @@ Only after the head(s) you trained exist do you flip
 
 ---
 
-## §1 — One-time weight pre-seed
+## §1 — Future-only weight pre-seed
 
 The trainer (`lib/classifiers/training/train_bloom_deberta.py`) refuses a bare
 HuggingFace hub id under `HF_HUB_OFFLINE` (`validate_base_model_path`) — by
@@ -142,7 +152,7 @@ this document runs fully offline; `validate_base_model_path` will accept
 
 ---
 
-## §2 — Idle-check every vLLM seat first
+## §2 — Future-run device preflight
 
 The trainer is a normal foreground GPU job — it does not go through
 `ED4ALL_SEAT_SCHEDULE` or any pipeline-owned seat lifecycle, so nothing stops
@@ -168,7 +178,7 @@ proceeding.
 
 ---
 
-## §3 — Training venv (light path, NOT `scripts/ops/bootstrap-training-env.sh`)
+## §3 — Future training environment
 
 `scripts/ops/bootstrap-training-env.sh` exists for the strict, version-banded
 Nemotron/TRL/PEFT/Accelerate/Datasets fit (`docs/operations/nemotron-lora-canary.md`)
@@ -195,11 +205,12 @@ nothing beyond what `train_bloom_deberta.py` actually imports.
 
 ---
 
-## §4 — Six per-level training commands
+## §4 — Staged per-level commands (not currently authorized)
 
-Per the Decision Protocol above, run these ONLY if the single multiclass run
+Per the Future approval protocol above, run these ONLY if the single multiclass run
 (also §1–§3 shared infra, then `--head multiclass` as shown above) turned
-out unsatisfactory on a level you need. Run once per canonical Bloom level
+out unsatisfactory on a level you need. After separate authorization, run once
+per canonical Bloom level
 (`lib.bloom_labels.dataset.BLOOM_LEVELS`), from the repo root, inside the §3
 venv, with §2's idle-check still holding (one CUDA context at a time — do
 not background a second one while the first runs):
@@ -327,7 +338,7 @@ one-vs-rest, `per_class_metrics.create` / `.evaluate` for multiclass — or
 the run never got there because `main` raised on an empty split), that is a
 data problem, not a hyperparameter one — do not chase it with `--epochs` /
 `--lr` tuning, and do not treat switching `--head` modes as a fix either
-(see the Decision Protocol's step 5: weak on BOTH means re-harvest). Re-run
+(see the Future approval protocol's step 5: weak on BOTH means re-harvest). Re-run
 `ed4all harvest-bloom-labels` against more Courseforge exports first
 (widening the artifact population the harvester walks is the only lever
 that grows the thin tail's positive count) and re-train once
@@ -340,7 +351,7 @@ there is only one head.
 
 ---
 
-## §6 — Enabling `ED4ALL_BLOOM_TRIVOTE_HEADS`
+## §6 — Future artifact activation
 
 `BloomDebertaHeads`'s loader (`lib/classifiers/bloom_deberta_heads.py`)
 checks `models/bloom_classifiers/multiclass/final/` FIRST; if that single
@@ -363,7 +374,7 @@ Checklist before enabling:
    whatever `ED4ALL_BLOOM_HEADS_DIR` points at — default
    `models/bloom_classifiers`, `lib/classifiers/bloom_deberta_heads.py::resolve_bloom_heads_dir`).
    Both being present is fine — the loader's auto-detect always prefers
-   the multiclass artifact (§ Decision Protocol, step 6).
+   the multiclass artifact (§ Future approval protocol, step 6).
 2. Whichever artifact(s) you trained carry a `summary.json` you have
    actually read (§5) — training completing without a crash is not the
    same as the head being any good.

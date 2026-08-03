@@ -403,24 +403,30 @@ not preload, or a `BlockFeatureCache` built with a different
 just a missing device — is also wrapped in `EmbeddingModelUnavailable`). Narrow
 those two handlers if you add such a caller.
 
-**Known deviation — `distractor_misconception_alignment` does not honour
+**`distractor_misconception_alignment` does not honour
 `TRAINFORGE_REQUIRE_EMBEDDINGS` on missing extras.** Its `try_load_embedder()`
 call re-raises `EmbeddingModelUnavailable` (device: fatal, as above), but a
 strict-mode `EmbeddingDepsMissing` is still caught by the broad
 `except Exception` that follows and degrades the gate to Jaccard token-overlap
 with a warning-severity `EMBEDDING_DEPS_MISSING`. The tier-wide strict flip does
-not reach this one validator. Pre-existing and **deliberately left unchanged**
-pending an owner decision; do not "fix" it as a drive-by.
+not reach this validator; changes to that behavior require a scoped contract
+decision rather than an incidental edit.
 
-**`bloom_classifier_disagreement` is not on this contract at all.** It rides the
-same `[embedding]` extras group (it reuses that group's `transformers` pin) but
-loads a BERT ensemble, not a `SentenceEmbedder`: its typed error is
-`BertEnsembleDepsMissing` and its strict flag is
-`TRAINFORGE_REQUIRE_BERT_ENSEMBLE`. `ED4ALL_EMBEDDING_DEVICE` and the
-passthrough above do not apply to it.
+**`bloom_classifier_disagreement` is not on this contract.** No reliable Bloom
+classifier is provisioned. The legacy ensemble dispatch is unimplemented and
+always abstains; installing `[embedding]` does not enable it. The
+`ED4ALL_BLOOM_TRIVOTE_HEADS` route is the staged, unproven MultiBERT/Ed4All-head
+training path over synthesized corpus labels; it awaits validation and
+provisioned weights. The gate remains warning-level under current defaults and
+records abstention rather than a classifier verdict.
+`TRAINFORGE_REQUIRE_BERT_ENSEMBLE` is retained as a strict configuration
+identifier, but it does not provision a model. `ED4ALL_EMBEDDING_DEVICE` and
+the passthrough above do not apply.
 
-The NLI-backed validators follow the missing-extras shape with their own issue
-code (`NLI_DEPS_MISSING`) and the same `TRAINFORGE_REQUIRE_EMBEDDINGS` flag.
+The active DeBERTa NLI-backed heuristic validators follow the missing-extras
+shape with their own issue code (`NLI_DEPS_MISSING`) and the same
+`TRAINFORGE_REQUIRE_EMBEDDINGS` flag. This entailment/grounding service is
+separate from Bloom classification.
 `ED4ALL_NLI_DEVICE` deliberately does **not** share the embedding device
 contract — it still degrades `cuda`→CPU with a warning.
 

@@ -1,22 +1,20 @@
-"""Statistical-tier classifiers for Phase 4 Category D validators.
+"""Statistical-tier classifier compatibility surfaces.
 
-Currently exposes :class:`BloomBertEnsemble` — a 3-member ensemble of
-HuggingFace BERT-family models that votes on the Bloom's-taxonomy level
-of a candidate text. The ensemble is consumed by
+Currently exposes :class:`BloomBertEnsemble`, an abstaining compatibility
+wrapper retained for consumers of the historical ensemble API. No reliable
+Bloom classifier is provisioned, and its model-specific dispatch is
+unimplemented, so the default wrapper returns ``winner_level="unknown"``
+without loading registry weights. It is consumed by
 :class:`lib.validators.bloom.classifier_disagreement.BloomClassifierDisagreementValidator`
-to flag outline-tier ``objective`` / ``assessment_item`` blocks whose
-declared ``bloom_level`` disagrees with the ensemble winner OR whose
-ensemble dispersion (entropy of normalised votes) exceeds the
-configured threshold.
-
-Phase 4 plan reference: ``plans/phase4_statistical_tier_detailed.md``
-Subtasks 24-31.
+which records the unavailable signal. The separate opt-in DeBERTa zero-shot
+path is an NLI heuristic, not a trained Bloom classifier. The configured
+MultiBERT training path is staged but remains unproven and unprovisioned.
 
 Public surface:
 - :class:`BloomBertEnsemble` — model wrapper with
   ``classify(text) -> {winner_level, winner_score, dispersion, per_member}``.
 - :class:`BertEnsembleDepsMissing` — raised in strict mode when the
-  ``transformers`` extras are unavailable.
+  compatibility surface cannot provide a usable classifier.
 """
 from __future__ import annotations
 

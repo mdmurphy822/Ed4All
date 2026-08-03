@@ -1,18 +1,19 @@
-"""Wave 3 W3.F-F4 — Bloom alignment-rate evaluator.
+"""Bloom alignment-rate evaluator with explicit classifier abstention.
 
-Per-question Bloom-level classification via the
-:class:`lib.classifiers.bloom_bert_ensemble.BloomBertEnsemble` 3-member
-ensemble. A question is "aligned" when the ensemble winner matches its
-declared ``bloom_level``. Mirrors W2.E's per-block binary check at
-corpus scope: the same classifier that gates synthesis-time blocks
-re-runs against the eval probe stems so a corpus-scale alignment
-regression surfaces in the eval report.
+The evaluator retains the historical
+:class:`lib.classifiers.bloom_bert_ensemble.BloomBertEnsemble` API. No
+reliable classifier is currently provisioned and default member dispatch is
+unimplemented, so the compatibility scaffold loads no members and the metric
+returns ``bloom_alignment_rate=None``. Injected implementations can still use
+the existing alignment contract: a question is aligned when the classifier
+winner matches its declared ``bloom_level``. The configured MultiBERT training
+path is staged but remains unproven and unavailable to this evaluator.
 
-Graceful-degrade contract: when the BERT extras are absent (``[bert]``
-extras not installed) or the ensemble fails to load any member,
+Abstention contract: when no classifier members are available,
 :meth:`evaluate` returns ``{bloom_alignment_rate: None,
-deps_missing: True}`` with a warning log instead of crashing the
-harness. Mirrors the surface used by
+deps_missing: True}`` rather than inventing a score. The compatibility field
+name ``deps_missing`` also covers the presently unprovisioned classifier.
+This mirrors the surface used by
 :mod:`lib.validators.bloom.classifier_disagreement`.
 
 Aggregate output is folded into ``eval_report.json`` under the
@@ -33,14 +34,14 @@ logger = logging.getLogger(__name__)
 
 
 class BloomAlignmentRateEvaluator:
-    """Score the fraction of questions whose ensemble-classified Bloom
+    """Score the fraction of questions whose classifier-assigned Bloom
     level matches the declared ``bloom_level``.
 
     Args:
         ensemble: Optional pre-instantiated
             :class:`BloomBertEnsemble`. When ``None``, the evaluator
             lazy-instantiates one on the first :meth:`evaluate` call.
-            Tests inject a stub here to skip the heavy model load.
+            Tests may inject a stub that provides actual votes.
     """
 
     def __init__(self, ensemble: Any = None) -> None:
@@ -75,7 +76,7 @@ class BloomAlignmentRateEvaluator:
         self,
         prompts: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        """Classify every question's stem and tally alignment.
+        """Classify question stems when a classifier is available.
 
         Args:
             prompts: List of question dicts. Each entry MAY carry:
@@ -89,16 +90,15 @@ class BloomAlignmentRateEvaluator:
                 ``mismatched_count``).
 
         Returns:
-            Dict carrying the alignment rate. When BERT extras are
-            absent, returns
+            Dict carrying the alignment rate. When the compatibility
+            scaffold has no usable classifier, returns
             ``{"bloom_alignment_rate": None, "deps_missing": True,
             "total_questions": <n>}``.
         """
         ensemble = self._get_ensemble()
         if ensemble is None:
-            # W7.B: deps-missing branch must emit per_question_type=None
-            # so the W7.D gate consumer can short-circuit cleanly without
-            # crashing on a missing key.
+            # The unavailable branch keeps ``per_question_type=None`` so
+            # gate consumers can distinguish abstention from scored output.
             return {
                 "bloom_alignment_rate": None,
                 "deps_missing": True,
@@ -108,9 +108,9 @@ class BloomAlignmentRateEvaluator:
                 "per_question_type": None,
             }
 
-        # Probe ensemble members loadability before classifying — this
-        # mirrors the bloom_classifier_disagreement validator's pattern
-        # and keeps the deps-missing path uniform across surfaces.
+        # Probe availability before classifying. The default compatibility
+        # scaffold returns no members because reliable dispatch is not
+        # provisioned; injected implementations may provide members.
         try:
             members = ensemble._load_members()
         except Exception as exc:  # noqa: BLE001 — graceful degrade
@@ -190,11 +190,10 @@ class BloomAlignmentRateEvaluator:
             (aligned / denom) if denom > 0 else 0.0
         )
 
-        # W7.B: per-question-type segmentation. Bucket the per_question
-        # records (filtered to only those that produced an aligned /
+        # Bucket per-question records that produced an aligned /
         # mismatched outcome — skipped records aren't counted in the
         # rate denom and shouldn't pollute per-bucket rates either).
-        # Stamp `relevant: bool` per the canonical relevance table —
+        # Stamp `relevant: bool` per the canonical relevance table;
         # bloom_alignment_rate is relevant across all 5 question types
         # so every bucket emits relevant=True.
         question_types = [str(p.get("question_type") or "") for p in prompts]

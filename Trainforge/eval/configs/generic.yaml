@@ -26,14 +26,14 @@ evaluators:
   regression: true
   key_term_precision: true
   disambiguation: true
-  # Six per-question metrics. Default true for the cheap
-  # signals; the two ML-driven metrics (bloom_alignment_rate +
-  # source_support_rate) gate on the optional [embedding] / [bert]
-  # pyproject extras at runtime via NliClassifier.get_or_load /
-  # BloomBertEnsemble._load_members and degrade gracefully (returning
-  # rate=None, deps_missing=True) when the extras are absent. Mirrors
-  # the [embedding] flag pattern used by the existing 4 statistical-
-  # tier validators.
+  # Six per-question metrics. Default true for the cheap signals.
+  # source_support_rate uses the optional NLI dependencies. The historical
+  # BloomBertEnsemble behind bloom_alignment_rate is an abstaining
+  # compatibility scaffold: no reliable classifier is provisioned and its
+  # dispatch is unimplemented, so the metric returns rate=None with the
+  # compatibility deps_missing=True marker. A separate zero-shot NLI
+  # heuristic does not make this evaluator a trained Bloom classifier. The
+  # configured MultiBERT training path is staged but unproven and unavailable.
   answerable_rate: true
   single_correct_rate: true
   distractor_entropy: true

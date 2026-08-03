@@ -1,42 +1,23 @@
-"""Three-member BERT ensemble for Bloom-level classification.
+"""Abstaining compatibility scaffold for Bloom-level classification.
 
-``BloomBertEnsemble`` exposes a ``classify`` contract over three pinned
-classifier identities:
+No reliable Bloom classifier is currently provisioned for this surface, and
+model-specific dispatch is not implemented. A default
+:class:`BloomBertEnsemble` therefore loads no members and returns the explicit
+``unknown`` sentinel rather than fabricating a classification. Strict mode
+raises :class:`BertEnsembleDepsMissing` instead of accepting that abstention.
 
-1. ``cip29/bert-blooms-taxonomy-classifier`` — purpose-built Bloom's
-   classifier (6-class BERT-base fine-tune, apache-2.0 license,
-   ``generated_from_trainer`` provenance). The model emits generic
-   ``LABEL_0`` ... ``LABEL_5`` labels (no semantic ``id2label``
-   mapping in its ``config.json``); :data:`_CIP29_TO_BLOOM` maps
-   them onto the canonical Bloom enum following the standard
-   hierarchical ordering convention (LABEL_0=remember,
-   LABEL_1=understand, ..., LABEL_5=create).
-2. ``distilbert-base-uncased-finetuned-sst-2-english`` — sentiment
-   model used as a generic confidence-anchor signal. Its raw labels
-   (``POSITIVE`` / ``NEGATIVE``) get mapped onto Bloom levels via the
-   :data:`_SST2_TO_BLOOM` heuristic table; the goal is dispersion
-   contribution, not a high-confidence vote, so the table is
-   intentionally low-resolution.
-3. ``MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli`` — zero-shot NLI
-   classifier; given a candidate text + the six Bloom-level labels as
-   hypotheses, picks the highest-entailment level.
+The three pinned registry entries and the cip29/SST-2 label mappings are
+non-authoritative compatibility metadata. They are retained because other
+code currently reads the DeBERTa NLI identity from registry index 2; they do
+not describe a usable default ensemble. In particular, the cip29 checkpoint
+was not reliable enough to serve as Ed4All's classifier, and the SST-2 mapping
+is a sentiment heuristic rather than a Bloom model.
 
-SHA pinning: each member's ``revision`` field carries a concrete
-HuggingFace git commit SHA so the ensemble's classification is
-reproducible across runs. Revisions are captured in the
-``bert_ensemble_member_loaded``
-decision event so the audit trail records exactly which revision
-produced each classification. Each entry's revision MUST match the
-40-hex-char regex ``^[0-9a-f]{40}$`` (enforced by the test suite).
-
-Graceful degradation: missing ``transformers`` extras raise
-:class:`BertEnsembleDepsMissing` only when strict mode is on (see
-:func:`is_strict_mode`); default mode logs a warning and returns
-``[]`` from :meth:`_load_members`. The validator that consumes the
-ensemble surfaces the missing-deps state via a warning-severity
-GateIssue with code ``BERT_ENSEMBLE_DEPS_MISSING``, mirroring the
-embedding-tier graceful-degrade pattern in
-``lib/embedding/sentence_embedder.py``.
+The separate opt-in trivote path uses a general-purpose DeBERTa NLI model as a
+zero-shot heuristic. It is not a trained Ed4All Bloom classifier and does not
+make this compatibility scaffold operational. The long-term MultiBERT training
+path is staged but unproven; it becomes a usable classifier only after training,
+evaluation, and explicit provisioning.
 """
 from __future__ import annotations
 
@@ -54,23 +35,23 @@ logger = logging.getLogger(__name__)
 # Module-level config: ensemble member registry + Bloom-level mappings.
 # ---------------------------------------------------------------------------
 
-#: Default ensemble members. Each entry pins ``name`` (HuggingFace repo
-#: id) and ``revision`` (concrete 40-hex-char git commit SHA). Override the
-#: registry by passing ``members=`` to :class:`BloomBertEnsemble.__init__`.
+#: Historical compatibility registry. Each entry pins ``name`` (HuggingFace
+#: repo id) and ``revision`` (concrete 40-hex-char git commit SHA). It is not a
+#: provisioned or validated default classifier, and production dispatch does
+#: not load these members. Override the metadata by passing ``members=`` to
+#: :class:`BloomBertEnsemble.__init__`.
 #:
 #: Compatibility behavior:
-#:    The first two members are bypassed under ``ED4ALL_BLOOM_TRIVOTE``.
+#:    The first two entries are non-authoritative retired metadata.
 #:    ``cip29/bert-blooms-taxonomy-classifier``
-#:    (member 0) carries no stated license — see ``docs/LICENSING.md`` — and
+#:    (registry index 0) carries no stated license and proved unreliable — see
+#:    ``docs/LICENSING.md`` — and
 #:    ``distilbert-base-uncased-finetuned-sst-2-english`` (registry index 1) is a
-#:    sentiment model mapped onto Bloom by a low-resolution heuristic. When
-#:    the trivote flag is ON these two are **NEVER loaded**: the
-#:    ``bloom_classifier_disagreement`` gate re-founds on three interpretable
-#:    voters (the generator's OWN asserted level, a zero-shot pass over the
-#:    ALREADY-LICENSED DeBERTa NLI member below, and the deterministic
-#:    verb-ontology level) — see :mod:`lib.classifiers.bloom_zero_shot`. This
-#:    list is retained UNCHANGED only to keep the legacy (flag-OFF) path
-#:    byte-identical AND because :meth:`lib.classifiers.nli_classifier.
+#:    sentiment model whose Bloom mapping is only a low-resolution heuristic.
+#:    Neither is loaded by the current scaffold. The opt-in trivote path is a
+#:    separate asserted-label / NLI-heuristic / verb-ontology check; it does
+#:    not activate this registry. See :mod:`lib.classifiers.bloom_zero_shot`.
+#:    This list remains unchanged because :meth:`lib.classifiers.nli_classifier.
 #:    NliClassifier.get_or_load` pulls the DeBERTa name+revision by INDEX
 #:    (``_DEFAULT_ENSEMBLE_MEMBERS[2]``) — do NOT reorder or shorten this
 #:    list without updating that pull, or every NLI-backed gate breaks.
@@ -104,34 +85,20 @@ _BLOOM_LEVELS: Tuple[str, ...] = (
 )
 
 
-#: Heuristic mapping for the SST-2 sentiment member (registry index 1).
-#: Sentiment
-#: doesn't carry direct Bloom signal, so this table is intentionally
-#: low-resolution: positive sentiment biases toward higher cognitive
-#: levels (``evaluate`` / ``create``), negative toward lower
-#: (``remember`` / ``understand``). Its role in the ensemble is to
-#: contribute to dispersion when the other members disagree, not to
-#: deliver a high-confidence vote on its own.
+#: Non-authoritative compatibility mapping for the retired SST-2 registry
+#: entry. Sentiment carries no direct Bloom signal, and current production
+#: dispatch never consumes this table.
 _SST2_TO_BLOOM: Dict[str, str] = {
     "POSITIVE": "evaluate",
     "NEGATIVE": "remember",
 }
 
 
-#: Translation table for ``cip29/bert-blooms-taxonomy-classifier``
-#: (registry index 0). The model emits generic ``LABEL_0`` ...
-#: ``LABEL_5`` labels with no semantic ``id2label`` mapping in its
-#: ``config.json`` (verified at SHA-pin time —
-#: ``huggingface_hub.hf_hub_download("cip29/bert-blooms-taxonomy-classifier",
-#: "config.json")`` returns ``id2label = {"0": "LABEL_0", ...,
-#: "5": "LABEL_5"}``). Per the standard convention for fine-tuned
-#: 6-class Bloom classifiers, the canonical hierarchical ordering is
-#: assumed: LABEL_0 → remember (lowest), ..., LABEL_5 → create
-#: (highest). This mirrors the canonical :data:`_BLOOM_LEVELS` tuple
-#: order. The translation runs inside :meth:`_classify_with_member`
-#: against the model's raw argmax output before the resulting Bloom
-#: level is returned to the ensemble vote aggregator. Every value MUST
-#: be a member of :data:`_BLOOM_LEVELS` (enforced by the test suite).
+#: Non-authoritative compatibility mapping for the retired cip29 registry
+#: entry. The checkpoint exposes generic ``LABEL_0`` ... ``LABEL_5`` names,
+#: and this table records the former assumed ordering. That assumption was not
+#: reliable enough for production classification; current dispatch never
+#: consumes this table.
 _CIP29_TO_BLOOM: Dict[str, str] = {
     "LABEL_0": "remember",
     "LABEL_1": "understand",
@@ -142,23 +109,19 @@ _CIP29_TO_BLOOM: Dict[str, str] = {
 }
 
 
-#: Strict-mode env var (parallel of ``TRAINFORGE_REQUIRE_EMBEDDINGS``).
-#: When truthy, missing ``transformers`` extras raise
-#: :class:`BertEnsembleDepsMissing` instead of degrading silently.
+#: Strict-mode env var. When truthy, unavailable dependencies or the
+#: unimplemented classifier dispatch raise :class:`BertEnsembleDepsMissing`
+#: instead of returning the ``unknown`` sentinel.
 _STRICT_MODE_ENV_VAR = "TRAINFORGE_REQUIRE_BERT_ENSEMBLE"
 _TRUTHY_VALUES = frozenset({"true", "1", "yes", "on"})
 
-#: Module-level latch so the "per-member dispatch unimplemented" warning
-#: fires exactly once per process regardless of how many ensembles are
-#: constructed (the synthesis call-path constructs one per validator,
-#: and a per-instance log would flood the operator console).
+#: Module-level latch so the unavailable-dispatch warning fires exactly once
+#: per process regardless of how many compatibility wrappers are constructed.
 _UNIMPLEMENTED_DISPATCH_WARNED = False
 
 
-#: Default on-disk cache for downloaded model weights. Mirrors the
-#: ``~/.cache/ed4all/`` convention used elsewhere; ``transformers``
-#: itself respects ``TRANSFORMERS_CACHE`` and ``HF_HOME`` when set, so
-#: this path is only used when the operator hasn't pinned one already.
+#: Compatibility cache path used only by the dormant per-member loader.
+#: Current production dispatch does not download or load ensemble weights.
 _DEFAULT_CACHE_DIR = Path.home() / ".cache" / "ed4all" / "bert_ensemble"
 
 
@@ -169,18 +132,18 @@ def is_strict_mode() -> bool:
 
 
 class BertEnsembleDepsMissing(RuntimeError):
-    """Raised in strict mode when ``transformers`` is unavailable.
+    """Raised when strict mode cannot provide a usable ensemble.
 
     Strict mode is opt-in via ``TRAINFORGE_REQUIRE_BERT_ENSEMBLE=true``.
-    Default mode logs a warning and returns an empty member list from
-    :meth:`BloomBertEnsemble._load_members` so downstream validators
-    degrade to a warning-severity GateIssue instead of failing closed.
+    This includes missing dependencies and the current unimplemented
+    model-specific dispatch. Default mode returns an empty member list so
+    downstream consumers can abstain.
     """
 
 
 @dataclass
 class BertClassifier:
-    """One loaded ensemble member.
+    """Container for a member used by custom or future dispatch code.
 
     Holds the model + tokenizer references plus the registry metadata
     so :meth:`BloomBertEnsemble._classify_with_member` can dispatch on
@@ -195,30 +158,24 @@ class BertClassifier:
 
 
 class BloomBertEnsemble:
-    """Three-member BERT ensemble that classifies text into Bloom's levels.
+    """Compatibility wrapper that currently abstains from classification.
 
     Public contract:
 
     .. code-block:: python
 
         ensemble = BloomBertEnsemble()
-        result = ensemble.classify("Identify the main themes of the passage.")
+        result = ensemble.classify("<task text>")
         # {
-        #     "winner_level": "remember",
-        #     "winner_score": 0.82,
-        #     "dispersion": 0.31,
-        #     "per_member": [
-        #         ("remember", 0.92),
-        #         ("remember", 0.71),
-        #         ("understand", 0.55),
-        #     ],
+        #     "winner_level": "unknown",
+        #     "winner_score": 0.0,
+        #     "dispersion": 0.0,
+        #     "per_member": [],
         # }
 
-    The ``per_member`` list preserves the registry order from
-    :data:`_DEFAULT_ENSEMBLE_MEMBERS`. When a member fails to load
-    (missing extras, network error, repo deleted), it is silently
-    omitted from the ensemble and the remaining members vote among
-    themselves. An empty member list returns a sentinel result
+    No reliable classifier is provisioned and model-specific dispatch is not
+    implemented, so the production loader returns no members. The empty list
+    produces a sentinel result
     (``winner_level="unknown"``, ``winner_score=0.0``,
     ``dispersion=0.0``, ``per_member=[]``) so downstream callers can
     short-circuit cleanly.
@@ -247,9 +204,11 @@ class BloomBertEnsemble:
     # ------------------------------------------------------------------ #
 
     def classify(self, text: str) -> Dict[str, Any]:
-        """Classify ``text`` into a Bloom level via majority + dispersion.
+        """Return a Bloom vote when a subclass supplies members, else abstain.
 
-        Returns a dict with four keys: ``winner_level`` (str),
+        The default scaffold returns ``unknown`` with an empty ``per_member``
+        list. The aggregation shape remains available to injected test or
+        future implementations. Returns four keys: ``winner_level`` (str),
         ``winner_score`` (float — the winner's per-member-confidence
         sum, normalised to ``[0, 1]``), ``dispersion`` (float —
         entropy of the normalised per-level scores; high dispersion
@@ -301,7 +260,7 @@ class BloomBertEnsemble:
     # ------------------------------------------------------------------ #
 
     def _load_members(self) -> List[BertClassifier]:
-        """Lazy-load every ensemble member.
+        """Return no production members while dispatch remains unavailable.
 
         Uses a one-shot import probe of ``transformers``: when the
         extras are absent and strict mode is off, returns ``[]`` and
@@ -310,20 +269,11 @@ class BloomBertEnsemble:
         raises :class:`BertEnsembleDepsMissing` with an operator-actionable
         install hint.
 
-        Per-member loads are SHA-pinned via ``revision=member["revision"]``
-        on both the tokenizer and model ``from_pretrained`` calls. Cache
-        directory defaults to :data:`_DEFAULT_CACHE_DIR`
-        (``~/.cache/ed4all/bert_ensemble/``), overridable via the
-        constructor's ``cache_dir`` kwarg. ``transformers`` itself
-        respects ``TRANSFORMERS_CACHE`` / ``HF_HOME`` env vars when set,
-        which take precedence over the per-instance ``cache_dir``.
-
-        Each load attempt — success or failure — emits one
-        ``bert_ensemble_member_loaded`` decision event when a
-        :class:`DecisionCapture` instance is attached via
-        :meth:`attach_capture`. Members that fail to load are silently
-        omitted from the ensemble; the remaining members vote among
-        themselves.
+        Even when ``transformers`` is importable, the method returns ``[]``
+        because no reliable Ed4All Bloom classifier is provisioned and the
+        compatibility registry has no implemented model-specific dispatch.
+        Strict mode raises instead. The dormant per-member loader below is not
+        reached by this production path.
         """
         if self._loaded is not None:
             return self._loaded
@@ -356,14 +306,10 @@ class BloomBertEnsemble:
         # explicit ``unknown`` sentinel. Strict mode raises instead because
         # callers that require the ensemble must not receive unknown results.
         #
-        # TODO: implement per-member dispatch in ``_classify_with_member`` —
-        # cip29 argmax via
-        # ``_CIP29_TO_BLOOM``, SST-2 mapping via ``_SST2_TO_BLOOM``, and
-        # DeBERTa zero-shot NLI entailment over the six Bloom labels.
-        # Validate the implementation with observe-only calibration (see the
-        # ``_ScriptedEnsemble`` aggregation tests in
-        # ``lib/classifiers/tests/test_bloom_bert_ensemble.py`` for the
-        # ``_aggregate`` contract), then restore the per-member load loop.
+        # The staged MultiBERT path requires training, validation, and explicit
+        # provisioning before it can implement this contract. The retired
+        # cip29 and SST-2 mappings are not production substitutes. The separate
+        # DeBERTa zero-shot heuristic remains outside this scaffold.
         if is_strict_mode():
             raise BertEnsembleDepsMissing(
                 "BloomBertEnsemble per-member dispatch is unimplemented "
@@ -383,14 +329,10 @@ class BloomBertEnsemble:
     def _load_one_member(
         self, member: Dict[str, str]
     ) -> Optional[BertClassifier]:
-        """Load a single ensemble member, SHA-pinned via ``revision``.
+        """Dormant compatibility loader for a SHA-pinned registry member.
 
-        Returns ``None`` on any load failure (network, missing revision,
-        deleted repo). The caller logs the failure via
-        :meth:`_emit_member_loaded` and continues with the remaining
-        members; the ensemble's contract is "best-effort over the
-        configured registry", not "fail-closed when any member is
-        unreachable".
+        The production :meth:`_load_members` path never calls this method.
+        Custom callers receive ``None`` on any load failure.
         """
         try:
             from transformers import (  # type: ignore
@@ -429,17 +371,9 @@ class BloomBertEnsemble:
     ) -> Tuple[str, float]:
         """Run inference on ``text`` with one ensemble member.
 
-        Returns ``(bloom_level, confidence)``. Dispatches on member
-        name: the cip29 Bloom classifier returns a 6-class argmax over
-        its generic ``LABEL_0`` ... ``LABEL_5`` output, which is
-        translated to canonical Bloom levels via
-        :data:`_CIP29_TO_BLOOM`; the SST-2 member maps its 2-class output via
-        :data:`_SST2_TO_BLOOM`; the zero-shot NLI member runs the
-        six Bloom labels as candidate hypotheses and picks the highest
-        entailment.
-
-        Model-specific dispatch (cip29 argmax and label translation,
-        SST-2 mapping, and zero-shot NLI entailment) is not implemented.
+        Model-specific dispatch is not implemented. The retired cip29 and
+        SST-2 metadata is non-authoritative, and the separate NLI heuristic is
+        not an ensemble member implementation.
         The production loader
         (:meth:`_load_members`) now degrades to ``[]`` BEFORE any member
         reaches this method, so the default-constructed ensemble never

@@ -2693,19 +2693,16 @@ workflows:
               on_error: warn
             description: Phase 4 PoC embedding-tier paraphrase-roundtrip stability check on objective Blocks. Skipped when no paraphrase_fn / router is wired.
 
-          # BERT ensemble disagreement gate. Wraps the three-member
-          # BloomBertEnsemble (cip29 Bloom classifier, distilbert SST-2,
-          # DeBERTa-v3 NLI) and emits regenerate-
-          # action GateIssues when the ensemble winner disagrees with
-          # an objective / assessment_item Block's declared bloom_level
-          # OR when ensemble dispersion (entropy of normalised votes)
-          # exceeds the configured threshold (default 0.7). Severity
-          # warning per the Phase 4 PoC contract — structural Python
-          # + SHACL + embedding gates above stay authoritative; the
-          # ensemble signal is *additive*. Degrades gracefully when
-          # transformers extras are missing (single warning issue,
-          # passed=True) — opt-in fail-closed via
-          # TRAINFORGE_REQUIRE_BERT_ENSEMBLE=true.
+          # Bloom-classifier availability gate. The historical
+          # BloomBertEnsemble is an abstaining compatibility scaffold:
+          # no reliable classifier is provisioned and member dispatch is
+          # unimplemented, so the default path loads no registry weights.
+          # It records a warning-level unavailable signal; strict mode
+          # fails closed via TRAINFORGE_REQUIRE_BERT_ENSEMBLE=true. The
+          # separate opt-in DeBERTa path is a zero-shot NLI heuristic,
+          # not a trained Bloom classifier. The MultiBERT training path is
+          # staged but unproven and unprovisioned. Structural and
+          # grounding validators remain authoritative.
           - gate_id: outline_bloom_classifier_disagreement
             validator: lib.validators.bloom.classifier_disagreement.BloomClassifierDisagreementValidator
             severity: warning
@@ -2714,7 +2711,7 @@ workflows:
             behavior:
               on_fail: warn
               on_error: warn
-            description: Phase 4 PoC BERT-ensemble disagreement check on outline-tier objective / assessment_item Blocks. Informational; structural gates remain authoritative.
+            description: Warning-level Bloom-classifier availability and disagreement surface for outline-tier objective / assessment_item Blocks; the compatibility scaffold abstains while the staged MultiBERT path remains unproven and unprovisioned.
 
           # GPT Feedback v2 Wave 1.7 W1.7.C: tri-axis (NLI statement
           # entailment / Bloom-gap≥2 / action-verb synonym presence)
@@ -3741,16 +3738,13 @@ workflows:
               on_error: warn
             description: Phase 4 PoC embedding-tier paraphrase-roundtrip stability check on rewrite-tier objective Blocks. Skipped when no paraphrase_fn / router is wired.
 
-          # Phase 4 Subtask 28: symmetric mirror of the BERT-ensemble
-          # disagreement gate added at the inter-tier seam (also
-          # Subtask 28). Distinct gate_id prefix (``rewrite_*`` vs the
-          # inter-tier ``outline_*``) so downstream decision-event
-          # filtering can stratify the two validation seams. The
-          # validator's text-extraction helper handles both outline-
-          # tier dict content (statement / text / key_claims) and
-          # rewrite-tier HTML-string content (HTML strip) via the
-          # same shape-dispatch path. Severity warning per the Phase 4
-          # PoC contract.
+          # Rewrite-tier mirror of the Bloom-classifier availability
+          # surface. The distinct gate_id prefix lets downstream events
+          # distinguish validation seams. The same validator accepts
+          # outline dictionaries and stripped rewrite HTML. Its default
+          # compatibility scaffold abstains because no reliable trained
+          # Bloom classifier is provisioned; the staged MultiBERT path is
+          # not yet proven or available for inference.
           - gate_id: rewrite_bloom_classifier_disagreement
             validator: lib.validators.bloom.classifier_disagreement.BloomClassifierDisagreementValidator
             severity: warning
@@ -3759,7 +3753,7 @@ workflows:
             behavior:
               on_fail: warn
               on_error: warn
-            description: Phase 4 PoC BERT-ensemble disagreement check on rewrite-tier objective / assessment_item Blocks. Informational; structural gates remain authoritative.
+            description: Warning-level Bloom-classifier availability and disagreement surface for rewrite-tier objective / assessment_item Blocks; the compatibility scaffold abstains while the staged MultiBERT path remains unproven and unprovisioned.
 
           # GPT Feedback v2 Wave 1.7 W1.7.C: post-rewrite mirror of the
           # outline-seam tri-axis gate. Same shape-dispatch handles

@@ -157,9 +157,10 @@ ed4all import-docs ./docs-tree --output ./corpus/
 # ed4all harvest-bloom-labels — deterministic (no-LLM) harvester: walks a
 # Courseforge project/export (+ optional --course-path LibV2 dir) and collects
 # every artifact-asserted Bloom label (objectives / blocks / assessment items)
-# into runtime/state/bloom_labels/labels.jsonl — the corpus behind the re-founded
-# bloom_classifier_disagreement voter 1 (ED4ALL_BLOOM_TRIVOTE). --dry-run counts
-# only. Also runs post-build under ED4ALL_HARVEST_BLOOM_LABELS.
+# into runtime/state/bloom_labels/labels.jsonl for the staged, unproven
+# MultiBERT/Ed4All-head training path. It does not provision a current Bloom
+# classifier. --dry-run counts only. Also runs post-build under
+# ED4ALL_HARVEST_BLOOM_LABELS.
 ed4all harvest-bloom-labels ./Courseforge/exports/<project-export> --dry-run
 
 # ed4all support-bundle — assemble a redacted .tar.gz of run state + doctor
@@ -867,7 +868,7 @@ Default posture: training-data synthesis routes to license-clean providers — `
 
 ## Canonical Helpers
 
-Long-form per-validator detail + BERT ensemble member detail + pyproject extras: `docs/validation/validators.md`.
+Long-form per-validator status and optional dependency detail: `docs/validation/validators.md`.
 
 Single-source-of-truth loaders (`lib/ontology/`):
 
@@ -885,7 +886,7 @@ Validators (`lib/validators/`) — wiring in `docs/validation/gates.md`. Load-be
 - Statistical-tier embedding validators — the eight that load a `SentenceEmbedder` via `try_load_embedder`: `objective_assessment_similarity`, `concept_example_similarity`, `objective_roundtrip_similarity`, `co_terminal_alignment`, `source_coverage`, `rewrite_source_grounding`, `terminal_objective_source_grounding`, `distractor_misconception_alignment` (13 gate wirings in `config/workflows.yaml`). Two DISTINCT contracts:
   - **Missing `[embedding]` extras** → warning-severity `EMBEDDING_DEPS_MISSING` GateIssue with `passed=True`, unless `TRAINFORGE_REQUIRE_EMBEDDINGS=true` flips it fail-closed (that flip then wins over `on_error: warn`). Unchanged.
   - **Extras present, requested `ED4ALL_EMBEDDING_DEVICE` absent** (default `cuda`, no CUDA→CPU fallback) → `EmbeddingModelUnavailable`, a type unrelated to `EmbeddingDepsMissing`. Always fatal: the validators `preload()` before their audit loop and re-raise it past their per-encode handlers, and `ValidationGateManager.run_gate` carries a typed passthrough that returns `passed=False` + critical `EMBEDDING_MODEL_UNAVAILABLE` **without consulting `behavior_on_error`**, so `on_error: warn` can no longer rewrite it to a pass. Pin `ED4ALL_EMBEDDING_DEVICE=cpu` on GPU-less hosts — that explicit opt-out is the only supported downgrade.
-  - Caveats that survive: all 13 wirings are declared `severity: warning`, so a device failure is a recorded FAILED gate but does not by itself halt the phase; a *typo'd* device token raises a plain `ValueError` and still warn-passes; `distractor_misconception_alignment` does not honor `TRAINFORGE_REQUIRE_EMBEDDINGS` on missing extras (pre-existing, deliberate). `bloom_classifier_disagreement` is NOT on this contract — it shares the `[embedding]` extras group but loads a BERT ensemble (`BertEnsembleDepsMissing` / `TRAINFORGE_REQUIRE_BERT_ENSEMBLE`). Full detail + the residual holes: `docs/architecture/validation-architecture.md` § 4.1-4.3.
+  - Caveats that survive: all 13 wirings are declared `severity: warning`, so a device failure is a recorded FAILED gate but does not by itself halt the phase; a *typo'd* device token raises a plain `ValueError` and still warn-passes; `distractor_misconception_alignment` does not honor `TRAINFORGE_REQUIRE_EMBEDDINGS` on missing extras. `bloom_classifier_disagreement` is separate from this contract: no reliable Bloom classifier is provisioned, so its current warning-level path abstains. `TRAINFORGE_REQUIRE_BERT_ENSEMBLE` remains the strict configuration identifier but cannot make an unavailable classifier operational. The MultiBERT/Ed4All-head route trained on synthesized corpus labels is staged and unproven pending validation and weight provisioning. Active DeBERTa NLI validation is a separate heuristic surface. Full detail: `docs/architecture/validation-architecture.md` § 4.1-4.3.
 
 `schemas/knowledge/course.schema.json` is the canonical shape for Trainforge-emitted `course.json` consumed by LibV2.
 
