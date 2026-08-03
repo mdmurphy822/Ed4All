@@ -16,8 +16,6 @@ placeholders — substitute your own.
 | Topic | Doc |
 |---|---|
 | Per-stage invocation, timeout knobs, corpus-prep gotchas, graceful-stop semantics | [`pipeline-invocation.md`](pipeline-invocation.md) |
-| Single-box big-model deployment + env profile | `dgx-spark.md` (untracked operator-local runbook, like `spark-profile.md`) |
-| Big-memory concurrent-serving flag profile | [`spark-profile.md`](spark-profile.md) |
 | Serving the large local models (vLLM / Ollama) | [`nemotron-spark-serving.md`](nemotron-spark-serving.md) |
 | License-clean provider routing for training data | [`license-clean-run.md`](license-clean-run.md), [`../LICENSING.md`](../LICENSING.md) |
 | Container topology (GUI + ollama sidecar, LibV2 bind mount) | [`docker.md`](docker.md) |
@@ -307,17 +305,15 @@ Verified `ed4all run` options (`cli/commands/run.py`): `--corpus`,
 > `packaging` lands before `content_generation_rewrite`. Export
 > `COURSEFORGE_TWO_PASS=true` first, then `--dry-run` matches §2.2 exactly.
 
-> **Conflict on `--provider local`.** `dgx-spark.md` (operator-local) § (f)
-> documents `ed4all run textbook-to-course --provider local …`. That value is
-> **rejected** by the current CLI: `--api-provider/--provider` is a
+> **Do not pass `--provider local`.** That value is rejected by the current
+> CLI: `--api-provider/--provider` is a
 > `click.Choice(["anthropic", "openai", "nvidia"])`, and passing `local` exits
 > with `Error: Invalid value for '--api-provider' / '--provider': 'local' is not
 > one of 'anthropic', 'openai', 'nvidia'.` (reproduced against this checkout).
 > The working pure-local route is to **omit `--provider` entirely** and route the
 > per-tier seats with the `*_PROVIDER` / `*_MODEL` env vars, exactly as
 > [`license-clean-run.md`](license-clean-run.md) and
-> [`pipeline-invocation.md`](pipeline-invocation.md) § 8.2 do. `dgx-spark.md`
-> § (c) already sets those env vars; only its `--provider local` flag is stale.
+> [`pipeline-invocation.md`](pipeline-invocation.md) § 8.2 describe.
 
 ### 2.2 The phase sequence
 
@@ -947,7 +943,7 @@ ed4all support-bundle --run-id <RUN_ID> -o ./ed4all-support.tar.gz # redacted bu
 
 | Conflict | Status |
 |---|---|
-| `dgx-spark.md` § (f) documents `ed4all run … --provider local`; the CLI rejects it (`click.Choice(["anthropic","openai","nvidia"])`). Reproduced against this checkout. | Real. Use the `*_PROVIDER` env vars instead, per §2.1. |
+| `ed4all run … --provider local` is rejected by the CLI (`click.Choice(["anthropic","openai","nvidia"])`). | Use the `*_PROVIDER` env vars instead, per §2.1. |
 | Root `CLAUDE.md` documented a `trainforge_train` invocation passing the course as `--course-code` plus a `--base-model` pin; `ed4all run` exposed neither option. | **Fully resolved** — routing by e15ad5f1, flags by 23f06886. Routing: the `training` phase reaches `Trainforge.train_course` via the `run_training` registry tool (phase-name dispatch), not `synthesize_training`. Flags: `ed4all run` now has a real `--base-model`, validated at PARSE time against `Trainforge/training/base_models.py::BaseModelRegistry` (unknown name → exit 2 with the supported list, never a silent substitution) and re-pinnable on `--resume`; precedence is `--base-model` > `ED4ALL_CAMPAIGN_BASE_MODEL` > the registry default (`nemotron3-nano-30b`). The course is still passed as `--course-name` — `--course-code` is only the handler-side param alias in `config/workflows.yaml::training`'s `inputs_from` block and a genuine flag on the separate `python -m Trainforge.train_course` CLI (§3.2). |
 | `--dry-run` appears to print a different phase order than the run executes. | **Not a defect.** Both paths call the same `WorkflowRunner._topological_sort`; the order only diverges when the dry-run shell lacks `COURSEFORGE_TWO_PASS=true`, because several `depends_on_when_env:` edges are conditional on it. Export it before dry-running. |
 | The `ed4all gui --mode` help text asserts "The GUI has no auth"; `gui/auth.py` implements a shared-secret token gate over the operator routes in `full` mode. | Real (stale help string). The gate is a pass-through when no token is configured, so the help text is right for the default posture and wrong once a token is set. See §5.2. |

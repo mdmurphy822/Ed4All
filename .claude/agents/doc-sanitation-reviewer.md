@@ -99,9 +99,8 @@ tracked `*.md` must resolve in the live tree.
 - **Validation-gate counts** (root `CLAUDE.md` → "Validation Gates" summary
   table): derive from `config/workflows.yaml::validation_gates`. Count
   `severity: critical` vs `severity: warning` per workflow and compare to the
-  printed per-workflow + Total rows. The per-wave history in
-  `docs/validation/gate-history.md` is provenance-only and is NOT expected to
-  sum to the current total — do not flag that.
+  printed per-workflow + Total rows. Operator-local campaign histories are
+  provenance-only and are not part of the public documentation audit.
 
 - **Behavior-flag counts** (root `CLAUDE.md` "Opt-In Behavior Flags" prefix
   table): the per-subsystem flag rows are owned by the named subsystem

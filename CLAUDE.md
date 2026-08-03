@@ -841,7 +841,8 @@ Summary by workflow (counts derived from `config/workflows.yaml`):
 | `trainforge_train` | 2 | 0 | 2 |
 | **Total** | **103** | **115** | **218** |
 
-Per-wave gate-landing history (additions, demotions, deferred severity flips, with the intermediate running subtotals at each wave): `docs/validation/gate-history.md`. The table above is the current authoritative count; the history file's per-wave subtotals are provenance-only and do not sum to the current total.
+The table above is the current authoritative count. Per-wave landing history is
+operator-local release evidence rather than part of the public documentation.
 
 ---
 

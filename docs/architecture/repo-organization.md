@@ -28,8 +28,8 @@ obviously fit a rule below, that is a design question, not a formatting one.
   lifetimes — durable operator entry points, reusable measurement harnesses,
   and one-shot pilots — while the good precedent (`archive/`, `codegen/`,
   `integration/`, `tests/`) already exists underneath.
-- **`lib/` mixes ~30 flat modules with 20+ subpackages.** TECH_DEBT D19
-  documents the sanctioned migration pattern (subpackage +
+- **`lib/` mixes ~30 flat modules with 20+ subpackages.** The sanctioned
+  migration pattern is a subpackage plus a
   `PendingDeprecationWarning` shim); the rule below stops *new* flat modules.
 - **`docs/` had six single-file dirs** beside three real ones (collapsed in
   Phase 1).
@@ -78,7 +78,7 @@ Per-dir placement rules (purpose / belongs / **never**):
   `lib`/`MCP` needs it at runtime, it graduates into the package).
 - `docs/` — see §4. Never: machine-specific values or gitignored-local-path
   references (existing hygiene contract; an intrinsically operator-local
-  runbook goes untracked, like `spark-profile.md` / `dgx-spark.md`),
+  runbook stays untracked),
   generated manifests (`docs/MANIFEST.md` stays gitignored).
 - `tests/` — cross-project integration only; single-subsystem tests live with
   the subsystem (unchanged).
@@ -135,9 +135,10 @@ Four buckets, hard rule "no single-file dirs":
 - `docs/validation/` — gates/validators (unchanged).
 - `docs/reference/` — compliance + subsystem deep-dives (absorbed
   `audit-trail.md`, `cross-package-index.md`, `reference-retrieval.md`).
-- Root-level `docs/{LICENSING,TECH_DEBT,FILE_MANIFEST,file-audit-cleanup}.md`
-  stay at `docs/` root (registers, not topics). CLAUDE.md family unchanged:
-  CLAUDE.md is *navigation*, docs are *content*.
+- Root-level `docs/LICENSING.md` is the public licensing register. Generated
+  manifests, cleanup evidence, technical-debt ledgers, campaign histories,
+  and machine-specific runbooks stay local and gitignored. CLAUDE.md family
+  remains navigation; public docs remain durable product content.
 
 ## 5. What we deliberately do NOT do (Phase 3 — REJECTED)
 
@@ -274,8 +275,8 @@ risk. None of these are started.
    any `git mv`.**
 2. **`Trainforge/` root — 19 loose modules** with one obvious cluster: nine
    `synthesis_*.py` plus `synthesize_training.py` want to be
-   `Trainforge/synthesis/`. Costs a shim per moved module (the D19 pattern,
-   TECH_DEBT) because `MCP/` dispatches into several by dotted path.
+   `Trainforge/synthesis/`. Costs a compatibility shim per moved module
+   because `MCP/` dispatches into several by dotted path.
 3. **`Trainforge/eval/` — 39 loose**, three subdirs already exist; the flat
    remainder should join them.
 4. **`SemantiK/data/` — 25 loose** dataset builders, several unreferenced.

@@ -10,8 +10,6 @@ For the full current-state ontology map (classes, relations, taxonomies, provena
 schemas/
 ├── README.md                                this file
 ├── ONTOLOGY.md                              current-state ontology map
-├── ONTOLOGY_LO_AUDIT.md                     LO ID conventions + audit (per-corpus)
-│
 ├── academic/                                course-level academic metadata
 │   ├── course_metadata.schema.json          full course (MIT OCW shape)
 │   ├── courseforge_page_types.schema.json   page-level type enum

@@ -134,8 +134,8 @@ class Validator(Protocol):
 
 Of the 210 configured gates, 195 resolve to `lib.validators.*`; the remaining 15
 are Courseforge inter-tier gates (`Courseforge.router.inter_tier_gates.*`). The
-authoritative per-gate table is `docs/validation/gates.md`; the per-wave landing
-history is `docs/validation/gate-history.md`.
+authoritative public per-gate table is `docs/validation/gates.md`; campaign
+landing history is operator-local release evidence.
 
 **Feature cache.** `lib/validators/feature_cache.py::BlockFeatureCache` is one
 instance per gate-chain invocation, built by the executor immediately before the

@@ -6,8 +6,7 @@ aggregators compose out of the gate stream.
 
 **Scope.** This file documents the *architecture*. The per-gate table
 (workflow → phase → `gate_id` → validator, with per-gate rationale) lives in
-[`docs/validation/gates.md`](../validation/gates.md); per-wave landing
-provenance in [`docs/validation/gate-history.md`](../validation/gate-history.md);
+[`docs/validation/gates.md`](../validation/gates.md);
 per-validator detail in [`docs/validation/validators.md`](../validation/validators.md);
 per-aggregator detail in [`docs/architecture/aggregators.md`](aggregators.md).
 Nothing in those files is duplicated here.

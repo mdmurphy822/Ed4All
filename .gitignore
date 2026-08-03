@@ -236,16 +236,26 @@ plans/
 # Linux view as a separate file. These are never project content.
 *:Zone.Identifier
 
-# Local-only generated index maintained by the recurring review loop
-docs/MANIFEST.md
-# Local repository-cleanup evidence may enumerate ignored operator artifacts.
-docs/file-audit-cleanup.md
+# Local-only generated indexes and release-review evidence. These files may
+# contain machine-, corpus-, campaign-, or run-specific details and are not
+# part of the public documentation surface.
+/docs/MANIFEST.md
+/docs/FILE_MANIFEST.md
+/docs/TECH_DEBT.md
+/docs/file-audit-cleanup.md
+/docs/operations/full-run-inventory.md
+/docs/validation/enrichment-trace-report.md
+/docs/validation/gate-history.md
+/docs/validation/ontology-review-v0.2.0.md
+/docs/validation/summary-retrieval-delta-v0.2.0.md
+/docs/validation/typed-edges-v0.2.0.md
+/schemas/ONTOLOGY_LO_AUDIT.md
 docker-compose.override.yml
 
 # Untracked operator runbook for the big-memory concurrent-serving profile.
 # Kept local-only so it can name the specific target hardware freely (tracked
 # docs stay machine-name-free per the hygiene contract).
-docs/operations/spark-profile.md
+/docs/operations/spark-profile.md
 
 # =============================================================================
 # SemantiK (Semantic v2 conversion) — runtime artifacts never ship
@@ -388,4 +398,4 @@ ed4all-backup*.tar.gz
 # (dgx-spark). Kept local-only alongside spark-profile.md so it can reference
 # the operator's gitignored inputs/<profile>/launch scripts and concrete seat
 # pins freely (tracked docs stay free of local-path references).
-docs/operations/dgx-spark.md
+/docs/operations/dgx-spark.md

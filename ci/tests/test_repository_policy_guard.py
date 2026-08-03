@@ -70,7 +70,8 @@ def test_external_var_allows_only_sentinels_and_generated_source_fails() -> None
 
 
 def test_privacy_checks_path_shapes_and_operator_tokens_in_content() -> None:
-    shaped = check_privacy("src/TTC_private_20260101/result.py", b"safe", [])
+    run_shape = "_".join(("TTC", "private", "20260101"))
+    shaped = check_privacy(f"src/{run_shape}/result.py", b"safe", [])
     private = check_privacy("src/module.py", b"comment mentions Private Course", ["Private Course"])
     assert "privacy_shape" in checks(shaped)
     assert "private_token" in checks(private)

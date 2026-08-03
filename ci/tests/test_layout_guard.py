@@ -137,7 +137,7 @@ def test_docs_taxonomy_docsingle_allowlist_escape():
 
 
 def test_docs_taxonomy_ignores_depth_one_root_docs_files():
-    tracked = ["docs/LICENSING.md", "docs/TECH_DEBT.md"]
+    tracked = ["docs/LICENSING.md", "docs/README.md"]
     violations = guard.check_docs_taxonomy(tracked, allowed_docsingle=set())
     assert violations == []
 
