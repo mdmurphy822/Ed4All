@@ -117,6 +117,7 @@ scripts/
   integration/  # cross-subsystem integration tools
   codegen/      # generated-contract maintenance
   archive/      # one-shots after their campaign ends; pilots retire here
+  regression/   # gitignored local shelf for proven obsolete scripts
   tests/        # tests move only when their subject moves
 ```
 
@@ -126,6 +127,14 @@ campaign* → `archive/` (or `runtime/` if truly scratch). The Phase 2 move
 updated imports, tests, documented commands, code comments, fixed argument
 vectors, and repo-root derivations together; the loose-file ratchet now retains
 only the wrapper awaiting separate disposition.
+
+Every directory named `scripts/`, including subsystem and nested script
+taxonomies, may contain a local `regression/` child. The recursive ignore rule
+in `.gitignore` keeps these shelves out of the public source tree. Move a script
+there only after the same import, dynamic-dispatch, CLI, config, documentation,
+test, and history audit required for deletion proves it is obsolete. A
+regression-shelved script is not a compatibility surface, test dependency, or
+supported entry point; anything still required belongs in a tracked family.
 
 ## 4. `docs/` taxonomy (Phase 1 — DONE)
 

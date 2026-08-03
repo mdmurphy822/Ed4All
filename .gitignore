@@ -236,6 +236,13 @@ schemas/training/schema_translation_catalog.*.yaml
 plans/
 plan/
 
+# Local regression retirement shelves. Every scripts container may retain
+# proven obsolete scripts here without publishing them or treating them as a
+# build/test dependency. The recursive form covers subsystem and nested
+# taxonomies such as Trainforge/scripts/harness/regression/.
+**/scripts/regression/
+**/scripts/**/regression/
+
 # Third-party IMS Common Cartridge / W3C XML schemas are operator-installed
 # dependencies, not Ed4All source. Keep the first-party installation README.
 /Courseforge/schemas/imscc/*.xsd
