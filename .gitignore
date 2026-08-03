@@ -466,7 +466,6 @@ ed4all-backup*.tar.gz
 !/docs/operations/docker.md
 !/docs/operations/expanded-adapter-evaluation.md
 !/docs/operations/flow-metrics.md
-!/docs/operations/fresh-training-synthesis.md
 !/docs/operations/full-run-playbook.md
 !/docs/operations/installation.md
 !/docs/operations/launch-seat.example.sh
@@ -482,7 +481,6 @@ ed4all-backup*.tar.gz
 !/docs/operations/seat-scripts.md
 !/docs/operations/super-synthesis-benchmark.md
 !/docs/operations/support-bundle.md
-!/docs/operations/visual-review.md
 !/docs/reference/audit-trail.md
 !/docs/reference/cross-package-index.md
 !/docs/reference/development-token-stats.json
