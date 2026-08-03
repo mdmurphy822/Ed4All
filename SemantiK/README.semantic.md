@@ -1,27 +1,29 @@
 # SemantiK — Accessible-HTML Conversion Engine
 
-Ed4All's **PDF → WCAG 2.2 AA accessible-HTML conversion engine**. A
-local-only ML cascade built on one principle:
+SemantiK turns PDFs into structured, accessible HTML while preserving the
+source provenance downstream systems need for citations, review, and
+reprocessing. Its ML cascade is built on one principle:
 
 > **Learned models are narrow candidate generators; deterministic code
 > orchestrates, gates, and assembles.**
 
 BERTs classify, Qwens generate candidates, and deterministic code owns
 composition, hierarchy, ARIA wiring, validation, and final assembly. That
-split is what lets SemantiK make an auditable WCAG conformance claim: the
-rules that produce conformance are visible code, not weights.
+split makes accessibility decisions inspectable: the rules that validate and
+assemble output are visible code, not hidden in model weights.
 
-- **License-clean by construction.** The PDF stack is built entirely on
-  permissively-licensed tooling — pypdfium2 (Apache-2/BSD-3) for text
+- **Auditable open-source foundation.** The PDF stack uses
+  permissively licensed tooling — pypdfium2 (Apache-2/BSD-3) for text
   extraction and rendering, pdfplumber (MIT) for layout, pikepdf (MPL-2.0)
   for structure, and Tesseract (Apache-2) for OCR. The code ships Apache-2.0
   (see `LICENSE`).
 - **No cloud LLM at runtime.** The Stage-6 specialists run fully offline on
   local GGUF weights. A hosted 70B endpoint is an opt-in quality seat, not a
   dependency.
-- **No human in the loop.** Four deterministic exit actions, no escalation.
+- **Explicit outcomes.** Four deterministic exit actions distinguish
+  validated output, flagged output, retry routing, and non-certified output.
 
-## Where things live
+## Explore the project
 
 | Path | What |
 |------|------|
@@ -32,7 +34,7 @@ rules that produce conformance are visible code, not weights.
 | [`CLAUDE.md`](CLAUDE.md) | Subsystem guide for coding agents (runtime modes, flags, bridge, tests) |
 | [`schemas/ONTOLOGY.md`](../schemas/ONTOLOGY.md) | Canonical ontology and standards-facing semantic contracts |
 
-## The cascade at a glance
+## How conversion works
 
 Entry point: `semantik_structure/cascade.py::run_full_cascade` (reachable as
 `pipeline_v2.run(pdf, mode="v2")`). Per-stage depth is in
@@ -60,7 +62,7 @@ back to a rule, an algorithm, or a model confidence. See
 specialists, the two-tier validation gate, the theta evaluator, and the
 exit-decision table.
 
-## Quick start
+## Get started
 
 SemantiK runs inside Ed4All as the `semantik_conversion` conversion backend (via
 the bridge in `MCP/tools/pipeline_tools.py`) — no dedicated CLI of its own.
@@ -92,7 +94,7 @@ venv's interpreter and `SEMANTIK_RUNTIME_DIR` at this repo root. Full
 provisioning, runtime modes, and the env-flag table are in
 [`CLAUDE.md`](CLAUDE.md).
 
-## Runtime modes
+## Choose a runtime
 
 - **Local GGUF specialists (default).** `SEMANTIK_SPECIALIST_PROVIDER=local`
   (or unset) runs the Stage-6 specialists in-process on `llama-cpp-python`
@@ -111,7 +113,7 @@ Stage-5d structure reviewer (`SEMANTIK_STRUCTURE_REVIEW=1`, off by default)
 is a conservative heading corrector that never alters text and **fails
 closed** on any token-conservation mismatch.
 
-## Output contract
+## Integrate reliable outputs
 
 SemantiK emits a stable, downstream-facing shape so every Ed4All consumer
 (Courseforge staging, source-mapping, the chunker, the Ask path) reads one
@@ -138,7 +140,7 @@ consistent interface across runs and versions. Full detail:
   (skips are first-class: "no measurement", not "verified safe"), the theta
   report, thresholds, heading tree, and a rule-id → WCAG SC coverage map.
 
-## Key concepts
+## Why the architecture is dependable
 
 - **Front-matter handling is deterministic.** Phantom-TOC / front-matter
   contamination (a book's table-of-contents getting classified as real
@@ -157,14 +159,14 @@ consistent interface across runs and versions. Full detail:
   WCAG verdict; it may lower confidence, trigger one capped offline retry,
   or attach a review flag.
 
-## Honest constraints
+## Operational constraints
 
 - **Council VRAM on 8 GB.** The full cascade is GPU-flaky on an 8 GB card:
   council BERTs share one ModernBERT-base backbone (one-resident LoRA
   adapter swap) and the Qwen specialists batch *by adapter* rather than
   fanning out, because parallel adapter contexts plus a concurrent
   Chromium/axe-core process poison CUDA on 8 GB. Mitigated, not eliminated.
-  The DGX Spark-class deployment target is the real fix.
+  Higher-memory deployment hardware avoids this contention.
 - **Structure quality is council-bound.** Block-ID quality of *pedagogical*
   elements is only as good as BERT-Structure's `structural_role` /
   `is_heading` heads; heading over-detection is patched defensively (the
@@ -175,19 +177,13 @@ Full limitations: [`architecture.md`](architecture.md) §14.
 
 ## License
 
-Apache-2.0 (`LICENSE`, "Copyright 2026 Ed4All"). License-clean by
-construction across both the PDF stack (pypdfium2 + pdfplumber + pikepdf +
-pytesseract/Tesseract) and the ML stack (transformers / peft /
-llama-cpp-python) — **every dependency on the path is permissively
-licensed**. Model weights (council BERTs, Qwen GGUFs, theta head) are
-separate artifacts, not shipped in this tree.
+The repository code is Apache-2.0 (`LICENSE`, "Copyright 2026 Ed4All"). The
+PDF and ML libraries named above use permissive or weak-copyleft licenses.
+Model weights (council BERTs, Qwen GGUFs, theta head) are separate artifacts,
+not shipped in this tree; deployers should review the licenses of the weights
+they select.
 
-Training data is sourced only under commercial-permissive licenses (CC-BY,
-CC-BY-SA, CC0, ODC-By, public domain, arXiv), with no LLM-API-derived
-labels — labels are mechanically extracted from ground-truth HTML tags. The
-provider/model licensing for the opt-in hosted 70B endpoint seat lives in
-`docs/LICENSING.md`.
-
-> Positioning line for procurement: *"SemantiK's structure model is trained
-> exclusively on public and synthetic data, with every training example
-> validated against WCAG 2.2 AA before inclusion."*
+Training-data and provider licensing policy is documented in
+[`docs/LICENSING.md`](../docs/LICENSING.md). Labels for the structure models
+are mechanically derived from source HTML rather than generated through an
+LLM API.

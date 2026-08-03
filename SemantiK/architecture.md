@@ -1,12 +1,12 @@
-# SemantiK — Architecture (the 13-stage v2 cascade)
+# SemantiK architecture
 
-> SemantiK is Ed4All's **PDF → WCAG 2.2 AA accessible-HTML conversion
-> engine** — a local-only pipeline built on the principle:
+> SemantiK converts PDFs into structured, accessible HTML with block-level
+> provenance. The 13-stage pipeline follows one principle:
 > **learned models are narrow candidate generators; deterministic code
 > orchestrates, gates, and assembles.** The extraction path is built
 > entirely on permissively-licensed PDF tooling (pypdfium2 + pdfplumber +
-> pikepdf + Tesseract); no cloud LLM required at runtime (a hosted 70B endpoint
-> is an opt-in seat, not a dependency); no human in the loop. SemantiK emits a
+> pikepdf + Tesseract); no cloud LLM is required at runtime (a hosted endpoint
+> is optional). SemantiK emits a
 > stable source-provenance **wire contract** — the `data-semantik-*` HTML block
 > attributes and the `semantik:{slug}#{block_id}` sourceId — so Ed4All consumers
 > thread block-level provenance through the pipeline unchanged (see §12).
@@ -14,13 +14,11 @@
 > This file is the cascade deep-dive. The subsystem guide (`CLAUDE.md`)
 > links here; the wire contract + cross-venv bridge are §12–§14 below.
 
-This document is the canonical reference for the structure of the pipeline.
+This document is the canonical reference for the pipeline structure and its
+integration contracts.
 For the canonical ontology and standards-facing semantic contracts, see
-[`schemas/ONTOLOGY.md`](../schemas/ONTOLOGY.md). This architecture supersedes
-the earlier eight-stage design; the current implementation and contracts in
-this file are authoritative. Treat the assertions in this file
-> as the operative ones until the ontology doc lands, and don't add new
-> deferrals to it.
+[`schemas/ONTOLOGY.md`](../schemas/ONTOLOGY.md). The current implementation
+and contracts in this file are authoritative.
 
 ---
 
@@ -28,9 +26,8 @@ this file are authoritative. Treat the assertions in this file
 
 Every learned model in the pipeline is **scoped to a narrow decision
 surface**. Composition, hierarchy enforcement, ARIA wiring, validation, and
-final assembly are deterministic. This is what lets us claim WCAG 2.2 AA
-conformance: the rules that produce conformance are visible, auditable code,
-not weights.
+final assembly are deterministic. Accessibility validation is therefore
+visible, auditable code rather than behavior encoded only in model weights.
 
 Concretely:
 
@@ -74,9 +71,8 @@ PDF
 │   table-candidates ──► Structure.table_region (binary head)          │
 │                          ├─ confirmed → table track                  │
 │                          └─ rejected  → demote to flat-text          │
-│   (BERT-TableDetector retired 2026-05-05 — Structure's table_region  │
-│    head + pdfplumber TableCandidate aggregation does the gating job; │
-│    eval P=R=F1=1.000 region-level on 170 arXiv held-out regions)     │
+│   (BERT-TableDetector retired; Structure's table_region head +       │
+│    pdfplumber TableCandidate aggregation now perform this routing.) │
 │                                                                      │
 │   math-candidates  ──► BERT-MathDetector                             │
 │                          ├─ confirmed → math track                   │
@@ -259,7 +255,7 @@ specialist requires expensive cell-level labels.
 | 1 | **BERT-MergeOrSplit** | multi-head | `same_logical_block` (binary) · `join_type` (space / newline_within_p / list_continuation) · `hyphen_repair` (binary) | text pair + 24-dim layout side-channel (font_size_a/b, font_size_delta, bold transition, y_gap_log1p, y_gap_lines, lhr, x0/x1_delta, width_ratio, x_overlap_frac, b_titlecase_frac, ...) + **deterministic features** (column_id, is_artifact) → LayerNorm → 64-dim MLP → concatenated with BERT pooled | flat-text + demoted regions |
 | 2 | **BERT-Structure** | multi-head | structural role · `is_heading` (binary) · heading-level (h1..h6, conditional on `is_heading=1`) · list-nesting | text + layout features | merged flat-text blocks |
 | 3 | **BERT-Semantic** | multi-head | doc-role (title/author/abstract/body/citation/footer/legal/metadata) · boilerplate flag | text + neighbor context + Structure top-k | merged flat-text blocks |
-| 4 | **BERT-TableDetector** *(RETIRED 2026-05-05 — folded into Structure as the `table_region` binary head; pdfplumber TableCandidate aggregation supplies the region grouping. Eval evidence: `scripts/eval/eval_table_region_at_region_level.py`, P=R=F1=1.000 region-level on 170 arXiv held-out regions.)* | — | — | — | — |
+| 4 | **BERT-TableDetector** *(retired; folded into Structure as the `table_region` binary head, with pdfplumber `TableCandidate` aggregation supplying region grouping)* | — | — | — | — |
 | 5 | **BERT-TableSpecialist** | multi-head | cell role + scope (header-col / header-row / both / data / span) · caption-association | layout + cell text + 2D neighbor cells + Structure top-k (soft hint) | detector-confirmed tables |
 | 6 | **BERT-MathDetector** | binary | is this region actually math? (vs. italicized prose / aligned symbols) | layout + glyph features | math-candidate regions |
 | 7 | **BERT-MathSpecialist** | multi-head | math-type (inline / display / numbered / multiline / matrix) · equation-number-association | text + glyph features (sub/sup, math-symbol density, fraction bars) | detector-confirmed math |
@@ -352,21 +348,13 @@ reading-order placement, and HTML emission are all Stage 9
 (assembler) responsibilities (§3.9 / lines 130-168). Stage 6 expands
 each Region into HTML candidates; Stage 9 stitches the document.
 
-**RESOLVED (2026-06-08) — Structure.is_heading over-fire.** The 2026-05-06
-diagnostic showed the head over-firing 3.6× (619 emitted vs 171 reference
-headings on the worst fixture). Fixed in three stages
-(`Plans/11_heading_overdetection.md`): (1) a `_plausible_heading()` guard at
-the Pass-2 promotion in `structure_graph.py` (drops empty/garbage/over-long
-blocks; rejects fall through to prose); (2) post-hoc temperature scaling
-T=1.6553 baked into `structure/final/heads.pt` plus `is_heading_threshold`
-raised 0.7 → 0.8 (calibrated max-F1 P=0.926/R=0.902); (3) the extraction
-root cause — pdfplumber's default 3pt `x_tolerance` glued LaTeX inter-word
-gaps — fixed with font-scaled `x_tolerance_ratio=0.15` in
-`extract_shared.py`. Validated on 1807.02622: 234 → 11 plausible headings,
-document `heading_tree` gate failed → PASSED. Note `data/extract_cache/` is
-mtime-keyed, so the extraction fix only applies to fresh extractions; the
-R10 post-fix eval ran with a cleared cache. Historical measurement:
-`data/eval_reports/stage5_heading_rate.json`.
+**Heading over-detection safeguards.** A `_plausible_heading()` guard in
+`structure_graph.py` rejects empty, malformed, and over-long heading
+candidates back to prose. Calibrated temperature scaling and the configured
+`is_heading_threshold` constrain the classifier, while font-scaled extraction
+tolerance prevents layout gaps from being joined into misleading text. The
+extraction cache is mtime-keyed, so extraction changes apply to newly created
+cache entries.
 
 ---
 
@@ -497,8 +485,8 @@ cross-encoder scores fit-quality:
 - `<title>` non-empty
 - `<main>` landmark present
 
-**Whole-document heading-contiguity normalization (Stage 9, this session
-`3a71e57`).** Stage 9a's heading normalization only re-levels regions whose
+**Whole-document heading-contiguity normalization (Stage 9).** Stage 9a's
+heading normalization only re-levels regions whose
 `Region.kind == "heading"`, so an `<hN>` a Stage-6 specialist (e.g. the hosted
 70B prose seat) emits *inside* a non-heading region's body bypasses it and
 reaches the Stage-10 `heading_tree` gate verbatim (a prose-embedded `<h6>`
@@ -568,17 +556,10 @@ burden — and emits a per-dimension report.
 | 7 | fragmentation / ambiguity penalty | deterministic | inverse of source-paragraph-split rate + source-list-item-break rate |
 | 8 | hallucinated-structure penalty | deterministic, **gap-fill-aware** | every gap-fill-emitted token must have a substring/paraphrase anchor in source |
 
-Composite weights, exit taus, and floors are **calibrated** (Plan 12 A3,
-2026-06-11): fitted on a 40-doc × 520-variant synthetic perturbation set
-(`scripts/calibration/calibrate_theta.py`; report
-`data/eval_reports/theta_calibration_v1.json`, fitted AUC 0.849 vs
-uniform 0.834) and locked in `theta/config.yaml` (`theta-config-2.0`)
-with full provenance. The numbers below are the calibrated values; the
-config file is the source of truth — re-run the harness with
-`--write-config` rather than hand-editing. Known caveat (recorded in the
-report): synthetic clean fixtures sit above the real-pipeline theta
-distribution, so the taus are clamped; re-calibrate against the C1
-corpus distribution once the real-runtime eval at scale lands.
+Composite weights, exit thresholds, and floors are loaded from
+`theta/config.yaml` (`theta-config-2.0`). The config file is the source of
+truth; use `scripts/calibration/calibrate_theta.py --write-config` to update
+it from evaluation results rather than hand-editing calibrated values.
 
 ### 6.2 Per-dimension floors
 
@@ -651,12 +632,10 @@ remains**:
   without `SEMANTIK_ALLOW_THETA_STUB`; it replaced the mode-collapsed v1.
   The `stub_v1` 0.7 fallback remains in code only as the documented
   loud-fail path when the model directory is absent.
-* **Composite weights are CALIBRATED (Plan 12 A3, 2026-06-11).** The
-  evaluator loads them from `theta/config.yaml` (`theta-config-2.0`,
-  fitted on 520 perturbation variants, AUC 0.849 vs uniform 0.834;
-  provenance in the config's `calibration:` block). A missing/invalid
+* **Composite weights are configuration-driven.** The evaluator loads them
+  from `theta/config.yaml` (`theta-config-2.0`). A missing or invalid
   config raises `ThetaConfigError` — no silent default.
-* **`hallucinated_structure_penalty` is REAL (Plan 12 A3, 2026-06-10):**
+* **`hallucinated_structure_penalty` uses source anchoring:**
   token-level anchoring of each resolved gap's text (words + all
   numeric tokens) against the gap's extraction context plus full source
   text; worst per-gap ratio is the score, with the per-gap breakdown on
@@ -664,13 +643,13 @@ remains**:
 
 ---
 
-## 7. Exits — no human escalation (Stage 13)
+## 7. Exit decisions (Stage 13)
 
 Per the standing local-only runtime constraint (see [`CLAUDE.md`](CLAUDE.md)
 § Overview — no cloud LLM is required at runtime; the hosted large-model
 endpoint is an opt-in quality seat, never a dependency):
-runtime is local-only. There is also no human-in-the-loop. The pipeline has
-exactly four exit actions, decided by the combination of WCAG hard-gate
+runtime can remain local. The pipeline has four exit actions, decided by the
+combination of WCAG hard-gate
 status and theta:
 
 The tau values are calibrated and loaded from `theta/config.yaml`
@@ -698,8 +677,8 @@ env re-read; `theta/evaluator.py`); `offline_retry._needs_retry` then skips the
 theta-`<TAU>` retry trigger (it STILL retries on a real `wcag=failed`), and
 `exits.decide_exit` ships `ship_with_flag` with the explicit
 `THETA_UNVERIFIED_STUB` flag instead of letting the 0.7 placeholder trip the
-offline retry / non-certified path. Byte-stable when theta is real
-(`theta/exits.py` + `theta/offline_retry.py`, this session `3a71e57`).
+offline retry / non-certified path. The real-theta path remains byte-stable
+(`theta/exits.py` and `theta/offline_retry.py`).
 
 ### 7.1 ship-with-confidence
 
@@ -770,94 +749,23 @@ regions through the offline lane and keeps the offline output iff
 it before `decide_exit`). Neither historical degradation flag
 (`theta_low_no_retry`, `offline_lane_unavailable_v1`) is emitted
 anywhere; six invariant tests in `tests/test_theta.py` lock the §7 rows
-and the no-`*_v1`-flag invariant. The lane fired in the R10 real-runtime
-eval (2 offline retries across 3 documents; fast lane retained both
-times on the theta margin).
+and the no-`*_v1`-flag invariant.
 
 ---
 
-## 8. Training plan
+## 8. Model-development constraints
 
-### 8.1 Strict dependency order
+Council models are developed in feature-dependency order: MergeOrSplit feeds
+Structure, Structure feeds Semantic, and Structure also supplies a soft hint
+to TableSpecialist. Cascaded models use teacher-forced upstream labels during
+early training, introduce predicted-output mixing near the end of training,
+and consume upstream top-k distributions at inference. Promotion requires
+measured improvement on the maintained evaluation family.
 
-Some BERTs feed others as input features. Training must respect this DAG.
-
-```
-1. BERT-MathSpecialist     (ar5iv-only labels — free; proves pipeline shape)
-2. BERT-MergeOrSplit       (small data; partly synthesizable from PDF
-                            span fragmentation patterns)
-3. BERT-Structure          (must converge before Semantic training begins)
-4. BERT-Semantic           (teacher-forced on Structure labels;
-                            scheduled-sampling near end of training)
-5. ~~BERT-TableDetector~~  (RETIRED 2026-05-05 — folded into Structure
-                            as the `table_region` binary head; pdfplumber
-                            TableCandidate aggregation supplies the
-                            grouping. P=R=F1=1.000 region-level eval.)
-6. BERT-TableSpecialist    (most expensive labels — last;
-                            uses Structure once stable)
-7. BERT-MathDetector       (DEFER — geometry is probably high-precision
-                            enough; revisit only if MathSpecialist shows
-                            false-positives on italicized prose)
-```
-
-Each BERT must demonstrate measured lift on `eval_v7_family` before the
-next one starts training. **Do not pre-commit to training all seven** — gate
-each on actual numbers.
-
-### 8.2 Teacher-forcing for cascaded BERTs
-
-Semantic depends on Structure outputs as input. Standard cascaded
-structured-prediction pattern:
-
-- **Training:** feed gold Structure labels alongside text. Pure teacher-forcing
-  in early epochs.
-- **End of training:** schedule a small fraction of "predicted-output mixing"
-  in the final epochs to close the train/test gap.
-- **Inference:** Structure runs first; its top-k feeds Semantic.
-
-### 8.3 One label schema, multiple head-projections
-
-Where labels can be derived from the same annotation pass, derive them.
-Structure and Semantic can share an arXiv pair labeling pipeline; only Table
-and Math need their own annotation paths. This keeps the data budget
-tractable on the 8K-pair target.
-
-### 8.4 Corpus mix per BERT
-
-Different BERTs need different source mixes. Do **not** pipe a uniform corpus
-into all five.
-
-| BERT | Primary sources | Why |
-|---|---|---|
-| **MathSpecialist** | ar5iv | Only source with rich MathML supervision |
-| **MergeOrSplit** | all sources, weighted toward Internet Archive scans | OCR-noisy sources are the hard cases |
-| **Structure** | all five (ar5iv + open-textbook + govinfo + IRS forms + IA) | Cross-domain heading/list patterns; the open-textbook corpus is calibration gold |
-| **Semantic** | govinfo + IRS + arXiv | Legal/boilerplate signal concentrated in regulatory corpus; arXiv contributes abstract / citation / author |
-| ~~**TableDetector**~~ | *(retired 2026-05-05; gating signal now lives on Structure's `table_region` head — corpus mix inherited from Structure's row in this table)* | — |
-| **TableSpecialist** | ar5iv + open-textbook + govinfo + IRS forms | Diverse table styles required — academic, educational, regulatory, form-style |
-| **MathDetector** *(deferred)* | ar5iv + Internet Archive | Hard cases live in scanned scientific papers |
-
-### 8.5 Cost asymmetry — detector vs. specialist
-
-The detector-then-specialist cascade exploits a real cost asymmetry:
-
-- **Detector:** binary task, abundant negatives, small distilled model.
-  ~0.2× a full specialist to train.
-- **Specialist:** trains *only* on detector-confirmed positives — distribution
-  matches inference exactly. Specialists on filtered distributions reliably
-  outperform mixed-distribution training.
-- Total cost: ~1.2× a single combined model, not 2×.
-
-This is the same logic that justified splitting BERT-Table into
-TableDetector + TableSpecialist; in practice (eval committed 2026-05-05)
-the detector half collapsed into Structure's `table_region` binary head
-because pdfplumber `TableCandidate` regions are themselves high-precision
-and Structure's head agreed with HTML truth on every aggregation
-(P=R=F1=1.000 region-level on 170 arXiv held-out regions). The cost
-asymmetry still applies — TableSpecialist still trains only on confirmed
-positives — but the gate is now a head on Structure rather than a
-standalone model. The same future split may still apply to BERT-Math if
-measurement justifies it.
+Detector and specialist responsibilities remain separate where the labels
+and runtime costs justify the split. The retired standalone TableDetector is
+the exception: its routing signal now lives in Structure's `table_region`
+head, while TableSpecialist remains responsible for cell-level semantics.
 
 ---
 
@@ -865,10 +773,10 @@ measurement justifies it.
 
 | Constraint | Source | Implication |
 |---|---|---|
-| RTX 3060 8 GB VRAM | hardware | No concurrent Qwen adapter contexts; batch-by-adapter |
+| 8 GB VRAM class | hardware | No concurrent Qwen adapter contexts; batch by adapter |
 | `build_qwen` must run serial | standing owner constraint (8 GB VRAM — parallel adapter contexts poison CUDA) | 4 shards sequentially, never parallel |
 | No external LLMs at runtime | standing owner constraint; see [`CLAUDE.md`](CLAUDE.md) § Overview | All inference is local |
-| WSL2 Ubuntu 24.04, Python 3.12, CUDA 12.1+ | dev environment | Council BERTs run on transformers + PEFT (encoder+heads); Qwen specialists run on llama.cpp (decoder-only LLMs); cross-encoders / theta scorer use DeBERTa-v3-small via transformers |
+| Python 3.12 with a compatible CUDA runtime | runtime | Council BERTs run on transformers + PEFT (encoder+heads); Qwen specialists run on llama.cpp (decoder-only LLMs); cross-encoders and theta use DeBERTa-v3-small via transformers |
 
 **Council base encoder — ModernBERT-base** (~150 M params, MIT, 8K context,
 modern flash attention). DeBERTa-v3-base was the originally-preferred choice
@@ -930,9 +838,8 @@ The following are decided. Changes require an explicit revision of this doc.
   build), MathSpecialist. **BERT-TableDetector retired 2026-05-05**
   — folded into Structure as the `table_region` binary head;
   pdfplumber `TableCandidate` aggregation supplies the region grouping.
-  Eval evidence: `scripts/eval/eval_table_region_at_region_level.py`,
-  P=R=F1=1.000 region-level on 170 arXiv held-out regions
-  (`data/eval/table_region_at_region.json`). With ImageSpecialist
+  Evaluation tooling: `scripts/eval/eval_table_region_at_region_level.py`.
+  With ImageSpecialist
   added 2026-05-04, the council target is **7 BERTs** total once
   ImageSpecialist ships (Structure, Semantic, MergeOrSplit,
   TableSpecialist, ImageSpecialist, MathDetector deferred,
@@ -1178,12 +1085,11 @@ Honest constraints an operator should know going in:
   miss corrections it cannot make safely — that is the intended trade
   (no fabrication over more aggressive repair).
 
-- **Deployment target is the Spark era.** SemantiK is built to run the local
-  GGUF specialists on a dev box for development and the hosted 70B endpoint
-  seat (`SEMANTIK_SPECIALIST_PROVIDER=nvidia`) for quality, but the intended
-  production home is an NVIDIA DGX Spark-class box where the full council +
-  specialists + theta fit resident without the 8 GB contention dance. Until
-  then, the local lane is functional but VRAM-disciplined.
+- **Higher-memory deployments reduce contention.** SemantiK can run local
+  GGUF specialists under a strict adapter-swap discipline or use the optional
+  hosted endpoint (`SEMANTIK_SPECIALIST_PROVIDER=nvidia`). Hardware that can
+  keep the council, specialists, and theta resident avoids the scheduling
+  constraints of an 8 GB development GPU.
 
 ---
 

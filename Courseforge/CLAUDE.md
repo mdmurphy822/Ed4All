@@ -1,20 +1,33 @@
-# Courseforge
+# Courseforge agent guide
 
-AI-powered instructional design system that creates and remediates accessible, LMS-ready IMSCC course packages.
+Courseforge turns accessible source HTML and learning requirements into
+source-grounded course pages, assessments, validation reports, and an IMS
+Common Cartridge. This file defines subsystem boundaries and implementation
+contracts for repository agents. User-facing setup belongs in
+[`docs/guides/getting-started.md`](docs/guides/getting-started.md).
 
-> **Universal Protocols**: See root `/CLAUDE.md` for orchestrator protocol, execution rules (ONE agent = ONE file, max 10 parallel), decision capture requirements, and error handling. This file contains Courseforge-specific guidance only.
+Read the root [`AGENTS.md`](../AGENTS.md) first. Its file-ownership, decision
+capture, validation-gate, data-hygiene, stop/resume, and branching invariants
+apply here without modification.
 
 ---
 
-## Quick Start
+## Purpose and boundaries
 
-### Course Creation Mode
-**Input**: Exam objectives (PDF/text) + optional SemantiK-converted textbooks (accessible HTML)
-**Output**: Single IMSCC file ready for Brightspace import
+### Course creation
 
-### Course Intake/Remediation Mode
-**Input**: Any IMSCC package (Canvas, Blackboard, Moodle, Brightspace, etc.)
-**Output**: Fully accessible, enhanced IMSCC with 100% WCAG 2.2 AA compliance
+**Input:** requirements plus SemantiK-converted accessible HTML.
+
+**Output:** course artifacts, validation evidence, and an IMSCC package for
+review in the target LMS.
+
+### Course intake and remediation
+
+**Input:** an IMSCC package from a supported source LMS.
+
+**Output:** an analyzed and remediated package plus validation evidence.
+Validators surface known defects; they do not constitute an unconditional
+accessibility or LMS-import guarantee.
 
 ### Provider selection
 
@@ -60,32 +73,7 @@ Any IMSCC Package ──► imscc-intake-parser ──► content-analyzer ─�
 
 ---
 
-## Orchestrator Protocol
-
-**The orchestrator is a lightweight task manager. Specialized agents determine frameworks and content structure.**
-
-### Orchestrator Responsibilities
-1. Create timestamped project folder in `exports/`
-2. Invoke planning agent → receive todo list (NO EXECUTION)
-3. Load todo list into TodoWrite (single source of truth)
-4. Execute todos via specialized agents in parallel batches
-5. Coordinate quality validation
-6. Invoke final packaging
-
-### Workflow Steps
-```
-USER REQUEST →
-  STEP 1: Planning agent analyzes request, returns todo list (NO execution) →
-  STEP 2: Orchestrator loads todo list into TodoWrite →
-  STEP 3: Orchestrator executes todos via agents (agents do NOT modify TodoWrite) →
-  STEP 4: Quality validation (oscqr-course-evaluator + quality-assurance) →
-  STEP 5: Package generation (brightspace-packager) →
-  OUTPUT: Single IMSCC file
-```
-
----
-
-## Available Agents
+## Agent surfaces
 
 ### Course Creation Agents
 | Agent | Purpose | When to Use |
@@ -102,7 +90,7 @@ USER REQUEST →
 ### Intake & Remediation Agents
 | Agent | Purpose | When to Use |
 |-------|---------|-------------|
-| `imscc-intake-parser` | Universal IMSCC package parsing | Importing existing courses |
+| `imscc-intake-parser` | Cross-LMS IMSCC package parsing | Importing existing courses |
 | `content-analyzer` | Accessibility/quality gap detection | Analyzing imported content |
 | `semantik-automation-coordinator` | Orchestrates the SemantiK v2 conversion cascade (routes to `extract_and_convert_pdf`). A read-compat dispatch alias in `MCP/core/executor.py::AGENT_TOOL_MAPPING` covers legacy pre-SemantiK resume states. | Converting PDFs/Office docs to accessible HTML |
 | `accessibility-remediation` | Automatic WCAG fixes | Fixing accessibility issues |
@@ -110,66 +98,41 @@ USER REQUEST →
 | `intelligent-design-mapper` | AI-driven component selection | Applying interactive styling |
 | `remediation-validator` | Final remediation QA (routes to `get_courseforge_status`; WCAG verification itself runs as the `wcag_compliance` gate, not as an agent tool) | Post-remediation validation |
 
----
+Pipeline agent registration is canonical in `config/agents.yaml`; phase wiring
+is canonical in `config/workflows.yaml`; dispatch overrides live in
+`MCP/core/executor.py`. Do not infer runtime dispatch from this table alone.
 
-## Critical Execution Protocols
+## Repository layout
 
-### Individual File Protocol (MANDATORY)
-- ONE agent = ONE file (never multiple files per agent)
-- Maximum 10 simultaneous Task calls per batch
-- Wait for batch completion before next batch
-
-**Correct:**
-```python
-Task(content-generator, "Create week_01_module_01_introduction.html")
-Task(content-generator, "Create week_01_module_02_concepts.html")
-# ... up to 10 per batch
-```
-
-**Wrong:**
-```python
-Task(content-generator, "Create all Week 1 content")  # NEVER DO THIS
-```
-
----
-
-## Project Structure
-
-```
-/Courseforge/
+```text
+Courseforge/
 ├── CLAUDE.md                    # This file
 ├── README.md                    # Project overview
-├── docs/                        # Documentation
-│   ├── troubleshooting.md       # Error patterns and solutions
-│   ├── workflow-reference.md    # Detailed workflow protocols
-│   ├── getting-started.md       # Quick start guide
-│   ├── per-week-learning-objectives.md
-│   └── template-chrome-roles.md
+├── docs/
+│   ├── guides/                  # User workflows and troubleshooting
+│   └── reference/               # Artifact and authoring contracts
 ├── agents/                      # Agent specifications
 ├── config/                      # block_routing.yaml, block_catalog.yaml
 ├── generators/                  # Outline / rewrite / synthesis LLM providers
 ├── router/                      # Two-pass router, policy, inter-tier gates
-├── inputs/                      # Input files
-│   ├── exam-objectives/         # Certification exam PDFs/docs
-│   ├── textbooks/               # SemantiK-converted accessible HTML textbooks
-│   ├── existing-packages/       # IMSCC packages for intake
-│   └── course-data/             # Per-course input data
+├── inputs/                      # Private working inputs; never source artifacts
 ├── templates/                   # HTML templates and components
 ├── schemas/                     # IMSCC and content schemas
 ├── imscc-standards/             # Brightspace/IMSCC technical specs
-├── scripts/                     # Automation scripts
-│   ├── imscc-extractor/         # Universal IMSCC extraction
+├── scripts/
+│   ├── rendering/               # Course-page generation
+│   ├── packaging/               # IMSCC packaging
+│   ├── validation/              # Structural checks
+│   ├── imscc-extractor/         # Cross-LMS IMSCC extraction
 │   ├── component-applier/       # Interactive component application
 │   ├── accessibility-validator/ # Accessibility checks
 │   └── remediation-validator/   # Final quality validation
-├── exports/                     # Generated course packages
-│   └── YYYYMMDD_HHMMSS_name/    # Timestamped project folders
-└── runtime/                     # Agent workspaces (auto-created)
+└── exports/                     # Private generated packages; never commit
 ```
 
 ### Export Project Structure
-```
-exports/YYYYMMDD_HHMMSS_coursename/
+```text
+exports/<PROJECT_ID>/
 ├── 00_template_analysis/
 ├── 01_learning_objectives/      # synthesized_objectives.json
 ├── 01_outline/                  # two-pass outline tier: blocks*.jsonl
@@ -184,7 +147,7 @@ exports/YYYYMMDD_HHMMSS_coursename/
 ├── 06_assessments/              # W10 QTI / imsdt / assignment XML + manifest
 ├── agent_workspaces/
 ├── project_log.md
-└── coursename.imscc              # Final deliverable
+└── <COURSE_NAME>.imscc           # Final deliverable
 ```
 
 ---
@@ -200,13 +163,14 @@ legacy pre-SemantiK resume states):
 1. Run the `semantik_conversion` phase (e.g. via `ed4all run textbook-to-course`),
    which converts the textbook PDF to accessible HTML and stages it for
    Courseforge.
-2. The SemantiK v2 cascade produces WCAG 2.2 AA accessible HTML.
-3. Staged output lands under `Courseforge/inputs/textbooks/{run_id}/`.
+2. The SemantiK v2 cascade produces HTML designed for WCAG 2.2 AA review.
+3. Staged output lands under `Courseforge/inputs/textbooks/<RUN_ID>/`.
 4. Reference in course generation.
 
 For a conversion-only slice with no course scaffolding, `ed4all convert`
 (`cli/commands/convert.py`) runs the same cascade standalone and emits
-`{stem}_accessible.html` plus sidecars. See `docs/operations/convert-verb.md`.
+`<SOURCE_STEM>_accessible.html` plus sidecars. See
+`docs/operations/convert-verb.md`.
 
 ---
 
@@ -525,7 +489,7 @@ ABCD-framework authorship attaches discrete `audience` / `behavior` / `condition
 
 ## Three-stage textbook synthesis
 
-An operator-locked, large-LLM, three-stage synthesis architecture mapped onto the three existing post-conversion phases of `config/workflows.yaml::textbook_to_course`. It lifts course outline, domain-concept vocabulary, and per-chapter objective authoring off the deterministic small-model paths and onto a single configurable large LLM. The deterministic paths remain the canonical no-LLM fallback. Full design: `plans/textbook-llm-synthesis-3stage-2026-05.md`.
+An operator-locked, large-LLM, three-stage synthesis architecture mapped onto the three existing post-conversion phases of `config/workflows.yaml::textbook_to_course`. It lifts course outline, domain-concept vocabulary, and per-chapter objective authoring off the deterministic small-model paths and onto a single configurable large LLM. The deterministic paths remain the canonical no-LLM fallback. The implementation and workflow configuration are authoritative.
 
 The three stages (pipeline order is Stage 1 → Stage 3 → Stage 2 + reconcile — the passes are independent):
 
@@ -537,7 +501,7 @@ Provider: `Courseforge/generators/_textbook_synthesis_provider.py::TextbookSynth
 
 ### Dynamic CURIE minting
 
-`BlockCurieAnchoringValidator` requires every outline/rewrite Block to carry a non-empty, text-anchored `content["curies"]`. RDF/SHACL corpora satisfy this for free (prose literally contains `sh:path` etc.); a prose corpus (math, history, K-12) has zero RDF CURIEs, so the gate would 100%-fail. Dynamic minting closes that gap by deriving a per-course CURIE namespace from the Stage-3 `domain_concept_vocabulary.json`:
+`BlockCurieAnchoringValidator` requires every outline/rewrite Block to carry a non-empty, text-anchored `content["curies"]`. RDF/SHACL corpora satisfy this directly because the prose contains tokens such as `sh:path`; ordinary prose may contain no RDF CURIEs, causing the gate to fail every affected block. Dynamic minting closes that gap by deriving a per-course CURIE namespace from the Stage-3 `domain_concept_vocabulary.json`:
 
 - **Helpers** — `lib/ontology/curie_discovery.py::mint_curie_prefix` / `curie_for_concept` / `build_minted_curie_map`. A minted CURIE is `{prefix}:{localname}` where `prefix` is a grammar-valid lowercase course abbreviation and `localname` is the concept slug with hyphens→underscores. The local name satisfies the *intersection* of the two CURIE grammars in the codebase — the outline schema `_CURIE_PATTERN` (allows hyphens) and the canonical `CURIE_REGEX` in `lib/ontology/curie_extraction.py` (does not) — so a minted CURIE round-trips through `extract_curies` intact.
 - **Outline tier** — `_run_content_generation_outline` mints CURIEs onto every outline block whose `content["curies"]` is empty, matching the block's `key_claims` text against the vocabulary via `extract_concept_tags`. Per-block `curie_minting` decision event.
@@ -705,12 +669,12 @@ Courseforge can import and remediate IMSCC packages from:
 ### Remediation Capabilities
 | Capability | Target |
 |------------|--------|
-| PDF Conversion | 100% to accessible HTML via the SemantiK v2 cascade (`semantik_conversion` phase) |
-| Office Documents | 100% to accessible HTML via the SemantiK v2 cascade (`semantik_conversion` phase) |
-| Alt Text | AI-generated for all images |
+| PDF conversion | SemantiK HTML plus validation evidence (`semantik_conversion` phase) |
+| Office-document conversion | SemantiK HTML plus validation evidence (`semantik_conversion` phase) |
+| Alt text | Generated descriptions routed through accessibility review |
 | Heading Structure | Automatic hierarchy correction |
 | Color Contrast | WCAG AA (4.5:1 minimum) |
-| Keyboard Navigation | Full accessibility |
+| Keyboard navigation | Keyboard-operability checks and remediation |
 | Component Styling | AI-selected interactive elements |
 | Quality Enhancement | Learning objectives, summaries, checks |
 
@@ -725,7 +689,7 @@ Courseforge can import and remediate IMSCC packages from:
 ### Scripts for Intake
 | Script | Location | Purpose |
 |--------|----------|---------|
-| `imscc_extractor.py` | `scripts/imscc-extractor/` | Universal IMSCC parsing + source-LMS detection |
+| `imscc_extractor.py` | `scripts/imscc-extractor/` | Cross-LMS IMSCC parsing + source-LMS detection |
 | `component_applier.py` | `scripts/component-applier/` | Interactive component application |
 | `accessibility_validator.py` | `scripts/accessibility-validator/` | Accessibility checks over remediated HTML |
 | `remediation_validator.py` | `scripts/remediation-validator/` | Final quality validation (`RemediationValidator` / `ValidationReport` / `ValidationSeverity`) |
@@ -735,16 +699,32 @@ Blocking quality enforcement lives in `config/workflows.yaml::validation_gates`
 (`wcag_compliance`, `cartridge_conformance`, and the rest); the
 `remediation-validator` *agent* itself routes to `get_courseforge_status`.
 
-### Success Metrics
+## Verification and tests
 
-Design targets for the intake/remediation surface. These are goals used to scope
-the work — they are **not** measurements, and no harness in this repo currently
-reports against them. Treat any figure below as unvalidated until a named eval
-produces it.
+Run the narrow tests for the files or contracts changed, followed by the
+Courseforge suite and repository guards appropriate to the change. At minimum:
 
-| Metric | Target |
-|--------|--------|
-| IMSCC import success | 95%+ (any source LMS) |
-| WCAG compliance | 100% Level AA |
-| SemantiK conversion | 98%+ for PDFs |
-| Component accuracy | 90%+ appropriate selections |
+```bash
+pytest -q Courseforge/tests Courseforge/router/tests Courseforge/generators/tests
+python3 ci/layout_guard.py
+python3 ci/course_slug_guard.py
+python3 ci/foreign_repo_guard.py
+```
+
+Workflow gates remain authoritative for generated artifacts. Stop at the first
+failed gate and fix the artifact or implementation; never weaken a threshold to
+make a run green. IMSCC delivery additionally requires import testing in the
+target LMS, and accessibility delivery requires human review alongside the
+automated checks.
+
+## References
+
+- [`docs/guides/getting-started.md`](docs/guides/getting-started.md) — supported
+  CLI-first user flow.
+- [`docs/reference/workflow-reference.md`](docs/reference/workflow-reference.md)
+  — pipeline and remediation details.
+- [`../docs/validation/gates.md`](../docs/validation/gates.md) — canonical gate
+  inventory.
+- [`../docs/operations/behavior-flags-courseforge.md`](../docs/operations/behavior-flags-courseforge.md)
+  — Courseforge environment flags.
+- [`../docs/LICENSING.md`](../docs/LICENSING.md) — provider and model posture.

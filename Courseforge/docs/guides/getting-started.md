@@ -1,400 +1,143 @@
-# Getting Started Guide
+# Build your first LMS-ready course
 
-## Welcome to Courseforge
+Courseforge turns accessible source material into a structured digital course:
+an outcome-aligned outline, modular learning pages, assessments, validation
+reports, and an IMS Common Cartridge for LMS review and import.
 
-This guide will walk you through creating your first high-quality, accessible online course using our AI-powered multi-agent orchestration system.
-
-## 📋 Prerequisites
-
-### Required Access
-- **Claude Code Access**: You need access to claude.ai/code
-- **Basic Knowledge**: Understanding of instructional design principles helpful but not required
-- **Course Materials**: Source content, objectives, or certification requirements
-
-### Technical Requirements
-- **File System Access**: Ability to create and manage files/directories
-- **Course Content**: Raw materials in text, PDF, or document format
-- **LMS Access**: Brightspace, Canvas, or other IMSCC-compatible system (for testing)
-
-## 🎯 Quick Start (15 minutes)
-
-### Step 1: Prepare Your Course Materials
-Place your course content in the `inputs/` directory:
-
-```
-inputs/
-├── exam-objectives/               # Certification exam objectives (PDF/text)
-│   └── your_exam_objectives.pdf
-├── textbooks/                     # SemantiK-processed accessible HTML textbooks
-│   └── chapter_accessible.html
-└── existing-packages/             # IMSCC packages for intake/remediation
+```text
+SOURCE MATERIAL
+      │
+      ▼
+COURSE PLAN + OBJECTIVES
+      │
+      ▼
+LESSONS + ACTIVITIES + ASSESSMENTS
+      │
+      ▼
+VALIDATION REPORTS + IMSCC PACKAGE
 ```
 
-### Step 2: Define Your Course Requirements
-Create a simple requirements document:
+This guide uses the supported `ed4all` CLI. You do not need to invoke
+individual agents or create export directories by hand.
 
-```markdown
-# Course Requirements
-- **Course Title**: Introduction to Cybersecurity
-- **Duration**: 12 weeks
-- **Level**: Undergraduate
-- **Credits**: 3 credit hours
-- **Format**: Online asynchronous
-- **Special Requirements**: WCAG 2.2 AA accessibility compliance
+## Before you begin
+
+You need:
+
+- an Ed4All development environment with the project dependencies installed;
+- a PDF, a directory of source files, or SemantiK-produced accessible HTML;
+- a short, non-sensitive course name;
+- access to an IMSCC-compatible LMS if you want to test the final import.
+
+Run commands from the Ed4All repository root. Use placeholders in scripts and
+documentation; do not commit source filenames, course names, run IDs, or
+generated course data.
+
+## Run the complete pipeline
+
+```bash
+ed4all run textbook-to-course \
+  --corpus <CORPUS_PATH> \
+  --course-name <COURSE_NAME>
 ```
 
-### Step 3: Launch the Orchestrator
-Use the main orchestration workflow:
+For a PDF, the workflow sends the source through SemantiK first. Accessible
+HTML then flows into Courseforge for planning, authoring, validation, and
+packaging. The final project is written beneath `Courseforge/exports/`; course
+artifacts in that directory are working data and are not for source control.
 
-```python
-# Initialize project with timestamp
-import datetime
-timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-project_name = f"{timestamp}_cybersecurity_intro_asynchronous"
+The command runs in local mode by default. Use `--mode api` only when the
+required provider credentials and licensing posture are configured. Provider
+and model choices can affect whether generated material is suitable for
+downstream training; read [Licensing](../../../docs/LICENSING.md) before
+changing synthesis providers.
 
-# Create project structure
-create_project_structure(f"exports/{project_name}")
+## Review the result
+
+The export contains the important review seams below. Exact filenames and
+optional artifacts vary by workflow configuration.
+
+```text
+Courseforge/exports/<PROJECT_ID>/
+├── 01_learning_objectives/    # canonical objective set
+├── 01_outline/                # source-grounded block outline
+├── 02_validation_report/      # inter-tier findings
+├── 03_content_development/    # authored course pages
+├── 04_rewrite/                # rewritten blocks and post-rewrite report
+├── 05_final_package/          # IMSCC deliverable
+└── 06_assessments/            # generated assessment resources
 ```
 
-### Step 4: Let the Agents Work
-The system will automatically:
-1. ✅ Analyze your requirements
-2. ✅ Design course structure
-3. ✅ Generate comprehensive content
-4. ✅ Validate quality and accessibility
-5. ✅ Package for LMS deployment
+Before publishing:
 
-### Step 5: Deploy to Your LMS
-Import the generated `.imscc` file into your learning management system.
+1. Read the validation reports and resolve failed gates at their source.
+2. Review lessons and assessments for instructional accuracy and tone.
+3. Navigate the course with a keyboard and assistive technology appropriate
+   to your learners.
+4. Import the IMSCC into a test course in the target LMS.
+5. Confirm links, navigation, assessment behavior, and learner-visible labels.
 
-## 🏗️ Detailed Workflow
+Courseforge validates known contracts; it does not replace editorial,
+accessibility, or LMS acceptance review.
 
-### Phase 1: Project Planning (5-10 minutes)
+## Resume or inspect a run
 
-#### 1.1 Requirements Collection
-The system will gather comprehensive specifications:
+Long workflows can be stopped and resumed at phase boundaries. Use the run ID
+reported by the CLI:
 
-```python
-# Invoke requirements-collector agent
-Task(
-    subagent_type="requirements-collector",
-    description="Gather course specifications",
-    prompt="Collect comprehensive requirements for undergraduate cybersecurity course including academic standards, technical requirements, and assessment frameworks."
-)
+```bash
+ed4all run textbook-to-course --resume <RUN_ID>
 ```
 
-**What This Produces**:
-- Academic standards identification
-- Technical requirement analysis  
-- Assessment framework recommendations
-- Accessibility compliance requirements
+For phase-by-phase operation, selective rewrites, stop behavior, and provider
+flags, use the canonical [pipeline invocation
+runbook](../../../docs/operations/pipeline-invocation.md).
 
-#### 1.2 Course Structure Design
-Create pedagogically-optimal course architecture:
+Useful Courseforge slices include:
 
-```python  
-# Invoke course-outliner agent
-Task(
-    subagent_type="course-outliner", 
-    description="Design course architecture",
-    prompt="Create timeline-free learning architecture for cybersecurity fundamentals with OSCQR compliance and UDL principles."
-)
+```bash
+# Run deterministic validation without an authoring call.
+ed4all run courseforge-validate --course-name <COURSE_NAME>
+
+# Re-run the rewrite tier for selected block types.
+ed4all run courseforge-rewrite \
+  --course-name <COURSE_NAME> \
+  --blocks <BLOCK_TYPES> \
+  --force
 ```
 
-**What This Produces**:
-- Learning progression sequences
-- Module organization structure
-- Assessment distribution plan
-- Accessibility integration framework
+These commands operate on an existing project. The complete
+`textbook-to-course` command remains the recommended first run.
 
-### Phase 2: Content Generation (30-60 minutes)
+## Bring an existing cartridge
 
-#### 2.1 Parallel Content Creation
-Generate all course materials simultaneously:
+Courseforge also supports IMSCC intake and remediation. The workflow inspects
+the package, inventories content, routes repair work, reruns validation, and
+packages a revised cartridge. Start with the [workflow
+reference](../reference/workflow-reference.md) to select the correct intake
+path and required inputs.
 
-```python
-# Example: Generate Week 1 content (individual file protocol)
-content_files = [
-    "week_01_module_01_introduction.html",
-    "week_01_module_02_key_concepts.html", 
-    "week_01_module_03_practical_applications.html",
-    "week_01_module_04_case_studies.html",
-    "week_01_module_05_assessment_preparation.html"
-]
+## Understand the quality gates
 
-# Execute in batches of 10 (proven optimal)
-for i in range(0, len(content_files), 10):
-    batch = content_files[i:i+10]
-    
-    # Create parallel Task calls for batch
-    for file_name in batch:
-        Task(
-            subagent_type="content-generator",
-            description=f"Create {file_name}",
-            prompt=f"Create comprehensive educational content for {file_name} with Pattern 22 prevention, authentic examples, and WCAG 2.2 AA compliance."
-        )
-    
-    # Wait for batch completion before proceeding
-    verify_batch_completion(batch)
-```
+Courseforge checks package structure, objective alignment, content quality,
+accessibility signals, and IMSCC/QTI contracts at defined workflow seams. A
+failed gate means the artifact needs attention. Do not lower thresholds or
+downgrade severity to make a run pass.
 
-**What This Produces**:
-- Complete HTML content files for all modules
-- WCAG 2.2 AA accessible design
-- Comprehensive educational depth
-- Authentic, relevant examples
-- Progressive learning complexity
+For the complete gate inventory and issue codes, see:
 
-#### 2.2 Assessment Integration
-Generate assessments aligned with learning objectives:
+- [Validation gates](../../../docs/validation/gates.md)
+- [Troubleshooting](troubleshooting.md)
+- [Learning-objective contract](../reference/per-week-learning-objectives.md)
+- [Template-chrome contract](../reference/template-chrome-roles.md)
 
-```python
-# Create assessments for each learning unit (dynamic based on course outline)
-assessment_types = ["assignments", "quizzes", "discussions"]
+## Where to go next
 
-for unit in course_outline.get_learning_units():  # Dynamic unit count
-    for assessment in assessment_types:
-        Task(
-            subagent_type="content-generator",
-            description=f"{unit.name} {assessment}",
-            prompt=f"Create {unit.id}_{assessment}.xml with D2L compatibility and authentic assessment scenarios."
-        )
-```
-
-### Phase 3: Quality Validation (10-15 minutes)
-
-#### 3.1 Educational Standards Compliance
-```python
-# Validate against educational standards
-Task(
-    subagent_type="educational-standards",
-    description="UDL compliance validation", 
-    prompt="Validate all generated content against UDL principles, ADDIE methodology, and Bloom's taxonomy alignment."
-)
-```
-
-#### 3.2 OSCQR Assessment  
-```python
-# Comprehensive quality evaluation
-Task(
-    subagent_type="oscqr-course-evaluator",
-    description="OSCQR evaluation",
-    prompt="Conduct systematic OSCQR evaluation across all 6 domains with detailed recommendations for any gaps."
-)
-```
-
-#### 3.3 Pattern Prevention Verification
-```python
-# Ensure all 22+ patterns prevented
-Task(
-    subagent_type="quality-assurance", 
-    description="Pattern prevention check",
-    prompt="Validate prevention of all identified failure patterns, especially Pattern 22 comprehensive content requirements."
-)
-```
-
-### Phase 4: Final Packaging (5 minutes)
-
-```python
-# Create deployment-ready IMSCC package
-Task(
-    subagent_type="brightspace-packager",
-    description="IMSCC packaging",
-    prompt="Create IMS CC 1.3 compliant package with D2L-specific optimizations and complete manifest structure."
-)
-```
-
-## 📊 What You'll Get
-
-### Generated Course Structure
-```
-exports/20250820_143022_cybersecurity_intro_asynchronous/
-├── 📄 course_information.html        # Course overview
-├── 📄 syllabus.html                  # Detailed syllabus  
-├── 📁 week_01/                       # Week 1 content
-│   ├── week_01_module_01_introduction.html
-│   ├── week_01_module_02_key_concepts.html
-│   ├── week_01_module_03_applications.html
-│   ├── week_01_module_04_case_studies.html
-│   └── week_01_module_05_assessment_prep.html
-├── 📁 week_02/                       # Week 2 content
-│   └── [similar structure]
-├── 📁 assessments/                   # All assessments
-│   ├── assignment_week_01.xml
-│   ├── quiz_week_01.xml  
-│   ├── discussion_week_01.xml
-│   └── [continuing for all weeks]
-├── 📄 imsmanifest.xml               # Package manifest
-└── 🎁 cybersecurity_intro.imscc     # Final package
-```
-
-### Quality Metrics You Can Expect
-- **🎯 OSCQR Score**: 45-50/50 (excellent quality)
-- **♿ Accessibility**: WCAG 2.2 AA compliant (100%)
-- **📚 Educational Depth**: Pattern 22 compliant (comprehensive content)
-- **🚀 Import Success**: 95%+ Brightspace compatibility
-- **⏱️ Generation Time**: 45-90 minutes for complete course (varies by scope)
-
-## 🎨 Customization Options
-
-### Template Selection
-Choose from multiple course templates:
-
-```python
-template_options = {
-    "asynchronous": "Self-paced online learning",
-    "synchronous": "Live online instruction", 
-    "hybrid": "Blended online/in-person",
-    "simple_structure": "Minimal navigation complexity"
-}
-```
-
-### Accessibility Levels
-Configure accessibility requirements:
-
-```python
-accessibility_config = {
-    "standard": "WCAG 2.2 AA (recommended)",
-    "enhanced": "WCAG 2.2 AAA (maximum accessibility)",
-    "basic": "WCAG 2.2 AA (minimum compliance)"
-}
-```
-
-### Assessment Frameworks
-Select assessment distribution:
-
-```python
-assessment_frameworks = {
-    "traditional": "Exams 60%, Assignments 30%, Participation 10%",
-    "project_based": "Projects 50%, Assignments 30%, Discussions 20%", 
-    "continuous": "Weekly Assessments 80%, Final Project 20%"
-}
-```
-
-## 🛠️ Advanced Configuration
-
-### For Certification Courses
-```python
-# Use exam-research agent for certification alignment
-Task(
-    subagent_type="exam-research",
-    description="CompTIA Security+ alignment",
-    prompt="Analyze CompTIA Security+ SY0-701 objectives and create comprehensive course framework with exam preparation strategies."
-)
-```
-
-### For Academic Courses
-```python
-# Use educational-standards agent for academic rigor
-Task(
-    subagent_type="educational-standards",
-    description="Academic standards application", 
-    prompt="Apply ADDIE methodology and ensure alignment with undergraduate computer science curriculum standards."
-)
-```
-
-### For Accessibility-First Design
-```python
-# Emphasize accessibility throughout process
-accessibility_prompt = """
-Create content with enhanced accessibility features:
-- Dyslexia-friendly fonts and spacing
-- Color-blind accessible color schemes  
-- Clear cognitive navigation aids
-- Multiple learning style accommodations
-"""
-```
-
-## 🚨 Common Beginner Mistakes to Avoid
-
-### ❌ Don't Do This
-```python
-# Wrong: Multiple files per agent
-Task(subagent_type="content-generator",
-     description="Create all Week 1 content",
-     prompt="Create all files for Week 1")
-
-# Wrong: Exceeding batch size limits
-for i in range(20):  # Too many simultaneous calls
-    Task(subagent_type="content-generator", ...)
-```
-
-### ✅ Do This Instead  
-```python
-# Correct: Individual file protocol
-Task(subagent_type="content-generator",
-     description="Create week_01_module_01.html", 
-     prompt="Create exactly one file: week_01_module_01_introduction.html")
-
-# Correct: Optimal batch size
-batch_size = 10  # Proven optimal limit
-```
-
-## 🔍 Monitoring Progress
-
-### Real-Time Progress Tracking
-```python
-# Monitor generation progress
-def track_progress():
-    completed_files = count_generated_files()
-    total_files = calculate_total_required()
-    progress = (completed_files / total_files) * 100
-    print(f"Course Generation: {progress:.1f}% complete")
-```
-
-### Quality Validation Checkpoints
-- ✅ **After Planning**: Course structure approved
-- ✅ **During Generation**: Content depth validation
-- ✅ **Before Packaging**: Accessibility compliance  
-- ✅ **Final Validation**: Import readiness confirmation
-
-## 🎯 Success Indicators
-
-### You'll Know It's Working When:
-1. **Project Structure Created**: Timestamped folder with organized subdirectories
-2. **Content Generation Progress**: HTML files appearing with substantial content
-3. **Assessment Integration**: XML files created with proper D2L formatting
-4. **Quality Validation Passing**: OSCQR scores 45+/50
-5. **Package Creation Success**: Valid IMSCC file generated
-6. **LMS Import Success**: Course imports without errors
-
-### Troubleshooting Quick Checks
-- **Files Not Generated**: Check individual file protocol compliance
-- **Import Failures**: Validate IMSCC structure and schema version
-- **Accessibility Issues**: Run WAVE validation on generated HTML
-- **Content Too Shallow**: Verify Pattern 22 prevention protocols
-
-## 📚 Next Steps
-
-### After Your First Course
-1. **Review Generated Content**: Customize and refine as needed
-2. **Test in LMS**: Import and navigate through student view
-3. **Gather Feedback**: Test with sample users for usability
-4. **Iterate and Improve**: Use feedback for next course generation
-
-### Scaling Up
-1. **Create Course Series**: Generate related courses with consistency
-2. **Develop Templates**: Create custom templates for your institution
-3. **Automation Integration**: Integrate with your content management workflows
-4. **Quality Assurance**: Establish regular validation procedures
-
-## 🆘 Getting Help
-
-### If You Get Stuck
-1. **Check Troubleshooting Guide**: [troubleshooting.md](troubleshooting.md)
-2. **Review Pattern Documentation**: [troubleshooting.md](troubleshooting.md)
-3. **Validate Against Schemas**: [schemas/README.md](../../schemas/README.md)
-4. **Test with Minimal Example**: Create simple 2-week course first
-
-### Resources
-- 📖 [Agent Specifications](../../agents/)
-- 🎨 [Template Library](../../templates/)
-- 📊 [Pattern Prevention](troubleshooting.md)
-
----
-
-**🎉 Ready to Create Your First Course?**
-
-Follow the Quick Start section above, and you'll have a complete, accessible, high-quality online course ready for deployment in under 90 minutes!
-
-**Remember**: The system is designed to handle the technical complexity while you focus on educational quality and student success.
+- Read the [Courseforge overview](../../README.md) for the product surface.
+- Use the [workflow reference](../reference/workflow-reference.md) for phase
+  details and remediation flows.
+- Browse the [local schema index](../../schemas/README.md) when integrating
+  Courseforge artifacts.
+- Return to the [Ed4All overview](../../../README.md) to see how Courseforge
+  connects accessible conversion, retrieval, training-data preparation, and
+  adapter training.
