@@ -286,6 +286,7 @@
         "semantik_markers_check",
         "severity_flip_applied",
         "severity_flip_deferred",
+        "shacl_validation",
         "source_coverage_check",
         "source_interpretation",
         "source_selection",

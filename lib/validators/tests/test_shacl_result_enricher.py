@@ -41,6 +41,7 @@ from lib.validators.shacl_result_enricher import (  # noqa: E402
     enrich_validation_report,
     report_to_jsonld,
 )
+from lib.validation import validate_decision  # noqa: E402
 from lib.validators.shape_provenance import (  # noqa: E402
     ShapeSourceIndex,
     ShapeSourceLocation,
@@ -539,6 +540,8 @@ def test_decision_capture_one_event_per_violation(isolated_decision_capture):
         assert all(
             focus_node in item["reason_rejected"] for item in alternatives
         )
+        valid, issues = validate_decision(event, tool="trainforge", strict=True)
+        assert valid, issues
 
 
 def test_decision_capture_rationale_meets_minimum_length(
