@@ -108,8 +108,13 @@ checks also require the locally installed, gitignored
 [third-party schema dependencies](schemas/imscc/README.md).
 
 ```bash
-pip install -e ".[full]"
+pip install -e ".[full,semantik]"
 ```
+
+The `semantik` extra supplies the document-conversion dependencies used by the
+end-to-end source-material workflow. If conversion runs in its isolated
+environment instead, install the matching bridge dependencies as described in
+the installation guide.
 
 Authoring phases require a configured model provider. Review the
 [pipeline invocation guide](../docs/operations/pipeline-invocation.md) and

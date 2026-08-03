@@ -98,11 +98,13 @@ creates their virtual phase-handler tasks because their phase names have
 explicit tool mappings. Gate lists and severity behavior come from the workflow
 configuration and must not be inferred from this diagram.
 
-Courseforge also retains the earlier `content_generation` phase because the
-packaging and assessment branches currently consume its output. The two-pass
-phases provide the separately re-runnable authoring surface. This coexistence
-is intentional compatibility behavior, not permission to merge their output
-contracts casually.
+Courseforge retains the earlier `content_generation` phase as the single-pass
+compatibility route. It is mutually exclusive with the four-phase authoring
+route in a given run: `COURSEFORGE_TWO_PASS=true` disables
+`content_generation` and enables the outline, inter-tier validation, rewrite,
+and post-rewrite phases. Downstream packaging and assessment resolve the
+output of whichever route is active; they do not combine both authoring
+contracts.
 
 ## Artifacts and contracts
 
@@ -156,10 +158,10 @@ ed4all run textbook-to-course \
 Four stage commands can re-drive the Courseforge authoring slice from an
 existing project without rerunning upstream conversion and planning:
 
-- `ed4all run courseforge-outline`
-- `ed4all run courseforge-validate`
-- `ed4all run courseforge-rewrite`
-- `ed4all run courseforge`
+- `ed4all run courseforge-outline --corpus <private-source-path> --course-name <private-course-name>`
+- `ed4all run courseforge-validate --corpus <private-source-path> --course-name <private-course-name>`
+- `ed4all run courseforge-rewrite --corpus <private-source-path> --course-name <private-course-name>`
+- `ed4all run courseforge --corpus <private-source-path> --course-name <private-course-name>`
 
 They reuse the canonical `textbook_to_course` workflow with a
 `courseforge_stage` parameter. They intentionally skip packaging and later
