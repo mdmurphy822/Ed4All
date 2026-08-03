@@ -396,20 +396,20 @@ def test_minted_curies_from_source_block_survive_into_html(monkeypatch):
         client=_make_client(handler),
     )
     block = _outline_block(
-        curies=["introbio101:slope", "introbio101:y_intercept"],
+        curies=["tstcourse101:slope", "tstcourse101:y_intercept"],
     )
     out = p.generate_rewrite(block)
     # The on-topic CURIE (its term "slope" is in the prose) survives.
-    assert _curie_survives_validator_path(out.content, "introbio101:slope"), (
-        "on-topic minted CURIE 'introbio101:slope' did not survive the "
+    assert _curie_survives_validator_path(out.content, "tstcourse101:slope"), (
+        "on-topic minted CURIE 'tstcourse101:slope' did not survive the "
         "validator path"
     )
     # The off-topic CURIE (term "y intercept" absent from the prose) is
     # PRUNED — NOT force-injected. This is the M3 over-forcing fix.
     assert not _curie_survives_validator_path(
-        out.content, "introbio101:y_intercept"
+        out.content, "tstcourse101:y_intercept"
     ), (
-        "off-topic minted CURIE 'introbio101:y_intercept' was force-injected "
+        "off-topic minted CURIE 'tstcourse101:y_intercept' was force-injected "
         "even though the rewrite tier never used the term — M3 should prune it"
     )
 

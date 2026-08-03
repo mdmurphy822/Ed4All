@@ -2414,9 +2414,9 @@ def _curie_surface_terms(curie: str) -> List[str]:
     whether the model "used the term", we surface-match BOTH:
 
     - the localname with underscores→spaces (e.g.
-      ``introbio101:least_common_multiple`` → ``"least common multiple"``),
+      ``tstcourse101:least_common_multiple`` → ``"least common multiple"``),
       the natural-language form a learner-facing sentence would carry; and
-    - the literal CURIE token (``introbio101:least_common_multiple``) —
+    - the literal CURIE token (``tstcourse101:least_common_multiple``) —
       RDF corpora carry the token verbatim in pedagogical prose.
 
     Returns lower-cased, de-duplicated, non-empty terms.

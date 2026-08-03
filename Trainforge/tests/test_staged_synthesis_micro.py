@@ -2,10 +2,21 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+
+def _live_evidence_root() -> Path:
+    configured = os.environ.get("ED4ALL_TEST_EVIDENCE_ROOT", "").strip()
+    if not configured:
+        pytest.skip("operator live-evidence replay root is not configured")
+    root = Path(configured).expanduser().resolve()
+    if not root.is_dir():
+        pytest.skip("configured operator live-evidence replay root is unavailable")
+    return root
 
 import Trainforge.generators.staged_synthesis_micro as micro_module
 from Trainforge.generators._synthesis_common import SynthesisProviderError
@@ -398,7 +409,7 @@ def test_generated_scalar_must_be_used_and_named_symbol_must_match():
 def test_live_stage_a_response_replays_under_scalar_authority_contract():
     """Regression provenance: functional-v1.3 Gate-D retry1 Stage A."""
     matches = list(
-        (Path(__file__).resolve().parents[2] / "plans/release-evidence").rglob(
+        _live_evidence_root().rglob(
             "response-5902498ad5f323ad2636c3358b769af873eb4a9950ca7cd9f2d098148821bb3e.txt"
         )
     )
@@ -416,7 +427,7 @@ def test_live_stage_a_response_replays_under_scalar_authority_contract():
 def test_canary_002_stage_a_response_replays_as_vacuous_condition_failure():
     """Regression provenance: functional-v1.3 canary-002 Stage A."""
     matches = list(
-        (Path(__file__).resolve().parents[2] / "plans/release-evidence").rglob(
+        _live_evidence_root().rglob(
             "response-2677726b97847700208b494e005bd1a5a9810fb6bd577bcb317fc5930aa78ea6.txt"
         )
     )
@@ -432,7 +443,7 @@ def test_canary_002_stage_a_response_replays_as_vacuous_condition_failure():
 
 def test_canary004_stage_d_numeric_failure_replays_and_corrects():
     """Regression provenance: functional-v1.3 canary004 Stage D."""
-    root = Path(__file__).resolve().parents[2] / "plans/release-evidence"
+    root = _live_evidence_root()
     response_matches = list(root.rglob(
         "response-548c0b1cecfdc6bac72c16c920953e5cf23a7f4663f33204ca4c3f5335a8f0b7.txt"
     ))
@@ -469,7 +480,7 @@ def test_canary004_stage_d_numeric_failure_replays_and_corrects():
 
 def test_canary005_stage_a_numeric_failure_has_joint_repair_scope():
     """Regression provenance: functional-v1.3 canary005 Stage A."""
-    root = Path(__file__).resolve().parents[2] / "plans/release-evidence"
+    root = _live_evidence_root()
     response_matches = list(root.rglob(
         "response-acbf2beb7b169b3aba52f2c63ed04bcf962b73e13b8c6ebed1abe2bb0326b696.txt"
     ))
@@ -492,7 +503,7 @@ def test_canary005_stage_a_numeric_failure_has_joint_repair_scope():
 
 def test_canary006_stage_d_missing_claim_replay_is_scoped_and_correctable():
     """Regression provenance: functional-v1.3 canary006 Stage D."""
-    root = Path(__file__).resolve().parents[2] / "plans/release-evidence"
+    root = _live_evidence_root()
     prompt_matches = list(root.rglob(
         "prompt-12ff4464fa780f4b6228ad96a5ef7d9e019dcad099db699dc1c2636b416e9a5d.txt"
     ))
@@ -559,7 +570,7 @@ def test_canary006_stage_d_missing_claim_replay_is_scoped_and_correctable():
 
 def test_canary009_stage_d_grounded_relation_short_circuits_low_nli():
     """Regression provenance: functional-v1.3 canary009 Stage D."""
-    root = Path(__file__).resolve().parents[2] / "plans/release-evidence"
+    root = _live_evidence_root()
     prompt_matches = list(root.rglob(
         "prompt-1af48fd85b52f1e95e979177776fbe57185c763a4004ef95f3f01dc3a2338300.txt"
     ))
@@ -643,7 +654,7 @@ def test_canary009_stage_d_grounded_relation_short_circuits_low_nli():
 
 def test_canary007_stage_a_normalizes_exact_live_scenario_numbers():
     """Regression provenance: functional-v1.3 canary007 Stage A."""
-    root = Path(__file__).resolve().parents[2] / "plans/release-evidence"
+    root = _live_evidence_root()
     a1_matches = list(root.rglob(
         "response-a863155408d3b270689fce77ef00a08a45bd8aff4a9ee7f8647023d3b561bd8a.txt"
     ))
@@ -1168,7 +1179,7 @@ def test_stage_a_v3_deterministically_preserves_every_objective_dimension(
 
 
 def test_canary010_exact_objective_card_is_valid_on_first_zero_call_assembly():
-    root = Path(__file__).resolve().parents[2] / "plans/release-evidence"
+    root = _live_evidence_root()
     matches = list((root / "training-synthesis-functional-v1.3.0"
                     / "02-one-row-canary"
                     / "functional-production-dpo-00183-seed0-010").rglob(
@@ -1276,8 +1287,8 @@ def test_stage_d_realization_view_projects_minimum_generic_domain_columns():
 
 def test_canary011_stage_d_leakage_replay_uses_private_quotes_and_can_progress():
     root = (
-        Path(__file__).resolve().parents[2]
-        / "plans/release-evidence/training-synthesis-functional-v1.3.0"
+        _live_evidence_root()
+        / "training-synthesis-functional-v1.3.0"
         / "02-one-row-canary"
         / "functional-production-dpo-00183-seed0-011"
     )
@@ -1356,8 +1367,8 @@ def test_canary011_stage_d_leakage_replay_uses_private_quotes_and_can_progress()
 
 def test_canary012_stage_d_never_scores_standalone_therefore():
     root = (
-        Path(__file__).resolve().parents[2]
-        / "plans/release-evidence/training-synthesis-functional-v1.3.0"
+        _live_evidence_root()
+        / "training-synthesis-functional-v1.3.0"
         / "02-one-row-canary"
         / "functional-production-dpo-00183-seed0-012"
     )
@@ -1465,7 +1476,7 @@ def test_canary013_d1_d2_d3_whole_answer_responses_fail_v2_structure(
     response_sha256,
 ):
     """The three oscillating canary responses cannot enter the v2 validator."""
-    root = Path(__file__).resolve().parents[2] / "plans/release-evidence"
+    root = _live_evidence_root()
     matches = list(root.rglob(f"response-{response_sha256}.txt"))
     if not matches:
         pytest.skip("ignored canary-013 response evidence is unavailable")
@@ -2069,8 +2080,8 @@ def test_canary024_composer_source_drifts_fingerprint_and_resume_identity(
 
 def test_canary015_exact_payload_stalls_after_prompt_and_length_remains_fatal():
     root = (
-        Path(__file__).resolve().parents[2]
-        / "plans/release-evidence/training-synthesis-functional-v1.3.0"
+        _live_evidence_root()
+        / "training-synthesis-functional-v1.3.0"
         / "02-one-row-canary"
         / "functional-production-dpo-00183-seed0-015"
     )
@@ -2128,8 +2139,8 @@ def test_canary015_per_artifact_schema_binds_cardinality_and_known_ids(
 
 def test_canary015_legacy_overlong_prompt_now_fails_authoritative_400_bound():
     root = (
-        Path(__file__).resolve().parents[2]
-        / "plans/release-evidence/training-synthesis-functional-v1.3.0"
+        _live_evidence_root()
+        / "training-synthesis-functional-v1.3.0"
         / "02-one-row-canary"
         / "functional-production-dpo-00183-seed0-015"
         / "micro-journals/micro_synthesis_state"
@@ -2193,8 +2204,8 @@ def _stage_e_candidate(
 
 def test_canary016_exact_fault_selects_canonical_id_without_free_mechanism():
     root = (
-        Path(__file__).resolve().parents[2]
-        / "plans/release-evidence/training-synthesis-functional-v1.3.0"
+        _live_evidence_root()
+        / "training-synthesis-functional-v1.3.0"
         / "02-one-row-canary"
         / "functional-production-dpo-00183-seed0-016"
     )
@@ -2329,8 +2340,8 @@ def test_canary025_exact_authority_derives_faulty_step_without_nli():
 
 def test_canary025_exact_replay_resolves_terminal_gate_e_output():
     root = (
-        Path(__file__).resolve().parents[2]
-        / "plans/release-evidence/training-synthesis-functional-v1.3.0"
+        _live_evidence_root()
+        / "training-synthesis-functional-v1.3.0"
         / "02-one-row-canary"
         / "functional-production-dpo-00183-seed0-025"
     )

@@ -47,7 +47,7 @@ from blocks import Block  # noqa: E402
 
 
 _VOCAB = {
-    "course_id": "introbio101",
+    "course_id": "tstcourse101",
     "concepts": [
         {"canonical": "slope", "aliases": ["gradient", "steepness"]},
         {"canonical": "intercept", "aliases": ["y-intercept"]},
@@ -67,7 +67,7 @@ def _minter(tmp_path):
         }
     }
     minter = _build_outline_curie_minter(
-        course_code="introbio101", kwargs=kwargs,
+        course_code="tstcourse101", kwargs=kwargs,
     )
     assert minter is not None
     return minter

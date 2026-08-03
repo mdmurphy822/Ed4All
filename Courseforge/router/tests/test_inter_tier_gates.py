@@ -144,7 +144,7 @@ def test_minted_curie_anchored_via_surface_form():
     forms appears in the block text — the synthetic CURIE token itself
     need NOT appear literally."""
     minted_map = {
-        "introbio101:slope": {
+        "tstcourse101:slope": {
             "canonical": "slope",
             "surface_forms": ["slope", "gradient"],
         },
@@ -152,7 +152,7 @@ def test_minted_curie_anchored_via_surface_form():
     blocks = [
         _outline_block(
             block_id="page_01#concept_slope_0",
-            curies=("introbio101:slope",),
+            curies=("tstcourse101:slope",),
             # The minted CURIE token never appears; the surface form
             # "gradient" does.
             key_claims=["The gradient of a line measures its steepness."],
@@ -170,7 +170,7 @@ def test_minted_curie_not_anchored_when_no_surface_form_in_text():
     """A minted CURIE whose surface forms are absent from the block
     text fails the anchoring gate (action=regenerate)."""
     minted_map = {
-        "introbio101:slope": {
+        "tstcourse101:slope": {
             "canonical": "slope",
             "surface_forms": ["slope", "gradient"],
         },
@@ -178,7 +178,7 @@ def test_minted_curie_not_anchored_when_no_surface_form_in_text():
     blocks = [
         _outline_block(
             block_id="page_01#concept_slope_0",
-            curies=("introbio101:slope",),
+            curies=("tstcourse101:slope",),
             key_claims=["This sentence mentions nothing about lines."],
         ),
     ]
@@ -199,7 +199,7 @@ def test_minted_curie_anchored_via_source_chunk_text():
     are tagged with the domain vocabulary, so this is rigorous, not a
     relaxation."""
     minted_map = {
-        "introbio101:slope": {
+        "tstcourse101:slope": {
             "canonical": "slope",
             "surface_forms": ["slope", "gradient"],
         },
@@ -207,7 +207,7 @@ def test_minted_curie_anchored_via_source_chunk_text():
     blocks = [
         _outline_block(
             block_id="page_01#concept_slope_0",
-            curies=("introbio101:slope",),
+            curies=("tstcourse101:slope",),
             # key_claims has no vocab surface form...
             key_claims=["This sentence mentions nothing about lines."],
         ),
@@ -232,7 +232,7 @@ def test_ungrounded_block_no_curie_still_fails_closed():
     still FAIL — source-chunk anchoring NEVER rescues an ungrounded
     block. Preserves the no-fabrication contract."""
     minted_map = {
-        "introbio101:slope": {
+        "tstcourse101:slope": {
             "canonical": "slope",
             "surface_forms": ["slope", "gradient"],
         },
@@ -262,7 +262,7 @@ def test_grounded_block_curie_not_in_source_or_claims_fails_closed():
     source-chunk text still fails (the concept is not actually present
     anywhere in its provenance)."""
     minted_map = {
-        "introbio101:slope": {
+        "tstcourse101:slope": {
             "canonical": "slope",
             "surface_forms": ["slope", "gradient"],
         },
@@ -270,7 +270,7 @@ def test_grounded_block_curie_not_in_source_or_claims_fails_closed():
     blocks = [
         _outline_block(
             block_id="page_01#concept_y_0",
-            curies=("introbio101:slope",),
+            curies=("tstcourse101:slope",),
             key_claims=["Talks about photosynthesis only."],
         ),
     ]
@@ -306,7 +306,7 @@ def test_minted_curie_anchored_via_objective_statement():
     multiplication / division" — the objective statement is the matchable
     surface."""
     minted_map = {
-        "introbio101:multiplication": {
+        "tstcourse101:multiplication": {
             "canonical": "multiplication",
             "surface_forms": ["multiplication", "multiply"],
         },
@@ -315,7 +315,7 @@ def test_minted_curie_anchored_via_objective_statement():
         _outline_block(
             block_id="week_12_content_01#misconception_week12_3",
             block_type="misconception",
-            curies=("introbio101:multiplication",),
+            curies=("tstcourse101:multiplication",),
             # Abstract claim — the concept surface form is NOT here.
             key_claims=[
                 "Misinterpreting the sign of a number can lead to errors."
@@ -346,7 +346,7 @@ def test_off_topic_block_not_anchored_via_objective_statement():
     nor its (empty) source chunks — still FAILS. The objective surface
     NEVER rescues a genuinely off-topic block."""
     minted_map = {
-        "introbio101:slope": {
+        "tstcourse101:slope": {
             "canonical": "slope",
             "surface_forms": ["slope", "gradient"],
         },
@@ -354,7 +354,7 @@ def test_off_topic_block_not_anchored_via_objective_statement():
     blocks = [
         _outline_block(
             block_id="page_01#concept_z_0",
-            curies=("introbio101:slope",),
+            curies=("tstcourse101:slope",),
             key_claims=["This block discusses cellular respiration."],
             objective_ids=("TO-02",),
         ),
@@ -381,7 +381,7 @@ def test_objective_surface_absent_byte_identical_to_pre_fix():
     form is absent from key_claims + source chunks fails closed even though
     it declares an objective whose statement WOULD have named it."""
     minted_map = {
-        "introbio101:slope": {
+        "tstcourse101:slope": {
             "canonical": "slope",
             "surface_forms": ["slope", "gradient"],
         },
@@ -389,7 +389,7 @@ def test_objective_surface_absent_byte_identical_to_pre_fix():
     blocks = [
         _outline_block(
             block_id="page_01#concept_w_0",
-            curies=("introbio101:slope",),
+            curies=("tstcourse101:slope",),
             key_claims=["Abstract prose with no vocabulary term."],
             objective_ids=("TO-01",),
         ),
@@ -408,7 +408,7 @@ def test_rdf_curie_still_uses_literal_check_with_map():
     """A CURIE NOT in the minted map (an RDF CURIE) keeps the legacy
     literal-token anchoring even when a minted_curie_map is supplied."""
     minted_map = {
-        "introbio101:slope": {
+        "tstcourse101:slope": {
             "canonical": "slope",
             "surface_forms": ["slope"],
         },
@@ -451,7 +451,7 @@ def test_no_minted_map_byte_identical_to_legacy():
     blocks = [
         _outline_block(
             block_id="page_01#concept_slope_0",
-            curies=("introbio101:slope",),
+            curies=("tstcourse101:slope",),
             key_claims=["The gradient of a line measures its steepness."],
         ),
     ]
@@ -536,7 +536,7 @@ def test_minted_literal_token_arm_anchors():
     the R1 force-injection) passes via the literal arm even when no
     surface form is present."""
     minted_map = {
-        "introbio101:slope": {
+        "tstcourse101:slope": {
             "canonical": "slope",
             "surface_forms": ["gradient"],
         },
@@ -544,10 +544,10 @@ def test_minted_literal_token_arm_anchors():
     blocks = [
         _outline_block(
             block_id="page_01#concept_slope_0",
-            curies=("introbio101:slope",),
+            curies=("tstcourse101:slope",),
             # Neither "slope" nor "gradient" in prose, but the minted
             # CURIE token itself is present (force-injected shape).
-            key_claims=["A discussion referencing introbio101:slope here."],
+            key_claims=["A discussion referencing tstcourse101:slope here."],
         ),
     ]
     result = BlockCurieAnchoringValidator().validate({
@@ -658,7 +658,7 @@ def test_minted_curie_surface_form_nowhere_on_page_still_fails():
     block itself and not any sibling), the minted CURIE still fails
     closed — the page-level fallback does not fabricate an anchor."""
     minted_map = {
-        "introbio101:slope": {
+        "tstcourse101:slope": {
             "canonical": "slope",
             "surface_forms": ["slope", "gradient"],
         },
@@ -667,14 +667,14 @@ def test_minted_curie_surface_form_nowhere_on_page_still_fails():
         block_id="page_01#concept_other_0",
         block_type="concept",
         page_id="page_01",
-        curies=("introbio101:slope",),
+        curies=("tstcourse101:slope",),
         key_claims=["This page discusses entirely unrelated material."],
     )
     orphan = _outline_block(
         block_id="page_01#callout_x_1",
         block_type="callout",
         page_id="page_01",
-        curies=("introbio101:slope",),
+        curies=("tstcourse101:slope",),
         key_claims=["Another sentence about nothing in particular."],
     )
     result = BlockCurieAnchoringValidator().validate({
@@ -727,7 +727,7 @@ def test_block_local_anchoring_still_wins_scope_block():
     capture tags it anchoring_scope="block", never "page", even when a
     sibling ALSO carries the surface form."""
     minted_map = {
-        "introbio101:slope": {
+        "tstcourse101:slope": {
             "canonical": "slope",
             "surface_forms": ["slope", "gradient"],
         },
@@ -736,14 +736,14 @@ def test_block_local_anchoring_still_wins_scope_block():
         block_id="page_01#concept_a_0",
         block_type="concept",
         page_id="page_01",
-        curies=("introbio101:slope",),
+        curies=("tstcourse101:slope",),
         key_claims=["The gradient of a line measures steepness."],
     )
     block_b = _outline_block(
         block_id="page_01#concept_b_1",
         block_type="concept",
         page_id="page_01",
-        curies=("introbio101:slope",),
+        curies=("tstcourse101:slope",),
         key_claims=["Slope is rise over run for a straight line."],
     )
     capture = _ScopeRecordingCapture()

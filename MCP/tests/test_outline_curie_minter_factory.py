@@ -43,7 +43,7 @@ from blocks import Block  # noqa: E402
 
 
 _VOCAB = {
-    "course_id": "introbio101",
+    "course_id": "tstcourse101",
     "concepts": [
         {"canonical": "slope", "aliases": ["gradient", "steepness"]},
         {"canonical": "intercept", "aliases": ["y-intercept"]},
@@ -87,7 +87,7 @@ def _prose_block(curies, key_claims) -> Block:
 def test_minter_is_none_without_vocabulary():
     """No vocabulary file → factory returns None (complete no-op)."""
     minter = _build_outline_curie_minter(
-        course_code="introbio101", kwargs={},
+        course_code="tstcourse101", kwargs={},
     )
     assert minter is None
 
@@ -101,7 +101,7 @@ def test_mint_block_stamps_and_then_anchors(tmp_path):
     """
     vocab_path = _write_vocab(tmp_path)
     minter = _build_outline_curie_minter(
-        course_code="introbio101",
+        course_code="tstcourse101",
         kwargs=_kwargs_with_vocab(vocab_path),
     )
     assert minter is not None
@@ -131,7 +131,7 @@ def test_mint_block_idempotent(tmp_path):
     """A block already carrying the minted CURIE is left untouched."""
     vocab_path = _write_vocab(tmp_path)
     minter = _build_outline_curie_minter(
-        course_code="introbio101",
+        course_code="tstcourse101",
         kwargs=_kwargs_with_vocab(vocab_path),
     )
     assert minter is not None
@@ -152,7 +152,7 @@ def test_mint_block_no_fabrication(tmp_path):
     """An ungrounded block with no surface-form match mints nothing."""
     vocab_path = _write_vocab(tmp_path)
     minter = _build_outline_curie_minter(
-        course_code="introbio101",
+        course_code="tstcourse101",
         kwargs=_kwargs_with_vocab(vocab_path),
     )
     assert minter is not None

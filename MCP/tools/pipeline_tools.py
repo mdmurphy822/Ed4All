@@ -8992,7 +8992,7 @@ def register_pipeline_tools(mcp):
 
                 # Wave 8: also stage the DART quality sidecar if one exists.
                 # Convention: same stem as the HTML, suffix .quality.json.
-                # E.g. "science_of_learning.html" -> "science_of_learning.quality.json".
+                # E.g. "sample_learning_material.html" -> "sample_learning_material.quality.json".
                 # The legacy stage_dart_outputs never copied this even though
                 # DART's convert_single_pdf has been writing it all along.
                 quality_name = html_path.stem + ".quality.json"

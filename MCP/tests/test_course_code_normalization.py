@@ -87,7 +87,7 @@ def test_different_inputs_generally_yield_different_codes():
         "ontology_engineering_textbook",
         "textbook_a",
         "textbook_b",
-        "science_of_learning",
+        "sample_learning_material",
         "principles_of_accessible_design",
     ]
     normalised = {normalize_course_code(x) for x in inputs}

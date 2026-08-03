@@ -60,7 +60,7 @@ from blocks import Block  # noqa: E402
 # A minted (prose-corpus) CURIE whose vocabulary surface form "gradient"
 # appears in the block's prose — but the literal CURIE token never does.
 _MINTED_MAP = {
-    "introbio101:slope": {
+    "tstcourse101:slope": {
         "canonical": "slope",
         "surface_forms": ["slope", "gradient"],
     },
@@ -73,7 +73,7 @@ def _prose_block_no_curies() -> Block:
     """A prose outline block the LLM emitted with EMPTY ``curies``.
 
     Its ``key_claims`` discusses the "gradient" — a surface form of the
-    minted ``introbio101:slope`` concept — so a minted CURIE, once
+    minted ``tstcourse101:slope`` concept — so a minted CURIE, once
     stamped on, anchors via surface form. Until stamped, ``curies`` is
     empty → the validator's ``OUTLINE_BLOCK_MISSING_CURIES`` branch.
     """
@@ -143,7 +143,7 @@ def _mint_hook_factory(source_chunks: List[Any]):
     """Per-block ``pre_validate_hook`` that stamps the minted CURIE.
 
     Mirrors the real ``_run_content_generation_outline`` hook: it appends
-    the minted ``introbio101:slope`` CURIE onto a candidate whose
+    the minted ``tstcourse101:slope`` CURIE onto a candidate whose
     ``content["curies"]`` is empty (never overwrites an existing real
     minted CURIE — idempotent). ``source_chunks`` is unused here (the
     block's key_claims already carry the surface form) but threaded to
@@ -158,7 +158,7 @@ def _mint_hook_factory(source_chunks: List[Any]):
         if any(c in _MINTED_MAP for c in existing):
             return candidate  # already minted — idempotent no-op
         new_content = dict(content)
-        new_content["curies"] = existing + ["introbio101:slope"]
+        new_content["curies"] = existing + ["tstcourse101:slope"]
         return dataclasses.replace(candidate, content=new_content)
 
     return _hook
@@ -198,7 +198,7 @@ def test_mint_before_validate_passes_on_first_attempt(monkeypatch):
         "(re-roll churn not eliminated)"
     )
     # The returned block carries the minted CURIE (stamped pre-validate).
-    assert "introbio101:slope" in out.content["curies"]
+    assert "tstcourse101:slope" in out.content["curies"]
     # And it won (self_consistency_winner Touch appended).
     assert any(
         t.purpose == "self_consistency_winner" for t in out.touched_by

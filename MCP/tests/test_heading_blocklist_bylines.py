@@ -117,7 +117,7 @@ class TestWave27LegitimateHeadings:
             "Learning in a Connected Age"
         ) is False
 
-    def test_science_of_learning(self):
+    def test_sample_learning_material(self):
         assert _cgh._is_low_signal_heading("The Science of Learning") is False
 
     def test_research_methods_in_education(self):

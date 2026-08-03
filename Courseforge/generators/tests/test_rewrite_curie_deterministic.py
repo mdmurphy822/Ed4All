@@ -182,13 +182,13 @@ def test_flag_on_zero_curie_retries_and_stamps(monkeypatch):
     p = RewriteProvider(
         provider="local",
         client=_make_client(handler),
-        minted_curie_map=_minted_map("introbio101:node_shape"),
+        minted_curie_map=_minted_map("tstcourse101:node_shape"),
     )
-    block = _outline_block(curies=["introbio101:node_shape"])
+    block = _outline_block(curies=["tstcourse101:node_shape"])
     out = p.generate_rewrite(block)
 
     assert len(seen) == 1, "flag on must never fire a CURIE-driven re-roll"
-    assert _curie_survives_validator_path(out.content, "introbio101:node_shape")
+    assert _curie_survives_validator_path(out.content, "tstcourse101:node_shape")
     # Touch chain records the deterministic-stamp provenance.
     assert out.touched_by[-1].purpose == _TOUCH_PURPOSE_CURIE_DETERMINISTIC
 
@@ -200,7 +200,7 @@ def test_flag_on_stamped_output_passes_anchoring_gate(monkeypatch):
     monkeypatch.setenv(ENV_CURIE_DETERMINISTIC, "1")
     _local_env(monkeypatch)
 
-    minted = _minted_map("introbio101:node_shape")
+    minted = _minted_map("tstcourse101:node_shape")
     p = RewriteProvider(
         provider="local",
         client=_make_client(
@@ -208,7 +208,7 @@ def test_flag_on_stamped_output_passes_anchoring_gate(monkeypatch):
         ),
         minted_curie_map=minted,
     )
-    out = p.generate_rewrite(_outline_block(curies=["introbio101:node_shape"]))
+    out = p.generate_rewrite(_outline_block(curies=["tstcourse101:node_shape"]))
 
     from Courseforge.router.inter_tier_gates import BlockCurieAnchoringValidator
 
@@ -239,12 +239,12 @@ def test_flag_on_prompt_has_no_curie_instruction_or_token(monkeypatch):
     p = RewriteProvider(
         provider="local",
         client=_make_client(handler),
-        minted_curie_map=_minted_map("introbio101:node_shape"),
+        minted_curie_map=_minted_map("tstcourse101:node_shape"),
     )
     # The system prompt itself carries no CURIE mention.
     assert "curie" not in p._system_prompt.lower()
 
-    p.generate_rewrite(_outline_block(curies=["introbio101:node_shape"]))
+    p.generate_rewrite(_outline_block(curies=["tstcourse101:node_shape"]))
     assert len(seen) == 1
     wire = seen[0].read().decode("utf-8").lower()
     assert "curie" not in wire, "user prompt must not mention CURIEs"
@@ -278,7 +278,7 @@ def test_flag_on_structural_transient_retry_preserved(monkeypatch):
         client=_make_client(
             lambda r: httpx.Response(200, json=_success_body(_DROP_CURIE_HTML))
         ),
-        minted_curie_map=_minted_map("introbio101:node_shape"),
+        minted_curie_map=_minted_map("tstcourse101:node_shape"),
     )
 
     call_count = {"n": 0}
@@ -291,10 +291,10 @@ def test_flag_on_structural_transient_retry_preserved(monkeypatch):
         return real_dispatch(*args, **kwargs)
 
     monkeypatch.setattr(p, "_dispatch_call", fake_dispatch)
-    out = p.generate_rewrite(_outline_block(curies=["introbio101:node_shape"]))
+    out = p.generate_rewrite(_outline_block(curies=["tstcourse101:node_shape"]))
 
     assert call_count["n"] == 3, "structural transient retries must survive"
-    assert _curie_survives_validator_path(out.content, "introbio101:node_shape")
+    assert _curie_survives_validator_path(out.content, "tstcourse101:node_shape")
 
 
 # ---------------------------------------------------------------------------
@@ -319,18 +319,18 @@ def test_flag_on_unmintable_token_is_not_stamped(monkeypatch):
         provider="local",
         client=_make_client(handler),
         # Only ``node_shape`` resolves; ``not_a_concept`` is unmintable.
-        minted_curie_map=_minted_map("introbio101:node_shape"),
+        minted_curie_map=_minted_map("tstcourse101:node_shape"),
     )
     out = p.generate_rewrite(
         _outline_block(
-            curies=["introbio101:node_shape", "introbio101:not_a_concept"],
+            curies=["tstcourse101:node_shape", "tstcourse101:not_a_concept"],
         )
     )
 
     assert len(seen) == 1
-    assert _curie_survives_validator_path(out.content, "introbio101:node_shape")
+    assert _curie_survives_validator_path(out.content, "tstcourse101:node_shape")
     assert not _curie_survives_validator_path(
-        out.content, "introbio101:not_a_concept"
+        out.content, "tstcourse101:not_a_concept"
     ), "an unmintable token must never be fabricated onto the emit"
 
 
@@ -377,14 +377,14 @@ def test_flag_on_capture_fires_curie_minting_with_dynamic_rationale(
             lambda r: httpx.Response(200, json=_success_body(_DROP_CURIE_HTML))
         ),
         capture=spy,
-        minted_curie_map=_minted_map("introbio101:node_shape"),
+        minted_curie_map=_minted_map("tstcourse101:node_shape"),
     )
-    p.generate_rewrite(_outline_block(curies=["introbio101:node_shape"]))
+    p.generate_rewrite(_outline_block(curies=["tstcourse101:node_shape"]))
 
     minting = [c for c in spy.calls if c.get("decision_type") == "curie_minting"]
     assert len(minting) == 1, "exactly one curie_minting decision expected"
     rationale = minting[0]["rationale"]
     assert len(rationale) >= 20
-    assert "introbio101:node_shape" in rationale  # the minted token list
+    assert "tstcourse101:node_shape" in rationale  # the minted token list
     assert "page#concept_intro_0" in rationale     # dynamic block id
     assert "COURSEFORGE_CURIE_DETERMINISTIC" in rationale

@@ -1,14 +1,17 @@
 """Hermetic adversarials for the reviewed one-row Gate-D authority."""
 from __future__ import annotations
 import copy, json
+import hashlib
 import threading
 from pathlib import Path
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from lib.ontology.misconception_id import canonical_mc_id
+from Trainforge.scripts.harness import gate_d_single_row as gate_d_module
 from Trainforge.scripts.harness.gate_d_single_row import (
     CAPABILITY_SCHEMA, CONTROL_EVIDENCE_SCHEMA, GATE_A_TRUST_SCHEMA,
+    GATE_D_SCHEMA,
     PINNED_AUTHORITY_SHA256, PINNED_CONTRACT_SHA256,
     PINNED_GO_CANONICAL_SHA256, PINNED_RELEASE_ROOT_SHA256, PINNED_ROW,
     PINNED_TUPLE_SHA256, SIGNED_WRAPPER_SCHEMA, GateDCallController,
@@ -21,16 +24,64 @@ from Trainforge.scripts.harness.gate_d_single_row import (
 )
 
 H = "a" * 64
-GO = Path("plans/release-evidence/training-synthesis-release-v1.2.3/"
-          "04-independent-go/gate-d-go.json").resolve()
 MANIFEST="655b0dfc2e396c09ca1ae5bcc7a078a854ee9e2064c97ab4d2210bf7c0b00936"
 ELIG="95fd0ba42871968fb344961669299fc70643b94bcff2b6b3922c5117dddc018a"
 ORDER="f0be5cf9600418e60e75b0a566234f51118f64b94ca421686322e203d456315e"
 RUN="gate-d-v1.2.3-dpo-00276-seed0-001"
-OUT=Path("plans/release-evidence/training-synthesis-release-v1.2.3/"
- "05-one-dpo-canary/gate-d-v1.2.3-dpo-00276-seed0-001").resolve()
+OUT=Path("synthetic-evidence/gate-d-canary-output").resolve()
 FUNCTIONAL_ROW_ID="openstax_ea2e_scan_eval_chunk_00183"
 FUNCTIONAL_ROW_SHA="44082f134734ef019e01f0bc51cfa887725fde67089e1146cd00f29b5b4452c0"
+
+@pytest.fixture(autouse=True)
+def _hermetic_go_digest(monkeypatch):
+    unsigned = _synthetic_go_unsigned()
+    monkeypatch.setattr(
+        gate_d_module, "PINNED_GO_CANONICAL_SHA256", _sha(unsigned)
+    )
+
+
+def _synthetic_go_unsigned() -> dict:
+    return {
+        "schema_version": GATE_D_SCHEMA,
+        "canary": {
+            "frozen_inputs": {
+                "manifest_sha256": MANIFEST,
+                "eligibility_sha256": ELIG,
+                "ordered_identity_sha256": ORDER,
+            },
+            "synthesis_seed": 0,
+            "run_id": RUN,
+            "output_root": str(OUT),
+            "contract": {"sha256": PINNED_CONTRACT_SHA256},
+            "row": PINNED_ROW,
+        },
+        "reviewed_authority": {
+            "release_evidence_manifest_sha256": PINNED_RELEASE_ROOT_SHA256,
+            "standalone_authority_canonical_sha256": PINNED_AUTHORITY_SHA256,
+            "tuple_sha256": PINNED_TUPLE_SHA256,
+        },
+    }
+
+
+def _functional_authority(tmp_path: Path, monkeypatch) -> Path:
+    raw = (
+        b"Synthetic functional authority for hermetic tests.\n\n"
+        b"## 1. Authority, supersession, and scope\n"
+        b"This fixture authorizes only the synthetic frozen-eight test cohort.\n"
+    )
+    path = tmp_path / "functional-authority.md"
+    path.write_bytes(raw)
+    heading = b"## 1. Authority, supersession, and scope"
+    offset = raw.index(heading)
+    monkeypatch.setattr(
+        gate_d_module, "FUNCTIONAL_PLAN_FILE_SHA256", hashlib.sha256(raw).hexdigest()
+    )
+    monkeypatch.setattr(
+        gate_d_module,
+        "FUNCTIONAL_PLAN_SEMANTIC_SHA256",
+        hashlib.sha256(raw[offset:]).hexdigest(),
+    )
+    return path
 
 
 def _local_pair_schema_fixture(tmp_path):
@@ -201,9 +252,12 @@ def signed(tmp_path: Path):
     capability={"schema":CAPABILITY_SCHEMA,"proof":proof,
       "signature_hex":key.sign(_stable(proof).encode()).hex()}
     cap=tmp_path/"cap.json"; cap.write_text(json.dumps(capability)); cap.chmod(0o600)
-    go_bytes=GO.read_bytes()
+    go_doc = _synthetic_go_unsigned()
+    synthetic_go_canonical = _sha(go_doc)
+    go_doc["canonical_decision_sha256"] = synthetic_go_canonical
+    go_bytes = json.dumps(go_doc, sort_keys=True).encode()
     go_copy=tmp_path/"gate-d-go.json"; go_copy.write_bytes(go_bytes); go_copy.chmod(0o600)
-    payload={"go_canonical_sha256":PINNED_GO_CANONICAL_SHA256,
+    payload={"go_canonical_sha256":synthetic_go_canonical,
       "go_file_sha256":__import__("hashlib").sha256(go_bytes).hexdigest(),
       "release_root_sha256":PINNED_RELEASE_ROOT_SHA256,
       "authority_sha256":PINNED_AUTHORITY_SHA256,
@@ -228,22 +282,24 @@ def test_full8_validated_then_exactly_one_selected(tmp_path):
     assert row["chunk_id"]==PINNED_ROW["chunk_id"] and subset["row_count"]==1
     assert subset["row"]==row_identity(rows()[3],3)
 
-def test_functional_selector_uses_frozen_plan_without_crypto(tmp_path):
+def test_functional_selector_uses_frozen_plan_without_crypto(tmp_path, monkeypatch):
+    plan_path = _functional_authority(tmp_path, monkeypatch)
     selected,subset=authorize_functional_single_row(
       rows=functional_rows(),full_manifest_sha256=MANIFEST,
       eligibility_sha256=ELIG,ordered_identity_sha256=ORDER,
       synthesis_seed=0,run_id=RUN,output_dir=tmp_path/"out",
       expected_chunk_id=FUNCTIONAL_ROW_ID,
-      expected_chunk_sha256=FUNCTIONAL_ROW_SHA)
+      expected_chunk_sha256=FUNCTIONAL_ROW_SHA,plan_path=plan_path)
     assert selected["chunk_id"]==FUNCTIONAL_ROW_ID
     assert subset["row_count"]==1 and subset["synthesis_seed"]==0
     assert not any(key in subset for key in ("signature","ticket","public_key"))
 
-def test_functional_selector_rejects_seed_and_ambiguous_row(tmp_path):
+def test_functional_selector_rejects_seed_and_ambiguous_row(tmp_path, monkeypatch):
+    plan_path = _functional_authority(tmp_path, monkeypatch)
     kwargs=dict(full_manifest_sha256=MANIFEST,eligibility_sha256=ELIG,
       ordered_identity_sha256=ORDER,run_id=RUN,output_dir=tmp_path/"out",
       expected_chunk_id=FUNCTIONAL_ROW_ID,
-      expected_chunk_sha256=FUNCTIONAL_ROW_SHA)
+      expected_chunk_sha256=FUNCTIONAL_ROW_SHA,plan_path=plan_path)
     with pytest.raises(ValueError,match="seed 0"):
       authorize_functional_single_row(
         rows=functional_rows(),synthesis_seed=1,**kwargs)
@@ -252,8 +308,9 @@ def test_functional_selector_rejects_seed_and_ambiguous_row(tmp_path):
       authorize_functional_single_row(rows=duplicate,synthesis_seed=0,**kwargs)
 
 def test_functional_selector_rejects_ineligible_preference_before_dispatch(
-    tmp_path,
+    tmp_path, monkeypatch,
 ):
+    plan_path = _functional_authority(tmp_path, monkeypatch)
     cohort=functional_rows()
     row=cohort[3]
     row["chunk_id"]=PINNED_ROW["chunk_id"]
@@ -273,7 +330,7 @@ def test_functional_selector_rejects_ineligible_preference_before_dispatch(
         eligibility_sha256=ELIG,ordered_identity_sha256=ORDER,
         synthesis_seed=0,run_id=RUN,output_dir=tmp_path/"out",
         expected_chunk_id=PINNED_ROW["chunk_id"],
-        expected_chunk_sha256=PINNED_ROW["chunk_sha256"])
+        expected_chunk_sha256=PINNED_ROW["chunk_sha256"],plan_path=plan_path)
 
 def test_functional_preflight_persists_and_reobserves_raw_sources(
     tmp_path, monkeypatch,

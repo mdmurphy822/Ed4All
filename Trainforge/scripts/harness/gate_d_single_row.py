@@ -789,7 +789,7 @@ def authorize_functional_single_row(
     eligibility_sha256: str, ordered_identity_sha256: str,
     synthesis_seed: int, run_id: str, output_dir: Path,
     expected_chunk_id: str, expected_chunk_sha256: str,
-    plan_path: Path = Path("plans/training-synthesis-functional-release-v1.3.1.md"),
+    plan_path: Path,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Standing-authorized functional selector; deliberately has no crypto gate."""
     plan_raw, _ = secure_read(plan_path, require_safe_mode=False)

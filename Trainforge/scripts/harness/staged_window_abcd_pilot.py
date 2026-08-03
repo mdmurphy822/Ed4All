@@ -4463,6 +4463,10 @@ def main() -> int:
     )
     parser.add_argument("--gate-d-functional-row-id")
     parser.add_argument("--gate-d-functional-row-sha256")
+    parser.add_argument(
+        "--gate-d-functional-authority", type=Path,
+        help="explicit operator-owned functional Gate-D authority document",
+    )
     parser.add_argument("--gate-d-signed-wrapper", type=Path)
     parser.add_argument("--gate-d-capability-proof", type=Path)
     parser.add_argument("--gate-d-wp11-public-key", type=Path)
@@ -4513,6 +4517,14 @@ def main() -> int:
     )
     if args.gate_d_functional_canary and args.gate_d_go_artifact:
         parser.error("functional Gate D cannot be combined with crypto Gate D")
+    if (
+        args.gate_d_functional_canary
+        and args.gate_d_functional_authority is None
+    ):
+        parser.error(
+            "--gate-d-functional-canary requires "
+            "--gate-d-functional-authority"
+        )
     if (
         args.gate_d_functional_production_repairs
         and not args.gate_d_functional_canary
@@ -4750,6 +4762,7 @@ def main() -> int:
             output_dir=args.output_dir,
             expected_chunk_id=args.gate_d_functional_row_id,
             expected_chunk_sha256=args.gate_d_functional_row_sha256,
+            plan_path=args.gate_d_functional_authority,
         )
         # Ordinary local safety: private fresh directory plus atomic/fsynced
         # artifacts. No custom trust root or retained-dirfd security gate.

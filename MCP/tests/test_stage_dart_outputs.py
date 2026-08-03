@@ -76,7 +76,7 @@ class TestStagingBasics:
         tool, staging_root = stage_tool
         dart_dir = tmp_path / "dart_out"
         dart_dir.mkdir()
-        html_file = dart_dir / "science_of_learning.html"
+        html_file = dart_dir / "sample_learning_material.html"
         _write_html(html_file)
 
         result = asyncio.run(tool(
@@ -87,7 +87,7 @@ class TestStagingBasics:
         payload = json.loads(result)
         assert payload["success"] is True
         staged = payload["staged_files"]
-        assert any("science_of_learning.html" in s for s in staged)
+        assert any("sample_learning_material.html" in s for s in staged)
 
     def test_staging_missing_file_is_reported(self, stage_tool, tmp_path):
         tool, _ = stage_tool
@@ -108,9 +108,9 @@ class TestQualitySidecarStaging:
         tool, staging_root = stage_tool
         dart_dir = tmp_path / "dart_out"
         dart_dir.mkdir()
-        html_file = dart_dir / "science_of_learning.html"
+        html_file = dart_dir / "sample_learning_material.html"
         _write_html(html_file)
-        quality_file = dart_dir / "science_of_learning.quality.json"
+        quality_file = dart_dir / "sample_learning_material.quality.json"
         _write_json(quality_file, {
             "confidence_score": 0.87,
             "extraction_sources": ["pdftotext", "pdfplumber"],
@@ -125,11 +125,11 @@ class TestQualitySidecarStaging:
         assert payload["success"] is True
 
         staged_names = {Path(s).name for s in payload["staged_files"]}
-        assert "science_of_learning.html" in staged_names
-        assert "science_of_learning.quality.json" in staged_names
+        assert "sample_learning_material.html" in staged_names
+        assert "sample_learning_material.quality.json" in staged_names
 
         # And the file actually landed under the staging dir.
-        staged_quality = staging_root / "WF-Q-001" / "science_of_learning.quality.json"
+        staged_quality = staging_root / "WF-Q-001" / "sample_learning_material.quality.json"
         assert staged_quality.exists()
         assert "confidence_score" in staged_quality.read_text()
 
@@ -158,11 +158,11 @@ class TestManifestRoleTags:
         tool, staging_root = stage_tool
         dart_dir = tmp_path / "dart_out"
         dart_dir.mkdir()
-        html_file = dart_dir / "science_of_learning.html"
+        html_file = dart_dir / "sample_learning_material.html"
         _write_html(html_file)
-        _write_json(dart_dir / "science_of_learning_synthesized.json",
+        _write_json(dart_dir / "sample_learning_material_synthesized.json",
                     {"campus_code": "TEST", "sections": []})
-        _write_json(dart_dir / "science_of_learning.quality.json",
+        _write_json(dart_dir / "sample_learning_material.quality.json",
                     {"confidence_score": 0.9, "extraction_sources": ["pdftotext"]})
 
         run_id = "WF-MANIFEST-001"
@@ -180,9 +180,9 @@ class TestManifestRoleTags:
         assert "files" in manifest
         files = manifest["files"]
         by_role = {f["role"]: f["path"] for f in files}
-        assert by_role.get("content") == "science_of_learning.html"
-        assert by_role.get("provenance_sidecar") == "science_of_learning_synthesized.json"
-        assert by_role.get("quality_sidecar") == "science_of_learning.quality.json"
+        assert by_role.get("content") == "sample_learning_material.html"
+        assert by_role.get("provenance_sidecar") == "sample_learning_material_synthesized.json"
+        assert by_role.get("quality_sidecar") == "sample_learning_material.quality.json"
 
         # Back-compat: flat staged_files list still present.
         assert "staged_files" in manifest
