@@ -1,12 +1,9 @@
-# Archived one-shot migration scripts
+# Temporary migration compatibility
 
-The remaining files are unsupported historical one-shot migrations retained
-temporarily while they are reviewed and moved to the ignored regression shelf.
-They are not production tools, supported CLI entry points, or templates for new
-repair work.
-
-`wave81_reclassify_chunks.py` remains here until its tracked legacy references
-are removed or redirected.
+`wave81_reclassify_chunks.py` is the only remaining temporary exception. It is
+not a production tool, supported CLI entry point, or template for new repair
+work. This archive directory will disappear after its tracked references are
+removed or redirected and the script moves to the ignored regression shelf.
 
 New supported repair behavior belongs in a purpose-named directory under
 `Trainforge/scripts/ops/`, `Trainforge/scripts/maintenance/`, or
