@@ -113,8 +113,8 @@ The actual upgrader shipped as **OP4 stage 2**. It has two pieces:
     are skipped as no-ops).
 
 ```bash
-libv2 migrate demo-course-1               # dry-run plan for one course
-libv2 migrate demo-course-1 --apply       # migrate one course (backup + validate + rollback)
+libv2 migrate <private-course-slug>               # dry-run plan for one course
+libv2 migrate <private-course-slug> --apply       # migrate with backup, validation, and rollback
 libv2 migrate --all                       # dry-run plan for every course
 libv2 migrate --all --apply               # migrate every course
 ```

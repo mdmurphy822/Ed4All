@@ -138,8 +138,7 @@ ed4all run courseforge --course-name <course-name> --force               # full 
 
 # --license-note / --attribution: optional corpus-provenance declarations
 # recorded on the LibV2 course_manifest (license.note / attribution.statement,
-# mirrored into the emitted NOTICE). See docs/operations/library-versioning.md
-# + docs/operations/demo-course.md.
+# mirrored into the emitted NOTICE). See docs/operations/library-versioning.md.
 ed4all run textbook-to-course --corpus pdfs/ --course-name <course-name> \
   --license-note 'CC-BY-4.0' --attribution 'Provided by the source publisher'
 
