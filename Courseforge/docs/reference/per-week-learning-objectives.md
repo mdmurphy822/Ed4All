@@ -80,7 +80,7 @@ python Courseforge/scripts/validation/validate_page_objectives.py \
 
 Exit code `0` on success, `1` if any page leaks another week's IDs. The
 same check runs as unit tests in
-`scripts/tests/test_generate_course_lo_specificity.py`:
+`scripts/tests/course_generation/test_generate_course_lo_specificity.py`:
 
 - A fabricated "correct" page (canonical IDs from the right week) passes.
 - A fabricated "buggy" page (all canonical IDs emitted on every week) is

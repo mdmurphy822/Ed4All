@@ -126,7 +126,15 @@ Courseforge/
 │   ├── imscc-extractor/         # Cross-LMS IMSCC extraction
 │   ├── component-applier/       # Interactive component application
 │   ├── accessibility-validator/ # Accessibility checks
-│   └── remediation-validator/   # Final quality validation
+│   ├── remediation-validator/   # Final quality validation
+│   └── tests/                   # Shared conftest + responsibility packages
+│       ├── block_contracts/
+│       ├── course_generation/
+│       ├── course_intake/
+│       ├── course_packaging/
+│       ├── interactive_components/
+│       ├── page_rendering/
+│       └── quality_validation/
 └── exports/                     # Private generated packages; never commit
 ```
 

@@ -287,7 +287,7 @@ def _annotate_block_type(payload: Dict[str, Any]) -> Dict[str, Any]:
     has to be added by the consumer because the JSON-LD context maps
     ``ed4all:hasBlock`` / ``ed4all:Block`` but doesn't auto-promote
     set members. Mirrors the test fixture at
-    ``Courseforge/scripts/tests/test_generate_course_shacl_validation.py:421-426``.
+    ``Courseforge/scripts/tests/course_generation/test_generate_course_shacl_validation.py``.
     """
     if not isinstance(payload, dict):
         return payload
