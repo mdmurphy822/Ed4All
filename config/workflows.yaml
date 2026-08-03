@@ -1539,8 +1539,8 @@ workflows:
       window_seconds: 300
 
     phases:
-      # DART->semantik naming purge (task #19, Stage 3d): the conversion phase
-      # is DECLARED ``semantik_conversion``. The legacy name ``dart_conversion``
+      # The conversion phase is declared ``semantik_conversion``. The legacy
+      # name ``dart_conversion``
       # is accepted on READ everywhere (checkpoint alias, phase_outputs
       # resume-normalization, the extract_and_convert_pdf seam, gate-input
       # routing) so an old paused run still resumes. NEW runs emit
@@ -1549,17 +1549,17 @@ workflows:
         agents: [semantik-converter]
         parallel: true
         # SEAT SCHEDULE (ED4ALL_SEAT_SCHEDULE): the conversion cascade extracts
-        # on the GLM-OCR seat and describes on the Qwe3-VL seat, so the seat
-        # schedule brings both up before conversion (the Super judge, ~5-10% of
-        # pages, is cascade-managed internally, not scheduled here). The
+        # on the GLM-OCR seat and describes on the Qwen3-VL seat, so the seat
+        # schedule brings both up before conversion. The heading judge runs in
+        # the following phase on the explicitly declared Super seat. The
         # deterministic staging/chunking/objective_extraction/source_mapping
         # phases that follow carry NO seat annotation (absent = no opinion), so
         # these seats stay resident until course_planning declares Super and the
         # schedule swaps them out in ONE transition.
         seats: [spark-glm, spark-qwen]
-        # One 8GB card: a full-cascade conversion holds council BERTs + the
-        # ollama reviewer seat; concurrent cascades OOM the GPU. Serialized
-        # also gives per-chapter artifact landing for mid-flight inspection.
+        # Serialize conversion so the DGX Spark seat schedule can give the
+        # active GLM-OCR and Qwen seats deterministic ownership, while each
+        # chapter lands an inspectable artifact before the next begins.
         max_concurrent: 1
         depends_on: []
         # Full-book chapters (up to ~200 pages) through OCR + the full

@@ -1,30 +1,15 @@
-# Council per-BERT hyperparameters and base-encoder choice.
-#
-# Locked decisions (per Plans/01_implementation_plan.md DP-0.1):
-#   - Council base encoder:  DeBERTa-v3-base   (~184M params, MIT license,
-#                                                disentangled attention).
-#   - Cross-encoder + theta: DeBERTa-v3-small  (~44M params).
-#
-# Fallback if DeBERTa's 512-token limit bites pair inputs:
-#   ModernBERT-base (~150M params, 8K context, MIT). Pick before Phase 2
-#   starts; locks LoRA target-module names.
-#
-# This file is read by future phases; Phase 0 lands the schema only. The
-# `confidence_threshold_tau` value is the council's per-head ship gate
+# Council model choices and per-specialist hyperparameters for the live
+# compatibility cascade. ModernBERT-base provides the council's shared 8K
+# backbone; DeBERTa-v3-small provides the cross-encoder and theta backbone.
+# The `confidence_threshold_tau` value is the council's per-head ship gate
 # from architecture.md §6 — top-1 confidence below tau routes to the soft
 # reranker for second-look.
 
 version: council-config-1.0
 
 base_encoder:
-  # Phase 2 (Goal A) chose ModernBERT-base as the working backbone:
-  # transformers 5.5 cannot decode DeBERTa-v3-base's spm.model file
-  # without tiktoken-incompatible artifacts. ModernBERT is the explicit
-  # DP-0.1 fallback ("ModernBERT-base is the fallback if DeBERTa's
-  # native 512 token limit bites... — both can be padded or chunked
-  # rather than swapping bases"). 8K context is a strict win for the
-  # Phase 4 cross-BERT reranker. Adapter target-module names changed
-  # accordingly.
+  # The 8K context supports long council inputs and fixes the LoRA target
+  # module shape expected by the stored specialist adapters.
   family: modernbert
   variant: base
   hf_name: answerdotai/ModernBERT-base
@@ -44,8 +29,7 @@ cross_encoder:
 
 confidence_threshold_tau: 0.70   # architecture.md §6: top-1 < tau -> soft rerank
 
-# Per-BERT hyperparameter slots. Phase 0 ships empty maps; each rollout
-# phase fills its own block.
+# Per-specialist hyperparameter slots consumed by council configuration.
 berts:
   math_detector:    {}
   span:             {}

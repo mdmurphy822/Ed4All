@@ -1,8 +1,23 @@
-# Running SemantiK Stage-6 locally (8GB GPU, fully on-device)
+# Resource-constrained SemantiK compatibility guide
 
-This box is a single ~8GB GPU. Stage-6 runs fully on-device on the
-license-clean local **Qwen3-4B QLoRA specialists** (prose / table / math /
-gap_fill) — no hosted or external calls.
+The current deployment target is a DGX Spark-class host. This page preserves
+the smaller-GPU procedure for compatibility testing and recovery environments;
+it is not the recommended production topology. On a constrained GPU, Stage 6
+can run fully on-device with the local **Qwen3-4B QLoRA specialists** (prose,
+table, math, and gap fill) and no hosted calls.
+
+The preferred production conversion lane is GLM-OCR and must be selected
+explicitly because the code-level default remains the compatibility council:
+
+```bash
+export SEMANTIK_GLMOCR_LANE=1
+export SEMANTIK_GLMOCR_BASE_URL=http://localhost:8002/v1
+export SEMANTIK_GLMOCR_MODEL=glm-ocr
+```
+
+Leaving `SEMANTIK_GLMOCR_LANE` unset runs the live ModernBERT council cascade.
+The page-arranger route is another flag-gated compatibility option, not part of
+the preferred GLM-OCR recipe.
 
 ## Default (recommended): local 4B specialists author
 
@@ -49,7 +64,7 @@ cd SemantiK
 The default aligner is `greedy` (byte-stable); `global` is the lossless
 split/merge-aware path (`SEMANTIK_STRUCTURE_ALIGNER=global` is equivalent).
 
-## VRAM notes (8GB)
+## Constrained-VRAM notes
 
 - Council BERTs are released before Stage-6 (cascade phasing — one large model
   resident at a time).
@@ -59,6 +74,10 @@ split/merge-aware path (`SEMANTIK_STRUCTURE_ALIGNER=global` is equivalent).
   `CLAUDE.md`.
 - Observability: `ED4ALL_VRAM_DOCTOR=1` logs a per-phase VRAM trajectory, and
   `ed4all doctor` preflights GPU fit.
+
+These constraints describe the compatibility path. DGX Spark deployments
+should use the seat schedule and GLM-OCR recipe in
+`docs/operations/pipeline-invocation.md`.
 
 ## Environment
 

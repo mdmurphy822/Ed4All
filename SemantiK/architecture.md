@@ -1,8 +1,8 @@
 # SemantiK architecture
 
 SemantiK converts source documents into structured HTML and carries source
-provenance into Ed4All. This guide describes the live v2 conversion path, its
-alternate structure lanes, the Ed4All adapter boundary, and the evidence that
+provenance into Ed4All. This guide describes its two live, non-convergent
+conversion routes, the shared Ed4All adapter boundary, and the evidence that
 travels with each output.
 
 For an operator-focused introduction, see the [SemantiK README](README.md).
@@ -18,8 +18,9 @@ For canonical semantic types, see the [Ed4All ontology](../schemas/ONTOLOGY.md).
    are implemented as inspectable code.
 3. **Hard failures cannot be averaged away.** A candidate that fails an
    eliminating check is removed before soft ranking.
-4. **Optional lanes are explicit.** Scan, OCR, reviewer, and hosted-model paths
-   are guarded behavior changes, not silent fallbacks.
+4. **Route selection is explicit.** The operator-preferred GLM-OCR route is
+   enabled by flag; flag-off behavior runs the compatibility cascade. Neither
+   route silently replaces the other after a runtime failure.
 5. **Skipped is not passed.** Audit records preserve skipped checks as missing
    measurements.
 
@@ -36,9 +37,16 @@ flowchart LR
     seam -->|in process| cascade["SemantiK v2 runtime"]
     seam -->|JSON subprocess| bridge["run_cascade_json.py"]
     bridge --> cascade
-    cascade --> result["PipelineV2Result"]
+    cascade --> result["Lane-specific PipelineV2Result"]
     result --> adapter["lib/semantik adapter"]
     adapter --> artifacts["HTML + cascade IR + audits"]
+
+    classDef entry fill:#EAF2FF,stroke:#2457A7,color:#102A4C,stroke-width:2px;
+    classDef runtime fill:#E7F8EF,stroke:#08783E,color:#103A26,stroke-width:2px;
+    classDef contract fill:#FFF4D8,stroke:#8A5A00,color:#402A00,stroke-width:2px;
+    class cli,workflow,seam entry;
+    class bridge,cascade,result runtime;
+    class adapter,artifacts contract;
 ```
 
 In words: both the standalone `ed4all convert` command and the complete
@@ -64,34 +72,56 @@ loudly; the seam must not invent empty provenance.
 | Ed4All seam | `MCP/tools/pipeline_tools.py::_run_semantik_v2_conversion` | Select in-process or bridge execution and persist artifacts |
 | Bridge | `scripts/run_cascade_json.py` | Execute conversion in the SemantiK environment and serialize the result |
 | Runtime | `semantik_structure/cascade.py::run_pipeline_v2` | Select a structure lane and own validator lifetime |
-| Full cascade | `semantik_structure/cascade.py::run_full_cascade` | Execute the default staged conversion path |
+| Compatibility cascade | `semantik_structure/cascade.py::run_full_cascade` | Execute the flag-off Stage-1–13 route |
 | Adapter | `lib/semantik/cascade_ir.py` and `adapter.py` | Convert region provenance into the downstream HTML contract |
 
-`semantik_structure/pipeline_v2.py` remains a compatibility selector between
-the older pipeline and v2. Ed4All's current conversion seam targets v2.
+Ed4All's conversion seam targets the v2 runtime through
+`semantik_structure/pipeline_v2.py`.
 
 ## Runtime routing
 
 ```mermaid
 flowchart TD
     input["Input PDF"] --> glm{"Whole-document GLM-OCR lane enabled?"}
-    glm -->|yes| glmrun["GLM-OCR + SDK transform own extraction and structure"]
-    glm -->|no| page{"Eligible scan page-arranger enabled?"}
-    page -->|yes| arrange["Multimodal page arrangement owns structure"]
-    page -->|no| default["Default extraction, features, classification, and grouping"]
-    glmrun --> common["Normalized regions + provenance"]
-    arrange --> common
-    default --> common
-    common --> generation["Generation, gates, assembly, audit"]
+    glm -->|yes: operator-preferred| glmrun["GLM-OCR + SDK transform<br/>and normalization"]
+    glmrun --> enrich["Deterministic enrichment"]
+    enrich --> judge["Super heading judge<br/>default on within GLM lane"]
+    judge --> glmresult["Region provenance + heading tree<br/>not_evaluated · ship_with_flag"]
+
+    glm -->|no: code default| page{"Eligible scan-page arranger enabled?"}
+    page -->|yes| arrange["Multimodal arrangement<br/>feeds compatibility processing"]
+    page -->|no| extract["Stages 1–2<br/>extraction + features"]
+    extract --> council["Stages 3–5<br/>five ModernBERT specialists<br/>cross-reranker + structure graph"]
+    arrange --> compat["Compatibility region stream"]
+    council --> compat
+    compat --> generation["Stages 6–9<br/>Qwen candidates + hard gates + assembler"]
+    generation --> document["Stages 10–13<br/>document gates + theta + exit"]
+
+    glmresult --> adapter["Ed4All adapter + public provenance contract"]
+    document --> adapter
+
+    classDef preferred fill:#E7F8EF,stroke:#08783E,color:#103A26,stroke-width:2px;
+    classDef compat fill:#EAF2FF,stroke:#2457A7,color:#102A4C,stroke-width:2px;
+    classDef contract fill:#FFF4D8,stroke:#8A5A00,color:#402A00,stroke-width:2px;
+    class glmrun,enrich,judge,glmresult preferred;
+    class page,arrange,extract,council,compat,generation,document compat;
+    class adapter contract;
 ```
 
-In words: the preferred current lane uses GLM-OCR extraction, the SDK transform,
-deterministic enrichment, and the super heading judge to produce the region-
-provenance contract. It can bypass the staged compatibility cascade, but its
-gate remains default-off. Otherwise, an eligible opt-in page-arranger can own
-structure for a scan. All other inputs use the compatibility extraction and
-structure path. Once a typed, ordered region stream exists, the routes converge
-on the same generation, validation, assembly, provenance, and adapter boundaries.
+The operator-preferred route uses GLM-OCR extraction, SDK transformation and
+normalization, deterministic enrichment, and the Super heading judge. The
+judge is on by default inside this route, while the route itself remains
+explicitly enabled. It builds `region_provenance` and a heading tree, then hands
+that evidence to the Ed4All adapter. It does not enter compatibility candidate
+generation, accessibility gates, assembly, or theta evaluation. Its current
+result accurately records accessibility as `not_evaluated` and the exit action
+`ship_with_flag`.
+
+With the GLM-OCR flag off—the code default—SemantiK runs the compatibility
+Stage-1–13 route. An eligible, explicitly enabled page arranger may supply its
+structure stream inside that route. The two primary routes meet only at the
+Ed4All adapter and public provenance contract; they do not share generation,
+validation, assembly, or audit semantics.
 
 The compatibility route combines extracted geometry with five ModernBERT
 specialists: Structure, Semantic, MergeOrSplit, TableSpecialist, and
@@ -101,11 +131,11 @@ signals. Separate table- and math-detector members are not part of the live
 route. Alternate routes do not silently activate because a
 model or dependency is missing; their flags and eligibility checks select them.
 
-## Default cascade
+## Compatibility Stage-1–13 cascade
 
-The implementation is staged, but several optional review and repair seams sit
-between the numbered stages. This table is a reliable conceptual map rather
-than a promise that every optional seam runs on every document.
+This route runs when GLM-OCR is not enabled. Several optional review and repair
+seams sit between its numbered stages. The table is a conceptual map, not a
+promise that every optional seam runs on every document.
 
 | Stage | Owner | Result |
 |------:|-------|--------|
@@ -183,10 +213,12 @@ pressure is an operational failure, not permission to substitute mock output.
 
 ### Runtime result
 
-`PipelineV2Result` carries the source path, assembled HTML, gate status, exit
-action, semantic-preservation score and report, flags, lane identifier, nested
-cascade evidence, ordered `region_provenance`, and the heading tree. The bridge
-serializes the equivalent fields as JSON.
+`PipelineV2Result` carries the source path, HTML, flags, lane identifier,
+ordered `region_provenance`, heading data, and route-specific evidence. The
+compatibility route also carries gate status, semantic-preservation results,
+nested cascade evidence, and its exit decision. The GLM route explicitly marks
+accessibility `not_evaluated` and uses `ship_with_flag`. The bridge serializes
+the equivalent lane-specific fields as JSON.
 
 Mock runtime output is for tests and harnesses. The production seam inspects
 runtime provenance and rejects mock-backed conversion artifacts.
@@ -242,32 +274,50 @@ follow the conversion guide rather than infer success from a filename alone.
 
 ### Conformance audit
 
+For the compatibility cascade,
 `conformance_audit.py::build_conformance_audit` records the runtime mode, exit
 decision, per-region and document gates, skipped-check counts, semantic-
 preservation evidence, thresholds, heading tree, provenance summary, and
 optional feature audits. A skip means that a check had no measurement. The
-audit is evidence for review; its presence alone is not a conformance claim.
+GLM route does not imply that these compatibility checks ran; its
+`not_evaluated`/`ship_with_flag` posture is the evidence consumers must honor.
+An audit artifact is evidence for review, not a conformance claim by itself.
 
 ## Failure behavior
 
 ```mermaid
 flowchart TD
-    run["Run selected conversion lane"] --> ok{"Required runtime and evidence available?"}
+    run["Run selected conversion route"] --> ok{"Required runtime and evidence available?"}
     ok -->|no| error["Fail with operator guidance"]
-    ok -->|yes| gate{"Hard gates pass?"}
+    ok -->|yes| route{"Which route ran?"}
+    route -->|GLM-OCR| glmposture["Record not_evaluated<br/>and ship_with_flag"]
+    route -->|Compatibility| gate{"Hard gates pass?"}
     gate -->|yes| score["Evaluate preservation and exit policy"]
     gate -->|no| retry{"Bounded retry allowed?"}
     retry -->|yes| rerun["Run one alternate retry"]
     rerun --> gate
     retry -->|no| flagged["Emit explicit non-certified or failed outcome"]
-    score --> output["Emit action, flags, HTML, and evidence"]
+    glmposture --> output["Emit action, flags, HTML, and lane evidence"]
+    score --> output
+    flagged --> output
+
+    classDef preferred fill:#E7F8EF,stroke:#08783E,color:#103A26,stroke-width:2px;
+    classDef compat fill:#EAF2FF,stroke:#2457A7,color:#102A4C,stroke-width:2px;
+    classDef contract fill:#FFF4D8,stroke:#8A5A00,color:#402A00,stroke-width:2px;
+    classDef failure fill:#FFF0F0,stroke:#A42828,color:#4B1515,stroke-width:2px;
+    class glmposture preferred;
+    class gate,score,retry,rerun,flagged compat;
+    class output contract;
+    class error failure;
 ```
 
 In words: missing dependencies, invalid bridge JSON, mock-backed production
 results, absent required provenance, and invariant violations are errors with
-operator-facing diagnostics. Hard-gate failure can request only the bounded
-retry defined by exit policy. Exhaustion remains explicit in the exit action
-and audit; it is never relabeled as validated output.
+operator-facing diagnostics. On the compatibility route, hard-gate failure can
+request only the bounded retry defined by exit policy. Exhaustion remains
+explicit in the exit action and audit; it is never relabeled as validated
+output. The GLM route preserves its unevaluated, flagged posture instead of
+borrowing compatibility-route gate results.
 
 Important failure classes include:
 

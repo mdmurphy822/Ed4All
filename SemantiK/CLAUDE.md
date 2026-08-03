@@ -26,10 +26,10 @@ every EMITTER mints the `semantik:` form. The full block-provenance contract
 is in [`architecture.md`](architecture.md) §12.
 
 Core principle: **learned models are narrow candidate generators;
-deterministic code orchestrates, gates, and assembles.** BERTs classify,
-Qwens generate, deterministic code owns composition / hierarchy / ARIA /
-validation. That is what lets SemantiK make a WCAG conformance claim — the
-rules that produce conformance are auditable code, not weights.
+deterministic code orchestrates, gates, and assembles.** Deterministic code
+owns composition, hierarchy, ARIA, validation, and the final output contract.
+That is what lets SemantiK make a WCAG conformance claim: the rules that
+produce conformance are auditable code, not weights.
 
 Code layout: the cascade + models live under `SemantiK/semantik_structure/`; the
 figure rendering, captioning, and subtype-routing family lives under
@@ -49,7 +49,21 @@ Trainer layout: the seven council/theta head-trainers live under
 theta cross-encoder + the figure-router head) that are run as one-off scripts
 rather than part of the council DAG.
 
-## The 13-stage v2 cascade at a glance
+## Preferred conversion route
+
+Operators should enable `SEMANTIK_GLMOCR_LANE=1`. This route runs GLM-OCR
+through its SDK, normalizes the response into SemantiK's deterministic block
+contract, enriches the resulting document, and applies the default-on Super
+heading judge before provenance adaptation and audit. It is the current
+operator-preferred route, but it is not yet the code default: leaving the flag
+unset enters the compatibility cascade documented below.
+
+## Flag-off compatibility cascade: 13 stages
+
+This cascade remains reachable and supported. Its ModernBERT council and
+cross-reranker are live compatibility components, not dead code. In this
+route, BERT specialists classify, Qwen specialists generate, and deterministic
+code owns composition, hierarchy, ARIA, validation, and final assembly.
 
 Entry: `semantik_structure/cascade.py::run_full_cascade` (reachable as
 `pipeline_v2.run(pdf, mode="v2")`). Full per-stage depth (input → behavior →
@@ -76,7 +90,7 @@ output) is in [`architecture.md`](architecture.md); the one-liner map:
 | 12 | theta | DeBERTa-v3-small + LoRA semantic-preservation cross-encoder (Stage-12 score) |
 | 13 | exit decider | one capped offline retry, then stamp `ship_with_confidence` / `ship_with_flag` / `offline_qwen_lane` / `non_certified_stamp`. **Theta-stub bypass**: when theta runs in stub mode (`SEMANTIK_ALLOW_THETA_STUB=1`, the v8 mode-collapse fallback's flat 0.7 placeholder), the exit-decider does NOT let the placeholder trip the theta-`<TAU>` offline retry / non-certified path — `theta_is_stubbed` (keyed off `semantic_preservation.method == "stub_v1"`, in `theta/evaluator.py`) makes `theta/offline_retry.py::_needs_retry` skip the theta trigger (still retries on a real `wcag=failed`) and `theta/exits.py::decide_exit` ships `ship_with_flag` + appends the `THETA_UNVERIFIED_STUB` flag (byte-stable when theta is real). |
 
-## Runtime modes
+## Compatibility-cascade runtime modes
 
 - **Local GGUF specialists (default).** `SEMANTIK_SPECIALIST_PROVIDER=local`
   (or unset). The Stage-6 specialists run in-process on `llama-cpp-python`
@@ -413,12 +427,14 @@ read or grep that file before adding, removing, or changing a flag.
 
 ## Honest constraints
 
-- **Council VRAM on 8 GB.** The full cascade is GPU-flaky on an 8 GB card —
+- **Resource-constrained compatibility hardware.** The full compatibility
+  cascade is GPU-flaky on an 8 GB card —
   council BERTs share one ModernBERT-base backbone (one-resident LoRA adapter
   swap) and the Qwen specialists batch **by adapter** rather than fanning out,
   precisely because parallel adapter contexts + a concurrent Chromium/axe-core
   process poison CUDA on 8 GB. Mitigated, not eliminated; gate GPU-heavy work
-  on a dev box. The DGX Spark-class deployment target is the real fix.
+  on resource-constrained hardware. DGX Spark-class systems are the current
+  deployment target.
 - **Structure quality is council-bound.** Block-ID quality of *pedagogical*
   elements is only as good as BERT-Structure's `structural_role` / `is_heading`
   heads; heading over-detection is patched defensively (the always-on

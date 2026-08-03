@@ -1,25 +1,23 @@
 """Static DAG describing the Phase-3 council schedule.
 
-The five council BERTs (today's lineup, post-2026-05-05 retirement of
-the standalone BERT-TableDetector) and how they feed each other:
+The five council BERTs in the compatibility cascade and how they feed each
+other:
 
 ::
 
     merge_or_split  ──► structure ──► semantic   (cascade-from-structure)
 
-    table_specialist  (root; no upstream in v1 — see note below)
+    table_specialist  (root; no upstream — see note below)
     math_specialist   (root; per math candidate, ungated)
 
-The ``structure ──► table_specialist`` soft-hint edge is **deferred to
-v4**. The v3 table_specialist adapter has no cascade projection layer;
+The ``structure ──► table_specialist`` soft-hint edge is not active. The
+current table-specialist adapter has no cascade projection layer;
 its head input is 832 = 768 (backbone) + 64 (cell features), with no
-+8 cascade slot. Until the adapter grows that projection, declaring
-the edge here would mislead readers into thinking the orchestrator
-ingests a Structure cascade for tables — it does not. Once the v4
-adapter ships with a cascade slot, restore the edge in :data:`ROUTING`
-and the diagram above.
++8 cascade slot. Until an adapter grows that projection, declaring
+the edge here would mislead readers into thinking the orchestrator ingests a
+Structure cascade for tables; it does not.
 
-There is **no MathDetector** in v1: ``math_specialist`` runs ungated on
+There is **no MathDetector**: ``math_specialist`` runs ungated on
 :class:`~semantik_structure.region_detection.MathCandidate` regions emitted
 by Stage 2's :func:`~semantik_structure.region_detection.detect_math_region_candidates`.
 Whether a candidate is "really math" is decided downstream by the
@@ -80,19 +78,17 @@ ROUTING: dict[str, _RouteSpec] = {
         "runs_per": "block",
     },
     "table_specialist": {
-        # Per architecture.md §3.1, table_specialist *will* take
-        # Structure's top-k as a soft hint, but that edge is **deferred
-        # to v4**. The v3 adapter has no cascade projection layer;
+        # The current adapter has no cascade projection layer for
+        # Structure's top-k soft hint;
         # head input is 832 = 768 (backbone) + 64 (cell features), with
         # no +8 cascade slot. Declaring the edge here would mislead
-        # readers and the topological order; restore it once the v4
-        # adapter ships with a cascade slot.
+        # readers and the topological order.
         "consumes": (),
         "emits": ("cell_role_scope",),
         "runs_per": "table",
     },
     "math_specialist": {
-        # MathSpecialist runs ungated for v1: there is no MathDetector
+        # MathSpecialist runs ungated because there is no MathDetector
         # BERT. Detector-style gating is done downstream in the
         # cross-BERT reranker using
         # MathCandidate.glyph_density_features.

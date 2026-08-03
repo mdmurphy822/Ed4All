@@ -32,43 +32,58 @@ and preserves block-level provenance for downstream course and retrieval tools.
 ## What SemantiK delivers
 
 - Semantic HTML organized for assistive technology and downstream processing.
-- Automated region- and document-level accessibility checks.
+- Lane-specific accessibility evidence that never presents an unevaluated check
+  as a pass.
 - Stable source references and physical-page provenance for citations and review.
-- An explicit audit record that distinguishes checks that passed, failed, or
-  were skipped.
+- Explicit status and audit data for review, publication, and downstream use.
 
-SemantiK targets WCAG 2.2 AA requirements through deterministic assembly and
-automated gates. Automated checks do not prove that every document is fully
-conformant; skipped checks and flagged output still require appropriate review.
+The compatibility cascade targets WCAG 2.2 AA requirements through
+deterministic assembly and automated gates. Automated checks do not prove that
+every document is fully conformant; skipped, unevaluated, and flagged output
+still requires appropriate review.
 
 ## Conversion flow
 
 ```mermaid
-flowchart LR
-    source["PDF or supported source"] --> extract["Extract text, images, and layout"]
-    extract --> route{"Choose structure lane"}
-    route -->|Default document lane| structure["Classify and group regions"]
-    route -->|Opt-in scan or OCR lane| structure
-    structure --> candidates["Generate semantic HTML candidates"]
-    candidates --> gates["Run hard validation gates"]
-    gates --> assemble["Assemble and normalize the document"]
-    assemble --> audit["Emit HTML, provenance, and audit sidecars"]
+flowchart TB
+    source["Source PDF"] --> route{"GLM-OCR lane enabled?"}
+
+    route -->|Operator-preferred: enabled| glm["GLM-OCR + SDK transform"]
+    glm --> enrich["Deterministic enrichment"]
+    enrich --> judge["Super heading judge<br/>default on within this lane"]
+    judge --> glmout["Region provenance<br/>status: not_evaluated<br/>action: ship_with_flag"]
+
+    route -->|Code default: disabled| extract["Stages 1–2<br/>extract + features"]
+    extract --> council["Stages 3–5<br/>five ModernBERT specialists<br/>reranker + structure graph"]
+    council --> generate["Stages 6–9<br/>generate + gate + assemble"]
+    generate --> validate["Stages 10–13<br/>document gates + theta + exit"]
+
+    glmout --> adapter["Ed4All adapter + provenance contract"]
+    validate --> adapter
+    adapter --> output["Accessible HTML + lane-specific evidence"]
+
+    classDef preferred fill:#E7F8EF,stroke:#08783E,color:#103A26,stroke-width:2px;
+    classDef compat fill:#EAF2FF,stroke:#2457A7,color:#102A4C,stroke-width:2px;
+    classDef contract fill:#FFF4D8,stroke:#8A5A00,color:#402A00,stroke-width:2px;
+    class glm,enrich,judge,glmout preferred;
+    class extract,council,generate,validate compat;
+    class adapter,output contract;
 ```
 
-The default v2 path runs `run_full_cascade` in
-`semantik_structure/cascade.py`. It extracts features, uses specialist
-classifiers and deterministic geometry to form regions, generates prose,
-table, and math candidates, eliminates candidates that fail hard checks, then
-assembles and validates the document. Explicitly enabled scan and whole-document
-OCR lanes can own structure while preserving the same downstream output seam.
+SemantiK has two live, non-convergent conversion routes. The operator-preferred
+route uses GLM-OCR, SDK transformation and normalization, deterministic
+enrichment, and a default-on Super heading judge. It produces ordered
+`region_provenance` for the Ed4All adapter without entering the staged
+generation, gate, assembly, or theta pipeline. Its current posture is explicit:
+accessibility is `not_evaluated`, and the exit action is `ship_with_flag`.
 
-The preferred current route uses GLM-OCR extraction, SDK transformation,
-deterministic enrichment, and the super heading judge. Because that lane is
-still opt-in, the compatibility route remains live: it uses five ModernBERT
-specialists for structure, semantics, merge/split, tables, and math, followed
-by contextual reranking and deterministic grouping. There are no separate
-table-detector or math-detector members. See
-[the architecture guide](architecture.md) for the routing conditions.
+When the GLM-OCR lane is not enabled—the code default—the compatibility route
+runs the Stage-1–13 cascade in `semantik_structure/cascade.py`. Five ModernBERT
+specialists cover structure, semantics, merge/split, tables, and math through a
+shared backbone. A cross-reranker and deterministic structure graph feed Qwen
+candidate generation, hard gates, document assembly, theta evaluation, and the
+exit policy. Both routes meet only at the Ed4All adapter and public provenance
+contract. See [the architecture guide](architecture.md) for the complete map.
 
 ## Quick start
 
@@ -113,9 +128,10 @@ dedicated SemantiK environment behind the JSON bridge at
   OpenAI-compatible endpoint but does not by itself replace local Stage-6
   authoring. `SEMANTIK_SPECIALIST_REFINE=1` enables endpoint refinement;
   `SEMANTIK_SPECIALIST_ENDPOINT_DISPLACE=1` enables endpoint-only generation.
-- **Alternate structure lanes are opt-in.** Scan-page arrangement and the
-  whole-document GLM-OCR lane are guarded behavior changes, not silent
-  fallbacks.
+- **GLM-OCR is operator-preferred and explicitly enabled.** The compatibility
+  Stage-1–13 cascade remains the code default when the lane flag is off.
+- **Scan-page arrangement is also explicit.** Optional routing never activates
+  silently because a dependency or model is unavailable.
 
 Provider and model licensing considerations are documented in
 [the licensing guide](../docs/LICENSING.md). Deployment flags and model paths
@@ -134,8 +150,11 @@ downstream-facing contract:
   run data and must not be hardcoded in tracked files.
 - `region_provenance` records regions in emission order with their source text,
   page span, structure, confidence, and available review metadata.
-- `*.conformance_audit.json` records the exit action, gate results, skip counts,
-  semantic-preservation report, thresholds, and heading tree.
+- Lane-specific evidence records the route and exit posture. The compatibility
+  cascade can include full conformance-audit data: gate results, skip counts,
+  semantic-preservation evidence, thresholds, and heading tree. The GLM route
+  reports accessibility as `not_evaluated` and exits `ship_with_flag`; consumers
+  must not infer that compatibility gates ran.
 
 Stable identifiers support repeatable source mapping, but content-hash IDs are
 used only when their documented flag is enabled. A skipped gate means no

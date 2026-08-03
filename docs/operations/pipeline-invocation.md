@@ -289,7 +289,11 @@ raise it (e.g. `90`) before a full-book local-7B run.
 
 ---
 
-## 5. Pure-local 7B on constrained VRAM (≈8 GB)
+## 5. Resource-constrained local compatibility
+
+The current deployment target is DGX Spark-class hardware. This section retains
+the smaller-GPU local recipe for compatibility and recovery use; it is not the
+recommended production topology.
 
 A fully local, no-cloud run needs several seats pinned to `local` — and **two of the
 defaults point at cloud** (they will silently no-op / fail without a key):
@@ -326,8 +330,8 @@ exceed that — the window budget goes negative and every chunk becomes its own 
 fragments). Set it to the local model's actual serving window (verify with
 `curl -s http://localhost:11434/api/show -d '{"name":"<model>"}'` → Modelfile `num_ctx`).
 
-**Model window vs VRAM (8 GB card):** the model + its KV cache must fit or it spills to
-CPU and crawls. Measured on an 8 GB card:
+**Model window vs constrained VRAM:** the model + its KV cache must fit or it
+spills to CPU and slows substantially. Historical constrained-host measurements:
 
 - `qwen2.5-7b-16k` → ~6.7 GB resident, **fits** (fast). Good default for planning/synthesis.
 - `qwen2.5-7b-32k` → ~8.7 GB, **exceeds** the card → partial CPU offload (slow). Use
@@ -344,6 +348,20 @@ export TRAINFORGE_REQUIRE_EMBEDDINGS=true    # fail-closed if [embedding] extras
 
 Then invoke with `--mode local` (the default). See `docs/operations/license-clean-run.md`
 for the licensing rationale behind each seat and the Together fallback for larger VRAM.
+
+### 5.1 Preferred DGX Spark SemantiK conversion
+
+Select the GLM-OCR lane explicitly. The flag-off code path remains the live
+ModernBERT council compatibility default; the page arranger is an alternate
+flag-gated compatibility route.
+
+```bash
+export SEMANTIK_GLMOCR_LANE=1
+export SEMANTIK_GLMOCR_BASE_URL=http://localhost:8002/v1
+export SEMANTIK_GLMOCR_MODEL=glm-ocr
+export SEMANTIK_HEADING_JUDGE_BASE_URL=http://localhost:8123/v1
+export SEMANTIK_HEADING_JUDGE_MODEL=nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
+```
 
 ---
 
@@ -733,7 +751,7 @@ and time-to-first-token metering (`ED4ALL_LLM_TTFT_METER`) are in the root
 
 ## 9. Declarative seat schedule (`ED4ALL_SEAT_SCHEDULE`)
 
-On a single-GPU box the Super-120B seat cannot coexist with the conversion
+On the current DGX Spark topology the Super-120B seat cannot coexist with the conversion
 (GLM-OCR / Qwen3-VL) seats or with the NLI/embedding validation chain — they
 contend for the same VRAM. Historically the operator swapped the Super container
 in and out by hand, and a **mis-scheduled swap starved validation 4-7x**
@@ -764,7 +782,7 @@ logged once (a dry-run report of the "logical order").
 
 | Phase range | Seats | Why |
 |---|---|---|
-| `semantik_conversion` | `[spark-glm, spark-qwen]` | GLM-OCR extract + Qwe3-VL describe (the Super judge, ~5-10% of pages, is cascade-internal). |
+| `semantik_conversion` | `[spark-glm, spark-qwen]` | GLM-OCR extraction + Qwen3-VL description. The following `heading_judge` phase declares the Super seat separately. |
 | `staging` → `source_mapping` | *absent (no opinion)* | Deterministic phases; conversion seats stay resident until course_planning swaps them out in ONE transition. |
 | `course_planning` → `assessment_synthesis` | `[spark-super]` | The whole synthesis range runs on ONE warm Super seat — planning, concept extraction, outline, inter-tier validation (kept warm), rewrite, and assessments back-to-back. |
 | `post_rewrite_validation` → `trainforge_assessment` | `[]` | Super retires after assessment_synthesis; the NLI/embedding validation chain + packaging + chunking get the whole GPU seat-free. |

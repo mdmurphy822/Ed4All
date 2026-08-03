@@ -4,10 +4,9 @@ These are the typed signals produced by individual BERTs in the council
 (Stage 3 of the v2 pipeline) and the aggregate state passed to Stage 4
 (cross-BERT reranker).
 
-Phase 0 scope: dataclass definitions only. No logic. No model imports.
-
-Phase-4 (v1 cross-BERT reranker) extension: :class:`RoutingDecision`
-is the per-region output of Stage 4's rule-based arbitration over a
+This module contains dataclass contracts only: no model imports or inference
+logic. :class:`RoutingDecision` is the per-region output of Stage 4's
+rule-based arbitration over a
 :class:`CouncilState`. See ``semantik_structure/council/cross_reranker.py``
 for the rules (architecture.md §3.2).
 """
@@ -104,15 +103,15 @@ from ..structure_graph import Region  # noqa: E402
 
 @dataclass(frozen=True)
 class RoutingDecision:
-    """Stage 4 (cross-BERT reranker) v1 output, one per region.
+    """Stage 4 cross-BERT reranker output, one per region.
 
     ``region_id`` indexes into the **detected region stream** — i.e.
     the ``regions`` list passed to
     :func:`~semantik_structure.council.cross_reranker.arbitrate`, which in
-    v1 is ``table_candidates + math_candidates`` (see
+    is ``table_candidates + math_candidates`` (see
     :func:`~semantik_structure.council.orchestrator.run_council`). It is
     **not** an index into FeatureBlocks. Prose spans do **not** get
-    RoutingDecisions in v1; per-span structure decisions are produced
+    RoutingDecisions; per-span structure decisions are produced
     downstream by Stage 5 directly from Structure's per-span
     :class:`TypedSignal`s on
     ``CouncilState.outputs['structure'].signals`` (whose own
@@ -131,8 +130,8 @@ class RoutingDecision:
                      head is a secondary/confirmation strength flag, not
                      the trigger. Gated by ``SEMANTIK_DETECT_FIGURES``.
     * ``"drop"``   — region demoted out of the structure stream entirely
-                     (header/footer artefact, page-number, etc.). v1
-                     never emits ``drop`` from the rule arbiter; the
+                     (header/footer artefact, page-number, etc.). The current
+                     arbiter never emits ``drop``; the
                      value is reserved for assemblers / future reranker
                      versions.
 

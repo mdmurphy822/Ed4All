@@ -109,23 +109,25 @@ Then add `TOGETHER_API_KEY` to the env. Together AI's ToS explicitly permits usi
 
 The five-env-var recipe above closes the largest training-data exposure paths in the pipeline. The Anthropic-pinned subagent surfaces have all been routed through in-process license-clean providers as of Wave W-D15:
 
-## Conversion (SemantiK) — PDF → HTML license-clean by construction
+## Conversion (SemantiK) — preferred local GLM-OCR lane
 
-The PDF → accessible-HTML conversion stage is **SemantiK**. There is no
-Anthropic default to flip on the conversion path: SemantiK's extraction stack carries no
-PyMuPDF/MuPDF (AGPL-3) or Poppler (GPL-2) and ships Apache-2.0, and its runtime
-runs **fully offline** by default — the BERT council, OCR, theta, and the
-Stage-6 Qwen specialists are all local. The conversion output (which is later
-ingested as Trainforge training chunks) is therefore license-clean with **no
-operator action required**.
-
-**Default (fully offline):**
+The PDF → accessible-HTML conversion stage is **SemantiK**. The preferred local
+recipe uses the MIT-licensed GLM-OCR weights, Apache-2.0 `glmocr` SDK and layout
+stack, deterministic enrichment, and the local Super heading judge. Select it
+explicitly; the flag is still off by default in code.
 
 ```bash
-# No env vars needed — SemantiK runs the local GGUF council + Qwen
-# specialists in-process. extraction / OCR / theta are local-only.
-export SEMANTIK_SPECIALIST_PROVIDER=local   # this is already the default
+export SEMANTIK_GLMOCR_LANE=1
+export SEMANTIK_GLMOCR_BASE_URL=http://localhost:8002/v1
+export SEMANTIK_GLMOCR_MODEL=glm-ocr
+export SEMANTIK_HEADING_JUDGE_BASE_URL=http://localhost:8123/v1
+export SEMANTIK_HEADING_JUDGE_MODEL=nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
 ```
+
+With `SEMANTIK_GLMOCR_LANE` unset, the live default-by-code is the local
+ModernBERT council cascade. It remains a license-clean compatibility path, not
+the preferred deployment recipe. The flag-gated page arranger is an alternate
+compatibility route and is not required for GLM-OCR.
 
 **Optional hosted large-model quality seat.** Stage-6 specialist generation (and the
 off-by-default Stage-5d structure reviewer) can be routed to a hosted large-model
@@ -157,7 +159,7 @@ This recipe documents a license-clean COURSEWARE / TRAINING-CORPUS run for every
 
 ## See also
 
-- `docs/operations/pipeline-invocation.md` — the **operational** companion: per-stage invocation (stop-after / reuse / stage subcommands), the timeout knobs that actually fire (`ED4ALL_TASK_TIMEOUT_MINUTES` for a slow in-process `course_planning`), the outline-vs-rewrite naming, and the pure-local constrained-VRAM (≈8 GB) env recipe. This licensing doc covers *which* seats to pin; that one covers *how* to invoke each stage.
+- `docs/operations/pipeline-invocation.md` — the **operational** companion: per-stage invocation, timeout controls, the preferred DGX Spark GLM-OCR recipe, and resource-constrained compatibility guidance. This licensing doc covers *which* seats to pin; that one covers *how* to invoke each stage.
 - `docs/LICENSING.md` — canonical ToS posture, per-provider terms, per-model license matrix.
 - `Courseforge/CLAUDE.md` § "Opt-In Behavior Flags" — full env-var table for the Courseforge two-pass router.
 - `Courseforge/config/block_routing.license_clean.yaml` — the sibling YAML this recipe pins via `COURSEFORGE_BLOCK_ROUTING_PATH`.

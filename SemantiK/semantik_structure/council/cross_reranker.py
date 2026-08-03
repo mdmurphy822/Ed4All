@@ -1,4 +1,4 @@
-"""Stage 4 v1 — cross-BERT reranker.
+"""Stage 4 cross-BERT reranker for the compatibility cascade.
 
 This module implements the rule-based arbiter described in
 ``architecture.md`` §3.2 (lines 275-285). It is **pure function** over
@@ -15,7 +15,7 @@ Public API
 Stage 4 / Stage 5 seam
 ----------------------
 
-Stage 4 v1 emits one :class:`RoutingDecision` per detected region
+Stage 4 emits one :class:`RoutingDecision` per detected region
 candidate (Table or Math). It deliberately does **NOT** emit decisions
 for the per-span Structure outputs that cover prose — that is Stage
 5's job (Structure-graph candidate generation per ``architecture.md``

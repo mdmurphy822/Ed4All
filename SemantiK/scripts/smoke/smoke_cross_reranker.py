@@ -1,4 +1,4 @@
-"""End-to-end smoke for Stage 4 v1 (cross-BERT reranker).
+"""End-to-end smoke for the compatibility cascade's Stage 4 reranker.
 
 Walks: PDF → ``run_council`` (5 BERTs swapped sequentially on one
 shared backbone) → ``arbitrate`` (rule-based §3.2 arbitration) → routing

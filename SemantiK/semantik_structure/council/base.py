@@ -1,16 +1,15 @@
 """Council backbone + LoRA adapter abstractions.
 
-The council shares one backbone encoder (DeBERTa-v3-base by default;
-ModernBERT-base is the fallback — see Plans/01_implementation_plan.md
-DP-0.1) and swaps a per-BERT LoRA adapter on top.
+The council shares one ModernBERT-base backbone encoder and swaps a per-BERT
+LoRA adapter on top.
 
-Phase 2 (this file) makes the Phase 0 protocol stubs concrete:
+The runtime implements these contracts:
 
 * ``SharedBackbone`` is a singleton-per-model-name wrapper around
   ``transformers.AutoModel.from_pretrained``. The encoder is loaded
   exactly once per process; subsequent ``get(...)`` calls return the
-  cached instance. The Phase 0 ``Protocol`` shape is preserved in
-  ``SharedBackboneProtocol`` for type-checking purposes.
+  cached instance. ``SharedBackboneProtocol`` preserves the type-checking
+  surface without importing the model runtime.
 
 * ``LoRAAdapter`` wraps ``peft.PeftModel`` over the backbone. ``load``
   attaches a LoRA adapter; ``unload`` detaches it. **Adapter-swap
@@ -20,8 +19,8 @@ Phase 2 (this file) makes the Phase 0 protocol stubs concrete:
 
 Heavy framework imports (torch, transformers, peft) are deferred to the
 first call site so plain ``import semantik_structure.council.base`` stays
-free; that is required by the Phase 0 invariant that the module import
-graph must not pull torch into ``sys.modules`` for offline tests.
+free, so lightweight and offline callers do not pull torch into
+``sys.modules``.
 """
 from __future__ import annotations
 
