@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""LLM-agnostic synthesis provider (Phase 2).
+"""Registry-driven, LLM-agnostic synthesis provider.
 
 ONE registry-driven synthesis provider that supersedes the per-vendor
 leaves (``LocalSynthesisProvider`` / ``TogetherSynthesisProvider`` /
@@ -40,9 +40,8 @@ Design:
   agnostic provider can RECOVER a malformed response where the legacy
   strict-together path would have retried / exhausted.
 
-Phase 2 is ADDITIVE: this class is NOT wired into ``run_synthesis`` or
-the provider factories yet. It ships alongside the per-vendor leaves
-unchanged.
+The provider factory routes OpenAI-compatible synthesis seats through this
+class while retaining the per-vendor leaves as a rollback path.
 """
 
 from __future__ import annotations
@@ -100,8 +99,8 @@ MAX_LEAKAGE_REWRITE_RETRIES = 2
 def _resolve_provenance_provider(provider: str) -> str:
     """Return the canonical ``provenance_provider`` for an endpoint name.
 
-    W9.1 (licensing-correctness): the value stamped onto a synthesized
-    pair's ``out["provider"]`` must be the closed ``Touch.provider``
+    For licensing correctness, the value stamped onto a synthesized pair's
+    ``out["provider"]`` must be the closed ``Touch.provider``
     provenance value the endpoint row declares — NOT the raw endpoint
     name. This keeps a hosted-cloud seat (groq/fireworks/deepseek →
     ``together``) from falsely recording the license-clean ``local``
@@ -129,7 +128,7 @@ def _resolve_provenance_provider(provider: str) -> str:
     return provider
 
 
-# Phase 3 rollback flag. When ON (the DEFAULT), the run_synthesis
+# Registry-driven synthesis rollback flag. When ON (the DEFAULT), run_synthesis
 # construction + the instruction/preference factory dispatch arms route
 # the OpenAI-compatible synthesis providers (``local`` / ``together``)
 # through the LLM-agnostic :class:`SynthesisProvider` instead of the
@@ -208,7 +207,7 @@ class SynthesisProvider:
       paraphrase methods never received a preserve directive.
     - ``local_user_directives`` — ``True`` (default) renders the
       local-leaf-only USER-prompt directives that the lean hosted
-      (together) renderer never sent. Today that is the Wave-126
+      (together) renderer never sent. This currently includes the
       ``definition_directive`` (the explanation-asking nudge on
       definition / recall chunks); ``False`` OMITS it so the rendered
       user prompt is byte-identical to ``TogetherSynthesisProvider``'s
@@ -246,8 +245,8 @@ class SynthesisProvider:
         # attached (e.g. "groq" / "fireworks"), preserving audit fidelity.
         self._provider_name = provider
 
-        # W9.1 (licensing-correctness): the value written to ``out["provider"]``
-        # is the CANONICAL provenance value from the registry row
+        # For licensing correctness, ``out["provider"]`` uses the canonical
+        # provenance value from the registry row
         # (``provenance_provider``), NOT the raw endpoint name. A cloud seat
         # (groq/fireworks/deepseek → "together") must never falsely stamp the
         # license-clean "local" provenance, and the stamp must be a valid
@@ -292,7 +291,7 @@ class SynthesisProvider:
         self._preserve_tokens_enabled = bool(preserve_tokens_enabled)
 
         # Local-only USER-prompt directive switch — the local leaf renders
-        # the Wave-126 definition_directive (and any future local-only user
+        # the definition_directive (and any future local-only user
         # directive) that the lean hosted (together) renderer never sent.
         # False → omitted, so the together path's rendered user prompt is
         # byte-identical to TogetherSynthesisProvider's lean renderer.
@@ -548,8 +547,8 @@ class SynthesisProvider:
         last_text: str = ""
         total_http_retries = 0
         last_usage: Dict[str, int] = {}
-        # Preserve the historical parse semantics: max_parse_retries names
-        # the total malformed-output attempt budget (so 1 means no retry).
+        # max_parse_retries names the total malformed-output attempt budget,
+        # so a value of one means no retry.
         # A value of zero still permits the one request needed to determine
         # whether the response is truncated; it permits no parse retry.
         parse_retry_budget = max(0, self._max_parse_retries - 1)
@@ -1025,8 +1024,8 @@ class SynthesisProvider:
         preserve = self._preserve_directive(
             preserve_tokens or [], "the prompt or completion",
         )
-        # Wave-126 definition_directive — a LOCAL-leaf-only USER-prompt
-        # directive. The lean hosted (together) renderer never sent it, so
+        # definition_directive is a local-leaf-only user-prompt directive.
+        # The lean hosted (together) renderer does not send it, so
         # it fires only when ``local_user_directives`` is on (the local
         # path). Gated so the together path is byte-identical to the
         # 2-fragment TogetherSynthesisProvider renderer for definition /
@@ -1378,7 +1377,7 @@ def build_synthesis_provider(
       leaf is preserve-aware); together never injected a preserve directive
       (its 2-arg leaf could not receive one), so it is DISABLED for hosted.
     - ``local_user_directives`` — local renders the leaf-only USER-prompt
-      directives (the Wave-126 ``definition_directive``); the lean hosted
+      directives (including ``definition_directive``); the lean hosted
       (together) renderer never sent them, so it is DISABLED for hosted.
       All three local-rendering axes (``terse_prompts`` system prompt +
       ``preserve_tokens_enabled`` + ``local_user_directives``) are driven

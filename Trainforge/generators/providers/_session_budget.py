@@ -1,4 +1,4 @@
-"""Wave 110 / Phase D — synthesis-session budget tracking.
+"""Synthesis-session budget tracking and failure throttling.
 
 Tracks dispatches vs. cache hits, persists per-call telemetry, and
 fails loud when ``max_dispatches`` is exceeded so a partial Claude

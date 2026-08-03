@@ -53,11 +53,9 @@ _KIND_BOUNDS: Dict[str, tuple] = {
 class SynthesisProviderError(RuntimeError):
     """Typed error raised on synthesis-provider validation failures.
 
-    Wave 112 Task 2: replaces the prior sentinel-injection branch in
-    ``_clamp`` (which silently appended a hardcoded filler phrase to any
-    short paraphrase, poisoning training data with a sentinel parrot
-    pattern). Raising a typed error instead lets the caller's retry path
-    fire and forces a re-paraphrase.
+    Short paraphrases raise this error instead of receiving filler text that
+    could contaminate training data. The typed error lets the caller's retry
+    path request a fresh paraphrase.
 
     The ``code`` field is a stable string the caller can dispatch on
     (e.g. ``completion_below_minimum``, ``prompt_below_minimum``);
