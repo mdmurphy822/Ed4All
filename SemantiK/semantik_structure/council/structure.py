@@ -14,10 +14,10 @@ Phase 3b/3f contract:
                emission time so downstream consumers don't see random
                output from an untrained head.
 
-Subsumes today's `semantik_structure/classify.py` DistilBERT classifier
-(`models/classifier_v5/final`). The structural_role head is the direct
-replacement (7 active classes only); is_heading, table_region, and
-list_nesting are new heads the v1 pipeline didn't have.
+The ``structural_role`` head provides the council counterpart to the
+compatibility v1 DistilBERT classifier in ``semantik_structure.classify``
+(seven active classes only). The additional heads provide heading, table,
+image-block, and list-nesting signals for downstream specialists.
 
 Two specialist-gating signals mirror the same pattern:
     * is_heading=1   → HeadingSpecialist emits h1..h6.

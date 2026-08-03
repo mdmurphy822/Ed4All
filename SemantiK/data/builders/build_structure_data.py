@@ -1,17 +1,18 @@
 """Build BERT-Structure (Phase 3b) training data.
 
-Span-level multi-head classifier on PDF blocks. Replaces the v1
-DistilBERT classifier (`train_classifier.py`) with a 4-head model on
-the shared ModernBERT-base backbone.
+Build labeled PDF-block examples for the six-head BERT-Structure specialist
+on the shared ModernBERT-base backbone. The structural-role labels align with
+the compatibility v1 classifier while the other heads supply council signals.
 
 Heads (all span-level):
-    * structural_role     6-class     A NON-AUTHORITATIVE recommendation
+    * structural_role     9-class     A NON-AUTHORITATIVE recommendation
                                       from BERT-Structure; downstream
                                       specialists override per their
                                       domain. Active classes only:
                                           paragraph, heading, list_item,
                                           form_label, blockquote,
-                                          code_block
+                                          code_block, definition_term,
+                                          definition_def, caption
                                       td/th/caption/figcaption text
                                       content is labeled `paragraph`
                                       (its content shape) — table
@@ -36,9 +37,16 @@ Heads (all span-level):
                                       scope; this head only DETECTS
                                       table membership, it does not
                                       parse the table.
+    * is_image_block      binary      1 if the span belongs to a figure or
+                                      image block. This is a secondary
+                                      membership signal for downstream image
+                                      routing and figure assembly.
     * list_nesting        4-class     <ul>/<ol> ancestor count of <li>:
                                       {0=not in list, 1=top-level li,
                                        2=nested, 3=3+ deep}
+    * pedagogical_role   10-class     Teaching-function label orthogonal to
+                                      structural shape; ``none`` plus nine
+                                      supported pedagogical opening roles.
 
 Layout side-channel (numeric, fed to the model alongside text — same
 pattern as Phase 3a v4 MergeOrSplit):
@@ -54,7 +62,7 @@ Source pipeline (mirrors data/builders/build_classifier_data_v2.py):
     3. Walk output_html DOM with metadata: per block emit
        ``(text, tag_name, role, list_depth)``.
     4. Align each pypdfium2 merged block to its HTML block via Jaccard.
-    5. Compute layout vector + the 4 labels.
+    5. Compute the layout vector and six labels.
     6. Stratified 80/10/10 split by structural_role.
 
 Outputs:
@@ -116,8 +124,8 @@ from data.alignment.structure_align import (
 # Label vocabularies
 # ---------------------------------------------------------------------------
 
-# 6-class structural_role head. Dropping the 15 Role enum values that
-# get zero training data OR are handled by other signals/specialists:
+# Nine-class structural_role head. Roles owned by independent specialist
+# signals or without training coverage are excluded:
 #   TITLE, LIST, TABLE, TABLE_ROW, TABLE_HEADER_CELL, TABLE_DATA_CELL,
 #   TABLE_CAPTION, FIGURE, FIGURE_CAPTION, FORM_FIELD, REFERENCE,
 #   FOOTNOTE, METADATA, PAGE_HEADER, PAGE_FOOTER.
@@ -130,14 +138,9 @@ from data.alignment.structure_align import (
 # (top_5pct/bottom_5pct/is_artifact) and post-processing. The 6
 # remaining classes describe span CONTENT shape only.
 #
-# AXIS-1 expansion (this wave): three roles were added so the head can EMIT
-# what gold needs instead of collapsing the shape onto `paragraph`:
-#   * definition_term / definition_def — <dt>/<dd> definition-list leaves
-#     (previously had no role; the dl family was simply not extracted).
-#   * caption — <caption>/<figcaption> text (previously collapsed onto
-#     `paragraph`, erasing the "this is a caption" signal Phase-1 measured as
-#     a real-PDF gap). The TABLE_* family + FIGURE stay dropped (table_region
-#     / is_image_block binary heads + downstream specialists own them).
+# Definition terms, definition descriptions, and captions remain distinct
+# content shapes. The TABLE_* family and FIGURE remain owned by the
+# table_region / is_image_block heads and downstream specialists.
 ROLE_LIST = (
     Role.PARAGRAPH,
     Role.HEADING,
@@ -171,13 +174,10 @@ LIST_NESTING_BUCKETS = (0, 1, 2, 3)
 # AXIS-2: pedagogical_role head vocabulary
 # ---------------------------------------------------------------------------
 #
-# A NEW span-level head ORTHOGONAL to structural_role: structural_role says
+# This span-level head is orthogonal to structural_role: structural_role says
 # WHAT SHAPE a span is (paragraph / heading / …); pedagogical_role says WHAT
 # PEDAGOGICAL FUNCTION it opens (an EXAMPLE / a Solution / a TRY IT / …). The
-# council currently collapses these into code_block/heading, which Phase 1
-# measured as a major source of the real-PDF gap (43/62 "code_blocks" are
-# really exercises). Class 0 == `none` (the overwhelming majority of spans
-# carry no pedagogical-label function).
+# Class 0 is `none`; positive classes identify supported pedagogical openings.
 #
 # Gold labels are extracted by REUSING the single-source-of-truth
 # `_PEDAGOGICAL_LABEL_CLASSES` regexes from
@@ -644,7 +644,7 @@ def _reading_order_sorted(merged: list[dict], page_w: float) -> list[dict]:
 # realistic PRESENTATION profile (2-column / serif / dense) BEFORE Playwright
 # renders the PDF, so the extracted training/eval blocks look deploy-LIKE while
 # the labels (read from the ORIGINAL output_html) stay clean. Default OFF =>
-# augment_html is the identity => byte-identical render to today.
+# augment_html is the identity so the disabled path preserves baseline output.
 
 
 def _stable_doc_index(pair_stem: str) -> int:
@@ -814,8 +814,8 @@ def process_pair(validator, work: tuple) -> dict:
     # path: arxiv pairs all carry a local_pdf, but the realistic EVAL renders
     # arxiv gold HTML — so to MATCH the eval, exact-mode training must render the
     # gold too (it does NOT consume local_pdf). Default off -> this branch is
-    # skipped and the fuzzy path below (which still PREFERS local_pdf) is
-    # byte-identical to today.
+    # skipped and the fuzzy path below continues to prefer local_pdf while
+    # preserving baseline output.
     from data.augmentation.render_capture import exact_render_labels_enabled  # lazy: avoids circular import
 
     if exact_render_labels_enabled():
@@ -1274,7 +1274,7 @@ def process_pair_global(validator, work: tuple) -> dict:
     # and emits the SAME global per-pair shard contract (v3 rows + ledger
     # sidecar) with exact provenance instead of the fuzzy aligner's ledger.
     # Default off -> this branch is skipped and the fuzzy global path below
-    # (which still PREFERS local_pdf) is byte-identical to today.
+    # continues to prefer local_pdf while preserving baseline output.
     from data.augmentation.render_capture import exact_render_labels_enabled  # lazy: avoids circular import
 
     if exact_render_labels_enabled():
@@ -1582,21 +1582,17 @@ def run_global_build(args) -> None:
 # Real-PDF eval-set build path (Phase 1) — opt-in, off by default
 # ---------------------------------------------------------------------------
 #
-# Today's training + eval live on RENDERED-HTML-PDF gold (output_html -> a
-# Playwright-rendered PDF -> extract_shared). The real deploy gap is therefore
-# UNMEASURED. This path builds a real-PDF eval set: it emits ``FBView``s from a
-# REAL source PDF (a born-digital arXiv paper on disk, an IRS form PDF, a
-# Federal Register PDF) and aligns them against the EXISTING gold ``output_html``
-# via the SAME frozen ``data/alignment/structure_align.py`` aligner the rendered path uses
-# (nothing in the aligner changes — it consumes input-agnostic views). The v3
-# rows it writes are then scored by the CURRENT committed structure head to
-# measure real-PDF gold-reproduction F1 vs the in-distribution 0.894.
+# The default training and evaluation path uses rendered-HTML-PDF gold
+# (output_html -> a
+# Playwright-rendered PDF -> extract_shared). The real-document path measures
+# deployment-shaped inputs by emitting ``FBView`` records from an operator-
+# supplied source PDF and aligning them against the corresponding gold HTML
+# through the frozen, input-agnostic ``data/alignment/structure_align.py``
+# aligner. The emitted rows can then be scored by the committed structure head.
 #
 # Three load-bearing guarantees:
-#   * LICENSE PARTITION — two physically separate roots. SHIPPABLE (PMC OA /
-#     federal_register / CFR / gov_forms + arXiv papers whose cached license is
-#     commercial-OK) vs INTERNAL-ONLY (OpenStax NC-SA + arXiv papers whose
-#     license is non-commercial OR unknown). Gated per pair on source+license.
+#   * LICENSE PARTITION — shippable and internal-only records use physically
+#     separate roots and are gated per pair on source and license metadata.
 #   * ZERO LEAKAGE — ``--eval-holdout-by-docid`` holds the eval set out by
 #     DOCUMENT id against the head's actual training corpus
 #     (``data/structure_dataset/{train,val}.jsonl``): a doc whose rendered rows
@@ -2085,16 +2081,16 @@ def _realpdf_coverage_report(
 # Realistic-render eval-set build path — opt-in, off by default
 # ---------------------------------------------------------------------------
 #
-# Today's eval lives on either CLEAN rendered-HTML-PDF gold (in-distribution,
-# the training render path) or REAL PDFs (--realpdf-only, where alignment is
-# noisy: <0.30 per-block sim on the wild docs). This path is the third leg: it
+# The standard evaluation paths use either clean rendered-HTML-PDF gold
+# (in-distribution,
+# the training render path) or operator-supplied PDFs (``--realpdf-only``).
+# This path adds presentation variation: it
 # renders the held-out gold output_html through a REALISTIC presentation
 # profile (2-column / serif / dense — data/augmentation/render_augment.py) so the extracted
 # blocks look deploy-LIKE, then aligns the extraction back to the SAME gold HTML
 # (the labels are the HTML tags, unchanged by presentation) via the SAME frozen
-# aligner. Because only PRESENTATION changed, the alignment stays clean (high
-# per-block sim, >> the wild 0.30) -> FREE, correctly-aligned deploy-like labels
-# with NO hand-labeling.
+# aligner. Because only presentation changes, the path produces aligned,
+# deployment-shaped labels without manual relabeling.
 #
 # The extraction MUST run with SEMANTIK_COLUMN_ORDER=1 so the column-aware
 # reading-order re-sort fires on the 2-column renders.
@@ -2473,8 +2469,8 @@ def run_realistic_eval_build(args) -> None:
         "role_names": list(ROLE_NAMES),
         "layout_feature_dim": LAYOUT_FEATURE_DIM,
     }
-    # Exact-mode provenance — appended only when on, so a flag-OFF realistic
-    # build's coverage_report.json stays byte-identical to today.
+    # Exact-mode provenance is conditional so flag-OFF coverage reports retain
+    # the baseline schema and bytes.
     if use_exact:
         report["build"] = "realistic_exact"
         report["exact_label"] = True

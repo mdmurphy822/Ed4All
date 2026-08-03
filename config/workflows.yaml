@@ -2693,9 +2693,9 @@ workflows:
               on_error: warn
             description: Phase 4 PoC embedding-tier paraphrase-roundtrip stability check on objective Blocks. Skipped when no paraphrase_fn / router is wired.
 
-          # Phase 4 Subtask 28: BERT ensemble disagreement gate. Wraps
-          # the 3-member BloomBertEnsemble (kabir5297 Bloom classifier,
-          # distilbert SST-2, DeBERTa-v3 NLI) and emits regenerate-
+          # BERT ensemble disagreement gate. Wraps the three-member
+          # BloomBertEnsemble (cip29 Bloom classifier, distilbert SST-2,
+          # DeBERTa-v3 NLI) and emits regenerate-
           # action GateIssues when the ensemble winner disagrees with
           # an objective / assessment_item Block's declared bloom_level
           # OR when ensemble dispersion (entropy of normalised votes)

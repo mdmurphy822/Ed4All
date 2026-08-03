@@ -1,15 +1,7 @@
-"""Phase 4 Category D — BERT ensemble Bloom's-level classifier.
+"""Three-member BERT ensemble for Bloom-level classification.
 
-Subtask 24 of ``plans/phase4_statistical_tier_detailed.md`` lands the
-skeleton: package structure, registry of three pre-resolved ensemble
-members, ``BloomBertEnsemble`` class with the public ``classify``
-contract, and stubs for ``_load_members`` (Subtask 25) +
-``_aggregate`` (Subtask 26).
-
-Three members per the pre-resolved Phase 4 plan decision (Phase 8
-Subtask 4 swap: ``kabir5297/bloom_taxonomy_classifier`` was deleted
-upstream and replaced with ``cip29/bert-blooms-taxonomy-classifier``
-per operator decision logged 2026-05-03 — see plan ST 4 Decision #4):
+``BloomBertEnsemble`` exposes a ``classify`` contract over three pinned
+classifier identities:
 
 1. ``cip29/bert-blooms-taxonomy-classifier`` — purpose-built Bloom's
    classifier (6-class BERT-base fine-tune, apache-2.0 license,
@@ -31,9 +23,8 @@ per operator decision logged 2026-05-03 — see plan ST 4 Decision #4):
 
 SHA pinning: each member's ``revision`` field carries a concrete
 HuggingFace git commit SHA so the ensemble's classification is
-reproducible across runs. SHAs were resolved via
-``huggingface_hub.HfApi().model_info(repo_id).sha`` at Phase 8 ST 4
-land time and are captured in the ``bert_ensemble_member_loaded``
+reproducible across runs. Revisions are captured in the
+``bert_ensemble_member_loaded``
 decision event so the audit trail records exactly which revision
 produced each classification. Each entry's revision MUST match the
 40-hex-char regex ``^[0-9a-f]{40}$`` (enforced by the test suite).
@@ -64,16 +55,14 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 #: Default ensemble members. Each entry pins ``name`` (HuggingFace repo
-#: id) and ``revision`` (concrete 40-hex-char git commit SHA, resolved
-#: at Phase 8 ST 4 land time via
-#: ``huggingface_hub.HfApi().model_info(repo_id).sha``). Override the
+#: id) and ``revision`` (concrete 40-hex-char git commit SHA). Override the
 #: registry by passing ``members=`` to :class:`BloomBertEnsemble.__init__`.
 #:
-#: .. deprecated::
-#:    **The first two members are RETIRED under ``ED4ALL_BLOOM_TRIVOTE``**
-#:    (owner-approved 2026-07-18). ``cip29/bert-blooms-taxonomy-classifier``
+#: Compatibility behavior:
+#:    The first two members are bypassed under ``ED4ALL_BLOOM_TRIVOTE``.
+#:    ``cip29/bert-blooms-taxonomy-classifier``
 #:    (member 0) carries no stated license — see ``docs/LICENSING.md`` — and
-#:    ``distilbert-base-uncased-finetuned-sst-2-english`` (member 1) is a
+#:    ``distilbert-base-uncased-finetuned-sst-2-english`` (registry index 1) is a
 #:    sentiment model mapped onto Bloom by a low-resolution heuristic. When
 #:    the trivote flag is ON these two are **NEVER loaded**: the
 #:    ``bloom_classifier_disagreement`` gate re-founds on three interpretable
@@ -115,7 +104,8 @@ _BLOOM_LEVELS: Tuple[str, ...] = (
 )
 
 
-#: Heuristic mapping for the SST-2 sentiment member (member 2). Sentiment
+#: Heuristic mapping for the SST-2 sentiment member (registry index 1).
+#: Sentiment
 #: doesn't carry direct Bloom signal, so this table is intentionally
 #: low-resolution: positive sentiment biases toward higher cognitive
 #: levels (``evaluate`` / ``create``), negative toward lower
@@ -129,7 +119,7 @@ _SST2_TO_BLOOM: Dict[str, str] = {
 
 
 #: Translation table for ``cip29/bert-blooms-taxonomy-classifier``
-#: (member 1, Phase 8 ST 4). The model emits generic ``LABEL_0`` ...
+#: (registry index 0). The model emits generic ``LABEL_0`` ...
 #: ``LABEL_5`` labels with no semantic ``id2label`` mapping in its
 #: ``config.json`` (verified at SHA-pin time —
 #: ``huggingface_hub.hf_hub_download("cip29/bert-blooms-taxonomy-classifier",
@@ -245,9 +235,8 @@ class BloomBertEnsemble:
         self.cache_dir = Path(cache_dir) if cache_dir else _DEFAULT_CACHE_DIR
         self._loaded: Optional[List[BertClassifier]] = None
         self._capture: Any = None  # optional DecisionCapture wired by caller
-        # Subtask 33: per-member softmax-temperature override. Default
-        # ``None`` reproduces the pre-Subtask-33 behaviour exactly
-        # (no temperature applied). When set to a scalar, the same
+        # Optional per-member softmax-temperature override. ``None``
+        # leaves vote confidences unscaled. When set to a scalar, the same
         # temperature applies to every member; when set to a list,
         # the i-th value applies to the i-th per-member vote (in
         # registry order).
@@ -280,7 +269,7 @@ class BloomBertEnsemble:
         for member in loaded:
             try:
                 vote = self._classify_with_member(member, text)
-            except Exception as exc:  # noqa: BLE001 — silent-degrade per Subtask 24
+            except Exception as exc:  # noqa: BLE001 — omit failed member votes
                 logger.warning(
                     "BloomBertEnsemble member %s failed to classify: %s",
                     member.name,
@@ -308,7 +297,7 @@ class BloomBertEnsemble:
         }
 
     # ------------------------------------------------------------------ #
-    # Loader + per-member classification — Subtask 25
+    # Loader + per-member classification
     # ------------------------------------------------------------------ #
 
     def _load_members(self) -> List[BertClassifier]:
@@ -361,35 +350,20 @@ class BloomBertEnsemble:
             self._loaded = loaded
             return loaded
 
-        # Subtask-25 latent-bug fix: ``_classify_with_member`` is an
-        # unfinished placeholder that ALWAYS returns ("remember", 0.5)
-        # (see its docstring). Loading the three SHA-pinned BERT models
-        # here and then discarding their outputs fabricates a
-        # per_member=[(remember,0.5)x3] vote → winner_score 1.0 →
-        # promotion.py criterion 6 (`low_bloom_alignment`) rejects EVERY
-        # pair whose declared bloom != "remember" (observed != declared
-        # AND winner_score > the disagreement floor). That silently
-        # collapsed training synthesis to zero non-remember pairs.
+        # Model-specific inference dispatch is not implemented yet, so
+        # loading these models would produce placeholder votes rather than
+        # classifications. Return no members so ``classify()`` reports the
+        # explicit ``unknown`` sentinel. Strict mode raises instead because
+        # callers that require the ensemble must not receive unknown results.
         #
-        # Until the real per-member dispatch lands, degrade HONESTLY:
-        # return [] so ``classify()`` yields the winner_level="unknown"
-        # sentinel → ``_classify_bloom`` returns (None, None) → criterion
-        # 6 skips. We must NOT load the 3 models just to throw their
-        # outputs away (also a ~10min/test-suite cost). Strict mode is
-        # preserved: it raised above when transformers is absent; when
-        # transformers IS present but dispatch is unimplemented we also
-        # raise so an operator who explicitly demanded the ensemble is
-        # not silently handed an always-unknown classifier.
-        #
-        # TODO(Subtask-25 follow-up wave): implement real per-member
-        # dispatch in ``_classify_with_member`` — cip29 argmax via
+        # TODO: implement per-member dispatch in ``_classify_with_member`` —
+        # cip29 argmax via
         # ``_CIP29_TO_BLOOM``, SST-2 mapping via ``_SST2_TO_BLOOM``, and
         # DeBERTa zero-shot NLI entailment over the six Bloom labels.
-        # That wave requires observe-only calibration (see the
+        # Validate the implementation with observe-only calibration (see the
         # ``_ScriptedEnsemble`` aggregation tests in
         # ``lib/classifiers/tests/test_bloom_bert_ensemble.py`` for the
-        # post-dispatch ``_aggregate`` contract). Once dispatch is real,
-        # restore the per-member load loop below.
+        # ``_aggregate`` contract), then restore the per-member load loop.
         if is_strict_mode():
             raise BertEnsembleDepsMissing(
                 "BloomBertEnsemble per-member dispatch is unimplemented "
@@ -459,35 +433,31 @@ class BloomBertEnsemble:
         name: the cip29 Bloom classifier returns a 6-class argmax over
         its generic ``LABEL_0`` ... ``LABEL_5`` output, which is
         translated to canonical Bloom levels via
-        :data:`_CIP29_TO_BLOOM` (Phase 8 ST 4 — replaces the deleted
-        ``kabir5297`` member that natively emitted Bloom-named
-        labels); the SST-2 member maps its 2-class output via
+        :data:`_CIP29_TO_BLOOM`; the SST-2 member maps its 2-class output via
         :data:`_SST2_TO_BLOOM`; the zero-shot NLI member runs the
         six Bloom labels as candidate hypotheses and picks the highest
         entailment.
 
-        Subtask 25 hands off the real per-member dispatch (cip29
-        argmax + ``_CIP29_TO_BLOOM`` translation / SST-2 mapping /
-        zero-shot NLI entailment) to a followup commit. Because that
-        dispatch is unimplemented, the production loader
+        Model-specific dispatch (cip29 argmax and label translation,
+        SST-2 mapping, and zero-shot NLI entailment) is not implemented.
+        The production loader
         (:meth:`_load_members`) now degrades to ``[]`` BEFORE any member
         reaches this method, so the default-constructed ensemble never
         invokes it — this body is reached only by test subclasses (e.g.
         ``_ScriptedEnsemble``) that override ``_load_members`` to inject
-        scripted votes, or by a future subclass that wires real
-        model-specific scoring. The placeholder return is retained ONLY
-        to keep those scripted-vote tests exercising the full
-        ``classify -> _aggregate`` path; it MUST NOT be relied on as a
-        real classification (it fabricates a remember/0.5 vote).
+        scripted votes, or by a subclass that wires model-specific scoring.
+        The placeholder return exists only to keep those scripted-vote tests
+        exercising the full ``classify -> _aggregate`` path; it is not a real
+        classification.
 
-        TODO(Subtask-25 follow-up wave): implement the three real
-        dispatch branches here, then restore the per-member load loop in
+        TODO: implement the three model-specific dispatch branches, then
+        restore the per-member load loop in
         :meth:`_load_members`.
         """
         return ("remember", 0.5)
 
     # ------------------------------------------------------------------ #
-    # Decision capture — emit per-member load events (Subtask 25 wiring)
+    # Decision capture — emit per-member load events
     # ------------------------------------------------------------------ #
 
     def _emit_member_loaded(
@@ -529,7 +499,7 @@ class BloomBertEnsemble:
             )
 
     # ------------------------------------------------------------------ #
-    # Aggregation — Subtask 26
+    # Aggregation
     # ------------------------------------------------------------------ #
 
     def _aggregate(
@@ -555,10 +525,9 @@ class BloomBertEnsemble:
         beats ``apply``). Deterministic so the validator's regression
         suite stays stable across re-runs.
 
-        **Subtask 33 — temperature scaling**: ``temperature`` accepts:
+        ``temperature`` accepts:
 
-        - ``None`` (default): no temperature applied; pre-Subtask-33
-          behaviour reproduced byte-identically.
+        - ``None`` (default): no temperature applied.
         - ``float`` (scalar): every per-member confidence is sharpened
           (``T < 1``) or softened (``T > 1``) by raising it to power
           ``1 / T`` before summation.
@@ -654,7 +623,7 @@ class BloomBertEnsemble:
         return (winner_level, winner_score, dispersion)
 
     # ------------------------------------------------------------------ #
-    # Decision capture — wired by the validator (Subtask 27)
+    # Decision capture — wired by the validator
     # ------------------------------------------------------------------ #
 
     def attach_capture(self, capture: Any) -> None:
@@ -662,7 +631,7 @@ class BloomBertEnsemble:
         self._capture = capture
 
     # ------------------------------------------------------------------ #
-    # Temperature scaling — Subtask 33
+    # Temperature scaling
     # ------------------------------------------------------------------ #
 
     def set_temperature(self, temperature: Optional[Any]) -> None:

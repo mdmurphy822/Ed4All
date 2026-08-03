@@ -1,23 +1,22 @@
-"""Train BERT-Structure (Phase 3b — ModernBERT-base + LoRA, 4 multi-head).
+"""Train BERT-Structure (Phase 3b — ModernBERT-base + LoRA, six heads).
 
-Span-level multi-head classifier. Subsumes today's DistilBERT
-22-class single-head classifier (`train_classifier.py`,
-`models/classifier_v5/final`). Highest stakes phase in the council DAG
-because it's the v1 replacement landmark.
+Train the council's span-level structure specialist. Its role head provides
+the council counterpart to the compatibility v1 single-head classifier, while
+five additional heads supply routing, hierarchy, and pedagogical signals.
 
 Heads:
-    * structural_role     7-class     Active Role enum subset only
+    * structural_role     9-class     Active Role enum subset only
                                       (paragraph, heading, list_item,
-                                      figure_caption, form_label,
-                                      blockquote, code_block) — see
+                                      form_label, blockquote, code_block,
+                                      definition_term, definition_def,
+                                      caption) — see
                                       data.builders.build_structure_data for
                                       rationale. Non-authoritative
                                       recommendation; downstream
                                       specialists override per their
                                       domain.
     * is_heading          binary      Span-level heading detection,
-                                      absorbed from MergeOrSplit's
-                                      failed pair-level head.
+                                      used to gate heading-level analysis.
                                       heading-level (h1..h6) is the
                                       HeadingSpecialist's job, gated on
                                       is_heading=1.
@@ -35,9 +34,12 @@ Heads:
     * list_nesting        4-class     <ul>/<ol> ancestor count of <li>:
                                       0=not in list, 1=top-level li,
                                       2=nested, 3=3+ deep.
+    * pedagogical_role   10-class     Orthogonal teaching-function signal:
+                                      none plus example, exercise, solution,
+                                      practice, and related opening roles.
 
 Layout side-channel: 20-dim numeric vector → LayerNorm → 64-dim MLP →
-concatenated with BERT pooled before all 4 heads. Same pattern as
+concatenated with BERT pooled before all six heads. Same pattern as
 Phase 3a v4 MergeOrSplit. Order in
 ``data.builders.build_structure_data.LAYOUT_FEATURE_NAMES``.
 

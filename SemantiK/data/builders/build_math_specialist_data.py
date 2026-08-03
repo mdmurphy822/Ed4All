@@ -1,7 +1,7 @@
 """Build BERT-MathSpecialist training data.
 
-The MathSpecialist is a multi-head DeBERTa-v3-base + LoRA classifier
-trained on ar5iv ground-truth math elements:
+The MathSpecialist is a two-head LoRA classifier on the council's shared
+ModernBERT-base backbone, trained on aligned document ground truth:
 
     * head ``math_type``      ∈ {inline, display, numbered, multiline, matrix}
     * head ``eq_num_assoc``   ∈ {none, attached_left, attached_right, separate}

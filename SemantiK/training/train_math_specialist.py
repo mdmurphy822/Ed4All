@@ -1,4 +1,4 @@
-"""Train BERT-MathSpecialist (DeBERTa-v3-base + LoRA, multi-head).
+"""Train BERT-MathSpecialist (shared ModernBERT-base + LoRA, two heads).
 
 Two heads:
     * math_type      ∈ {inline, display, numbered, multiline, matrix}    (5)
@@ -139,7 +139,7 @@ def compute_class_weights(
 
 
 class MathSpecialistModel(nn.Module):
-    """DeBERTa-v3-base + LoRA, two classification heads.
+    """Shared configurable encoder with LoRA and two classification heads.
 
     Implemented as a single nn.Module so the standard PyTorch training
     loop does optimizer/save bookkeeping for both the LoRA matrices and

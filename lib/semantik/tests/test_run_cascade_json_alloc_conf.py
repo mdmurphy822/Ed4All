@@ -1,8 +1,8 @@
-"""Bug 2 — run_cascade_json expandable-segments allocator gate is OPT-IN.
+"""Verify that expandable-segments allocator configuration is opt-in.
 
-``PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`` backfired (it can trigger
-a CUDACachingAllocator INTERNAL ASSERT in a council BERT), so it is now gated
-behind ``SEMANTIK_EXPANDABLE_SEGMENTS`` and OFF by default. ``run_cascade_json``
+``PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`` is not safe for every CUDA
+workload and can trigger allocator assertions, so it is gated behind
+``SEMANTIK_EXPANDABLE_SEGMENTS`` and OFF by default. ``run_cascade_json``
 factors the gate into ``_maybe_set_alloc_conf()`` so it can be unit-tested
 directly after monkeypatching env — without importing the heavy cascade (the
 module-top imports are all stdlib).
