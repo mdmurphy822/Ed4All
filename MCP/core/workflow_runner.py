@@ -837,6 +837,9 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
         "synthesized_objectives_path": (
             "phase_outputs", "course_planning", "synthesized_objectives_path",
         ),
+        "project_workspace": (
+            "phase_outputs", "trainforge_assessment", "trainforge_dir",
+        ),
     },
     "finalization": {
         "project_id": ("phase_outputs", "objective_extraction", "project_id"),
@@ -938,7 +941,7 @@ _LEGACY_PHASE_OUTPUT_KEYS: Dict[str, List[str]] = {
     # assessment_objective_alignment gate input builder.
     "trainforge_assessment": [
         "output_path", "assessments_path", "assessment_id",
-        "question_count", "chunks_path",
+        "question_count", "trainforge_dir", "chunks_path",
     ],
     "libv2_archival": ["course_slug", "course_dir", "manifest_path"],
     "finalization": ["project_id", "package_path", "course_slug"],
