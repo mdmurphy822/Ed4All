@@ -40,6 +40,7 @@ def test_warns_when_estimate_exceeds_ceiling(tmp_path: Path) -> None:
     result = SynthesisQuotaValidator().validate({
         "course_dir": str(course),
         "instruction_variants_per_chunk": 3,
+        "synthesis_provider": "claude_session",
         "thresholds": {"max_estimated_dispatches": 1500},
     })
     warnings = [i for i in result.issues if i.severity == "warning"]
@@ -54,6 +55,7 @@ def test_critical_severity_when_explicitly_set(tmp_path: Path) -> None:
     result = SynthesisQuotaValidator().validate({
         "course_dir": str(course),
         "instruction_variants_per_chunk": 3,
+        "synthesis_provider": "claude_session",
         "thresholds": {"max_estimated_dispatches": 1500},
         "severity": "critical",
     })
@@ -79,6 +81,7 @@ def test_default_ceiling_is_1500(tmp_path: Path) -> None:
     result = SynthesisQuotaValidator().validate({
         "course_dir": str(course),
         "instruction_variants_per_chunk": 1,
+        "synthesis_provider": "claude_session",
     })
     warnings = [i for i in result.issues if i.severity == "warning"]
     assert any(i.code == "SYNTHESIS_QUOTA_OVER_CEILING" for i in warnings)
