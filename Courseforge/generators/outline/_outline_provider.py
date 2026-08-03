@@ -310,8 +310,8 @@ def _touch_provenance(provider: str) -> str:
 # providers in :mod:`Trainforge.generators.providers._local_provider`.
 MAX_PARSE_RETRIES = 3
 
-# Worker W6: per-block transient-retry budget for dispatch-side
-# failures (Ollama 503 / connection reset / read timeout). Transient
+# Per-block transient-retry budget for dispatch-side failures such as
+# service unavailability, connection reset, or read timeout. Transient
 # retries do NOT advance ``MAX_PARSE_RETRIES`` so a flaky local server
 # can't burn the parse budget before any parse attempt completes.
 # Permanent errors (auth failure, bad request) re-raise immediately.
@@ -335,7 +335,7 @@ class OutlineProviderError(RuntimeError):
 
     - ``outline_exhausted`` — every parse + remediation retry failed
       Schema validation; the outline tier returned no usable JSON.
-    - ``outline_transient_exhausted`` — Worker W6: the transient-retry
+    - ``outline_transient_exhausted`` — the transient-retry
       budget (``_TRANSIENT_RETRY_BUDGET``) was exhausted on dispatch-
       side failures (Ollama 503 / connection reset / read timeout)
       without any parse attempt completing. Distinct from
@@ -756,11 +756,8 @@ _OUTLINE_SYSTEM_PROMPT: str = (
 # AFTER the model emits, so the GBNF only needs to keep the model
 # inside JSON-grammar territory and prevent prose drift.
 #
-# Authoring per-block-type fully-typed GBNFs (e.g. enforcing
-# ``"block_type": "objective"`` as a string literal in-grammar) is
-# deferred to Phase 4 — at the 7B-class default model, the JSON-only
-# constraint plus a strong system prompt already keeps drift below
-# the parse-retry budget on the RDF/SHACL calibration corpus.
+# The JSON-only constraint plus a strong system prompt keeps output within the
+# parser's accepted grammar while the JSON Schema owns strict field validation.
 _GENERIC_JSON_GBNF: str = r"""root   ::= object
 value  ::= object | array | string | number | ("true" | "false" | "null") ws
 object ::= "{" ws ( string ":" ws value ("," ws string ":" ws value)* )? "}" ws
@@ -832,10 +829,8 @@ def _max_bloom_level(*levels: Optional[str]) -> Optional[str]:
 # vocabulary ``BlockContentTypeValidator`` enforces at the inter-tier
 # seam. Pinning it into the outline JSON Schema lets Ollama
 # structured-output decoding force a canonical value at sample time.
-# Without the enum the field was free-form ``{"type": "string"}`` and
-# Qwen drifted off-vocabulary (observed 2026-05-15 on Qwen-7B: emitted
-# 'text', 'definition_and_example', 'place value and rounding' — every
-# one of which fails the inter-tier content_type gate).
+# The enum prevents free-form values that would fail the inter-tier
+# content-type gate.
 _CONTENT_TYPE_ENUM: List[str] = sorted(get_valid_chunk_types())
 
 # CURIE pattern mirrors the canonical SHACL/RDF surface form check
@@ -957,15 +952,13 @@ def _build_block_outline_schema(
 _BLOCK_TYPE_JSON_SCHEMAS: Dict[str, Dict[str, Any]] = {}
 for _bt in BLOCK_TYPES:
     if _bt == "assessment_item":
-        # Worker W7: distractors[] (>=2) + correct_answer_index (>=0)
-        # required alongside stem + answer_key. Mirrors
+        # distractors[] (>=2) + correct_answer_index (>=0) are required
+        # alongside stem + answer_key. Mirrors
         # ``schemas/knowledge/courseforge_jsonld_v1.schema.json::$defs.AssessmentItem``;
         # the canonical shape lives there and ``lib.validators.
         # assessment_item_payload.BlockAssessmentItemPayloadValidator``
-        # gates the same fields end-to-end. Pre-W7 the outline tier
-        # required only stem + answer_key, so a model could ship a
-        # "valid" assessment_item with one distractor or none and
-        # ship it; the new fields close that regression class. The
+        # gates the same fields end-to-end, preventing an assessment item
+        # with fewer than two distractors from passing. The
         # per-distractor ``misconception_ref`` is OPTIONAL and is a
         # forward-compat slot — the chunk -> misconception linkage
         # that would populate it is deferred to a separate plan
@@ -1138,22 +1131,16 @@ _RETRY_DIRECTIVE_PATTERNS: List[Tuple["re.Pattern[str]", str]] = [
         "not a number or bare token. Wrap numeric tier or boolean "
         "values in their canonical string label.",
     ),
-    # Worker W7 + assessment-item-descriptor fix (2026-06): assessment_item
-    # Blocks must carry the four dedicated fields ``stem`` / ``answer_key`` /
-    # ``distractors[]`` / ``correct_answer_index`` as TOP-LEVEL keys with REAL
-    # VALUES. The validator surfaces the missing-key / too-few-items errors as
+    # Assessment-item blocks carry ``stem``, ``answer_key``, ``distractors``,
+    # and ``correct_answer_index`` as top-level fields with concrete values.
+    # The validator surfaces missing-key and too-few-items errors as
     # ``'stem' is a required property`` / ``'answer_key' is a required
     # property`` / ``'distractors' is a required property`` /
     # ``'correct_answer_index' is a required property`` / ``[...] is too
-    # short`` depending on which constraint trips first. The 2026-06
-    # investigation (7B + 14B) showed the model pours the question into
-    # ``key_claims`` / ``section_skeleton`` and OMITS the dedicated fields,
-    # OR emits a LIST of field-TYPE DESCRIPTOR objects
-    # (``[{"type": "stem"}, {"type": "distractors"}, ...]``) instead of real
-    # values — so the directive now names all four fields AND forbids the
-    # descriptor-list shape, telling the model to emit the actual stem text /
-    # option texts / answer value. One pattern catches every failure mode via
-    # a non-greedy alternation match.
+    # short`` depending on which constraint trips first. The directive keeps
+    # question content in dedicated fields rather than ``key_claims`` or
+    # ``section_skeleton`` and rejects field-descriptor lists in place of
+    # actual question values. One pattern covers every validation message.
     (
         re.compile(
             r"'(stem|answer_key|distractors|correct_answer_index)' is a "
@@ -1400,12 +1387,11 @@ def _drop_objective_echo_claims(
 ) -> Dict[str, Any]:
     """Drop ``key_claims`` that are near-verbatim restatements of an objective.
 
-    A 7B outline tier lazily echoes a learning-objective statement verbatim
-    into ``key_claims`` on thin / exercise-grounded pages (measured: 7% of
-    outline-tier claims on a real full-book run). An objective-echo claim is
-    vacuous for grounding, NLI scoring, and downstream assessment/training
-    synthesis, so it is dropped here (BEFORE the strict validator; same
-    pre-validation point as the sibling ``_repair_*`` helpers).
+    An outline tier may echo a learning-objective statement verbatim into
+    ``key_claims`` on thin or exercise-grounded pages. An objective-echo claim
+    is vacuous for grounding, NLI scoring, and downstream assessment/training
+    synthesis, so it is dropped before strict validation at the same point as
+    the sibling ``_repair_*`` helpers.
 
     Semantics:
 
@@ -2542,9 +2528,9 @@ class OutlineProvider(_BaseLLMProvider):
         parsed: Optional[Dict[str, Any]] = None
         grounding_repair: Optional[Dict[str, Any]] = None
         total_retries = 0
-        # Worker W6: transient retries (Ollama 503 / connection reset /
-        # read timeout) are counted separately from MAX_PARSE_RETRIES so
-        # they do NOT burn the parse budget. Permanent errors re-raise
+        # Transient dispatch retries are counted separately from
+        # MAX_PARSE_RETRIES so they do not consume the parse budget.
+        # Permanent errors re-raise
         # immediately. UNKNOWN-class errors preserve legacy semantics
         # (advance the parse retry loop).
         transient_retries = 0
@@ -2556,9 +2542,9 @@ class OutlineProvider(_BaseLLMProvider):
                 schema_hint = (
                     json.dumps(schema, sort_keys=True) if schema else "{}"
                 )
-                # Plan §3.6: pull the per-pattern directive matching the
-                # validator's last_error message and append it after the
-                # schema dump so the model sees the canonical fix-it
+                # Append the per-pattern directive matching the validator's
+                # last_error message after the schema dump so the model sees
+                # the canonical fix-it
                 # instruction, not just the terse validator string.
                 directive = _match_retry_directive(
                     last_error, block.block_type
@@ -2575,8 +2561,7 @@ class OutlineProvider(_BaseLLMProvider):
                     f"{schema_hint}"
                 )
             try:
-                # outline-overflow-fix-2026-07: the outline provider's
-                # ``_dispatch_call`` override returns a 3-tuple carrying the
+                # The outline provider's ``_dispatch_call`` override returns
                 # server-reported ``usage`` so the input-truncation tripwire
                 # can read ``usage.prompt_tokens``. The seam name is kept so
                 # the existing transient-retry tests (which patch
@@ -2586,9 +2571,9 @@ class OutlineProvider(_BaseLLMProvider):
                     extra_payload=extra_payload or None,
                 )
             except Exception as exc:
-                # Worker W6: classify the dispatch-side failure so a
-                # transient (Ollama 503 / connection reset / read
-                # timeout) doesn't burn the parse-retry budget. Permanent
+                # Classify the dispatch-side failure so a transient
+                # service error, connection reset, or read timeout does not
+                # consume the parse-retry budget. Permanent
                 # errors (auth failure, bad request) surface immediately;
                 # UNKNOWN-class errors preserve the legacy parse-retry
                 # path so semantic regressions don't shift behavior on

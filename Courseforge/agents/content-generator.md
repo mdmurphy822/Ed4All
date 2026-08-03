@@ -203,23 +203,16 @@ Rules:
 }
 ```
 
-## Wave 79 Template Catalog
-
-**Forward-looking** — applies to FUTURE Courseforge runs. Existing
-exports (the RDF/SHACL calibration corpus archive) are unchanged.
+## Chunk Template Catalog
 
 ### Why
 
-Wave 78's content-generator subagents produced ~219 chunks across the
-RDF/SHACL course, with 153 of them (~70%) tagged `explanation`. Only
-~25 (11%) were `example`, ~14 (6%) `exercise`, ~14 (6%)
-`assessment_item`. Downstream SLM training (Wave 79 Worker A's
-instruction-pair extractor) wants ~3× the example/exercise/assessment
-ratio so synthesized SFT + DPO pairs cover task-oriented behavior,
-not just explanatory recall. The catalog below gives the
-content-generator subagent **deterministic** per-template HTML so the
-parser can find each chunk type by attribute, not by heuristic
-class-name guessing.
+Course content needs a deliberate balance of explanations, examples,
+exercises, and assessments so downstream SFT and DPO pairs cover
+task-oriented behavior as well as recall. The catalog gives the
+content-generator subagent **deterministic** per-template HTML so the parser
+can find each chunk type by attribute instead of heuristic class-name
+guessing.
 
 ### Canonical catalog
 
@@ -233,7 +226,7 @@ HTML and per-template required attribute tables. Four templates:
 | Common Pitfall               | `common_pitfall`      | misconception paragraph → KG misconception node + DPO rejected; correction → DPO chosen |
 | Step-by-Step Procedure       | `procedure`           | inputs + steps → procedural SFT pair; worked example → second SFT pair |
 
-### Per-week chunk mix (mandatory for Wave 79+ runs)
+### Per-week chunk mix
 
 For each week, the content-generator MUST emit (in addition to the
 existing overview / summary / self-check pages):
@@ -266,22 +259,21 @@ attributes (full table in `templates/chunk_templates.md`):
 2. **Problem-Solution Walkthrough** — emit
    `data-cf-template-type="problem_solution"`,
    `data-cf-problem-class` (slug), `data-cf-applicable-concepts`,
-   plus the wave-stable attributes. The counter-example paragraph
+   plus the shared block attributes. The counter-example paragraph
    MUST carry `data-cf-counter-example="true"` so the DPO extractor
    can locate it deterministically.
 3. **Common Pitfall** — emit `data-cf-template-type="common_pitfall"`,
    `data-cf-pitfall-concept` (slug), `data-cf-confused-with` (slug),
-   plus the wave-stable attributes. The misconception paragraph
+   plus the shared block attributes. The misconception paragraph
    MUST carry `data-cf-misconception="true"` so Trainforge can mint
    a misconception node deterministically.
 
-   **Wave 81 dual-emit requirement (mandatory)**: every common_pitfall
+   **Dual-emit requirement (mandatory)**: every common-pitfall
    chunk MUST emit BOTH the `data-cf-misconception="true"` HTML
    attribute AND a corresponding entry in the page's JSON-LD
    `misconceptions[]` array. The two arms are equivalent semantics;
    both are required. Trainforge's primary harvester reads the JSON-LD
-   array; the HTML-attr fallback (Wave 81 Worker C) only rescues
-   archives produced by pre-Wave-81 runs and MUST NOT be relied on for
+   array; the HTML-attribute compatibility fallback MUST NOT be relied on for
    new content. See `Courseforge/templates/chunk_templates.md`
    Template 3 for the canonical JSON-LD shape (`misconception`,
    `correction`, `bloom_level`).

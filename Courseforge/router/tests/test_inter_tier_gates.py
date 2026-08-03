@@ -601,11 +601,11 @@ def test_minted_curie_anchored_via_page_sibling():
     SAME-PAGE sibling block's text carries the surface form. The pass is
     tagged anchoring_scope="page" in the decision capture."""
     minted_map = {
-        "algvendorrag02:evaluating_algebraic_expressions": {
-            "canonical": "evaluating algebraic expressions",
+        "fxcourse:concept_alpha": {
+            "canonical": "concept alpha",
             "surface_forms": [
-                "evaluating algebraic expressions",
-                "evaluate an expression",
+                "concept alpha",
+                "alpha concept",
             ],
         },
     }
@@ -614,10 +614,9 @@ def test_minted_curie_anchored_via_page_sibling():
         block_id="week_01_content_07#concept_eval_0",
         block_type="concept",
         page_id="week_01_content_07",
-        curies=("algvendorrag02:evaluating_algebraic_expressions",),
+        curies=("fxcourse:concept_alpha",),
         key_claims=[
-            "Evaluating algebraic expressions means substituting values "
-            "for variables and simplifying."
+            "Concept Alpha defines the first relation in the synthetic fixture."
         ],
     )
     # ...the callout inherited the same minted CURIE but only paraphrases
@@ -626,8 +625,8 @@ def test_minted_curie_anchored_via_page_sibling():
         block_id="week_01_content_07#callout_evaluate-an-expression_2",
         block_type="callout",
         page_id="week_01_content_07",
-        curies=("algvendorrag02:evaluating_algebraic_expressions",),
-        key_claims=["Evaluate the expression: 3x + 4 when x = -2."],
+        curies=("fxcourse:concept_alpha",),
+        key_claims=["Apply the first synthetic relation to the fixture input."],
     )
     capture = _ScopeRecordingCapture()
     result = BlockCurieAnchoringValidator().validate({

@@ -1,39 +1,21 @@
-# Wave 79 Chunk Template Catalog
-
-> **Forward-looking** — applies to FUTURE Courseforge content-generator
-> runs. Existing exports (e.g. `Courseforge/exports/PROJ-<course>-…`)
-> are unchanged; this catalog is ADDITIVE guidance.
+# Chunk Template Catalog
 
 ## Why this catalog exists
 
-Wave 78's content-generator subagents produced grounded but
-**explanation-heavy** chunks. Across the RDF/SHACL calibration corpus,
-chunk-type distribution skewed:
-
-| content_type_label | count | share |
-|--------------------|------:|------:|
-| `explanation`      |  153  |  70%  |
-| `example`          |   25  |  11%  |
-| `exercise`         |   14  |   6%  |
-| `assessment_item`  |   14  |   6%  |
-| (other)            |   13  |   6%  |
-| **total**          |  219  | 100%  |
-
-Downstream SLM training (Wave 79 Worker A's instruction-pair
-extractor) wants ~3× the example/exercise/assessment ratio so the
-synthesized SFT + DPO pairs cover task-oriented behavior, not just
-explanatory recall. This file gives the content-generator subagent
-**deterministic** per-template HTML so the parser can find each chunk
-type by attribute, not by heuristic class-name guessing.
+Course content needs a deliberate mix of explanations, examples, exercises,
+and assessments so downstream SFT and DPO pairs cover task-oriented behavior
+as well as recall. This file gives the content-generator subagent
+**deterministic** per-template HTML so the parser can find each chunk type by
+attribute instead of heuristic class-name guessing.
 
 ## How Trainforge consumes this
 
 Each template prescribes a `data-cf-template-type` attribute on the
-enclosing `<section>`. The Wave 79 Worker A extractor walks the parsed
-section list (via `Trainforge/parsers/html_content_parser.py`) and
-keys instruction/preference pairs off that attribute:
+enclosing `<section>`. The extractor walks the parsed section list through
+`Trainforge/parsers/html_content_parser.py` and keys instruction/preference
+pairs off that attribute:
 
-| `data-cf-template-type` | Wave 79 extractor mapping |
+| `data-cf-template-type` | Extractor mapping |
 |-------------------------|---------------------------|
 | `real_world_scenario`   | scenario → task → SFT pair |
 | `problem_solution`      | problem → walkthrough → SFT pair; counter-example → DPO rejected arm |
@@ -72,43 +54,40 @@ SFT prompt and the deliverable into the SFT response target.
 <section data-cf-template-type="real_world_scenario"
          data-cf-scenario-domain="data_governance"
          data-cf-applicable-concepts="rdf-graph,shacl-shape"
-         data-cf-expected-deliverable="A SHACL NodeShape that constrains the Customer class"
+         data-cf-expected-deliverable="A SHACL NodeShape that constrains the Record class"
          data-cf-objective-id="CO-04"
          data-cf-bloom-level="apply"
          data-cf-content-type="example">
-  <h3>Scenario: Onboarding a new SHACL constraint at FinServ Inc.</h3>
-  <p>You're the data steward at FinServ Inc., a mid-sized financial
-  services firm. The compliance team has just flagged that the
-  customer master graph admits records missing tax-residency. Records
-  are stored as RDF triples in a graph database; downstream
-  reporting tools assume every <code>:Customer</code> has exactly one
-  <code>:taxResidency</code>. Without a constraint, ingestion
-  silently accepts malformed records and the gap surfaces only at
-  the regulator's quarterly audit.</p>
+  <h3>Scenario: Onboarding a new SHACL constraint at Example Organization</h3>
+  <p>You're the data steward at Example Organization. A data-quality review
+  found that the example graph admits records missing a required value.
+  Records are stored as RDF triples; downstream tools assume every
+  <code>:Record</code> has exactly one <code>:requiredValue</code>. Without a
+  constraint, ingestion accepts malformed records.</p>
   <h4>Your Task</h4>
   <p>Author a SHACL NodeShape that constrains every
-  <code>:Customer</code> to have exactly one <code>:taxResidency</code>
-  property whose value is an ISO-3166 alpha-2 country code. Submit
-  the shape as Turtle.</p>
+  <code>:Record</code> to have exactly one <code>:requiredValue</code>
+  property whose value is a single uppercase letter. Submit the shape as
+  Turtle.</p>
   <h4>Approach</h4>
   <ol>
-    <li>Identify the target class (<code>sh:targetClass :Customer</code>).</li>
-    <li>Add a property shape for <code>:taxResidency</code> with
+    <li>Identify the target class (<code>sh:targetClass :Record</code>).</li>
+    <li>Add a property shape for <code>:requiredValue</code> with
     <code>sh:minCount 1</code> and <code>sh:maxCount 1</code>.</li>
     <li>Constrain the value with <code>sh:datatype xsd:string</code>
-    and <code>sh:pattern "^[A-Z]{2}$"</code>.</li>
+    and <code>sh:pattern "^[A-Z]$"</code>.</li>
     <li>Validate the shape against a known-good fixture before
     deploying it to staging.</li>
   </ol>
   <h4>Success Criteria</h4>
   <ul>
-    <li>The shape rejects a <code>:Customer</code> with zero
-    <code>:taxResidency</code> values.</li>
-    <li>The shape rejects a <code>:Customer</code> with two
-    <code>:taxResidency</code> values.</li>
-    <li>The shape accepts <code>"US"</code>, <code>"GB"</code>,
-    <code>"JP"</code> and rejects <code>"USA"</code>,
-    <code>"us"</code>, <code>"123"</code>.</li>
+    <li>The shape rejects a <code>:Record</code> with zero
+    <code>:requiredValue</code> values.</li>
+    <li>The shape rejects a <code>:Record</code> with two
+    <code>:requiredValue</code> values.</li>
+    <li>The shape accepts <code>"A"</code>, <code>"B"</code>,
+    <code>"C"</code> and rejects <code>"AA"</code>,
+    <code>"a"</code>, <code>"1"</code>.</li>
   </ul>
 </section>
 ```
@@ -117,11 +96,10 @@ SFT prompt and the deliverable into the SFT response target.
 
 ## Template 2 — Problem-Solution Walkthrough
 
-**Goal**: An explicit problem statement plus a stepwise walkthrough
-that names the failure mode of the most common incorrect approach.
-The counter-example block becomes the DPO **rejected** arm in
-Wave 79's preference-pair pipeline; the walkthrough is the
-**chosen** arm.
+**Goal**: An explicit problem statement plus a stepwise walkthrough that names
+the failure mode of the most common incorrect approach. The preference-pair
+pipeline uses the counter-example as the DPO **rejected** arm and the
+walkthrough as the **chosen** arm.
 
 ### Required `data-cf-*` attributes
 
@@ -148,35 +126,35 @@ deterministically without keyword matching.
          data-cf-content-type="example">
   <h3 data-cf-content-type="example"
       data-cf-key-terms="shacl-shape,property-path">Problem</h3>
-  <p>A <code>:Customer</code> may have multiple email addresses, but
-  only one of them may carry the <code>:primaryEmail</code> flag.
+  <p>A <code>:Record</code> may have multiple labels, but
+  only one of them may carry the <code>:primaryLabel</code> flag.
   Given the data graph below, write a SHACL shape that fails when
-  more than one <code>:primaryEmail</code> is present per customer.</p>
+  more than one <code>:primaryLabel</code> is present per record.</p>
   <h3>Walkthrough</h3>
   <ol>
     <li><strong>Identify:</strong> the constraint targets the
-    <code>:primaryEmail</code> property, with cardinality at most one
-    per <code>:Customer</code> instance.</li>
+    <code>:primaryLabel</code> property, with cardinality at most one
+    per <code>:Record</code> instance.</li>
     <li><strong>Plan:</strong> use a property shape with
     <code>sh:maxCount 1</code> on
-    <code>sh:path :primaryEmail</code>, scoped via
-    <code>sh:targetClass :Customer</code>.</li>
+    <code>sh:path :primaryLabel</code>, scoped via
+    <code>sh:targetClass :Record</code>.</li>
     <li><strong>Execute:</strong> author the Turtle shape and
     register it in the validation graph.</li>
     <li><strong>Verify:</strong> validate against a fixture with one
-    primary email (passes) and a fixture with two (fails with
+    primary label (passes) and a fixture with two (fails with
     <code>sh:MaxCountConstraintComponent</code>).</li>
   </ol>
   <h3>Common Incorrect Approach</h3>
   <p data-cf-counter-example="true">Many learners try to enforce
-  primary-email uniqueness with <code>sh:minCount 0</code> and
+  primary-label uniqueness with <code>sh:minCount 0</code> and
   <code>sh:maxCount 1</code> on the <em>generic</em>
-  <code>:email</code> property. This fails because the constraint
-  fires on every email, not on the flagged primary — a customer
-  with three secondary emails and zero primaries trips the shape.
+  <code>:label</code> property. This fails because the constraint
+  fires on every label, not on the flagged primary — a record
+  with three secondary labels and zero primaries trips the shape.
   The walkthrough above succeeds because it scopes the cardinality
-  bound to <code>:primaryEmail</code> specifically, leaving generic
-  <code>:email</code> multi-valued as intended.</p>
+  bound to <code>:primaryLabel</code> specifically, leaving generic
+  <code>:label</code> multi-valued as intended.</p>
 </section>
 ```
 
@@ -214,10 +192,10 @@ misconception node deterministically.
          data-cf-content-type="explanation">
   <h3 data-cf-content-type="explanation"
       data-cf-key-terms="rdf-blank-node,rdf-named-node">Common Pitfall: treating blank nodes like named resources</h3>
-  <p>When learners first model a complex object — say a customer's
-  mailing address — they reach for a blank node because it "saves
+  <p>When learners first model a complex object — say a record's
+  nested field — they reach for a blank node because it "saves
   having to mint a URI." This works locally but fails the moment the
-  same address has to be referenced from a second graph or a query
+  same field has to be referenced from a second graph or a query
   result.</p>
   <h4>What looks like the right answer</h4>
   <p data-cf-misconception="true">"A blank node is just an
@@ -244,7 +222,7 @@ misconception node deterministically.
 </section>
 ```
 
-### Required JSON-LD `misconceptions[]` entry (Wave 81 — dual-emit)
+### Required JSON-LD `misconceptions[]` entry
 
 Every `common_pitfall` chunk MUST emit BOTH the
 `data-cf-misconception="true"` HTML attribute on the misconception
@@ -252,12 +230,9 @@ paragraph AND a corresponding entry in the page's JSON-LD
 `misconceptions[]` array. The two arms are equivalent semantics; both
 are required.
 
-The forward Trainforge harvester reads `misconceptions[]` as the
-authoritative source; the backward bridge (Wave 81 Worker C) falls
-back to scraping the `data-cf-misconception` paragraph when
-`misconceptions[]` is absent, but new content MUST NOT rely on the
-fallback. The fallback exists only to rescue archives produced by
-pre-Wave-81 content-generator runs.
+The Trainforge harvester reads `misconceptions[]` as the authoritative source.
+For compatibility, it can scrape the `data-cf-misconception` paragraph when
+`misconceptions[]` is absent, but new content MUST NOT rely on that fallback.
 
 Canonical JSON-LD shape:
 
@@ -354,36 +329,35 @@ procedure.
   <code>sh:conforms</code> flag. A conforming graph yields a report
   with <code>sh:conforms true</code> and zero results.</p>
   <h4>Worked Example</h4>
-  <p>Given the FinServ <code>:Customer</code> graph from Template 1
-  and the <code>:taxResidency</code> shape from the same scenario,
+  <p>Given the Example Organization <code>:Record</code> graph from Template 1
+  and the <code>:requiredValue</code> shape from the same scenario,
   running <code>pyshacl -s shapes.ttl data.ttl</code> against a
-  fixture with one tax-residency-less customer produces a report
+  fixture with one record missing the required value produces a report
   with <code>sh:conforms false</code> and a single
   <code>sh:MinCountConstraintComponent</code> result naming that
-  customer's IRI as the focus node.</p>
+  record's IRI as the focus node.</p>
 </section>
 ```
 
 ---
 
-## Per-week chunk mix targets (Wave 79)
+## Per-week chunk mix targets
 
-| Chunk type | Wave 78 actual (RDF/SHACL calibration corpus) | Wave 79 target (per week) |
-|------------|-------------------------------:|--------------------------:|
-| `explanation`              | ~13/wk | **4-5/wk** |
-| `example`                  | ~2/wk  | **2-3/wk** |
-| `procedure`                | rare   | **2/wk** |
-| `real_world_scenario`      | rare   | **1-2/wk** |
-| `common_pitfall`           | rare   | **1/wk** |
-| `problem_solution`         | rare   | **1/wk** |
-| `self-check` (interactive) | ~1/wk  | **1/wk** |
-| `summary`                  | ~1/wk  | **1/wk** |
-| `overview`                 | ~1/wk  | **1/wk** |
-| **Total / week**           | ~8-10  | **~15-18** |
+| Chunk type | Target per week |
+|------------|----------------:|
+| `explanation`              | **4-5** |
+| `example`                  | **2-3** |
+| `procedure`                | **2** |
+| `real_world_scenario`      | **1-2** |
+| `common_pitfall`           | **1** |
+| `problem_solution`         | **1** |
+| `self-check` (interactive) | **1** |
+| `summary`                  | **1** |
+| `overview`                 | **1** |
+| **Total**                  | **15-18** |
 
-The new mix shifts the explanation : example : exercise ratio from
-roughly **10 : 1.5 : 1** to roughly **3 : 2 : 1.5**. That delta is
-what feeds Wave 79 Worker A's task-oriented training-pair budget.
+This mix supplies task-oriented examples while retaining explanatory and
+summary coverage.
 
 ## Authoring checklist (per template instance)
 

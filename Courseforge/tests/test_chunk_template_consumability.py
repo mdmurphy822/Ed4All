@@ -1,18 +1,8 @@
-"""
-Wave 79 Worker C — chunk-template consumability tests.
+"""Verify that documented chunk templates satisfy the parser contract.
 
-Verifies that the four canonical chunk templates documented in
-``Courseforge/templates/chunk_templates.md`` produce HTML whose
-metadata is locatable by Trainforge's ``HTMLContentParser`` (the same
-extraction surface Wave 79 Worker A's instruction-pair pipeline runs
-against). These tests assert the templates are CONSUMABLE — i.e.
-Trainforge can find ``data-cf-template-type`` and the template-
-specific sub-attributes deterministically without keyword guessing.
-
-The tests are **forward-looking**: they pin the contract the future
-content-generator subagent must honor. They do NOT exercise the
-content-generator itself — that requires a real Anthropic dispatch
-and is out of scope for Wave 79 Worker C.
+The tests confirm that Trainforge can locate ``data-cf-template-type`` and
+template-specific attributes deterministically without keyword guessing. They
+exercise template consumability, not content-generation dispatch.
 """
 
 from __future__ import annotations
@@ -26,7 +16,7 @@ from Trainforge.parsers.html_content_parser import HTMLContentParser
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _wrap_page(body_html: str, title: str = "Wave 79 Template Sample") -> str:
+def _wrap_page(body_html: str, title: str = "Template Contract Sample") -> str:
     """Wrap a fragment in a minimal HTML5 page so the parser sees a title."""
     return (
         "<!DOCTYPE html>\n"
@@ -51,26 +41,26 @@ TEMPLATE_1_HTML = """
 <section data-cf-template-type="real_world_scenario"
          data-cf-scenario-domain="data_governance"
          data-cf-applicable-concepts="rdf-graph,shacl-shape"
-         data-cf-expected-deliverable="A SHACL NodeShape that constrains the Customer class"
+         data-cf-expected-deliverable="A SHACL NodeShape that constrains the Record class"
          data-cf-objective-id="CO-04"
          data-cf-bloom-level="apply"
          data-cf-content-type="example">
   <h3 data-cf-content-type="example"
       data-cf-key-terms="rdf-graph,shacl-shape">Scenario: Onboarding a new SHACL constraint</h3>
-  <p>You're the data steward at FinServ Inc. The compliance team flagged that the
-  customer master graph admits records missing tax-residency.</p>
+  <p>You're the data steward at Example Organization. A data-quality review
+  found that the example graph admits records missing a required value.</p>
   <h4>Your Task</h4>
-  <p>Author a SHACL NodeShape that constrains every Customer to one taxResidency.</p>
+  <p>Author a SHACL NodeShape that constrains every Record to one requiredValue.</p>
   <h4>Approach</h4>
   <ol>
     <li>Identify the target class.</li>
     <li>Add a property shape with cardinality bounds.</li>
-    <li>Constrain the value to ISO-3166 alpha-2.</li>
+    <li>Constrain the value to one uppercase letter.</li>
   </ol>
   <h4>Success Criteria</h4>
   <ul>
-    <li>The shape rejects a Customer with zero taxResidency values.</li>
-    <li>The shape accepts US, GB, JP and rejects USA, us.</li>
+    <li>The shape rejects a Record with zero requiredValue values.</li>
+    <li>The shape accepts A, B, C and rejects AA, a.</li>
   </ul>
 </section>
 """
@@ -93,7 +83,7 @@ def test_template_1_real_world_scenario_metadata_extractable():
     assert len(deliverables) == 1
     assert deliverables[0].startswith("A SHACL NodeShape")
 
-    # 3) Wave-stable attributes (objective + bloom + content_type) still apply.
+    # 3) Shared attributes (objective + bloom + content_type) still apply.
     assert _extract_attr(page, "data-cf-objective-id") == ["CO-04"]
     assert _extract_attr(page, "data-cf-bloom-level") == ["apply"]
 
@@ -123,20 +113,20 @@ TEMPLATE_2_HTML = """
          data-cf-bloom-level="apply"
          data-cf-content-type="example">
   <h3>Problem</h3>
-  <p>A Customer may have multiple email addresses, but only one carries
-  the primaryEmail flag. Write a SHACL shape that fails when more than
-  one primaryEmail is present per customer.</p>
+  <p>A Record may have multiple labels, but only one carries
+  the primaryLabel flag. Write a SHACL shape that fails when more than
+  one primaryLabel is present per record.</p>
   <h3>Walkthrough</h3>
   <ol>
-    <li><strong>Identify:</strong> the property targeted is primaryEmail.</li>
+    <li><strong>Identify:</strong> the property targeted is primaryLabel.</li>
     <li><strong>Plan:</strong> use sh:maxCount 1 on the property path.</li>
     <li><strong>Execute:</strong> author the Turtle shape.</li>
     <li><strong>Verify:</strong> validate against fixtures.</li>
   </ol>
   <h3>Common Incorrect Approach</h3>
-  <p data-cf-counter-example="true">Many learners try to enforce primary-email
-  uniqueness with sh:maxCount 1 on the generic email property. This fails
-  because the constraint fires on every email, not on the flagged primary.</p>
+  <p data-cf-counter-example="true">Many learners try to enforce primary-label
+  uniqueness with sh:maxCount 1 on the generic label property. This fails
+  because the constraint fires on every label, not on the flagged primary.</p>
 </section>
 """
 
@@ -272,7 +262,7 @@ TEMPLATE_4_HTML = """
   <h4>Output</h4>
   <p>A SHACL validation report graph (itself RDF).</p>
   <h4>Worked Example</h4>
-  <p>Running pyshacl -s shapes.ttl data.ttl on the FinServ fixture
+  <p>Running pyshacl -s shapes.ttl data.ttl on the Example Organization fixture
   yields sh:conforms false and one sh:MinCountConstraintComponent.</p>
 </section>
 """
