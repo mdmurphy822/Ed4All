@@ -43,67 +43,31 @@ from Trainforge.synthesize_training import (  # noqa: E402
 )
 
 
-def _archive_has_eligible_chunks(chunks_path: Path) -> bool:
-    """True iff the corpus carries >=1 synthesis-eligible chunk.
-
-    Delegates the per-chunk predicate to the SAME
-    ``Trainforge.synthesize_training._eligible`` the synthesizer applies (a
-    chunk drives instruction/preference-pair synthesis only when it carries a
-    non-empty ``learning_outcome_refs`` list plus an id) rather than
-    re-implementing it, so the two can't drift. The stratified-synthesis
-    integration tests assert on emitted pairs / per-bucket supply, so a corpus
-    with zero eligible chunks (e.g. a chunk-only markdown-ingest or scan corpus
-    built with ``--stop-after chunking``, which never ran objective synthesis)
-    can't exercise them — the discovery must pass such a corpus over rather
-    than hard-fail against it. The JSONL wrapper + graceful-except behavior is
-    the local part.
-    """
-    try:
-        with chunks_path.open(encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                if _eligible(json.loads(line)):
-                    return True
-    except (OSError, ValueError):
-        return False
-    return False
-
-
-def _real_archive() -> Path:
-    """Discover the first LibV2 course archive with synthesis-eligible chunks.
-
-    No course slug is hardcoded: the archive lives under the gitignored
-    ``LibV2/courses/`` tree (honors ``ED4ALL_LIBV2_ROOT``). Each course's
-    chunks.jsonl is resolved via ``resolve_imscc_chunks_path`` so the
-    ``imscc_chunks/`` → ``semantik_chunks/`` → legacy ``dart_chunks/`` →
-    legacy ``corpus/`` layouts are
-    all found. Only a corpus carrying at least one chunk with populated
-    ``learning_outcome_refs`` is selected — an objective-less chunk-only
-    corpus (markdown-ingest / scan built with ``--stop-after chunking``)
-    can't drive the pair-synthesis assertions and is skipped over. Skips
-    cleanly when no eligible corpus is present (the default on a clean
-    checkout).
-    """
-    import os
-
-    from lib.libv2_storage import resolve_imscc_chunks_path
-
-    root = os.environ.get("ED4ALL_LIBV2_ROOT")
-    libv2_root = (Path(root) if root else PROJECT_ROOT / "LibV2") / "courses"
-    if libv2_root.is_dir():
-        for candidate in sorted(libv2_root.iterdir()):
-            if not candidate.is_dir():
-                continue
-            chunks_path = resolve_imscc_chunks_path(candidate, "chunks.jsonl")
-            if chunks_path.exists() and _archive_has_eligible_chunks(chunks_path):
-                return candidate
-    pytest.skip(
-        "no LibV2 course archive with synthesis-eligible chunks "
-        "(chunks carrying learning_outcome_refs) present under "
-        "ED4ALL_LIBV2_ROOT / LibV2/courses/; integration test skipped"
-    )
+def _synthetic_archive(tmp_path: Path) -> Path:
+    """Build a neutral synthesis-eligible archive without operator data."""
+    archive = tmp_path / "courses" / "fixture-course"
+    (archive / "corpus").mkdir(parents=True)
+    (archive / "training_specs").mkdir()
+    blooms = ("remember", "understand", "apply")
+    difficulties = ("foundational", "intermediate", "advanced")
+    with (archive / "corpus" / "chunks.jsonl").open("w", encoding="utf-8") as fh:
+        for i in range(12):
+            chunk = {
+                "id": f"chunk-{i:02d}",
+                "chunk_type": "explanation",
+                "text": (f"Neutral concept {i} explains a durable learning principle. " * 8),
+                "learning_outcome_refs": [f"co-{i % 3}"],
+                "bloom_level": blooms[i % len(blooms)],
+                "difficulty": difficulties[i % len(difficulties)],
+                "concept_tags": [f"concept-{i}"],
+                "misconceptions": [{
+                    "misconception": f"Incorrect interpretation {i}.",
+                    "correction": f"Correct interpretation {i} with evidence.",
+                }],
+            }
+            assert _eligible(chunk)
+            fh.write(json.dumps(chunk) + "\n")
+    return archive
 
 
 def _course_code_for(archive: Path) -> str:
@@ -225,12 +189,12 @@ def test_unknown_stratify_dimension_raises(tmp_path):
 # Integration tests against a real LibV2 archive
 # ---------------------------------------------------------------------------
 
-def test_libv2_resolver_finds_real_archive():
+def test_libv2_resolver_finds_synthetic_archive(tmp_path):
     from lib.libv2_storage import resolve_imscc_chunks_path
 
-    archive = _real_archive()
+    archive = _synthetic_archive(tmp_path)
     # Resolver must find it whether the slug is canonical or doubled.
-    resolved = _resolve_libv2_corpus_dir(archive.name)
+    resolved = _resolve_libv2_corpus_dir(archive.name, archive.parent)
     assert resolved == archive
     assert resolve_imscc_chunks_path(resolved, "chunks.jsonl").exists()
 
@@ -244,7 +208,7 @@ def test_stratify_bloom_balances_pair_distribution(tmp_path):
     each other (the round-robin invariant), bounded by the smallest
     bucket's size.
     """
-    archive = _real_archive()
+    archive = _synthetic_archive(tmp_path)
     out_dir = tmp_path / "out"
 
     # First read the corpus's per-bucket population so we can compute the
@@ -266,6 +230,7 @@ def test_stratify_bloom_balances_pair_distribution(tmp_path):
     target = 60
     stats = run_synthesis_from_libv2(
         slug=archive.name,
+        libv2_root=archive.parent,
         course_code=_course_code_for(archive),
         provider="mock",
         seed=42,
@@ -315,10 +280,11 @@ def test_include_dpo_from_misconceptions_emits_wellformed_pairs(tmp_path):
     fewer). Corpus-agnostic invariants — emit/on-disk consistency and
     per-record shape — are always enforced. On a discovered corpus that
     carries no editorial misconceptions, the test skips."""
-    archive = _real_archive()
+    archive = _synthetic_archive(tmp_path)
     out_dir = tmp_path / "out"
     stats = run_synthesis_from_libv2(
         slug=archive.name,
+        libv2_root=archive.parent,
         course_code=_course_code_for(archive),
         provider="mock",
         seed=42,
@@ -326,10 +292,7 @@ def test_include_dpo_from_misconceptions_emits_wellformed_pairs(tmp_path):
         max_pairs=10000,  # Don't cap; we want every misconception pair.
         output_dir=out_dir,
     )
-    if stats.misconception_dpo_pairs_emitted == 0:
-        pytest.skip(
-            "discovered corpus carries no editorial misconception pairs"
-        )
+    assert stats.misconception_dpo_pairs_emitted == 12
 
     pref_path = out_dir / "preference_pairs.jsonl"
     pref_records = _load_jsonl(pref_path)
@@ -356,12 +319,13 @@ def test_include_dpo_from_misconceptions_emits_wellformed_pairs(tmp_path):
 
 
 def test_seed_42_regenerates_byte_identical_output(tmp_path):
-    archive = _real_archive()
+    archive = _synthetic_archive(tmp_path)
     out_a = tmp_path / "a"
     out_b = tmp_path / "b"
     for out in (out_a, out_b):
         run_synthesis_from_libv2(
             slug=archive.name,
+            libv2_root=archive.parent,
             course_code=_course_code_for(archive),
             provider="mock",
             seed=42,
@@ -393,12 +357,13 @@ def test_max_pairs_caps_each_artifact(tmp_path):
     discovered corpus that emits fewer than 50 pairs would never trip a
     hardcoded 50-pair cap.
     """
-    archive = _real_archive()
+    archive = _synthetic_archive(tmp_path)
 
     # Uncapped baseline emission for the discovered corpus.
     base_dir = tmp_path / "base"
     base_stats = run_synthesis_from_libv2(
         slug=archive.name,
+        libv2_root=archive.parent,
         course_code=_course_code_for(archive),
         provider="mock",
         seed=42,
@@ -417,6 +382,7 @@ def test_max_pairs_caps_each_artifact(tmp_path):
     out_dir = tmp_path / "out"
     stats = run_synthesis_from_libv2(
         slug=archive.name,
+        libv2_root=archive.parent,
         course_code=_course_code_for(archive),
         provider="mock",
         seed=42,
@@ -432,10 +398,11 @@ def test_max_pairs_caps_each_artifact(tmp_path):
 
 
 def test_difficulty_curriculum_orders_foundational_first(tmp_path):
-    archive = _real_archive()
+    archive = _synthetic_archive(tmp_path)
     out_dir = tmp_path / "out"
     run_synthesis_from_libv2(
         slug=archive.name,
+        libv2_root=archive.parent,
         course_code=_course_code_for(archive),
         provider="mock",
         seed=42,

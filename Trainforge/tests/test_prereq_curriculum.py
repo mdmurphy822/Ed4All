@@ -40,42 +40,6 @@ from Trainforge.synthesize_training import (  # noqa: E402
 )
 
 
-def _real_archive() -> Path:
-    """Discover the first LibV2 course archive that carries the corpus +
-    graph artifacts the curriculum-ordering smoke needs.
-
-    No course slug is hardcoded: the archive lives under the gitignored
-    ``LibV2/courses/`` tree (honors ``ED4ALL_LIBV2_ROOT``). Skips
-    cleanly when none is present (the default on a clean checkout).
-    """
-    import os
-
-    root = os.environ.get("ED4ALL_LIBV2_ROOT")
-    libv2_root = (Path(root) if root else PROJECT_ROOT / "LibV2") / "courses"
-    if libv2_root.is_dir():
-        for candidate in sorted(libv2_root.iterdir()):
-            # The graph-required curriculum default reads pedagogy_graph.json
-            # (under graph/ or pedagogy/); a bare graph/ DIR without that file
-            # makes run_synthesis_from_libv2 fail closed rather than skip, so
-            # require the file itself — not just the directory.
-            has_pedagogy_graph = (
-                candidate / "graph" / "pedagogy_graph.json"
-            ).exists() or (
-                candidate / "pedagogy" / "pedagogy_graph.json"
-            ).exists()
-            if (
-                candidate.is_dir()
-                and (candidate / "corpus" / "chunks.jsonl").exists()
-                and has_pedagogy_graph
-            ):
-                return candidate
-    pytest.skip(
-        "no LibV2 course archive with corpus/chunks.jsonl + "
-        "graph|pedagogy/pedagogy_graph.json present under "
-        "ED4ALL_LIBV2_ROOT / LibV2/courses/; integration test skipped"
-    )
-
-
 def _course_code_for(archive: Path) -> str:
     """Upper-snake course_code from the first two slug hyphen-tokens."""
     tokens = [t for t in archive.name.split("-") if t]
@@ -184,6 +148,26 @@ def _make_chunk(
         "run_id": "test-run",
         "created_at": "2026-04-24T00:00:00Z",
     }
+
+
+def _synthetic_archive(tmp_path: Path) -> Path:
+    """Build a neutral archive with a basic-to-aggregation prerequisite."""
+    graph = _mini_graph([
+        {"source": "concept:query-basics", "target": "concept:aggregation"},
+    ])
+    chunks = [
+        _make_chunk("chunk-basic", ["query-basics"], text=(
+            "Basic SPARQL query syntax selects matching graph patterns. " * 6
+        )),
+        _make_chunk("chunk-aggregation", ["aggregation"], text=(
+            "Aggregation summarizes query results after basic matching. " * 6
+        )),
+    ]
+    archive = _write_corpus(tmp_path, chunks, graph)
+    archive_target = tmp_path / "courses" / "fixture-course"
+    archive_target.parent.mkdir()
+    archive.rename(archive_target)
+    return archive_target
 
 
 # ---------------------------------------------------------------------------
@@ -475,7 +459,7 @@ def test_curriculum_requires_pedagogy_graph(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_real_archive_curriculum_anchors_basic_before_aggregation(tmp_path: Path):
+def test_synthetic_archive_curriculum_anchors_basic_before_aggregation(tmp_path: Path):
     """Sample test: SPARQL aggregation pairs must follow basic-SPARQL pairs
     in the curriculum-ordered output for a corpus that carries both.
 
@@ -485,10 +469,11 @@ def test_real_archive_curriculum_anchors_basic_before_aggregation(tmp_path: Path
     that no aggregation pair appears earlier in the emit order than every
     basic-SPARQL pair (guards against accidental input-order leakage).
     """
-    archive = _real_archive()
+    archive = _synthetic_archive(tmp_path)
     out_dir = tmp_path / "out"
     stats = run_synthesis_from_libv2(
         slug=archive.name,
+        libv2_root=archive.parent,
         course_code=_course_code_for(archive),
         provider="mock",
         seed=42,
@@ -534,11 +519,8 @@ def test_real_archive_curriculum_anchors_basic_before_aggregation(tmp_path: Path
         if _has_basic_sparql(ch):
             last_basic_idx = i
 
-    if first_aggregation_idx is None or last_basic_idx is None:
-        pytest.skip(
-            "corpus sample doesn't contain both aggregation and "
-            "basic-SPARQL pairs in this run; skipping ordering assertion"
-        )
+    assert first_aggregation_idx is not None
+    assert last_basic_idx is not None
     # Allow a small overlap window: aggregation may appear AFTER at least
     # one basic-SPARQL pair has been emitted. Strict "all basic before all
     # aggregation" is too brittle because chunks tag both regimes in
@@ -549,13 +531,14 @@ def test_real_archive_curriculum_anchors_basic_before_aggregation(tmp_path: Path
     )
 
 
-def test_real_archive_manifest_contains_topo_order(tmp_path: Path):
-    """The manifest from a real-archive run must list the corpus concept
+def test_synthetic_archive_manifest_contains_topo_order(tmp_path: Path):
+    """The manifest from a neutral archive must list the fixture concept
     count and report topo_method=kahn."""
-    archive = _real_archive()
+    archive = _synthetic_archive(tmp_path)
     out_dir = tmp_path / "out"
     run_synthesis_from_libv2(
         slug=archive.name,
+        libv2_root=archive.parent,
         course_code=_course_code_for(archive),
         provider="mock",
         seed=42,
@@ -565,11 +548,7 @@ def test_real_archive_manifest_contains_topo_order(tmp_path: Path):
     )
     manifest = json.loads((out_dir / "curriculum_manifest.json").read_text())
     assert manifest["topo_method"] == "kahn"
-    # The corpus has 599 Concept nodes; allow a generous floor in case the
-    # archive is rebuilt with fewer.
-    assert len(manifest["topo_order"]) >= 100, (
-        f"topo_order size {len(manifest['topo_order'])} < 100"
-    )
+    assert manifest["topo_order"] == ["concept:query-basics", "concept:aggregation"]
     assert manifest["slug"] == archive.name
 
 

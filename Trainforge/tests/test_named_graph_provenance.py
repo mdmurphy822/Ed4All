@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import importlib
 import json
-import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,27 +49,6 @@ FIXTURE_DIR = (
     PROJECT_ROOT / "Trainforge" / "tests" / "fixtures" / "mini_course_typed_graph"
 )
 
-
-def _libv2_courses_root() -> Path:
-    """LibV2 courses dir, honoring the ``ED4ALL_LIBV2_ROOT`` override."""
-    root = os.environ.get("ED4ALL_LIBV2_ROOT")
-    base = Path(root) if root else PROJECT_ROOT / "LibV2"
-    return base / "courses"
-
-
-def _discover_corpus_graph():
-    """First ``<course>/graph/concept_graph_semantic.json`` under LibV2."""
-    courses_root = _libv2_courses_root()
-    if not courses_root.is_dir():
-        return None
-    for course_dir in sorted(courses_root.iterdir()):
-        candidate = course_dir / "graph" / "concept_graph_semantic.json"
-        if candidate.exists():
-            return candidate
-    return None
-
-
-CORPUS_GRAPH_FIXTURE = _discover_corpus_graph()
 
 # Optional dep: rdflib. Skip the whole module if unavailable so the
 # legacy default-off path is still exercised by adjacent suites.
@@ -496,44 +474,13 @@ def test_mint_rule_graph_iri_is_deterministic():
 
 
 # ---------------------------------------------------------------------------
-# 8. Real-corpus smoke (skipped if no LibV2 corpus graph present).
+# 8. Tracked neutral-fixture smoke.
 # ---------------------------------------------------------------------------
 
-def test_flag_on_real_corpus_smoke(monkeypatch):
-    """When a real LibV2 corpus concept graph is present, derive a
-    minimal chunks/concept_graph stand-in from its node set and verify
-    the dataset still composes with 9 named graphs.
-
-    Acts as the parent-mandated metric on a production fixture.
-    The rule emits will largely be zero on this synthetic-input form
-    (we don't replay the full chunks pipeline) — but the named-graph
-    structural contract still holds.
-    """
-    if CORPUS_GRAPH_FIXTURE is None or not CORPUS_GRAPH_FIXTURE.exists():
-        pytest.skip(
-            "no LibV2 course with graph/concept_graph_semantic.json present "
-            "under ED4ALL_LIBV2_ROOT / LibV2/courses/"
-        )
-
+def test_flag_on_tracked_fixture_smoke(monkeypatch):
+    """The tracked mini graph composes into every named rule graph."""
     monkeypatch.setattr(named_graph_writer, "EMIT_TRIG", True)
-
-    with CORPUS_GRAPH_FIXTURE.open() as f:
-        artifact = json.load(f)
-    # Re-shape the artifact's nodes into a minimal co-occurrence graph
-    # suitable for re-running the rule pipeline. Edges are dropped —
-    # the rule pipeline rebuilds typed edges from chunks, which we
-    # don't have in this fixture form.
-    concept_graph = {
-        "kind": "concept",
-        "nodes": [
-            {"id": n["id"], "label": n.get("label", n["id"]),
-             "frequency": n.get("frequency", 0)}
-            for n in artifact.get("nodes", [])
-        ],
-        "edges": [],
-    }
-    chunks = []  # No chunks → most rules produce zero edges; that's fine.
-    course = {"learning_outcomes": []}
+    chunks, course, concept_graph, _ = _load_mini_fixture()
 
     _, dataset = build_semantic_graph_with_dataset(
         chunks, course, concept_graph, now=FIXED_NOW, run_id="demo-course-1"
@@ -546,12 +493,11 @@ def test_flag_on_real_corpus_smoke(monkeypatch):
         if str(ctx.identifier).startswith(named_graph_writer.RULE_GRAPH_BASE)
     ]
     assert len(rule_iris) == len(EXPECTED_RULES), (
-        f"On real-corpus fixture, expected {len(EXPECTED_RULES)} "
+        f"On tracked fixture, expected {len(EXPECTED_RULES)} "
         f"named graphs; got {len(rule_iris)}"
     )
 
-    # Exercise the TriG serializer end-to-end on a corpus-scale node set
-    # (the fixture has ~672 nodes per Phase 1 evidence).
+    # Exercise the TriG serializer end-to-end.
     trig = named_graph_writer.serialize_trig(dataset)
     assert "@prefix ed4all:" in trig
     # All 9 rule graph IRIs must appear in the TriG output as named-graph

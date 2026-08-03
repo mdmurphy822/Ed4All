@@ -12,16 +12,13 @@ existing artifact, parses via ``pyld`` + ``rdflib``, and asserts:
   not a literal)
 * Turtle round-trip is loss-free (graph-isomorphic delta of zero triples)
 
-Phase 1 does not modify ``Trainforge/process_course.py`` or
-``Trainforge/rag/typed_edge_inference.py``; the bridge is exercised
-out-of-band from whichever LibV2 course (under ``ED4ALL_LIBV2_ROOT`` /
-``LibV2/courses/``) ships a ``graph/concept_graph_semantic.json``.
+Phase 1 does not modify the emitting pipeline; the bridge is exercised
+against a neutral inline graph without reading operator course archives.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -35,29 +32,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
-def _libv2_courses_root() -> Path:
-    """LibV2 courses dir, honoring the ``ED4ALL_LIBV2_ROOT`` override."""
-    root = os.environ.get("ED4ALL_LIBV2_ROOT")
-    base = Path(root) if root else PROJECT_ROOT / "LibV2"
-    return base / "courses"
-
-
-def _discover_artifact() -> Path | None:
-    """First ``<course>/graph/concept_graph_semantic.json`` under LibV2."""
-    courses_root = _libv2_courses_root()
-    if not courses_root.is_dir():
-        return None
-    for course_dir in sorted(courses_root.iterdir()):
-        candidate = course_dir / "graph" / "concept_graph_semantic.json"
-        if candidate.exists():
-            return candidate
-    return None
-
-
 CONTEXT_PATH = (
     PROJECT_ROOT / "schemas" / "context" / "concept_graph_semantic_v1.jsonld"
 )
-ARTIFACT_PATH = _discover_artifact()
 
 ED4ALL_VOCAB = "https://ed4all.io/vocab/"
 ED4ALL_EDGE_TYPE_PRED = ED4ALL_VOCAB + "edgeType"
@@ -88,15 +65,22 @@ def context_doc() -> dict:
 
 @pytest.fixture(scope="module")
 def graph_artifact() -> dict:
-    """Load the JSON artifact that we are bridging to RDF."""
-    if ARTIFACT_PATH is None or not ARTIFACT_PATH.exists():
-        pytest.skip(
-            "No LibV2 course with graph/concept_graph_semantic.json present "
-            "— Phase 1 round-trip test depends on a real corpus under "
-            "ED4ALL_LIBV2_ROOT / LibV2/courses/."
-        )
-    with ARTIFACT_PATH.open() as f:
-        return json.load(f)
+    """Neutral semantic graph covering node, edge, and provenance mappings."""
+    nodes = [
+        {"id": f"concept-{i}", "label": f"Concept {i}", "class": "DomainConcept"}
+        for i in range(12)
+    ]
+    edges = [
+        {
+            "source": f"concept-{i}", "target": f"concept-{i + 1}",
+            "type": "related-to", "confidence": 0.9,
+            "provenance": {"rule": "related_from_cooccurrence", "rule_version": 1,
+                           "evidence": {"cooccurrence_weight": 4, "threshold": 3}},
+        }
+        for i in range(11)
+    ]
+    return {"kind": "concept_semantic", "generated_at": "2026-01-01T00:00:00+00:00",
+            "nodes": nodes, "edges": edges}
 
 
 @pytest.fixture(scope="module")
@@ -125,7 +109,7 @@ def rdf_graph(context_doc, graph_artifact) -> "rdflib.Graph":
 # Tests
 # ---------------------------------------------------------------------------
 
-def test_triple_count_floor(rdf_graph) -> None:
+def test_triple_count_floor(rdf_graph, graph_artifact) -> None:
     """Sanity floor: layered context must produce >> 500 triples for the
     corpus's ~672 nodes / ~6.3k edges / per-edge provenance shape.
 
@@ -134,11 +118,7 @@ def test_triple_count_floor(rdf_graph) -> None:
     (smaller fixtures, schema additions) without losing the smoke-test value.
     """
     n = len(rdf_graph)
-    assert n > 500, (
-        f"Expected the JSON-LD bridge to materialize >>500 triples for the "
-        f"reference corpus; got {n}.  Likely cause: a context-term mapping "
-        f"regressed to null or a key suppression collapsed entire branches."
-    )
+    assert n > len(graph_artifact["nodes"]) + len(graph_artifact["edges"])
 
 
 def test_every_edge_emits_edgetype_triple(rdf_graph, graph_artifact) -> None:
