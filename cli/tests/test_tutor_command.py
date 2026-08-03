@@ -2,19 +2,14 @@
 
 CliRunner-driven smoke tests of the three subcommands (diagnose,
 inventory, guardrails) in both ``--format text`` and ``--format json``
-modes with count-agnostic assertions. The integration corpus is opt-in:
-point ``ED4ALL_TUTORING_FIXTURE_SLUG`` at a course slug under
-``$ED4ALL_LIBV2_ROOT/courses/`` — no real course slug is hardcoded here.
-
-Module-level ``pytestmark`` skips the file cleanly when the env var is
-unset or the misconception index is empty (e.g.
-``imscc_chunks/chunks.jsonl`` hasn't been backfilled).
+modes with count-agnostic assertions. A neutral synthetic archive is built
+under ``tmp_path``; tests never discover or read operator course data.
 """
 
 from __future__ import annotations
 
 import json
-import os
+from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
@@ -23,17 +18,70 @@ from cli.commands.tutor import tutor_group
 from MCP.tools.tutoring_tools import load_misconception_index
 
 
-SLUG = os.environ.get("ED4ALL_TUTORING_FIXTURE_SLUG")
+SLUG = "sample-course"
 
 
-pytestmark = pytest.mark.skipif(
-    SLUG is None or not load_misconception_index(SLUG).items,
-    reason=(
-        "tutoring integration corpus not configured "
-        "(set ED4ALL_TUTORING_FIXTURE_SLUG to a slug with a reachable, "
-        "populated misconception index)."
-    ),
-)
+@pytest.fixture(autouse=True)
+def synthetic_archive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    courses_root = tmp_path / "courses"
+    course = courses_root / SLUG
+    (course / "corpus").mkdir(parents=True)
+    (course / "graph").mkdir()
+    misconceptions = [
+        (
+            "An RDF triple is like a row in a relational table",
+            "RDF represents graph statements, not relational rows",
+            "rdf-graph",
+        ),
+        (
+            "A shape always changes the source graph",
+            "A validation shape reports conformance without rewriting source data",
+            "shape-validation",
+        ),
+        (
+            "Every identifier must resolve over the network",
+            "Identifiers can name resources without network dereferencing",
+            "identifiers",
+        ),
+        (
+            "A missing property and an empty value are identical",
+            "Constraint semantics distinguish absence from an explicit empty value",
+            "property-constraints",
+        ),
+    ]
+    with (course / "corpus" / "chunks.jsonl").open("w", encoding="utf-8") as stream:
+        for index, (wrong, correction, concept) in enumerate(misconceptions, 1):
+            stream.write(json.dumps({
+                "id": f"chunk-{index}",
+                "concept_tags": [concept],
+                "source": {"source_references": [{"sourceId": f"src-{index}"}]},
+                "misconceptions": [{
+                    "misconception": wrong,
+                    "correction": correction,
+                }],
+            }) + "\n")
+    (course / "graph" / "pedagogy_graph.json").write_text(json.dumps({
+        "nodes": [
+            {"id": f"mc-{index}", "statement": wrong}
+            for index, (wrong, _correction, _concept) in enumerate(misconceptions, 1)
+        ],
+        "edges": [
+            {
+                "source": f"mc-{index}",
+                "target": f"concept:{concept}",
+                "relation_type": "interferes_with",
+            }
+            for index, (_wrong, _correction, concept) in enumerate(misconceptions, 1)
+        ],
+    }), encoding="utf-8")
+
+    import MCP.tools.tutoring_tools as tutoring_tools
+
+    monkeypatch.setattr(tutoring_tools, "LIBV2_COURSES", courses_root)
+    monkeypatch.setattr(tutoring_tools, "_select_backend", lambda: "jaccard")
+    tutoring_tools._INDEX_CACHE.clear()
+    yield
+    tutoring_tools._INDEX_CACHE.clear()
 
 
 def _run(*args):
@@ -159,7 +207,7 @@ def test_guardrails_text_output_smoke():
     with at least one ``Avoid:`` line."""
     concept = _first_concept_with_guardrails()
     if concept is None:
-        pytest.skip("no concept in this corpus carries guardrails")
+        pytest.fail("synthetic archive must carry at least one guardrail")
     res = _run(
         "guardrails",
         "--slug", SLUG,
@@ -177,7 +225,7 @@ def test_guardrails_json_output_is_valid_json():
     a concept that's known to carry guardrails in this corpus."""
     concept = _first_concept_with_guardrails()
     if concept is None:
-        pytest.skip("no concept in this corpus carries guardrails")
+        pytest.fail("synthetic archive must carry at least one guardrail")
     res = _run(
         "guardrails",
         "--slug", SLUG,

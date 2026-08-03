@@ -1,23 +1,13 @@
 """Tests for ``MCP/tools/tutoring_tools.py`` (Wave 77).
 
-Smoke tests against a real LibV2 archive. The assertions guard the SHAPE
-of the output rather than specific member counts (which differ by corpus
-regeneration). The integration corpus is opt-in: point
-``ED4ALL_TUTORING_FIXTURE_SLUG`` at a course slug under
-``$ED4ALL_LIBV2_ROOT/courses/`` — no real course slug is hardcoded here.
-
-Some assertions still depend on the misconception index being populated
-(non-empty ``misconceptions[]`` envelopes in the chunkset). The
-module-level ``pytestmark`` skips the whole file cleanly when the env var
-is unset or the index is empty — e.g. when ``imscc_chunks/chunks.jsonl``
-hasn't been backfilled and the legacy ``corpus/chunks.jsonl`` isn't
-reachable through the Phase 7c resolver. Whoever configures the corpus
-will see the assertions fire automatically.
+Smoke tests against a neutral synthetic LibV2 archive under ``tmp_path``.
+The suite never discovers or reads operator course data.
 """
 
 from __future__ import annotations
 
-import os
+import json
+from pathlib import Path
 
 import pytest
 
@@ -29,17 +19,73 @@ from MCP.tools.tutoring_tools import (
 )
 
 
-SLUG = os.environ.get("ED4ALL_TUTORING_FIXTURE_SLUG")
+SLUG = "sample-course"
 
 
-pytestmark = pytest.mark.skipif(
-    SLUG is None or not load_misconception_index(SLUG).items,
-    reason=(
-        "tutoring integration corpus not configured "
-        "(set ED4ALL_TUTORING_FIXTURE_SLUG to a slug with a reachable, "
-        "populated misconception index)."
-    ),
-)
+@pytest.fixture(autouse=True)
+def synthetic_archive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    courses_root = tmp_path / "courses"
+    course = courses_root / SLUG
+    (course / "corpus").mkdir(parents=True)
+    (course / "graph").mkdir()
+    misconceptions = [
+        (
+            "An RDF triple is like a row in a relational table",
+            "RDF represents graph statements, not relational rows",
+            "rdf-graph",
+        ),
+        (
+            "A shape always changes the source graph",
+            "A validation shape reports conformance without rewriting source data",
+            "shape-validation",
+        ),
+        (
+            "Every identifier must resolve over the network",
+            "Identifiers can name resources without network dereferencing",
+            "identifiers",
+        ),
+        (
+            "A missing property and an empty value are identical",
+            "Constraint semantics distinguish absence from an explicit empty value",
+            "property-constraints",
+        ),
+    ]
+    with (course / "corpus" / "chunks.jsonl").open("w", encoding="utf-8") as stream:
+        for index, (wrong, correction, concept) in enumerate(misconceptions, 1):
+            stream.write(json.dumps({
+                "id": f"chunk-{index}",
+                "concept_tags": [concept],
+                "source": {"source_references": [{"sourceId": f"src-{index}"}]},
+                "misconceptions": [{
+                    "misconception": wrong,
+                    "correction": correction,
+                }],
+            }) + "\n")
+    graph = {
+        "nodes": [
+            {"id": f"mc-{index}", "statement": wrong}
+            for index, (wrong, _correction, _concept) in enumerate(misconceptions, 1)
+        ],
+        "edges": [
+            {
+                "source": f"mc-{index}",
+                "target": f"concept:{concept}",
+                "relation_type": "interferes_with",
+            }
+            for index, (_wrong, _correction, concept) in enumerate(misconceptions, 1)
+        ],
+    }
+    (course / "graph" / "pedagogy_graph.json").write_text(
+        json.dumps(graph), encoding="utf-8"
+    )
+
+    import MCP.tools.tutoring_tools as tutoring_tools
+
+    monkeypatch.setattr(tutoring_tools, "LIBV2_COURSES", courses_root)
+    monkeypatch.setattr(tutoring_tools, "_select_backend", lambda: "jaccard")
+    tutoring_tools._INDEX_CACHE.clear()
+    yield
+    tutoring_tools._INDEX_CACHE.clear()
 
 
 # ---------------------------------------------------------------------- #
@@ -48,7 +94,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def test_match_misconception_relational_table_smoke():
-    """Real-archive smoke: 'RDF triple is like a row in a relational
+    """Archive smoke: 'RDF triple is like a row in a relational
     table' should top-1 match the editorial misconception of the same
     framing with similarity > 0.5 and contain 'row' or 'relational' in
     the matched misconception OR correction."""
@@ -108,15 +154,12 @@ def test_match_misconception_top_k_respected():
 
 
 def test_guardrails_rdf_graph_has_at_least_one():
-    """Real-archive smoke: at least one DomainConcept in the pedagogy
+    """Archive smoke: at least one DomainConcept in the pedagogy
     graph carries ``interferes_with`` edges (Wave 76 prune kept these
     for DomainConcepts). We probe a few likely targets and require
     that at least one resolves to >= 1 guardrail; no specific concept
     is pinned because the populated targets vary by corpus regen."""
-    candidates = [
-        "rdf-graph", "rdf", "shacl", "sparql", "owl", "iri",
-        "blank-node", "turtle", "rdfs",
-    ]
+    candidates = ["rdf-graph", "shape-validation", "identifiers"]
     found = False
     for c in candidates:
         if preemptive_misconception_guardrails(SLUG, c):
@@ -140,7 +183,7 @@ def test_guardrails_concept_prefix_strip():
             target = c
             break
     if target is None:
-        pytest.skip("no concept in this corpus carries guardrails")
+        pytest.fail("synthetic archive must carry at least one guardrail")
     a = preemptive_misconception_guardrails(SLUG, f"concept:{target}")
     b = preemptive_misconception_guardrails(SLUG, target)
     assert {x["misconception"] for x in a} == {x["misconception"] for x in b}
@@ -163,7 +206,7 @@ def test_guardrails_envelope_shape():
             target = c
             break
     if target is None:
-        pytest.skip("no concept in this corpus carries guardrails")
+        pytest.fail("synthetic archive must carry at least one guardrail")
     out = preemptive_misconception_guardrails(SLUG, target)
     assert out
     expected_keys = {
@@ -181,7 +224,7 @@ def test_guardrails_envelope_shape():
 
 
 def test_cluster_misconceptions_total_members_matches_index():
-    """Real-archive smoke: every unique misconception is placed into a
+    """Archive smoke: every unique misconception is placed into a
     cluster (no statement is dropped). The exact count is corpus-
     dependent; we assert it matches ``len(index)``."""
     index = load_misconception_index(SLUG)

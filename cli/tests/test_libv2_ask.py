@@ -15,33 +15,16 @@ tests exercise the *Click surface*:
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import List
 
-import pytest
 from click.testing import CliRunner
 
 from cli.commands.libv2_ask import ask_command
-from lib.paths import LIBV2_PATH
-
-
-LIVE_SLUG = os.environ.get("ED4ALL_INTENT_ROUTER_FIXTURE_SLUG")
-LIVE_ARCHIVE = (
-    LIBV2_PATH / "courses" / LIVE_SLUG if LIVE_SLUG else None
-)
 
 
 def _run(args: List[str]):
     return CliRunner().invoke(ask_command, args)
-
-
-@pytest.fixture(scope="module")
-def live_archive_present() -> bool:
-    return (
-        LIVE_ARCHIVE is not None
-        and (LIVE_ARCHIVE / "corpus" / "chunks.jsonl").is_file()
-    )
 
 
 # ---------------------------------------------------------------------- #
@@ -244,7 +227,7 @@ def test_ask_text_show_routing_off_omits_entities(tmp_path: Path):
 def test_ask_text_misconception_renders_correction(tmp_path: Path, monkeypatch):
     """Text format for misconception_query should render
     Misconception: + Correction: lines for each result.
-    Use monkeypatch so the test doesn't depend on the live archive's
+    Use monkeypatch so the test doesn't depend on the synthetic archive's
     misconception inventory."""
     courses_root = tmp_path / "courses"
     courses_root.mkdir()
@@ -316,16 +299,18 @@ def test_ask_top_k_zero_returns_empty(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------- #
-# Live-archive smoke (skipped without the fixture)                       #
+# Concept-query smoke against the hermetic archive                       #
 # ---------------------------------------------------------------------- #
 
 
-def test_ask_live_concept_query_returns_results(live_archive_present):
-    if not live_archive_present:
-        pytest.skip("intent-router fixture archive not configured")
+def test_ask_concept_query_returns_results(tmp_path: Path):
+    courses_root = tmp_path / "courses"
+    courses_root.mkdir()
+    _make_synthetic_archive(courses_root, "demo")
     result = _run([
-        "--slug", LIVE_SLUG,
+        "--slug", "demo",
         "--query", "How does sh:minCount work?",
+        "--courses-root", str(courses_root),
         "--top-k", "5",
         "--format", "json",
     ])

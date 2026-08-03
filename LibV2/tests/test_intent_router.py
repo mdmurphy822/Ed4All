@@ -7,22 +7,16 @@ retrieval backend. Tests cover:
 * The canonical 6-query routing matrix from the design contract,
   asserting both the intent classification *and* the entity
   extraction (so we'd catch silent regressions in either layer).
-* Live-archive dispatch against an opt-in course archive
-  (set ``ED4ALL_INTENT_ROUTER_FIXTURE_SLUG`` to a slug under
-  ``$ED4ALL_LIBV2_ROOT/courses/``; skipped when unset or the
-  fixture isn't present in-repo).
+* Backend dispatch against a hermetic synthetic archive.
 * Edge cases: empty query, unknown slug, ambiguous query.
 
-The live-archive assertions are loose lower-bounds (``>= 1``) rather
-than exact counts because the BM25 / similarity scoring is
-order-sensitive; precision is governed by the chunk-quality reviews,
-not the router.
+The archive is built under ``tmp_path`` so tests cannot inspect operator
+course data or depend on machine-local state.
 """
 
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import List
 
@@ -33,13 +27,6 @@ from LibV2.tools.intent_router import (
     classify_intent,
     dispatch,
     extract_entities,
-)
-from lib.paths import LIBV2_PATH
-
-
-LIVE_SLUG = os.environ.get("ED4ALL_INTENT_ROUTER_FIXTURE_SLUG")
-LIVE_ARCHIVE = (
-    LIBV2_PATH / "courses" / LIVE_SLUG if LIVE_SLUG else None
 )
 
 
@@ -67,7 +54,7 @@ def _make_synthetic_archive(courses_root: Path, slug: str) -> Path:
         for i, (ct, diff, bl, text, wc, refs, mod) in enumerate(
             [
                 ("explanation", "foundational", "remember",
-                 "Intro chunk about RDF.", 100, ["co-01"], "week_01_overview"),
+                 "Intro chunk about RDF triples.", 100, ["co-01"], "week_01_overview"),
                 ("example", "intermediate", "apply",
                  "Example with sh:minCount usage in SHACL.", 150, ["co-02"],
                  "week_03_content"),
@@ -84,6 +71,11 @@ def _make_synthetic_archive(courses_root: Path, slug: str) -> Path:
             start=1,
         )
     ]
+    chunks[0]["misconceptions"] = [{
+        "misconception": "An RDF triple is like a row in a relational table",
+        "correction": "An RDF triple is a graph statement, not a table row",
+    }]
+    chunks[0]["concept_tags"] = ["rdf-triples"]
     with (root / "corpus" / "chunks.jsonl").open("w", encoding="utf-8") as f:
         for c in chunks:
             f.write(json.dumps(c) + "\n")
@@ -95,15 +87,52 @@ def _make_synthetic_archive(courses_root: Path, slug: str) -> Path:
         ],
     }
     (root / "objectives.json").write_text(json.dumps(objectives), encoding="utf-8")
+    (root / "graph").mkdir()
+    concept_graph = {
+        "nodes": [
+            {"id": "shacl-validation", "label": "SHACL validation", "frequency": 5},
+            {"id": "rdf-triples", "label": "RDF triples", "frequency": 4},
+        ],
+        "edges": [],
+    }
+    pedagogy_graph = {
+        "nodes": [{
+            "id": "mc-rdf-row",
+            "statement": "An RDF triple is like a row in a relational table",
+        }],
+        "edges": [
+            {
+                "source": "concept:rdf-triples",
+                "target": "concept:shacl-validation",
+                "relation_type": "prerequisite_of",
+                "confidence": 0.9,
+            },
+            {
+                "source": "mc-rdf-row",
+                "target": "concept:rdf-triples",
+                "relation_type": "interferes_with",
+            },
+        ],
+    }
+    (root / "graph" / "concept_graph.json").write_text(
+        json.dumps(concept_graph), encoding="utf-8"
+    )
+    (root / "graph" / "pedagogy_graph.json").write_text(
+        json.dumps(pedagogy_graph), encoding="utf-8"
+    )
     return root
 
 
-@pytest.fixture(scope="module")
-def live_archive_present() -> bool:
-    return (
-        LIVE_ARCHIVE is not None
-        and (LIVE_ARCHIVE / "corpus" / "chunks.jsonl").is_file()
-    )
+@pytest.fixture
+def synthetic_courses(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    courses_root = tmp_path / "courses"
+    courses_root.mkdir()
+    _make_synthetic_archive(courses_root, "demo")
+    import MCP.tools.tutoring_tools as tutoring_tools
+
+    monkeypatch.setattr(tutoring_tools, "LIBV2_COURSES", courses_root)
+    tutoring_tools._INDEX_CACHE.clear()
+    return courses_root
 
 
 # ---------------------------------------------------------------------- #
@@ -295,31 +324,31 @@ def test_dispatch_empty_query_returns_concept_class():
 
 
 # ---------------------------------------------------------------------- #
-# 5. Live-archive dispatch tests                                          #
+# 5. Hermetic archive dispatch tests                                      #
 # ---------------------------------------------------------------------- #
 
 
-def test_live_objective_lookup_returns_results(live_archive_present):
-    if not live_archive_present:
-        pytest.skip("intent-router fixture archive not configured")
-    out = dispatch("Which chunks assess to-04?", LIVE_SLUG, top_k=5)
+def test_archive_objective_lookup_returns_results(synthetic_courses: Path):
+    out = dispatch(
+        "Which chunks assess to-04?", "demo", top_k=5,
+        courses_root=synthetic_courses,
+    )
     assert out["intent_class"] == "objective_lookup"
     assert out["entities"]["objective_ids"] == ["to-04"]
     assert len(out["results"]) >= 1
     # Each returned chunk should carry to-04 or one of its child COs.
-    expected = {"to-04", "co-16", "co-17", "co-18", "co-19"}
+    expected = {"to-04", "co-16", "co-17"}
     for chunk in out["results"]:
         refs = set(chunk.get("learning_outcome_refs") or [])
         assert refs & expected, f"chunk {chunk.get('id')} doesn't carry to-04 rollup"
 
 
-def test_live_prerequisite_query_returns_concepts(live_archive_present):
-    if not live_archive_present:
-        pytest.skip("intent-router fixture archive not configured")
+def test_archive_prerequisite_query_returns_concepts(synthetic_courses: Path):
     out = dispatch(
         "What is a prerequisite for SHACL validation?",
-        LIVE_SLUG,
+        "demo",
         top_k=10,
+        courses_root=synthetic_courses,
     )
     assert out["intent_class"] == "prerequisite_query"
     # The archive has prerequisite_of edges; we should resolve at
@@ -331,13 +360,12 @@ def test_live_prerequisite_query_returns_concepts(live_archive_present):
         assert r["target"]
 
 
-def test_live_misconception_query_returns_corrections(live_archive_present):
-    if not live_archive_present:
-        pytest.skip("intent-router fixture archive not configured")
+def test_archive_misconception_query_returns_corrections(synthetic_courses: Path):
     out = dispatch(
         "What misconceptions exist about RDF triples?",
-        LIVE_SLUG,
+        "demo",
         top_k=5,
+        courses_root=synthetic_courses,
     )
     assert out["intent_class"] == "misconception_query"
     assert len(out["results"]) >= 1
@@ -346,13 +374,12 @@ def test_live_misconception_query_returns_corrections(live_archive_present):
         assert "correction" in r
 
 
-def test_live_faceted_query_extracts_facets(live_archive_present):
-    if not live_archive_present:
-        pytest.skip("intent-router fixture archive not configured")
+def test_archive_faceted_query_extracts_facets(synthetic_courses: Path):
     out = dispatch(
         "Show me apply-level exercises for week 7",
-        LIVE_SLUG,
+        "demo",
         top_k=10,
+        courses_root=synthetic_courses,
     )
     # Routing: the entity extraction is what we validate (the
     # archive happens not to have exercise-typed chunks in week 7,
@@ -364,10 +391,11 @@ def test_live_faceted_query_extracts_facets(live_archive_present):
     assert "exercise" in out["entities"]["chunk_types"]
 
 
-def test_live_concept_query_returns_bm25_chunks(live_archive_present):
-    if not live_archive_present:
-        pytest.skip("intent-router fixture archive not configured")
-    out = dispatch("How does sh:minCount work?", LIVE_SLUG, top_k=10)
+def test_archive_concept_query_returns_bm25_chunks(synthetic_courses: Path):
+    out = dispatch(
+        "How does sh:minCount work?", "demo", top_k=10,
+        courses_root=synthetic_courses,
+    )
     assert out["intent_class"] == "concept_query"
     assert len(out["results"]) >= 1
     # At least one of the top-k results should mention the term.
@@ -380,17 +408,16 @@ def test_live_concept_query_returns_bm25_chunks(live_archive_present):
     )
 
 
-def test_live_faceted_examples_chunk_type(live_archive_present):
-    if not live_archive_present:
-        pytest.skip("intent-router fixture archive not configured")
+def test_archive_faceted_examples_chunk_type(synthetic_courses: Path):
     out = dispatch(
         "Show me 5 worked examples of SHACL constraints",
-        LIVE_SLUG,
+        "demo",
         top_k=5,
+        courses_root=synthetic_courses,
     )
     assert out["intent_class"] == "faceted_query"
     assert "example" in out["entities"]["chunk_types"]
-    # Live archive has 25 example chunks, so ≥1 result expected.
+    # The synthetic archive has one example chunk.
     assert len(out["results"]) >= 1
     for chunk in out["results"]:
         assert chunk.get("chunk_type") == "example"

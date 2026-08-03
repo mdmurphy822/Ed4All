@@ -1,19 +1,12 @@
 """Tests for ``ed4all libv2 query`` (Wave 77 Worker β).
 
-The live-archive assertions run against an opt-in course archive (set
-``ED4ALL_INTENT_ROUTER_FIXTURE_SLUG`` to a slug under
-``$ED4ALL_LIBV2_ROOT/courses/``). The reference counts encoded here were
-independently verified against the RDF/SHACL calibration corpus
-(``--week 7`` → 18; ``--outcome to-04`` → ≥69; ``--outcome co-18`` → ≥44).
-
-A small handful of structural tests use synthetic fixtures so the suite
-isn't tightly coupled to the live archive's exact byte content.
+All archive assertions use a neutral synthetic fixture under ``tmp_path``;
+the suite never discovers or opens operator course archives.
 """
 
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import List
 
@@ -21,13 +14,6 @@ import pytest
 from click.testing import CliRunner
 
 from cli.commands.libv2_query import query_command
-from lib.paths import LIBV2_PATH
-
-
-LIVE_SLUG = os.environ.get("ED4ALL_INTENT_ROUTER_FIXTURE_SLUG")
-LIVE_ARCHIVE = (
-    LIBV2_PATH / "courses" / LIVE_SLUG if LIVE_SLUG else None
-)
 
 
 # ---------------------------------------------------------------------- #
@@ -37,15 +23,6 @@ LIVE_ARCHIVE = (
 
 def _run(args: List[str]) -> "click.testing.Result":
     return CliRunner().invoke(query_command, args)
-
-
-@pytest.fixture(scope="module")
-def live_archive_present() -> bool:
-    """Skip live-archive tests if the fixture isn't configured."""
-    return (
-        LIVE_ARCHIVE is not None
-        and (LIVE_ARCHIVE / "corpus" / "chunks.jsonl").is_file()
-    )
 
 
 # ---------------------------------------------------------------------- #
@@ -138,6 +115,14 @@ def _make_synthetic_archive(courses_root: Path, slug: str) -> Path:
     return root
 
 
+@pytest.fixture
+def synthetic_courses(tmp_path: Path) -> Path:
+    courses_root = tmp_path / "courses"
+    courses_root.mkdir()
+    _make_synthetic_archive(courses_root, "demo")
+    return courses_root
+
+
 # ---------------------------------------------------------------------- #
 # Help / smoke tests                                                      #
 # ---------------------------------------------------------------------- #
@@ -164,17 +149,17 @@ def test_query_help_lists_filters():
 
 
 # ---------------------------------------------------------------------- #
-# Live-archive structural assertions                                      #
+# Hermetic archive structural assertions                                  #
 # ---------------------------------------------------------------------- #
 
 
-def test_chunk_type_example_intermediate_returns_min_10(live_archive_present):
-    if not live_archive_present:
-        pytest.skip("intent-router fixture archive not configured")
+def test_chunk_type_example_intermediate_returns_one(synthetic_courses: Path):
     result = _run(
         [
             "--slug",
-            LIVE_SLUG,
+            "demo",
+            "--courses-root",
+            str(synthetic_courses),
             "--chunk-type",
             "example",
             "--difficulty",
@@ -185,48 +170,43 @@ def test_chunk_type_example_intermediate_returns_min_10(live_archive_present):
     )
     assert result.exit_code == 0, result.output
     count = int(result.output.strip())
-    assert count >= 10, f"expected >=10 example/intermediate chunks, got {count}"
+    assert count == 1
 
 
-def test_week_7_returns_18_chunks(live_archive_present):
-    if not live_archive_present:
-        pytest.skip("intent-router fixture archive not configured")
+def test_week_7_returns_two_chunks(synthetic_courses: Path):
     result = _run(
-        ["--slug", LIVE_SLUG, "--week", "7", "--format", "count"]
+        ["--slug", "demo", "--courses-root", str(synthetic_courses),
+         "--week", "7", "--format", "count"]
     )
     assert result.exit_code == 0, result.output
-    assert result.output.strip() == "18"
+    assert result.output.strip() == "2"
 
 
-def test_outcome_to_04_rolls_up_to_at_least_69(live_archive_present):
-    if not live_archive_present:
-        pytest.skip("intent-router fixture archive not configured")
+def test_outcome_to_04_rolls_up_to_three(synthetic_courses: Path):
     result = _run(
-        ["--slug", LIVE_SLUG, "--outcome", "to-04", "--format", "count"]
+        ["--slug", "demo", "--courses-root", str(synthetic_courses),
+         "--outcome", "to-04", "--format", "count"]
     )
     assert result.exit_code == 0, result.output
-    count = int(result.output.strip())
-    assert count >= 69, f"expected >=69 chunks under to-04 rollup, got {count}"
+    assert result.output.strip() == "3"
 
 
-def test_outcome_co_18_returns_at_least_44(live_archive_present):
-    if not live_archive_present:
-        pytest.skip("intent-router fixture archive not configured")
+def test_outcome_co_16_returns_one(synthetic_courses: Path):
     result = _run(
-        ["--slug", LIVE_SLUG, "--outcome", "co-18", "--format", "count"]
+        ["--slug", "demo", "--courses-root", str(synthetic_courses),
+         "--outcome", "co-16", "--format", "count"]
     )
     assert result.exit_code == 0, result.output
-    count = int(result.output.strip())
-    assert count >= 44, f"expected >=44 chunks tagged co-18, got {count}"
+    assert result.output.strip() == "1"
 
 
-def test_text_filter_finds_sh_mincount(live_archive_present):
-    if not live_archive_present:
-        pytest.skip("intent-router fixture archive not configured")
+def test_text_filter_finds_sh_mincount(synthetic_courses: Path):
     result = _run(
         [
             "--slug",
-            LIVE_SLUG,
+            "demo",
+            "--courses-root",
+            str(synthetic_courses),
             "--text",
             "sh:minCount",
             "--format",
@@ -238,13 +218,13 @@ def test_text_filter_finds_sh_mincount(live_archive_present):
     assert count > 0, "expected at least one chunk containing 'sh:minCount'"
 
 
-def test_text_filter_includes_match_in_json(live_archive_present):
-    if not live_archive_present:
-        pytest.skip("intent-router fixture archive not configured")
+def test_text_filter_includes_match_in_json(synthetic_courses: Path):
     result = _run(
         [
             "--slug",
-            LIVE_SLUG,
+            "demo",
+            "--courses-root",
+            str(synthetic_courses),
             "--text",
             "sh:minCount",
             "--limit",
@@ -260,14 +240,14 @@ def test_text_filter_includes_match_in_json(live_archive_present):
         assert "sh:mincount" in (chunk.get("text") or "").lower()
 
 
-def test_bloom_apply_analyze_with_exercise_composes(live_archive_present):
-    if not live_archive_present:
-        pytest.skip("intent-router fixture archive not configured")
+def test_bloom_apply_analyze_with_exercise_composes(synthetic_courses: Path):
     # Composition: every returned chunk must satisfy ALL filters.
     result = _run(
         [
             "--slug",
-            LIVE_SLUG,
+            "demo",
+            "--courses-root",
+            str(synthetic_courses),
             "--bloom",
             "apply,analyze",
             "--chunk-type",
@@ -284,13 +264,13 @@ def test_bloom_apply_analyze_with_exercise_composes(live_archive_present):
         assert chunk.get("bloom_level") in {"apply", "analyze"}
 
 
-def test_week_range_with_limit_caps_results(live_archive_present):
-    if not live_archive_present:
-        pytest.skip("intent-router fixture archive not configured")
+def test_week_range_with_limit_caps_results(synthetic_courses: Path):
     result = _run(
         [
             "--slug",
-            LIVE_SLUG,
+            "demo",
+            "--courses-root",
+            str(synthetic_courses),
             "--week",
             "1-3",
             "--limit",
@@ -308,13 +288,13 @@ def test_week_range_with_limit_caps_results(live_archive_present):
         assert module_id.startswith(("week_01", "week_02", "week_03")), module_id
 
 
-def test_format_count_returns_integer(live_archive_present):
-    if not live_archive_present:
-        pytest.skip("intent-router fixture archive not configured")
+def test_format_count_returns_integer(synthetic_courses: Path):
     result = _run(
         [
             "--slug",
-            LIVE_SLUG,
+            "demo",
+            "--courses-root",
+            str(synthetic_courses),
             "--chunk-type",
             "exercise",
             "--format",
@@ -326,14 +306,13 @@ def test_format_count_returns_integer(live_archive_present):
     assert result.output.strip().isdigit()
 
 
-def test_empty_filter_returns_all_219_chunks(live_archive_present):
-    if not live_archive_present:
-        pytest.skip("intent-router fixture archive not configured")
+def test_empty_filter_returns_all_five_chunks(synthetic_courses: Path):
     result = _run(
-        ["--slug", LIVE_SLUG, "--format", "count"]
+        ["--slug", "demo", "--courses-root", str(synthetic_courses),
+         "--format", "count"]
     )
     assert result.exit_code == 0, result.output
-    assert result.output.strip() == "219"
+    assert result.output.strip() == "5"
 
 
 # ---------------------------------------------------------------------- #
