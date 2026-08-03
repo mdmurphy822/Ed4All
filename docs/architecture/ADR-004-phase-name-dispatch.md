@@ -1,185 +1,178 @@
-# ADR-004 — Phase name, not agent name, is the dispatch key
+# ADR-004: Phase-name dispatch overrides
 
 ## Status
 
-**Accepted — recorded retroactively (2026-07-20).**
-
-The decision was implemented before it was written down; this ADR records it against the shipped code rather
-than proposing it. Supersedes nothing. Not superseded.
+Accepted.
 
 ## Context
 
-The orchestrator's original dispatch model was **agent-keyed**: a phase in `config/workflows.yaml` declares
-an `agents:` list, and `MCP/core/executor.py::AGENT_TOOL_MAPPING` maps each agent name to the tool that
-implements it. One agent, one tool, everywhere that agent appears.
+Most workflow tasks can be routed by agent role: a phase declares an agent in
+`config/workflows.yaml`, and `AGENT_TOOL_MAPPING` selects the corresponding
+pipeline tool. That model is not sufficient when:
 
-That model has no answer for two shapes the pipeline grew:
+- one agent role performs different operations in different phases; or
+- a deterministic phase needs a handler but does not need an agent.
 
-1. **Two phases that share an agent but need different handlers.** The two content-generation tiers
-   (ADR-003) both belong to the `content-generator` agent, but the outline tier and the rewrite tier are
-   different code. Likewise, the same chunker agent (`semantik-chunker`) runs at two points in the graph:
-   once over staged HTML, once over the packaged IMSCC. The two emit different chunkset kinds
-   (`chunkset_kind="semantik"` with `source_semantik_html_sha256`, versus `chunkset_kind="imscc"` with
-   `source_imscc_sha256`) into different directories. Under agent-keyed dispatch there is exactly one
-   destination per agent, so one of the two is always wrong.
-2. **Phases with no agent at all.** Validator-only phases run a gate chain and a deterministic handler; there
-   is no LLM worker to name. Declaring a fictitious agent purely to satisfy the router would put a lie in
-   the config.
-
-The alternative available at the time — forking the agent registry so each call site gets its own agent name
-(`semantik-chunker-imscc`, `content-generator-outline`, …) — pushes a routing concern into the vocabulary
-the workflow config uses to describe *who does the work*.
+The workflow phase is already the unit used for dependencies, checkpoints,
+validation gates, and resume behavior. It is therefore the most precise key for
+these exceptions.
 
 ## Decision
 
-**Resolve the handler by phase name first, and fall back to agent name.** `_PHASE_TOOL_MAPPING` in
-`MCP/core/executor.py` is consulted before `AGENT_TOOL_MAPPING`; a phase present in it reaches its named
-tool regardless of what its `agents:` list says.
+`TaskExecutor` resolves a task's tool in this order:
 
-```
-_PHASE_TOOL_MAPPING.get(phase_name)          # checked FIRST
-  └─ miss → AGENT_TOOL_MAPPING.get(agent_type)
-        └─ miss → dispatcher.dispatch_task (ED4ALL_AGENT_DISPATCH)
-                  or a stub (LOCAL_DISPATCHER_ALLOW_STUB)
-```
+1. Look up the phase name in `_PHASE_TOOL_MAPPING`.
+2. If the phase is not mapped, look up the agent role in
+   `AGENT_TOOL_MAPPING`.
+3. If neither lookup succeeds, return an execution error.
 
-Both mappings resolve to string keys in the registry built by
+A phase mapping always takes precedence, even when the task also names a real
+agent. Both maps contain tool-name strings. The executor resolves those strings
+against the internal registry built by
 `MCP/tools/pipeline_tools.py::_build_tool_registry`.
 
-**Corollary decision:** a phase may declare `agents: []`. For such a phase,
-`WorkflowRunner._create_phase_tasks` synthesizes a single virtual task with `agent_type="phase-handler"` —
-but **only if the phase name appears in `_PHASE_TOOL_MAPPING`** (`workflow_runner.py:4927`). The mapping is
-therefore both the route and the existence condition for the task.
+The phase overrides are:
 
-Nine phases are routed this way today:
+| Workflow phase | Internal tool |
+|---|---|
+| `content_generation_outline` | `run_content_generation_outline` |
+| `inter_tier_validation` | `run_inter_tier_validation` |
+| `content_generation_rewrite` | `run_content_generation_rewrite` |
+| `post_rewrite_validation` | `run_post_rewrite_validation` |
+| `imscc_chunking` | `run_imscc_chunking` |
+| `assessment_synthesis` | `run_assessment_synthesis` |
+| `heading_judge` | `run_heading_judge` |
+| `training` | `run_training` |
+| `evaluation` | `run_evaluation` |
 
-| Phase | Tool | `agents:` in YAML | Why the override exists |
-|---|---|---|---|
-| `heading_judge` | `run_heading_judge` | `[]` | Validator-only phase; mapping is the **only** route |
-| `content_generation_outline` | `run_content_generation_outline` | `["content-generator"]` | Shared agent, tier-specific handler (ADR-003) |
-| `inter_tier_validation` | `run_inter_tier_validation` | `[]` | Validator-only phase; **only** route |
-| `content_generation_rewrite` | `run_content_generation_rewrite` | `["content-generator"]` | Shared agent, tier-specific handler (ADR-003) |
-| `assessment_synthesis` | `run_assessment_synthesis` | `[]` | Validator-only phase; **only** route |
-| `post_rewrite_validation` | `run_post_rewrite_validation` | `[]` | Validator-only phase; **only** route |
-| `imscc_chunking` | `run_imscc_chunking` | `["semantik-chunker"]` | Same agent, different chunkset kind and output dir |
-| `training` | `run_training` | `[]` | Validator-only-style phase; **only** route. Shared by `trainforge_train` and the opt-in `textbook_to_course` tail |
-| `evaluation` | `run_evaluation` | `[]` | Validator-only-style phase; **only** route |
+These tools are pipeline-internal. Registration in `_build_tool_registry` makes
+them available to workflow execution; it does not expose them as public MCP
+tools.
 
-`training` / `evaluation` needed one thing beyond the mapping. `trainforge_train`'s
-`training` phase declares `agents: ["training-synthesizer"]`, which is in
-`AGENT_SUBAGENT_SET`, and the subagent fork happens **before** the registry lookup —
-so under `ED4ALL_AGENT_DISPATCH` the phase would still fork to a subagent, which
-cannot produce an adapter. A deterministic-tool set keyed on the RESOLVED tool name
-(`run_training` / `run_evaluation`) forces in-process execution. Phase-name routing
-alone is not sufficient whenever the phase's agent is subagent-classified.
+### Phases without agents
 
-## Rationale
+`WorkflowRunner._create_phase_tasks` applies a separate task-creation rule:
 
-1. **The phase is the unit of work; the agent is a role label.** Checkpoints, timeouts, `--resume`, gate
-   chains, seat schedules, and `inputs_from` are all keyed on the phase. Making dispatch phase-keyed aligns
-   routing with every other axis of the orchestrator.
-2. **It keeps the agent vocabulary honest.** `semantik-chunker` genuinely is one content-agnostic,
-   deterministic chunker used at two points. Splitting it into two agent names to satisfy a lookup table
-   would encode a routing detail as a claim about the system's capabilities.
-3. **It is additive and reversible per phase.** Adding a row overrides one phase; the other twelve phases
-   continue to resolve through `AGENT_TOOL_MAPPING` unchanged. There is no global migration.
-4. **`agents: []` becomes expressible.** A validator-only phase can say what is true — that no agent is
-   involved — and still run.
+- a phase with declared agents creates its normal agent tasks;
+- a phase with `agents: []` and a phase-name mapping creates one virtual task
+  with `agent_type="phase-handler"`; and
+- a phase with `agents: []` and no phase-name mapping creates no handler task.
 
-## Rejected alternatives
+The final case is valid for a gate-only phase. Its validation gates run at the
+end of the phase without an executable handler. A phase that needs to produce
+or transform an artifact must not rely on that shape.
 
-- **Fork the agent registry per call site.** Rejected: pollutes the agent vocabulary with routing artifacts,
-  and every fork has to be mirrored into `config/agents.yaml`, workflow YAML, and any doc that enumerates
-  agents.
-- **Put the tool name directly on the phase in YAML.** This is arguably the cleanest design and was not
-  taken. The cost of taking it now is a schema change to `workflows_meta.schema.json` plus a migration of
-  every phase; see `FOLLOWUP-ADR004-2`.
-- **Dispatch on `(phase, agent)` tuples.** Rejected: more expressive than the problem requires. No phase
-  needs to route two different agents to two different tools.
+The virtual `phase-handler` role is only a task placeholder. It is not an agent
+registry entry, and the executor never uses it as the tool-selection key because
+the phase-name mapping wins first.
 
-## Consequences
+### Deterministic training tools
 
-### The dispatch table is load-bearing and looks like configuration
+`run_training` and `run_evaluation` must execute in process. They perform
+deterministic training and evaluation work that a language-model worker cannot
+substitute for. The executor therefore checks the resolved tool name against
+`_DETERMINISTIC_TRAINING_TOOLS` before considering subagent dispatch.
 
-This is the sharpest consequence and it is worth stating bluntly:
+Keying this rule on the resolved tool name is important: it protects the
+operation even if the workflow task carries an agent role that would normally
+be eligible for subagent dispatch.
 
-- **For the four `agents: []` phases, deleting the `_PHASE_TOOL_MAPPING` row does not fall back to
-  anything.** No agent references them, so `AGENT_TOOL_MAPPING` has no entry, and `_create_phase_tasks`
-  creates *no task at all*. The phase does not error — it produces nothing and the workflow continues to the
-  next phase. A defect introduced this way surfaces far downstream as missing artifacts.
-- **For `imscc_chunking`, deleting the row is worse than a no-op: it silently does the wrong thing.** The
-  agent falls back to the staged-HTML chunking tool, which emits the staged-HTML chunkset kind into the
-  staged-HTML directory. The phase reports success. The `chunkset_drift` gate that compares the two chunksets then
-  compares a chunkset against itself.
-
-There is no test that fails on removal of a `_PHASE_TOOL_MAPPING` row (`FOLLOWUP-ADR004-1`).
-
-### Two mappings must be read together
-
-Neither table alone answers "what runs for this phase". `AGENT_TOOL_MAPPING` also carries live read-compat
-aliases that exist only to keep older persisted state resumable — legacy agent names from before the
-SemantiK rename that point at the current staged-HTML chunking tool and at `extract_and_convert_pdf`. They
-are reached by string comparison from a resumed workflow's state file, never by an import, so static
-analysis reads them as dead.
-
-### Registry-only tools are invisible to external MCP clients
-
-The tools reached through these mappings are registered in `_build_tool_registry` but deliberately not
-decorated with `@mcp.tool()`. They are pipeline-internal: `run_heading_judge`,
-`run_content_generation_outline`, `run_content_generation_rewrite`, `run_inter_tier_validation`,
-`run_post_rewrite_validation`, `run_assessment_synthesis`, `run_imscc_chunking`, the staged-HTML chunking
-tool, `run_concept_extraction`, `run_vector_indexing`, `run_training`, `run_evaluation`,
-`build_source_module_map`, `extract_textbook_structure`, `plan_course_structure`. An external MCP client cannot invoke them, and grepping for `@mcp.tool` will not
-find them.
-
-### Task ids record which route was taken
-
-The synthesized task id embeds the routing decision, which makes it a reliable diagnostic:
-`T-<phase>-phase-handler-<HHMMSS>` means the phase-name route with no agent;
-`T-<phase>-<agent-name>-<HHMMSS>` means the agent route. On a completed production run, exactly the four
-`agents: []` phases carried `phase-handler` ids.
-
-## Diagram
+## Dispatch model
 
 ```mermaid
 flowchart TD
-    A["phase from config/workflows.yaml"] --> B{"phase name in<br/>_PHASE_TOOL_MAPPING?"}
+    P["Load workflow phase"] --> A{"Agents declared?"}
+    A -- Yes --> T["Create normal agent task or tasks"]
+    A -- No --> M{"Phase override exists?"}
+    M -- Yes --> V["Create one virtual phase-handler task"]
+    M -- No --> G["Create no handler task; run configured gates"]
 
-    B -- yes --> C["tool = _PHASE_TOOL_MAPPING[phase]"]
-    C --> C2{"agents: [] ?"}
-    C2 -- yes --> C3["_create_phase_tasks synthesizes<br/>ONE virtual task<br/>agent_type='phase-handler'"]
-    C2 -- no --> C4["agent tasks created,<br/>agent's own tool IGNORED"]
+    T --> R{"Phase override exists?"}
+    V --> R
+    R -- Yes --> PT["Select phase-mapped tool"]
+    R -- No --> AR{"Agent mapping exists?"}
+    AR -- Yes --> AT["Select agent-mapped tool"]
+    AR -- No --> E["Return an execution error"]
 
-    B -- no --> D{"agent_type in<br/>AGENT_TOOL_MAPPING?"}
-    D -- yes --> E["tool = AGENT_TOOL_MAPPING[agent]"]
-    D -- no --> F["dispatcher.dispatch_task<br/>(ED4ALL_AGENT_DISPATCH)<br/>or stub"]
-
-    C3 --> G["_build_tool_registry lookup"]
-    C4 --> G
-    E --> G
-    G --> H["TaskExecutor._invoke_tool"]
-
-    B -. "row deleted &<br/>agents: [] " .-> X["NO TASK CREATED<br/>phase silently no-ops"]
-
-    style X fill:#f8d7da,stroke:#721c24
-    style C fill:#fff3cd,stroke:#856404
+    PT --> D{"Resolved tool is deterministic training work?"}
+    AT --> D
+    D -- Yes --> I["Invoke the registered tool in process"]
+    D -- No --> X["Apply the configured execution policy"]
+    X --> L["Invoke the registered tool or eligible dispatcher"]
+    I --> O["Return the task result"]
+    L --> O
 ```
 
-## Open questions / known issues not addressed
+The diagram separates task creation from tool selection. A mapped phase with
+declared agents still creates normal agent tasks, but each task resolves to the
+phase-specific tool.
 
-- `FOLLOWUP-ADR004-1` — No regression test pins all nine `_PHASE_TOOL_MAPPING` rows. Note that the
-  originally-proposed guard ("every phase declaring `agents: []` has a mapping entry") is no longer a
-  valid invariant: `post_training_validation` declares `agents: []` *deliberately* without a mapping
-  entry, so it creates no tasks and runs only its gate chain.
-- `FOLLOWUP-ADR004-2` — The rejected "tool name on the phase in YAML" alternative would make the routing
-  visible in the same file as the phase. If `workflows_meta.schema.json` ever gains a `handler:` field,
-  `_PHASE_TOOL_MAPPING` becomes a migration target rather than a permanent fixture.
-- `FOLLOWUP-ADR004-3` — `AGENT_TOOL_MAPPING`'s read-compat aliases have no recorded retirement condition.
-  They can be removed once no resumable persisted workflow state references the old agent names, but nothing
-  measures that.
+## Failure behavior
 
-## Decision log (append-only)
+Routing failures must be visible:
 
-| Date | What |
-|---|---|
-| 2026-07-20 | Decision recorded retroactively against the shipped implementation. No code change. |
+- no phase or agent mapping returns an `ERROR` result;
+- a mapped tool absent from the internal registry raises `ValueError`;
+- parameter-mapping errors propagate instead of selecting another tool; and
+- a deterministic training tool is not allowed to fall through to a subagent.
+
+Removing a mapping from an agent-less handler phase changes it into a phase
+with no executable task. That shape can be correct for gate-only validation,
+so the runner cannot reject it generically. Workflow-specific tests must prove
+that artifact-producing phases remain mapped and reachable.
+
+## Adding or changing an override
+
+Treat the workflow declaration, dispatch mapping, tool registry, and tests as
+one change:
+
+1. Confirm that the operation is phase-specific. Use ordinary agent routing
+   when the agent always performs the same operation.
+2. Implement the async handler and register its exact tool key in
+   `_build_tool_registry`.
+3. Add or update the phase-to-tool entry in `_PHASE_TOOL_MAPPING`.
+4. Declare `agents: []` only when the phase genuinely has no agent. Leave an
+   intentional gate-only phase unmapped.
+5. Add the resolved tool to an in-process guard only when execution cannot be
+   delegated safely. Cover that exception with a dispatch test.
+6. Wire the phase's inputs, outputs, dependencies, and validation gates in
+   `config/workflows.yaml`.
+7. Test mapping precedence, virtual-task creation where applicable, registry
+   reachability, parameter routing, and fail-loud behavior.
+8. Update the canonical routing documentation in `AGENTS.md` and `CLAUDE.md` if
+   the public contract changes.
+
+## Consequences
+
+- Agent names remain capability labels instead of multiplying for each call
+  site.
+- Deterministic phases can accurately declare that they use no agent.
+- Phase-specific behavior is explicit and testable.
+- Understanding a task's destination requires reading both dispatch maps, with
+  the phase map taking precedence.
+- A mapped tool must remain synchronized with its registry entry and workflow
+  contract.
+
+## Rejected alternatives
+
+### Create a new agent name for every phase
+
+This would encode routing differences as artificial capabilities and require
+duplicate agent-registry entries.
+
+### Infer a handler from gates or output names
+
+Inference would make dispatch sensitive to unrelated configuration and would
+make missing routes difficult to diagnose.
+
+### Route by phase-and-agent pairs
+
+No current override needs different tools for different agents within the same
+phase. Pair-based routing would add complexity without changing the supported
+behavior.
+
+### Put tool names directly in workflow YAML
+
+This could make routing more visible, but it would change the workflow schema
+and configuration contract. The explicit mapping keeps that migration separate
+from the current decision.
