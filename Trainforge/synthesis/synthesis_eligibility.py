@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
-from Trainforge.generators.synthesis_window_contract import (
+from Trainforge.generators.staged.window_contract import (
     build_evidence_window,
     objective_card,
 )
@@ -705,7 +705,7 @@ def pair_eligibility(
     # Preference admission must use the exact dependency resolver consumed by
     # micro Stage E. A lexical affordance can suggest a misconception while
     # still providing no source-backed incorrect/correction candidate.
-    from Trainforge.generators.staged_synthesis_micro import (
+    from Trainforge.generators.staged.micro import (
         micro_preference_eligibility,
     )
     result = micro_preference_eligibility(focused_chunk, focus=focus)

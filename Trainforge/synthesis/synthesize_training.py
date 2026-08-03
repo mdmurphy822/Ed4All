@@ -443,7 +443,7 @@ def _read_chunks(chunks_path: Path) -> List[Dict[str, Any]]:
     # lands structured misconceptions is byte-identical. See
     # ``synthesis_window_contract.resolve_chunk_misconceptions`` for why this
     # has to happen before the emitter rather than at the window layer.
-    from Trainforge.generators.synthesis_window_contract import (
+    from Trainforge.generators.staged.window_contract import (
         resolve_chunk_key_terms,
         resolve_chunk_misconceptions,
     )
@@ -556,10 +556,10 @@ def staged_objective_contract_enabled() -> bool:
     ``missing_canonical_objective_focus`` — a whole-corpus zero-pair emit with
     no error raised.
     """
-    from Trainforge.generators.staged_synthesis_micro import (
+    from Trainforge.generators.staged.micro import (
         staged_synthesis_micro_v1_enabled,
     )
-    from Trainforge.generators.staged_synthesis_provider import (
+    from Trainforge.generators.staged.provider import (
         staged_synthesis_v4_enabled,
     )
 
@@ -659,7 +659,7 @@ def _micro_generation_unit(kind: str, variant_index: int) -> Any:
     resume store 1:1 with the outer journal's units.  Returns a no-op context
     for every other contract, so the non-micro path is byte-identical.
     """
-    from Trainforge.generators.staged_synthesis_micro import (
+    from Trainforge.generators.staged.micro import (
         bind_micro_generation_unit,
         staged_synthesis_micro_v1_enabled,
     )
@@ -1797,27 +1797,28 @@ _SYNTHESIS_REJECTION_CONTRACT_VERSION = "v1"
 # (validators, thresholds, classifiers, embedding) do NOT regenerate
 # previously-accepted pairs — only their verdict verdict digest changes.
 _GENERATION_CONTRACT_FILES = (
-    "Trainforge/synthesize_training.py",
-    "Trainforge/synthesis_eligibility.py",
+    "Trainforge/synthesis/synthesize_training.py",
+    "Trainforge/synthesis/synthesis_eligibility.py",
     "Trainforge/generators/providers/_synthesis_provider.py",
     "Trainforge/generators/providers/_synthesis_common.py",
     "Trainforge/generators/providers/_openai_compatible_client.py",
-    "Trainforge/generators/staged_synthesis_provider.py",
-    # The micro contract's twin of staged_synthesis_provider.py. It decides
+    "Trainforge/generators/staged/provider.py",
+    # The micro contract's twin of staged/provider.py. It decides
     # model-call outcomes exactly as its V4 sibling does, AND it owns
     # ``micro_preference_eligibility`` — the preference-admission predicate
     # that synthesis_eligibility.py delegates to for BOTH contracts — so an
     # edit here changes which chunks generate preference pairs. Without this
     # entry a resumed run appended post-edit rows to a pre-edit corpus.
-    "Trainforge/generators/staged_synthesis_micro.py",
+    "Trainforge/generators/staged/micro.py",
     "Trainforge/generators/providers/_local_provider.py",
     "Trainforge/generators/instruction_factory.py",
     "Trainforge/generators/preference_factory.py",
-    "Trainforge/generators/synthesis_window_contract.py",
-    "Trainforge/synthesis_contract_guard.py",
-    "Trainforge/synthesis_concurrency.py",
-    "Trainforge/synthesis_journal.py",
-    "Trainforge/synthesis_fresh_start.py",
+    "Trainforge/generators/staged/window_contract.py",
+    "Trainforge/generators/staged/objective_contract.py",
+    "Trainforge/synthesis/synthesis_contract_guard.py",
+    "Trainforge/synthesis/synthesis_concurrency.py",
+    "Trainforge/synthesis/synthesis_journal.py",
+    "Trainforge/synthesis/synthesis_fresh_start.py",
     "lib/decision_capture.py",
     "lib/utils/jsonl.py",
     "schemas/knowledge/instruction_pair.schema.json",
@@ -3296,7 +3297,7 @@ def run_synthesis(
     # constructing a provider.  This prevents a registry default (notably the
     # Nano default) from silently serving a run explicitly intended for a
     # different immutable snapshot.
-    from Trainforge.generators.staged_synthesis_provider import (
+    from Trainforge.generators.staged.provider import (
         staged_synthesis_v4_enabled,
     )
     preflight_model_id: Optional[str] = None
@@ -3393,7 +3394,7 @@ def run_synthesis(
     # Validate the measured served window once at orchestration time.  The
     # provider retains its per-call headroom check, but a missing/garbage
     # declaration must fail before any synthesis output or resume file opens.
-    from Trainforge.generators.staged_synthesis_provider import (
+    from Trainforge.generators.staged.provider import (
         ENV_SERVED_CONTEXT_TOKENS,
     )
     production_embedder: Optional[Any] = None
@@ -3650,7 +3651,7 @@ def run_synthesis(
     instruction_variants = max(1, int(instruction_variants_per_chunk))
     stats.instruction_variants_per_chunk = instruction_variants
     if instruction_variants > 1:
-        from Trainforge.generators.staged_synthesis_micro import (
+        from Trainforge.generators.staged.micro import (
             staged_synthesis_micro_v1_enabled,
         )
 
@@ -4648,7 +4649,7 @@ def run_synthesis(
         # contract and therefore fails closed when it cannot be verified.
         # The flag-off path retains the historical audit-only behavior so a
         # bare legacy run is byte-compatible with its prior admission policy.
-        from Trainforge.generators.staged_synthesis_provider import (
+        from Trainforge.generators.staged.provider import (
             staged_synthesis_v4_enabled,
         )
         _objective_delivery_validator = PairObjectiveDeliveryValidator(

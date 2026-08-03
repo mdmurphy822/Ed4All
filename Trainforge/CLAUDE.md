@@ -698,7 +698,7 @@ byte-identical legacy route.
 `course_generation` run and passes no CLI selector.
 
 **micro-v1 cannot complete a production run today.** Its Stage A requires a
-non-empty `action_object` on the objective card (`staged_synthesis_micro.py`
+non-empty `action_object` on the objective card (`generators/staged/micro.py`
 `required_scalars`), but production objectives reach synthesis through
 `lib/validators/pair/objective_delivery.py::_load_synthesized_objectives_for_w4c`,
 which projects every LO down to exactly `{statement, bloom_level, bloom_verb}` —

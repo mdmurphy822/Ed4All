@@ -15,11 +15,11 @@ import pytest
 
 from Trainforge import synthesize_training as st
 from Trainforge.generators.providers._synthesis_provider import build_synthesis_provider
-from Trainforge.generators.staged_synthesis_micro import (
+from Trainforge.generators.staged.micro import (
     MicroStagedSynthesisProvider,
     staged_synthesis_micro_v1_enabled,
 )
-from Trainforge.generators.staged_synthesis_provider import (
+from Trainforge.generators.staged.provider import (
     StagedSynthesisProvider,
     staged_synthesis_v4_enabled,
 )

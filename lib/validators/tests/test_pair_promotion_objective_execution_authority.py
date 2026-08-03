@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 
-from Trainforge.generators.objective_execution_contract import (
+from Trainforge.generators.staged.objective_contract import (
     build_private_sidecar,
     content_sha256,
     derive_objective_requirements,

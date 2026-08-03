@@ -21,7 +21,7 @@ from __future__ import annotations
 import pytest
 
 from Trainforge.generators.providers._synthesis_common import SynthesisProviderError
-from Trainforge.generators import staged_synthesis_micro as micro
+from Trainforge.generators.staged import micro
 
 
 class _Capture:

@@ -112,7 +112,7 @@ from lib.validators.bloom.classifier_disagreement import (
     _DISAGREEMENT_CONFIDENCE_FLOOR,
 )
 from lib.ontology.bloom import BLOOM_LEVELS
-from Trainforge.generators.objective_execution_contract import (
+from Trainforge.generators.staged.objective_contract import (
     content_sha256 as _objective_content_sha256,
     reconcile_completion_execution,
     release_content_sha256,

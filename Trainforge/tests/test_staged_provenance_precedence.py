@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import pytest
 
-from Trainforge.generators.staged_synthesis_provider import (
+from Trainforge.generators.staged.provider import (
     StagedSynthesisProvider,
     _claim_repair_diff,
     _claim_repair_guard,
     _coverage_units,
 )
-from Trainforge.generators.synthesis_window_contract import objective_card
+from Trainforge.generators.staged.window_contract import objective_card
 from Trainforge.tests.test_staged_synthesis_provider import _Base
 
 

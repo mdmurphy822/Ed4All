@@ -1,6 +1,6 @@
 """Bloom-ladder initiative (WI-12) — caller-side window/rung wiring.
 
-WI-11 (``Trainforge/generators/synthesis_window_contract.py``) built the
+WI-11 (``Trainforge/generators/staged/window_contract.py``) built the
 per-CARD Bloom-rung recovery plumbing and ``build_evidence_window``'s
 optional ``target_rung`` ceiling, but explicitly left it dead code on the
 caller side: neither call site threaded a ``target_rung`` and
@@ -10,8 +10,8 @@ when the authored misconception card carried its own, different rung.
 
 This module covers the caller-side half:
 
-* ``build_evidence_window`` call sites in ``staged_synthesis_provider.py``
-  and ``staged_synthesis_micro.py`` now pass ``target_rung=`` the focus
+* ``build_evidence_window`` call sites in ``staged/provider.py``
+  and ``staged/micro.py`` now pass ``target_rung=`` the focus
   objective's own ``bloom_level`` -- proven here by observing the ceiling
   actually exclude an over-rung evidence block, not just by inspecting the
   call signature.
@@ -33,9 +33,9 @@ import pytest
 
 from lib.ontology.misconception_id import canonical_mc_id
 from Trainforge.generators.providers._synthesis_common import SynthesisProviderError
-from Trainforge.generators.synthesis_window_contract import BLOOM_WINDOWS_ENV
-import Trainforge.generators.staged_synthesis_provider as provider_module
-from Trainforge.generators.staged_synthesis_micro import micro_preference_eligibility
+from Trainforge.generators.staged.window_contract import BLOOM_WINDOWS_ENV
+import Trainforge.generators.staged.provider as provider_module
+from Trainforge.generators.staged.micro import micro_preference_eligibility
 
 
 # ---------------------------------------------------------------------------

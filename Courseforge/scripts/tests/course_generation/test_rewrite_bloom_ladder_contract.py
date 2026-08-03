@@ -11,7 +11,7 @@ and (b) author the claim/correction from the rung's misconception-probe
 strategy (``lib.ontology.bloom_ladder``, the WI-01 taxonomy), phrased from
 source-adjacent distractor-style wording so it survives the Arm-A
 ``source_backs`` token-subset check
-(``Trainforge/generators/staged_synthesis_micro.py::source_backs``). A
+(``Trainforge/generators/staged/micro.py::source_backs``). A
 ``misconception_card_authoring`` decision fires per successfully-authored
 card via the inherited ``_base.py::_emit_decision`` seam.
 

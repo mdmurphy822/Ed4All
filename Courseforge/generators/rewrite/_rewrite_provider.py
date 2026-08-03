@@ -1679,7 +1679,7 @@ def _misconception_ladder_probe_contract_suffix(block: Any) -> str:
     paragraphs the same way an assessment-item distractor is phrased —
     from the source's own wording and worked values — so they survive the
     Arm-A ``source_backs`` token-subset check
-    (``Trainforge/generators/staged_synthesis_micro.py::source_backs``).
+    (``Trainforge/generators/staged/micro.py::source_backs``).
 
     Not registered in ``_RELOCATED_SEGMENTS_BY_BLOCK_TYPE``: that map only
     relocates EXISTING segments of the shared, module-constant

@@ -8,7 +8,7 @@ import pytest
 
 from Trainforge.generators.providers._openai_compatible_client import OpenAICompatibleClient
 from Trainforge.generators.providers._synthesis_common import SynthesisProviderError
-from Trainforge.generators.staged_synthesis_provider import (
+from Trainforge.generators.staged.provider import (
     StagedSynthesisProvider,
     _canonical_evidence_quote,
     _coverage_units,
@@ -23,7 +23,7 @@ from Trainforge.generators.staged_synthesis_provider import (
     _relation_preserving_support,
     staged_synthesis_v4_enabled,
 )
-from Trainforge.generators.synthesis_window_contract import (
+from Trainforge.generators.staged.window_contract import (
     WINDOW_CONTRACT_VERSION,
     build_evidence_window,
 )

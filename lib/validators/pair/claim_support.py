@@ -118,7 +118,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 from MCP.hardening.validation_gates import GateIssue, GateResult
 from lib.classifiers.nli_classifier import NliClassifier, NliScore
 from lib.semantik.math_fold import normalize_math_notation
-from Trainforge.generators.objective_execution_contract import (
+from Trainforge.generators.staged.objective_contract import (
     release_content_sha256,
 )
 

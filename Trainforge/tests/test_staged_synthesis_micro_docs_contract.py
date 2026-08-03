@@ -11,11 +11,11 @@ from Trainforge.generators.providers._synthesis_provider import (
     SynthesisProvider,
     build_synthesis_provider,
 )
-from Trainforge.generators.staged_synthesis_micro import (
+from Trainforge.generators.staged.micro import (
     MICRO_CONTRACT_VERSION,
     micro_contract_components,
 )
-from Trainforge.generators.staged_synthesis_provider import (
+from Trainforge.generators.staged.provider import (
     StagedSynthesisProvider,
 )
 

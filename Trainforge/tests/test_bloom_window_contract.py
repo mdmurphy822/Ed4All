@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from bs4 import BeautifulSoup
 
-from Trainforge.generators.synthesis_window_contract import (
+from Trainforge.generators.staged.window_contract import (
     BLOOM_WINDOWS_ENV,
     _structured_misconception_pairs,
     build_evidence_window,

@@ -18,7 +18,7 @@ walk the chunkset, recover misconception cards, and simulate exactly the
 same admission chain the real synthesis run will exercise, all before any
 provider dispatch:
 
-1. :func:`Trainforge.generators.synthesis_window_contract.resolve_chunk_misconceptions`
+1. :func:`Trainforge.generators.staged.window_contract.resolve_chunk_misconceptions`
    recovers each chunk's structured misconception cards (authored value wins;
    recovery reads only the chunk's own markup). Per-card Bloom rung is
    carried when ``TRAINFORGE_BLOOM_WINDOWS`` recovery populated one.
@@ -27,7 +27,7 @@ provider dispatch:
    "instruction"``) resolve the SAME canonical-objective focus and run the
    SAME shared content/LO/evidence-window/length gates every real pair goes
    through, before the preference-specific arm.
-3. :func:`Trainforge.generators.staged_synthesis_micro.micro_preference_eligibility`
+3. :func:`Trainforge.generators.staged.micro.micro_preference_eligibility`
    simulates Arm A/B admission against the chunk's REAL text — the exact
    predicate ``synthesis_eligibility.pair_eligibility(kind="preference")``
    calls, contract-independent of ``staged-v4`` vs ``micro-v1``.
@@ -121,10 +121,10 @@ def project_dpo_yield(
     # unit test driving synthetic candidates) never pays Trainforge's
     # heavier import chain, and so the CPU-only projector never imports a
     # GPU-capable module at collection time.
-    from Trainforge.generators.staged_synthesis_micro import (
+    from Trainforge.generators.staged.micro import (
         micro_preference_eligibility,
     )
-    from Trainforge.generators.synthesis_window_contract import (
+    from Trainforge.generators.staged.window_contract import (
         resolve_chunk_misconceptions,
     )
     from Trainforge.synthesis.synthesis_eligibility import (

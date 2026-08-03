@@ -3,7 +3,7 @@
   "$id": "https://ed4all.dev/ns/taxonomies/v1/bloom_ladder_blocks.schema.json",
   "title": "Bloom Ladder Blocks",
   "description": "Canonical Bloom-ladder rung table: one rung per Bloom's Revised Taxonomy cognitive level, each declaring the Courseforge BLOCK_TYPES subset permitted at that rung plus the rung's misconception-card probe-authoring guidance. Source of truth for the Bloom-ladder loader (`lib/ontology/bloom_ladder.py`) consumed by the block planner / content-generation ladder-capping logic (ED4ALL_BLOOM_LADDER). The schema is dual-use: it both describes the shape (via $defs) and carries the data itself as the `default` value on each level property, so loaders can read the defaults directly (mirrors `schemas/taxonomies/bloom_verbs.json`).",
-  "$comment": "block_types values are drawn ONLY from the existing 30-member Courseforge/scripts/blocks.py::BLOCK_TYPES frozenset (mirrored for import-light validation by lib/generation/block_catalog.py) -- no new BLOCK_TYPES tokens are minted here. misconception_probe.card_class / claim_class / correction_class are pinned VERBATIM to the existing misconception-card / misconception-claim / misconception-correction HTML class-token contract read by Trainforge/generators/synthesis_window_contract.py::_role_and_polarity -- zero-touch, additive guidance only.",
+  "$comment": "block_types values are drawn ONLY from the existing 30-member Courseforge/scripts/blocks.py::BLOCK_TYPES frozenset (mirrored for import-light validation by lib/generation/block_catalog.py) -- no new BLOCK_TYPES tokens are minted here. misconception_probe.card_class / claim_class / correction_class are pinned VERBATIM to the existing misconception-card / misconception-claim / misconception-correction HTML class-token contract read by Trainforge/generators/staged/window_contract.py::_role_and_polarity -- zero-touch, additive guidance only.",
   "type": "object",
   "required": ["remember", "understand", "apply", "analyze", "evaluate", "create"],
   "additionalProperties": false,
@@ -26,7 +26,7 @@
     },
     "MisconceptionProbe": {
       "type": "object",
-      "description": "Per-rung misconception-card probe guidance. card_class / claim_class / correction_class are the existing (zero-touch) HTML class tokens the rewrite tier already emits -- see Courseforge/generators/rewrite/_rewrite_provider.py and Trainforge/generators/synthesis_window_contract.py::_role_and_polarity.",
+      "description": "Per-rung misconception-card probe guidance. card_class / claim_class / correction_class are the existing (zero-touch) HTML class tokens the rewrite tier already emits -- see Courseforge/generators/rewrite/_rewrite_provider.py and Trainforge/generators/staged/window_contract.py::_role_and_polarity.",
       "required": ["probe_strategy", "card_class", "claim_class", "correction_class"],
       "additionalProperties": false,
       "properties": {

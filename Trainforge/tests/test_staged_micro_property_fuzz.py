@@ -7,7 +7,7 @@ import random
 import sys
 from pathlib import Path
 
-from Trainforge.generators.staged_synthesis_micro import (
+from Trainforge.generators.staged.micro import (
     MICRO_DPO_PROJECTION,
     MICRO_SFT_PROJECTION,
     MicroResumeStore,
@@ -16,7 +16,7 @@ from Trainforge.generators.staged_synthesis_micro import (
     micro_contract_fingerprint,
     validate_typed_givens,
 )
-from Trainforge.generators.staged_synthesis_provider import (
+from Trainforge.generators.staged.provider import (
     _coverage_units,
     _stable_json,
 )

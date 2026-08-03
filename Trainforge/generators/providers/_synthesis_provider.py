@@ -1418,11 +1418,11 @@ def build_synthesis_provider(
     # base class makes the unset/default path byte-identical, while the active
     # production workflow can separate evidence planning, SFT realization,
     # and the two DPO branches into independently validated calls.
-    from Trainforge.generators.staged_synthesis_provider import (
+    from Trainforge.generators.staged.provider import (
         StagedSynthesisProvider,
         staged_synthesis_v4_enabled,
     )
-    from Trainforge.generators.staged_synthesis_micro import (
+    from Trainforge.generators.staged.micro import (
         MicroStagedSynthesisProvider,
         staged_synthesis_micro_v1_enabled,
     )

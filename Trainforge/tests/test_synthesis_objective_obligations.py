@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from Trainforge.generators.staged_synthesis_provider import StagedSynthesisProvider
-from Trainforge.generators.synthesis_window_contract import (
+from Trainforge.generators.staged.provider import StagedSynthesisProvider
+from Trainforge.generators.staged.window_contract import (
     build_evidence_window,
     objective_card,
 )

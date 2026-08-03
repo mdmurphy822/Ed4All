@@ -59,9 +59,12 @@ _RETRY_PATTERNS = {
 }
 
 _PROVENANCE_FILES = (
-    "Trainforge/synthesize_training.py",
+    "Trainforge/synthesis/synthesize_training.py",
     "Trainforge/generators/providers/_synthesis_provider.py",
-    "Trainforge/generators/staged_synthesis_provider.py",
+    "Trainforge/generators/staged/provider.py",
+    "Trainforge/generators/staged/micro.py",
+    "Trainforge/generators/staged/window_contract.py",
+    "Trainforge/generators/staged/objective_contract.py",
     "Trainforge/generators/instruction_factory.py",
     "Trainforge/generators/preference_factory.py",
     "lib/validators/pair/claim_support.py",

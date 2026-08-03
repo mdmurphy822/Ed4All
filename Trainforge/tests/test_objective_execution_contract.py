@@ -4,7 +4,7 @@ import copy
 
 import pytest
 
-from Trainforge.generators.objective_execution_contract import (
+from Trainforge.generators.staged.objective_contract import (
     CANDIDATE_COMPLETION_CAPS,
     DEFAULT_CANDIDATE_COMPLETION_CAP,
     ObjectiveExecutionContractError,
@@ -154,7 +154,7 @@ def test_each_candidate_cap_accepts_an_untruncated_short_completion(cap):
 def test_micro_contract_completion_cap_defaults_to_600_and_never_truncates():
     # PACKAGE A: This test pins the MICRO contract completion cap, which is
     # deliberately NOT changing. The general SFT answer caps in
-    # staged_synthesis_provider.py are being raised from 600→1200 chars, but the
+    # staged/provider.py are being raised from 600→1200 chars, but the
     # MICRO contract's objective-execution completion bounds remain exactly 600
     # (a separate, uncapped MICRO path for objective realization).
     assert DEFAULT_CANDIDATE_COMPLETION_CAP == 600
@@ -192,7 +192,7 @@ def test_release_payload_hash_excludes_only_detached_objective_audit_link():
         "pair_objective_execution_pass_rate": 1.0,
     }
     assert sidecar["release_content_sha256"] == content_sha256(release)
-    from Trainforge.generators.objective_execution_contract import (
+    from Trainforge.generators.staged.objective_contract import (
         release_content_sha256,
     )
     assert release_content_sha256(linked) == release_content_sha256(release)

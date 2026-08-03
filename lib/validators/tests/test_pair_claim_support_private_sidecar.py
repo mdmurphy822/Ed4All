@@ -8,7 +8,7 @@ import pytest
 
 from lib.classifiers.nli_classifier import NliScore
 from lib.validators.pair.claim_support import PairClaimSupportValidator
-from Trainforge.generators.objective_execution_contract import (
+from Trainforge.generators.staged.objective_contract import (
     release_content_sha256,
 )
 

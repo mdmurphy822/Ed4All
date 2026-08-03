@@ -316,9 +316,12 @@ risk. Completed items are marked below.
    identities, session controls, the shared OpenAI-compatible transport, and
    its durable attempt ledger now live under `providers/`. These internal
    modules moved without compatibility shims, and every tracked caller uses
-   the canonical package path. The exact loose-module cap fell from 32 to 19;
-   assessment, pair-generation, staged-synthesis, and deterministic-program
-   families remain candidates for later bounded moves.
+   the canonical package path. Staged generation, its provider, and the
+   evidence/objective contracts now live under `staged/`; four root-level
+   module aliases preserve their documented import paths through the
+   deprecation window. The exact loose-module cap remains 19 while those
+   aliases are supported. Assessment, pair-generation, and deterministic-
+   program families remain candidates for later bounded moves.
 8. **`LibV2/tools/libv2/` — IN PROGRESS.** Evaluation implementations now
    live under `evaluation/`. Three documented compatibility modules remain at
    the package root through their deprecation window, so the exact flat cap

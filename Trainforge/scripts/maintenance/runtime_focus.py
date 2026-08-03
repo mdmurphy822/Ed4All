@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Mapping
 
-from Trainforge.generators.synthesis_window_contract import objective_card
+from Trainforge.generators.staged.window_contract import objective_card
 from Trainforge.synthesis.synthesis_eligibility import (
     focus_chunk_on_canonical_objective,
 )

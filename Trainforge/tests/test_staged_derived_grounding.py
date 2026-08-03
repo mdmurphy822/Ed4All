@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from Trainforge.generators.staged_synthesis_provider import (
+from Trainforge.generators.staged.provider import (
     StagedSynthesisProvider,
     _deterministic_derivation_ledger,
 )

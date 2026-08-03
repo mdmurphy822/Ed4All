@@ -171,7 +171,7 @@ def test_legacy_pair_without_provenance_is_unchanged() -> None:
 
 def test_v4_provider_exports_the_quotes_it_verified() -> None:
     """Producer half: the plan's verified quotes land on the emitted pair."""
-    from Trainforge.generators.staged_synthesis_provider import (
+    from Trainforge.generators.staged.provider import (
         StagedSynthesisProvider,
     )
 
@@ -193,7 +193,7 @@ def test_v4_provider_exports_the_quotes_it_verified() -> None:
 
 
 def test_v4_provider_stamp_preserves_existing_provenance() -> None:
-    from Trainforge.generators.staged_synthesis_provider import (
+    from Trainforge.generators.staged.provider import (
         StagedSynthesisProvider,
     )
 
@@ -209,7 +209,7 @@ def test_v4_provider_stamp_preserves_existing_provenance() -> None:
 
 
 def test_v4_provider_emits_nothing_when_no_claim_carries_evidence() -> None:
-    from Trainforge.generators.staged_synthesis_provider import (
+    from Trainforge.generators.staged.provider import (
         StagedSynthesisProvider,
     )
 

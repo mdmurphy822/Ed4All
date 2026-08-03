@@ -6,10 +6,10 @@ from types import SimpleNamespace
 
 import pytest
 
-import Trainforge.generators.staged_synthesis_micro as micro_module
+import Trainforge.generators.staged.micro as micro_module
 from Trainforge.generators.providers._synthesis_common import SynthesisProviderError
 from lib.ontology.misconception_id import canonical_mc_id
-from Trainforge.generators.staged_synthesis_micro import (
+from Trainforge.generators.staged.micro import (
     MICRO_CONTRACT_VERSION,
     MICRO_COMPLETION_CAP_CANDIDATES,
     MICRO_DEFAULT_COMPLETION_CAP,
@@ -56,13 +56,13 @@ from Trainforge.generators.staged_synthesis_micro import (
     _prompt_numeric_error,
 )
 from Trainforge.synthesis.synthesize_training import build_parser
-from Trainforge.generators.staged_synthesis_provider import (
+from Trainforge.generators.staged.provider import (
     _coverage_units,
     _operational_condition_error,
     _relation_operator_mutation,
     affine_two_line_relation_proof,
 )
-from Trainforge.generators.objective_execution_contract import (
+from Trainforge.generators.staged.objective_contract import (
     derive_objective_requirements,
 )
 
@@ -585,7 +585,7 @@ def test_stage_a_normalizes_exact_synthetic_scenario_numbers():
     assert unnecessary_generated_givens_error(a1["learner_task"], givens) is None
     assert evidence["contract_version"] == MICRO_STAGE_A_SEED_CONTRACT_VERSION
     assert "generated_givens" not in __import__(
-        "Trainforge.generators.staged_synthesis_micro",
+        "Trainforge.generators.staged.micro",
         fromlist=["_TASK_SCHEMA"],
     )._TASK_SCHEMA["properties"]
     assert "generated_givens" in a2
@@ -745,7 +745,7 @@ def test_micro_preference_eligibility_reason_codes_missing_correction():
 
 
 def test_every_micro_schema_string_and_array_is_finitely_bounded():
-    from Trainforge.generators import staged_synthesis_micro as micro
+    from Trainforge.generators.staged import micro
 
     schemas = (
         micro._TASK_SCHEMA,
@@ -773,7 +773,7 @@ def test_every_micro_schema_string_and_array_is_finitely_bounded():
 
 
 def test_micro_system_directives_explicitly_disable_reasoning():
-    from Trainforge.generators import staged_synthesis_micro as micro
+    from Trainforge.generators.staged import micro
 
     for directive in (
         micro._TASK_SYSTEM,
@@ -1733,7 +1733,7 @@ def test_canary023_formula_proof_source_drifts_fingerprint_and_resume_contract(
         != micro_module._sha(
             __import__("inspect").getsource(
                 __import__(
-                    "Trainforge.generators.staged_synthesis_provider",
+                    "Trainforge.generators.staged.provider",
                     fromlist=["formula_relation_proof"],
                 ).formula_relation_proof
             )
@@ -2144,7 +2144,7 @@ def test_claim_provider_failure_retries_once_before_succeeding(
     class Result:
         value = _claim()
 
-    from Trainforge.generators import staged_synthesis_provider as staged_base
+    from Trainforge.generators.staged import provider as staged_base
     provider = MicroStagedSynthesisProvider(Base(), synthesis_seed=17)
     calls = []
 
@@ -2171,7 +2171,7 @@ def test_claim_provider_failure_retries_once_before_succeeding(
 
 
 def test_schema_maximum_payloads_fit_stage_token_caps_by_byte_upper_bound():
-    from Trainforge.generators import staged_synthesis_micro as micro
+    from Trainforge.generators.staged import micro
 
     payloads = {
         "A": {
@@ -2222,7 +2222,7 @@ def test_assembly_dedupes_with_stable_identity_order_and_hashes():
 
 
 def test_empty_obligations_route_by_objective_semantics_not_block_id(monkeypatch):
-    import Trainforge.generators.staged_synthesis_micro as micro
+    import Trainforge.generators.staged.micro as micro
 
     provider = object.__new__(MicroStagedSynthesisProvider)
     provider._task_design = lambda _chunk: {

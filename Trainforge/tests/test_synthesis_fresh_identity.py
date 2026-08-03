@@ -20,7 +20,7 @@ from Trainforge.synthesize_training import (
     _append_synthesis_pairs_checkpoint,
     _load_synthesis_pairs_checkpoint,
 )
-from Trainforge.generators.staged_synthesis_provider import (
+from Trainforge.generators.staged.provider import (
     StagedSynthesisProvider,
 )
 

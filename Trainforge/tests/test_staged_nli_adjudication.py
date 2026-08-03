@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from Trainforge.generators.staged_synthesis_provider import (
+from Trainforge.generators.staged.provider import (
     StagedSynthesisProvider,
     _symbolic_math_supports,
 )

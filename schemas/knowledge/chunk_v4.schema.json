@@ -417,7 +417,7 @@
         "id": {
           "type": "string",
           "minLength": 1,
-          "description": "Canonical misconception ID minted by lib/ontology/misconception_id.py::canonical_mc_id over (misconception, correction, bloom_level). Read by Trainforge/generators/staged_synthesis_micro.py::micro_preference_eligibility, which REJECTS the entry when a supplied ID disagrees with the recomputed canonical one. Optional — omit it and the canonical ID is derived. Permitted here because additionalProperties is false and the eligibility arm already reads this key; without it a provenance-carrying misconception was unrepresentable."
+          "description": "Canonical misconception ID minted by lib/ontology/misconception_id.py::canonical_mc_id over (misconception, correction, bloom_level). Read by Trainforge/generators/staged/micro.py::micro_preference_eligibility, which REJECTS the entry when a supplied ID disagrees with the recomputed canonical one. Optional — omit it and the canonical ID is derived. Permitted here because additionalProperties is false and the eligibility arm already reads this key; without it a provenance-carrying misconception was unrepresentable."
         },
         "mechanism_evidence": {
           "type": "string",
