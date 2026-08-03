@@ -223,10 +223,9 @@ Before removing `--dry-run`:
 5. Ensure enough local storage and accelerator capacity for the selected work.
 6. Start the run and retain its emitted run ID privately.
 
-A DGX Spark is a supported local deployment profile, not a requirement. Use
-the same CLI and workflow contracts on any compatible host; install
-architecture-appropriate GPU dependencies as described under [Platform
-dependencies](installation.md#platform-dependencies). Keep device-specific
+Use the same CLI and workflow contracts on any compatible host. Install
+architecture-appropriate accelerator dependencies as described under [Platform
+dependencies](installation.md#platform-dependencies), and keep device-specific
 launch values and endpoint details in ignored operator configuration.
 
 ## 7. Graceful stop, resume, and checkpoints

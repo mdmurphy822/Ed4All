@@ -1,63 +1,91 @@
-# `ed4all support-bundle` (OP1)
+# Create a sanitized support bundle
 
-Assemble a **redacted diagnostics tarball** to hand a maintainer when a run
-misbehaves. A support bundle carries the *diagnostic* surface of a deployment —
-never the confidential surface, and never course content.
+`ed4all support-bundle` packages diagnostics for a maintainer without walking
+course archives or Courseforge exports. Redaction reduces disclosure risk, but
+it cannot prove that every included log or malformed file is safe. Always
+inspect the archive inside your trust boundary before sharing it.
+
+## Create the bundle
+
+Bundle the newest private run and current environment diagnostics:
 
 ```bash
-# Newest run + live-env doctor groups
 ed4all support-bundle
-
-# A specific run (adds the doctor POST-MORTEM group over its checkpoints/VRAM)
-ed4all support-bundle --run-id <RUN_ID> -o <BUNDLE_PATH>
-
-# Include decision captures (OFF by default — see "Secret handling")
-ed4all support-bundle --run-id WF-... --include-captures
 ```
 
-Prints the bundle path + size on completion.
+Select a run or output path explicitly:
 
-## What's IN
+```bash
+ed4all support-bundle \
+  --run-id <PRIVATE_RUN_ID> \
+  --output <PRIVATE_BUNDLE_PATH>
+```
 
-| Member | Source | Notes |
-|--------|--------|-------|
-| `doctor.json` | `ed4all doctor`, run **in-process** at bundle time | Post-mortem group with `--run-id` (reads the run's checkpoints + VRAM trajectory off disk); otherwise the live-env `gpu` / `window` / `environment` groups. Never raises — a failure degrades to `{"error": ...}`. |
-| `run/<run_id>/…` | `runtime/state/runs/<id>/` | Checkpoints, `vram_trajectory.jsonl`, `llm_usage.jsonl`, decisions, audit. With no `--run-id` the **newest** run dir is chosen. |
-| `gui-logs/…` | `runtime/state/gui/logs/*.log` | The per-run consoles tailed by the GUI. |
-| `captures/…` | `runtime/training-captures/**/*.jsonl` | **Only** under `--include-captures`. |
-| `manifest.json` | generated | Every included file with its `size` + `sha256`, plus a `warnings[]` list recording anything withheld. |
+The command prints the archive path and size. Missing optional state, such as a
+run directory or GUI log directory, becomes a manifest warning so the remaining
+diagnostics can still be assembled.
 
-## What's OUT
+## Included diagnostics
 
-* **Course content** — `LibV2/courses/`, `Courseforge/exports/`. These trees are
-  never walked, so they are excluded by construction.
-* **Secret-only files** — `secrets.json`, `.env`, `.env.rendered`, `*.key`,
-  `*.pem`, `*.crt` … are dropped outright wherever they appear (e.g. a
-  `secrets.json` that slipped into a run dir). Each drop is logged as a
-  `warnings[]` entry in the manifest.
+| Archive path | Contents |
+|---|---|
+| `doctor.json` | Post-mortem diagnostics for an explicit run, or current environment diagnostics when no run is selected. |
+| `run/<private-run-id>/` | One run's checkpoints, resource telemetry, usage records, decisions, and audit files. |
+| `gui-logs/` | Available GUI console logs. |
+| `manifest.json` | Included-member sizes and SHA-256 hashes plus warnings for missing or excluded material. |
+| `captures/` | Decision captures, only when `--include-captures` is explicitly supplied. |
 
-## Secret handling
+When no run is specified, the most recently modified run directory is selected.
+This is a convenience rule, not proof that the selected run is the one you
+intended; verify `manifest.json`.
 
-Defense in depth beyond the wave-1 settings/secrets sidecar split:
+Course archives and Courseforge exports are excluded by construction because
+the command never walks those trees.
 
-1. **Secret-only files are dropped** (never bundled). `secrets.json` and
-   `settings.json` env values never enter a bundle.
-2. **Every bundled `*.json` is walked** and any secret-shaped key
-   (`*_API_KEY` / `*_KEY` / `*_TOKEN` / `*_SECRET` / `*_PASSWORD`, and the bare
-   `authorization` / `password` / `secret` / `token` / `api_key` keys) has its
-   value replaced with `"***REDACTED***"` (a set-but-empty value stays `null` so
-   the "is it configured?" signal survives). This scrubs a stray credential in a
-   config snapshot.
-3. **Decision captures are opt-in.** Capture *rationales* interpolate real
-   signals and can quote verbatim source text, so `runtime/training-captures/` is
-   excluded unless you pass `--include-captures` — which also prints a review
-   warning and records it in the manifest.
+## Redaction boundary
 
-Even so, plaintext GUI logs are bundled as-is; skim a bundle before sharing it
-outside your trust boundary.
+The bundle drops recognized secret-only files, including common environment
+files and private-key or certificate formats. In valid JSON files, values under
+secret-shaped keys are replaced with `***REDACTED***`; empty secret values stay
+`null` so configuration presence remains visible.
 
-## Related
+Redaction is deliberately conservative but not universal:
 
-* `ed4all doctor` — the diagnostics whose JSON is embedded (`cli/commands/doctor.py`).
-* `ed4all backup` — a **complete, restore-able** snapshot (includes secrets;
-  `0600`). See [`backup-restore.md`](backup-restore.md).
+- plaintext logs and non-JSON files are copied as-is;
+- malformed JSON is copied as-is because its structure cannot be inspected
+  reliably;
+- an unrecognized credential filename or key can evade pattern-based checks;
+- run metadata can reveal private identifiers, model choices, timings, and
+  infrastructure characteristics; and
+- generated rationales can quote private source material.
+
+Review both the archive members and their contents before transfer. Share a
+bundle only through an approved private channel.
+
+## Decision captures
+
+Captures are excluded by default. Include them only when a maintainer needs the
+decision trail and the source-content risk has been reviewed:
+
+```bash
+ed4all support-bundle \
+  --run-id <PRIVATE_RUN_ID> \
+  --include-captures \
+  --output <PRIVATE_BUNDLE_PATH>
+```
+
+The command records an explicit warning in the manifest when captures are
+included. Opting in does not sanitize free-text rationales.
+
+## Verify before sharing
+
+1. Open `manifest.json` and confirm the selected private run.
+2. Review every warning and every included archive path.
+3. Search extracted content for credentials, source text, personal data,
+   course identifiers, local paths, host details, and endpoint information.
+4. Confirm that decision captures were included only when intended.
+5. Transfer the bundle through a private, access-controlled channel.
+
+Do not use a support bundle as a backup. A backup intentionally includes a
+broader restore surface and has different confidentiality requirements; see
+[Backup and restore](backup-restore.md).
