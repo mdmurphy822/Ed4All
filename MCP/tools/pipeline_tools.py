@@ -6276,9 +6276,18 @@ def _derive_terminals_bottom_up(
                     "(never dropped)."
                 ),
                 alternatives_considered=[
-                    "keep the raw fixed-K Ward clusters (singleton outlier "
-                    "becomes a hallucinated TO; runts + duplicate themes "
-                    "survive)",
+                    {
+                        "option": "Keep the raw fixed-K Ward clusters",
+                        "reason_rejected": (
+                            f"The raw partition contained "
+                            f"{guard_signals.get('outliers_absorbed', 0)} "
+                            "outlier, "
+                            f"{guard_signals.get('undersize_merged', 0)} "
+                            "undersize, and "
+                            f"{guard_signals.get('near_dup_clusters_merged', 0)} "
+                            "near-duplicate cluster correction(s)"
+                        ),
+                    },
                 ],
             )
         except Exception:  # noqa: BLE001 — capture must not break derivation
@@ -6310,8 +6319,13 @@ def _derive_terminals_bottom_up(
                     "(never dropped/invented)."
                 ),
                 alternatives_considered=[
-                    "keep the size-1 cluster (a lone outlier CO becomes a "
-                    "hallucinated course-wide terminal objective)",
+                    {
+                        "option": "Keep each size-one cluster",
+                        "reason_rejected": (
+                            f"{singletons_dissolved} singleton cluster(s) would "
+                            "author standalone course-wide terminal objectives"
+                        ),
+                    },
                 ],
             )
         except Exception:  # noqa: BLE001 — capture must not break derivation
@@ -6692,8 +6706,14 @@ def _derive_terminals_chapter_anchored(
                     "statement clustering scattered."
                 ),
                 alternatives_considered=[
-                    "bottom-up statement clustering (scatters a chapter's COs "
-                    "across theme clusters — Defect A prerequisite inversions)",
+                    {
+                        "option": "Use bottom-up statement clustering",
+                        "reason_rejected": (
+                            f"Chapter anchoring assigned {len(chapter_cos)} "
+                            f"chapter objectives to {result.n_modules} source "
+                            "modules to preserve prerequisite order"
+                        ),
+                    },
                 ],
             )
         except Exception:  # noqa: BLE001 — capture must not break derivation
@@ -7310,10 +7330,20 @@ def _drop_apparatus_seeded_candidates(
                     "never emptied."
                 ),
                 alternatives_considered=[
-                    "keep the apparatus-seeded survivors (a 'In the following "
-                    "exercises' banner becomes a vacuous canonical CO)",
-                    "drop unconditionally (risks emptying a window's pool when "
-                    "every survivor is apparatus text)",
+                    {
+                        "option": "Keep the apparatus-seeded survivors",
+                        "reason_rejected": (
+                            f"{dropped_count} survivor(s) matched non-"
+                            "instructional apparatus markers"
+                        ),
+                    },
+                    {
+                        "option": "Drop every apparatus-seeded survivor",
+                        "reason_rejected": (
+                            f"The input pool contained {len(pool)} candidate(s); "
+                            "the keep-one rule prevents an empty objective pool"
+                        ),
+                    },
                 ],
             )
         except Exception:  # noqa: BLE001 — capture must not break synthesis
@@ -16106,20 +16136,26 @@ def _emit_curie_minting_capture(
             for canonical in matched_canonicals
         )
     alternatives = [
-        (
-            f"leave content['curies']={existing!r} unchanged (rejected: "
-            "the block then fails BlockCurieAnchoringValidator on a "
-            "prose corpus — the gate gap this minting pass closes)"
-        ),
+        {
+            "option": f"Leave content['curies']={existing!r} unchanged",
+            "reason_rejected": (
+                f"Block {block.block_id} would remain without an anchorable "
+                "domain CURIE"
+            ),
+        },
     ]
     dropped_count = len(matched_canonicals) - len(minted_curies)
     if matched_surface != "sibling_page_fallback" and dropped_count > 0:
-        alternatives.append(
-            f"also mint the {dropped_count} matched concept(s) whose only "
-            "surface form fails _surface_form_can_anchor (rejected: an "
-            "unanchorable short/stopword alias would fail the gate and "
-            "poison concept_tags)"
-        )
+        alternatives.append({
+            "option": (
+                f"Also mint the {dropped_count} matched concept(s) without "
+                "an anchorable surface form"
+            ),
+            "reason_rejected": (
+                "A short or stop-word-only alias cannot satisfy the CURIE "
+                "anchoring gate"
+            ),
+        })
     try:
         capture.log_decision(
             decision_type="curie_minting",
@@ -30243,8 +30279,24 @@ def _build_tool_registry() -> dict:
                                 f"before the co-occurrence graph build."
                             ),
                             alternatives_considered=[
-                                "leave seeds empty (status-quo degenerate graph)",
-                                "run Stage-3 LLM vocabulary synthesis",
+                                {
+                                    "option": "Leave the concept seed set empty",
+                                    "reason_rejected": (
+                                        f"The empty seed path produced no domain "
+                                        f"vocabulary across {len(chunks)} chunks"
+                                    ),
+                                },
+                                {
+                                    "option": (
+                                        "Run Stage-3 language-model vocabulary "
+                                        "synthesis"
+                                    ),
+                                    "reason_rejected": (
+                                        f"The lexical fallback derived "
+                                        f"{lexical_seed_count} seed(s) without a "
+                                        "model call"
+                                    ),
+                                },
                             ],
                         )
                     except Exception as exc:  # noqa: BLE001 — best-effort

@@ -5173,9 +5173,21 @@ class WorkflowRunner:
                     f"html_files={len(html_paths)}"
                 ),
                 alternatives_considered=[
-                    f"keep provisional {provisional!r}"
-                    if resolution.resolved
-                    else "rebind to an h1-derived slug (h1 unusable)"
+                    {
+                        "option": (
+                            f"Keep provisional identity {provisional!r}"
+                            if resolution.resolved
+                            else "Rebind to an H1-derived identity"
+                        ),
+                        "reason_rejected": (
+                            f"The H1 resolved to {resolution.final_name!r}"
+                            if resolution.resolved
+                            else (
+                                "The H1 was not usable; resolution reason="
+                                f"{resolution.reason}"
+                            )
+                        ),
+                    }
                 ],
             )
         except Exception as exc:  # noqa: BLE001 — capture never blocks the run
@@ -6064,12 +6076,24 @@ class WorkflowRunner:
                                 f"{feedback[:400] or '<empty>'}"
                             ),
                             alternatives_considered=[
-                                "stop the workflow on the first critical "
-                                "gate failure (legacy permanent-class "
-                                "behavior; ED4ALL_PLANNING_GATE_RETRIES=0)",
-                                "evict the window sidecar too (re-rolls the "
-                                "expensive per-window CO synthesis; rejected "
-                                "— the retry is TO-stage scoped)",
+                                {
+                                    "option": (
+                                        "Stop the workflow on the first "
+                                        "critical gate failure"
+                                    ),
+                                    "reason_rejected": (
+                                        f"Retry {attempt} of {retry_budget} is "
+                                        "available for the failed planning gates"
+                                    ),
+                                },
+                                {
+                                    "option": "Evict the window sidecar",
+                                    "reason_rejected": (
+                                        "The retry is scoped to terminal-objective "
+                                        "derivation; the window and chapter-"
+                                        "objective cache remains valid"
+                                    ),
+                                },
                             ],
                         )
                     except Exception:  # noqa: BLE001 — capture never blocks
@@ -6202,9 +6226,16 @@ class WorkflowRunner:
                             f"fail-open-after-retries contract."
                         ),
                         alternatives_considered=[
-                            "block the workflow after budget exhaustion "
-                            "(legacy behavior; contradicts this phase's "
-                            "fail-open contract)",
+                            {
+                                "option": (
+                                    "Block the workflow after planning retry "
+                                    "budget exhaustion"
+                                ),
+                                "reason_rejected": (
+                                    f"The phase contract continues with a warning "
+                                    f"after {attempts_used} failed retry attempt(s)"
+                                ),
+                            },
                         ],
                     )
                 except Exception:  # noqa: BLE001 — capture never blocks

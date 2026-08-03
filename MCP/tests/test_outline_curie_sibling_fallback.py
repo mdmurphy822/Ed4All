@@ -31,6 +31,8 @@ import json
 import sys
 from pathlib import Path
 
+import jsonschema
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -303,7 +305,23 @@ def test_capture_fires_with_sibling_fallback_marker(tmp_path):
     )
     alternatives = call["alternatives_considered"]
     assert alternatives
-    assert any("BlockCurieAnchoringValidator" in a for a in alternatives)
+    assert all(
+        isinstance(alternative.get("option"), str)
+        and isinstance(alternative.get("reason_rejected"), str)
+        for alternative in alternatives
+    )
+    assert any(
+        "without an anchorable domain CURIE"
+        in alternative["reason_rejected"]
+        for alternative in alternatives
+    )
+    schema = json.loads(
+        (
+            PROJECT_ROOT / "schemas/events/decision_event.schema.json"
+        ).read_text(encoding="utf-8")
+    )["properties"]["alternatives_considered"]["items"]
+    for alternative in alternatives:
+        jsonschema.validate(alternative, schema)
 
     # The sibling's own (non-fallback) mint event references the actual
     # matched vocabulary concept(s) as inputs.

@@ -245,6 +245,7 @@ def test_retry_recovers_after_transient_gate_failures(
     tmp_path, monkeypatch
 ) -> None:
     monkeypatch.setenv(_RETRIES_ENV, "10")
+    monkeypatch.setenv("DECISION_VALIDATION_STRICT", "true")
     obj_dir = tmp_path / "export" / "01_learning_objectives"
     # Fails twice (initial + retry 1), passes on retry 2 → 3 dispatches.
     stub = _PlanningExecutorStub(obj_dir, fail_attempts=2)
@@ -312,6 +313,11 @@ def test_retry_recovers_after_transient_gate_failures(
     # failure-directed remediation digest it fed back to the synthesizer.
     assert "remediation digest" in rationale
     assert "TO-01" in rationale
+    assert all(
+        isinstance(alternative.get("option"), str)
+        and isinstance(alternative.get("reason_rejected"), str)
+        for alternative in retry_events[0]["alternatives_considered"]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +329,7 @@ def test_retries_exhausted_fail_open_with_loud_warning(
     tmp_path, monkeypatch, caplog
 ) -> None:
     monkeypatch.setenv(_RETRIES_ENV, "2")
+    monkeypatch.setenv("DECISION_VALIDATION_STRICT", "true")
     obj_dir = tmp_path / "export" / "01_learning_objectives"
     stub = _PlanningExecutorStub(obj_dir, fail_attempts=99)
     with caplog.at_level("ERROR", logger="MCP.core.workflow_runner"):

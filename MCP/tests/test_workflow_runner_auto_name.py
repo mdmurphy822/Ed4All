@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import jsonschema
 import pytest
 
 import lib.decision_capture as decision_capture_module
@@ -139,6 +140,18 @@ def test_rebind_happy_path(tmp_path, runner):
     assert "Principles Of Sample Systems" in dec["rationale"]
     assert "2026-07-22" in dec["rationale"]
     assert len(dec["rationale"]) >= 20
+    alternatives = dec["alternatives_considered"]
+    assert alternatives == [{
+        "option": "Keep provisional identity 'fixture-source'",
+        "reason_rejected": f"The H1 resolved to {FINAL_SLUG!r}",
+    }]
+    schema = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "schemas/events/decision_event.schema.json"
+        ).read_text(encoding="utf-8")
+    )["properties"]["alternatives_considered"]["items"]
+    jsonschema.validate(alternatives[0], schema)
 
 
 def test_route_params_carries_final_slug_after_rebind(tmp_path, runner):
