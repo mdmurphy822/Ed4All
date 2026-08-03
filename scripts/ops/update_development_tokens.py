@@ -23,6 +23,7 @@ README_START = "<!-- development-token-stats:start -->"
 README_END = "<!-- development-token-stats:end -->"
 DEFAULT_AGGREGATE = Path("docs/reference/development-token-stats.json")
 DEFAULT_README = Path("README.md")
+README_SECTION_ANCHOR = "## From source to course-grounded AI"
 LOC_CATEGORIES = ("source", "tests", "docs", "tooling_config", "other")
 LOC_EXCLUDED_PARTS = {"runtime", "vendor", "vendors", "node_modules", ".venv", "dist", "build", "courses"}
 
@@ -318,79 +319,61 @@ def render_readme(summary: dict[str, Any]) -> str:
     total = summary["total_tokens"]
     read = sum(source["input_tokens"] + source["cache_creation_input_tokens"] + source["cache_read_input_tokens"] for source in (claude, codex))
     written = sum(source["output_tokens"] for source in (claude, codex))
-    date = str(summary["generated_at_utc"]).split("T", 1)[0]
     average_seconds = sum(source["duration_seconds"] for source in (claude, codex)) // summary["total_sessions"] if summary["total_sessions"] else 0
     average_duration = f"{average_seconds // 3600}h {(average_seconds % 3600) // 60}m"
     loc = summary["repository_lines"]
+    fresh = claude["input_tokens"] + codex["input_tokens"] - codex["cached_input_tokens"]
+    cache_read = claude["cache_read_input_tokens"] + codex["cached_input_tokens"]
+    cache_write = claude["cache_creation_input_tokens"]
     return f"""{README_START}
-## Built with a little help from our AI friends
-
-![Observed tokens](https://img.shields.io/badge/observed_tokens-{total}-7C3AED?style=for-the-badge)
-![Sessions](https://img.shields.io/badge/sessions-{summary['total_sessions']}-2563EB?style=for-the-badge)
-![Recorded user turns](https://img.shields.io/badge/recorded_user_turns-{summary['total_user_turns']}-0F766E?style=for-the-badge)
-![Average session span](https://img.shields.io/badge/avg_session_span-{average_seconds // 3600}h_{(average_seconds % 3600) // 60}m-EA580C?style=for-the-badge)
-![Maintained lines](https://img.shields.io/badge/maintained_LOC-{loc['total']}-DB2777?style=for-the-badge)
-
-Ed4All's local development logs record **{total:,} tokens** across
-**{summary['total_sessions']:,} sessions**—a playful, approximate measure of the
-Claude and Codex collaboration behind the project. Updated {date}; only numeric
-aggregates are published. [How it is counted](docs/operations/development-token-stats.md).
-
-| Collaborator | Tokens | Sessions | Avg tokens/session | Avg session span | Recorded user turns |
-|---|---:|---:|---:|---:|---:|
-| Claude | {claude['tokens']:,} | {claude['sessions']:,} | {claude['tokens'] // claude['sessions'] if claude['sessions'] else 0:,} | {claude['duration_seconds'] // claude['sessions'] // 3600 if claude['sessions'] else 0}h {(claude['duration_seconds'] // claude['sessions'] % 3600) // 60 if claude['sessions'] else 0}m | {claude['user_turns']:,} |
-| Codex | {codex['tokens']:,} | {codex['sessions']:,} | {codex['tokens'] // codex['sessions'] if codex['sessions'] else 0:,} | {codex['duration_seconds'] // codex['sessions'] // 3600 if codex['sessions'] else 0}h {(codex['duration_seconds'] // codex['sessions'] % 3600) // 60 if codex['sessions'] else 0}m | {codex['user_turns']:,} |
-| **Combined** | **{total:,}** | **{summary['total_sessions']:,}** | **{summary['average_tokens_per_session']:,}** | **{average_duration}** | **{summary['total_user_turns']:,}** |
-
-### What those tokens did
-
-| Token type | Claude | Codex | Combined |
-|---|---:|---:|---:|
-| Fresh input | {claude['input_tokens']:,} | {codex['input_tokens'] - codex['cached_input_tokens']:,} | {claude['input_tokens'] + codex['input_tokens'] - codex['cached_input_tokens']:,} |
-| Cache creation | {claude['cache_creation_input_tokens']:,} | — | {claude['cache_creation_input_tokens']:,} |
-| Cached input read | {claude['cache_read_input_tokens']:,} | {codex['cached_input_tokens']:,} | {claude['cache_read_input_tokens'] + codex['cached_input_tokens']:,} |
-| Output written | {claude['output_tokens']:,} | {codex['output_tokens']:,} | {written:,} |
-| ↳ reasoning output | Not separately reported | {codex['reasoning_output_tokens']:,} | {codex['reasoning_output_tokens']:,} |
-
-**{read:,} input/read tokens** and **{written:,} output/write tokens** were
-observed. Codex cached input is already included in its input total, while
-Claude reports cache creation and reads as additive categories; reasoning is a
-subset of Codex output, not an extra token charge.
-
-### Maintained repository lines
-
-| Source | Tests | Docs | Tooling/config | Other | Total |
-|---:|---:|---:|---:|---:|---:|
-| {loc['source']:,} | {loc['tests']:,} | {loc['docs']:,} | {loc['tooling_config']:,} | {loc['other']:,} | **{loc['total']:,}** |
-
-```mermaid
-%%{{init: {{"theme":"base","themeVariables":{{"xyChart":{{"plotColorPalette":"#7C3AED, #2563EB, #0F766E, #EA580C, #DB2777"}}}}}}}}%%
-xychart-beta
-    title "Maintained lines by role"
-    x-axis [Source, Tests, Docs, Tooling, Other]
-    y-axis "Lines" 0 --> {max(loc.values())}
-    bar [{loc['source']}, {loc['tests']}, {loc['docs']}, {loc['tooling_config']}, {loc['other']}]
-```
-
-```mermaid
-%%{{init: {{"theme":"base","themeVariables":{{"pie1":"#7C3AED","pie2":"#2563EB","pieStrokeColor":"#334155","pieOuterStrokeColor":"#334155","pieTitleTextColor":"#475569","pieSectionTextColor":"#ffffff","pieLegendTextColor":"#475569"}}}}}}%%
-pie showData
-    title Development tokens by collaborator
-    "Claude" : {claude['tokens']}
-    "Codex" : {codex['tokens']}
-```
+<div align="center">
+<table>
+<thead>
+<tr bgcolor="#1F6FEB"><th align="center" colspan="4"><font color="#FFFFFF">🎓 Development Token Tracking</font></th></tr>
+<tr>
+<td align="center" width="25%" bgcolor="#EDE9FE"><font color="#111827"><strong>{total:,}</strong><br><sub>🧠 DEVELOPMENT TOKENS</sub></font></td>
+<td align="center" width="25%" bgcolor="#DBEAFE"><font color="#111827"><strong>{summary['total_sessions']:,}</strong><br><sub>🧭 SESSIONS</sub></font></td>
+<td align="center" width="25%" bgcolor="#D1FAE5"><font color="#111827"><strong>{summary['total_user_turns']:,}</strong><br><sub>💬 USER TURNS OBSERVED</sub></font></td>
+<td align="center" width="25%" bgcolor="#FFEDD5"><font color="#111827"><strong>{loc['total']:,}</strong><br><sub>🧱 TRACKED TEXT LOC</sub></font></td>
+</tr>
+</thead>
+<tbody>
+<tr bgcolor="#334155"><th align="center"><font color="#FFFFFF">🤝 COLLABORATOR</font></th><th align="center"><font color="#FFFFFF">TOKENS</font></th><th align="center"><font color="#FFFFFF">SESSIONS</font></th><th align="center"><font color="#FFFFFF">USER TURNS</font></th></tr>
+<tr><td align="center">Claude</td><td align="center">{claude['tokens']:,}</td><td align="center">{claude['sessions']:,}</td><td align="center">{claude['user_turns']:,}</td></tr>
+<tr><td align="center">Codex</td><td align="center">{codex['tokens']:,}</td><td align="center">{codex['sessions']:,}</td><td align="center">{codex['user_turns']:,}</td></tr>
+<tr bgcolor="#0E7490"><th align="center"><font color="#FFFFFF">↔️ TOKEN FLOW</font></th><th align="center"><font color="#FFFFFF">READ</font></th><th align="center"><font color="#FFFFFF">WRITTEN</font></th><th align="center"><font color="#FFFFFF">AVG / SESSION</font></th></tr>
+<tr><td align="center">All sessions</td><td align="center">{read:,}</td><td align="center">{written:,}</td><td align="center">{summary['average_tokens_per_session']:,}</td></tr>
+<tr bgcolor="#6D28D9"><th align="center"><font color="#FFFFFF">🔎 TOKEN DETAIL</font></th><th align="center"><font color="#FFFFFF">COUNT</font></th><th align="center"><font color="#FFFFFF">TOKEN DETAIL</font></th><th align="center"><font color="#FFFFFF">COUNT</font></th></tr>
+<tr><td align="center">Fresh input</td><td align="center">{fresh:,}</td><td align="center">Cache writes</td><td align="center">{cache_write:,}</td></tr>
+<tr><td align="center">Cache reads</td><td align="center">{cache_read:,}</td><td align="center">Model output</td><td align="center">{written:,}</td></tr>
+<tr><td align="center">Reasoning output subset</td><td align="center">{codex['reasoning_output_tokens']:,}</td><td align="center">Counted again in total</td><td align="center">No</td></tr>
+<tr bgcolor="#0369A1"><th align="center"><font color="#FFFFFF">⏱️ SESSION DURATION</font></th><th align="center"><font color="#FFFFFF">CLAUDE AVG</font></th><th align="center"><font color="#FFFFFF">CODEX AVG</font></th><th align="center"><font color="#FFFFFF">COMBINED AVG</font></th></tr>
+<tr><td align="center">First-to-last observed event</td><td align="center">{claude['duration_seconds'] // claude['sessions'] // 3600 if claude['sessions'] else 0}h {(claude['duration_seconds'] // claude['sessions'] % 3600) // 60 if claude['sessions'] else 0}m</td><td align="center">{codex['duration_seconds'] // codex['sessions'] // 3600 if codex['sessions'] else 0}h {(codex['duration_seconds'] // codex['sessions'] % 3600) // 60 if codex['sessions'] else 0}m</td><td align="center">{average_duration}</td></tr>
+<tr bgcolor="#C2410C"><th align="center"><font color="#FFFFFF">📚 TRACKED TEXT</font></th><th align="center"><font color="#FFFFFF">LINES</font></th><th align="center"><font color="#FFFFFF">TRACKED TEXT</font></th><th align="center"><font color="#FFFFFF">LINES</font></th></tr>
+<tr><td align="center">Application source</td><td align="center">{loc['source']:,}</td><td align="center">Tests</td><td align="center">{loc['tests']:,}</td></tr>
+<tr><td align="center">Documentation</td><td align="center">{loc['docs']:,}</td><td align="center">Tooling / configuration</td><td align="center">{loc['tooling_config']:,}</td></tr>
+<tr><td align="center">Other text</td><td align="center">{loc['other']:,}</td><td align="center">Total physical lines</td><td align="center">{loc['total']:,}</td></tr>
+</tbody>
+</table>
+<sub>[How these privacy-safe project metrics are counted →](docs/operations/development-token-stats.md)</sub>
+</div>
 {README_END}"""
 
 
 def _replace_marked(text: str, replacement: str) -> str:
     start = text.find(README_START)
     end = text.find(README_END)
-    if start < 0 and end < 0:
-        return text.rstrip() + "\n\n---\n\n" + replacement + "\n"
-    if start < 0 or end < start:
+    if (start < 0) != (end < 0) or (start >= 0 and end < start):
         raise ValueError("README development-token markers are incomplete")
-    end += len(README_END)
-    return text[:start] + replacement + text[end:]
+    if start >= 0:
+        end += len(README_END)
+        text = text[:start] + text[end:]
+    anchor_start = text.find(README_SECTION_ANCHOR)
+    if anchor_start < 0:
+        raise ValueError("README source-to-course heading was not found")
+    before = text[:anchor_start].rstrip()
+    after = text[anchor_start:].lstrip("\n")
+    return before + "\n\n" + replacement + "\n\n" + after
 
 
 def _comparable(summary: dict[str, Any]) -> dict[str, Any]:

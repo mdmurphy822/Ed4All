@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "generated_at_utc": "2026-08-03T16:10:07+00:00",
+  "generated_at_utc": "2026-08-03T16:46:26+00:00",
   "scope": "Ed4All development sessions",
   "sources": {
     "claude": {
@@ -16,28 +16,28 @@
       "duration_seconds": 2509886
     },
     "codex": {
-      "tokens": 864825598,
+      "tokens": 870037235,
       "sessions": 15,
-      "user_turns": 466,
-      "input_tokens": 863171884,
-      "output_tokens": 1653714,
+      "user_turns": 480,
+      "input_tokens": 868354160,
+      "output_tokens": 1683075,
       "cache_creation_input_tokens": 0,
       "cache_read_input_tokens": 0,
-      "cached_input_tokens": 840809728,
-      "reasoning_output_tokens": 364686,
-      "duration_seconds": 746298
+      "cached_input_tokens": 845917696,
+      "reasoning_output_tokens": 367349,
+      "duration_seconds": 748477
     }
   },
-  "total_tokens": 12881262377,
+  "total_tokens": 12886474014,
   "total_sessions": 53,
-  "average_tokens_per_session": 243042686,
-  "total_user_turns": 6427,
+  "average_tokens_per_session": 243141019,
+  "total_user_turns": 6441,
   "repository_lines": {
     "source": 553319,
-    "tests": 504578,
-    "docs": 37955,
-    "tooling_config": 114237,
+    "tests": 504588,
+    "docs": 37933,
+    "tooling_config": 114220,
     "other": 1176,
-    "total": 1211265
+    "total": 1211236
   }
 }

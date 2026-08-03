@@ -38,10 +38,11 @@ usernames, hostnames, and local paths are never written to the repository.
   the number is an observed activity indicator rather than a complete or
   cross-provider-normalized prompt count.
 
-The README's colored badges, comparison table, type breakdown, and Mermaid pie
-are different views of the same aggregate JSON. Labels remain present in plain
-Markdown so the section remains understandable if colors or diagrams are not
-rendered.
+The README presents the metrics in one centered, native HTML table immediately
+after the complete **What Ed4All does** section. Tinted KPI cells and labeled
+section bands provide visual grouping, while every value remains text in the
+table for accessibility and plain-renderer resilience. The display uses no
+images, badges, SVG, Mermaid, custom CSS, or collapsible sections.
 
 ## Maintained lines of code and documentation
 

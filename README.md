@@ -11,64 +11,7 @@
 ╰────────────────────────────────────────────────────────────╯
 </pre>
 
-<!-- development-token-stats:start -->
-## Built with a little help from our AI friends
 
-![Observed tokens](https://img.shields.io/badge/observed_tokens-12881262377-7C3AED?style=for-the-badge)
-![Sessions](https://img.shields.io/badge/sessions-53-2563EB?style=for-the-badge)
-![Recorded user turns](https://img.shields.io/badge/recorded_user_turns-6427-0F766E?style=for-the-badge)
-![Average session span](https://img.shields.io/badge/avg_session_span-17h_3m-EA580C?style=for-the-badge)
-![Maintained lines](https://img.shields.io/badge/maintained_LOC-1211265-DB2777?style=for-the-badge)
-
-Ed4All's local development logs record **12,881,262,377 tokens** across
-**53 sessions**—a playful, approximate measure of the
-Claude and Codex collaboration behind the project. Updated 2026-08-03; only numeric
-aggregates are published. [How it is counted](docs/operations/development-token-stats.md).
-
-| Collaborator | Tokens | Sessions | Avg tokens/session | Avg session span | Recorded user turns |
-|---|---:|---:|---:|---:|---:|
-| Claude | 12,016,436,779 | 38 | 316,222,020 | 18h 20m | 5,961 |
-| Codex | 864,825,598 | 15 | 57,655,039 | 13h 49m | 466 |
-| **Combined** | **12,881,262,377** | **53** | **243,042,686** | **17h 3m** | **6,427** |
-
-### What those tokens did
-
-| Token type | Claude | Codex | Combined |
-|---|---:|---:|---:|
-| Fresh input | 2,199,648 | 22,362,156 | 24,561,804 |
-| Cache creation | 285,091,038 | — | 285,091,038 |
-| Cached input read | 11,684,381,384 | 840,809,728 | 12,525,191,112 |
-| Output written | 44,764,709 | 1,653,714 | 46,418,423 |
-| ↳ reasoning output | Not separately reported | 364,686 | 364,686 |
-
-**12,834,843,954 input/read tokens** and **46,418,423 output/write tokens** were
-observed. Codex cached input is already included in its input total, while
-Claude reports cache creation and reads as additive categories; reasoning is a
-subset of Codex output, not an extra token charge.
-
-### Maintained repository lines
-
-| Source | Tests | Docs | Tooling/config | Other | Total |
-|---:|---:|---:|---:|---:|---:|
-| 553,319 | 504,578 | 37,955 | 114,237 | 1,176 | **1,211,265** |
-
-```mermaid
-%%{init: {"theme":"base","themeVariables":{"xyChart":{"plotColorPalette":"#7C3AED, #2563EB, #0F766E, #EA580C, #DB2777"}}}}%%
-xychart-beta
-    title "Maintained lines by role"
-    x-axis [Source, Tests, Docs, Tooling, Other]
-    y-axis "Lines" 0 --> 1211265
-    bar [553319, 504578, 37955, 114237, 1176]
-```
-
-```mermaid
-%%{init: {"theme":"base","themeVariables":{"pie1":"#7C3AED","pie2":"#2563EB","pieStrokeColor":"#334155","pieOuterStrokeColor":"#334155","pieTitleTextColor":"#475569","pieSectionTextColor":"#ffffff","pieLegendTextColor":"#475569"}}}%%
-pie showData
-    title Development tokens by collaborator
-    "Claude" : 12016436779
-    "Codex" : 864825598
-```
-<!-- development-token-stats:end -->
 
 # Ed4All
 
@@ -110,6 +53,40 @@ Accessible HTML · Digital course + IMSCC · Grounded training data · Hybrid re
   preference pairs derived from course content.
 - **Optionally trains a LoRA adapter** and evaluates it alongside the course's
   retrieval system.
+
+<!-- development-token-stats:start -->
+<div align="center">
+<table>
+<thead>
+<tr bgcolor="#1F6FEB"><th align="center" colspan="4"><font color="#FFFFFF">🎓 Development Token Tracking</font></th></tr>
+<tr>
+<td align="center" width="25%" bgcolor="#EDE9FE"><font color="#111827"><strong>12,886,474,014</strong><br><sub>🧠 DEVELOPMENT TOKENS</sub></font></td>
+<td align="center" width="25%" bgcolor="#DBEAFE"><font color="#111827"><strong>53</strong><br><sub>🧭 SESSIONS</sub></font></td>
+<td align="center" width="25%" bgcolor="#D1FAE5"><font color="#111827"><strong>6,441</strong><br><sub>💬 USER TURNS OBSERVED</sub></font></td>
+<td align="center" width="25%" bgcolor="#FFEDD5"><font color="#111827"><strong>1,211,236</strong><br><sub>🧱 TRACKED TEXT LOC</sub></font></td>
+</tr>
+</thead>
+<tbody>
+<tr bgcolor="#334155"><th align="center"><font color="#FFFFFF">🤝 COLLABORATOR</font></th><th align="center"><font color="#FFFFFF">TOKENS</font></th><th align="center"><font color="#FFFFFF">SESSIONS</font></th><th align="center"><font color="#FFFFFF">USER TURNS</font></th></tr>
+<tr><td align="center">Claude</td><td align="center">12,016,436,779</td><td align="center">38</td><td align="center">5,961</td></tr>
+<tr><td align="center">Codex</td><td align="center">870,037,235</td><td align="center">15</td><td align="center">480</td></tr>
+<tr bgcolor="#0E7490"><th align="center"><font color="#FFFFFF">↔️ TOKEN FLOW</font></th><th align="center"><font color="#FFFFFF">READ</font></th><th align="center"><font color="#FFFFFF">WRITTEN</font></th><th align="center"><font color="#FFFFFF">AVG / SESSION</font></th></tr>
+<tr><td align="center">All sessions</td><td align="center">12,840,026,230</td><td align="center">46,447,784</td><td align="center">243,141,019</td></tr>
+<tr bgcolor="#6D28D9"><th align="center"><font color="#FFFFFF">🔎 TOKEN DETAIL</font></th><th align="center"><font color="#FFFFFF">COUNT</font></th><th align="center"><font color="#FFFFFF">TOKEN DETAIL</font></th><th align="center"><font color="#FFFFFF">COUNT</font></th></tr>
+<tr><td align="center">Fresh input</td><td align="center">24,636,112</td><td align="center">Cache writes</td><td align="center">285,091,038</td></tr>
+<tr><td align="center">Cache reads</td><td align="center">12,530,299,080</td><td align="center">Model output</td><td align="center">46,447,784</td></tr>
+<tr><td align="center">Reasoning output subset</td><td align="center">367,349</td><td align="center">Counted again in total</td><td align="center">No</td></tr>
+<tr bgcolor="#0369A1"><th align="center"><font color="#FFFFFF">⏱️ SESSION DURATION</font></th><th align="center"><font color="#FFFFFF">CLAUDE AVG</font></th><th align="center"><font color="#FFFFFF">CODEX AVG</font></th><th align="center"><font color="#FFFFFF">COMBINED AVG</font></th></tr>
+<tr><td align="center">First-to-last observed event</td><td align="center">18h 20m</td><td align="center">13h 51m</td><td align="center">17h 4m</td></tr>
+<tr bgcolor="#C2410C"><th align="center"><font color="#FFFFFF">📚 TRACKED TEXT</font></th><th align="center"><font color="#FFFFFF">LINES</font></th><th align="center"><font color="#FFFFFF">TRACKED TEXT</font></th><th align="center"><font color="#FFFFFF">LINES</font></th></tr>
+<tr><td align="center">Application source</td><td align="center">553,319</td><td align="center">Tests</td><td align="center">504,588</td></tr>
+<tr><td align="center">Documentation</td><td align="center">37,933</td><td align="center">Tooling / configuration</td><td align="center">114,220</td></tr>
+<tr><td align="center">Other text</td><td align="center">1,176</td><td align="center">Total physical lines</td><td align="center">1,211,236</td></tr>
+</tbody>
+</table>
+<sub>[How these privacy-safe project metrics are counted →](docs/operations/development-token-stats.md)</sub>
+</div>
+<!-- development-token-stats:end -->
 
 ## From source to course-grounded AI
 

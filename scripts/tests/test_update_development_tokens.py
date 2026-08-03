@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import re
 import subprocess
 
 
@@ -103,16 +104,28 @@ def test_readme_marker_update_is_stable() -> None:
         "repository_lines": {"source": 1, "tests": 2, "docs": 3, "tooling_config": 4, "other": 5, "total": 15},
     }
     rendered = stats.render_readme(summary)
-    first = stats._replace_marked("# Project\n", rendered)
+    source = "# Project\n\n## What Ed4All does\n\nComplete section.\n\n## From source to course-grounded AI\n\nPipeline.\n"
+    first = stats._replace_marked(source, rendered)
     assert stats._replace_marked(first, rendered) == first
-    assert '"Claude" : 3' in first
-    assert '"Codex" : 7' in first
+    assert "🎓 Development Token Tracking" in first
+    assert "<tr><td align=\"center\">Claude</td><td align=\"center\">3</td>" in first
+    assert "<tr><td align=\"center\">Codex</td><td align=\"center\">7</td>" in first
+    assert first.index("Complete section.") < first.index(stats.README_START)
+    assert first.index(stats.README_END) < first.index("## From source to course-grounded AI")
+    assert "mermaid" not in rendered.lower()
+    assert "img" not in rendered.lower()
+    assert rendered.count("width=\"25%\"") == 4
+    cells = re.findall(r"<(?:td|th)\b([^>]*)>", rendered)
+    assert cells and all('align="center"' in attributes for attributes in cells)
 
 
 def test_update_then_check_with_synthetic_empty_logs(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     (repo / "docs" / "reference").mkdir(parents=True)
-    (repo / "README.md").write_text("# Project\n", encoding="utf-8")
+    (repo / "README.md").write_text(
+        "# Project\n\n## What Ed4All does\n\nComplete.\n\n## From source to course-grounded AI\n",
+        encoding="utf-8",
+    )
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
     claude = tmp_path / "claude"
