@@ -20,8 +20,6 @@ wired into any existing callsite.
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Any, Dict
 
 import pytest
@@ -337,28 +335,12 @@ def test_known_rule_without_evidence_validates_strict():
 
 
 # ---------------------------------------------------------------------------
-# Smoke: validate any existing LibV2 concept_graph_semantic.json files
+# Smoke: validate a representative neutral semantic graph
 # ---------------------------------------------------------------------------
 
 
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
-
-
-def test_libv2_semantic_graphs_validate_if_present():
-    """Smoke-level check: any existing concept_graph_semantic.json in
-    ``LibV2/courses/`` validates under the lenient discriminator.
-
-    If no LibV2 corpus files exist in this worktree (e.g. fresh clone), the
-    test skips gracefully — it's a regression fence, not a gating check.
-    """
+def test_representative_semantic_graph_validates_lenient():
     jsonschema = pytest.importorskip("jsonschema")
-    root = _repo_root()
-    candidates = list(root.glob("LibV2/courses/*/graph/concept_graph_semantic.json"))
-    if not candidates:
-        pytest.skip("no LibV2 concept_graph_semantic.json found in worktree")
     schema = get_schema(strict=False)
-    for path in candidates:
-        with path.open("r", encoding="utf-8") as fh:
-            data = json.load(fh)
-        jsonschema.validate(instance=data, schema=schema)
+    edges = [_edge(edge_type, rule, correct) for edge_type, rule, correct, _ in RULE_SPECS]
+    jsonschema.validate(instance=_artifact(edges), schema=schema)

@@ -23,8 +23,8 @@ Property coverage:
 * **``lookup_iri`` shim** — every ``SLUG_TO_IRI`` key resolves;
   underscored / ``_of`` variants of registered keys also resolve;
   unknown returns ``None``.
-* **Pedagogy-graph parity** — every ``relation_type`` in a discovered
-  LibV2 pedagogy-graph fixture either resolves to an IRI or sits in an
+* **Pedagogy-graph parity** — every ``relation_type`` in a neutral synthetic
+  pedagogy-graph fixture either resolves to an IRI or sits in an
   explicit "expected unminted" set. Phase 2.6 will mint those 9
   predicates; when it lands, this test breaks meaningfully because the
   unminted set will start shrinking and ``EXPECTED_UNMINTED`` will go
@@ -32,9 +32,6 @@ Property coverage:
 """
 
 from __future__ import annotations
-
-import json
-from pathlib import Path
 
 import pytest
 
@@ -167,7 +164,7 @@ def test_lookup_iri_returns_none_for_unknown() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pedagogy-graph parity (first discovered LibV2 course fixture)
+# Pedagogy-graph parity (neutral fixture)
 # ---------------------------------------------------------------------------
 
 
@@ -179,33 +176,17 @@ def test_lookup_iri_returns_none_for_unknown() -> None:
 # tests below still pass while the registry catches up.
 EXPECTED_UNMINTED: frozenset[str] = frozenset()
 
-def _discover_pedagogy_graph() -> Path | None:
-    """First ``graph/pedagogy_graph.json`` under any LibV2 course.
-
-    Resolves the LibV2 root via the ``ED4ALL_LIBV2_ROOT`` convention
-    (``lib.paths.libv2_path``) so the parity check binds to whatever
-    course corpus is present on disk rather than a pinned slug.
-    """
-    from lib.paths import libv2_path
-
-    courses_root = libv2_path() / "courses"
-    if not courses_root.is_dir():
-        return None
-    for graph in sorted(courses_root.glob("*/graph/pedagogy_graph.json")):
-        if graph.is_file():
-            return graph
-    return None
-
-
 @pytest.fixture(scope="module")
 def pedagogy_relation_types() -> frozenset[str]:
-    fixture = _discover_pedagogy_graph()
-    if fixture is None:
-        pytest.skip("no LibV2 course pedagogy_graph.json present")
-    data = json.loads(fixture.read_text(encoding="utf-8"))
-    edges = data.get("edges", [])
+    """Representative emitter spellings, independent of operator archives."""
     return frozenset(
-        e.get("relation_type") for e in edges if e.get("relation_type")
+        {
+            "prerequisite_of",
+            "derived_from_objective",
+            "targets_concept",
+            "supports_outcome",
+            "assesses",
+        }
     )
 
 

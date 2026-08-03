@@ -13,8 +13,8 @@ collection time.
 Tests 3/4 depend on Executor A/B modules (``lib.retrieval.citation_anchor`` /
 ``lib.retrieval.gold_set``). They ``importorskip`` those modules so this suite
 can land before A/B finish and activate automatically as the modules appear.
-The tier-2 real-corpus test skips when the in-tree LibV2 corpora are absent
-(clean checkout / CI).
+All coverage uses the neutral tracked mini-course fixture. Ignored operator
+archives are private runtime data and are never discovered by public tests.
 """
 
 from __future__ import annotations
@@ -23,11 +23,6 @@ import json
 from pathlib import Path
 
 import pytest
-
-# Resolve the in-tree LibV2 root for the tier-2 real-corpus test without
-# importing lib.paths at module scope (keep the offline path minimal).
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-
 
 def _load_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
@@ -94,57 +89,3 @@ def test_gold_set_loader_offline(mini_course: Path, offline_guard):
     _gold, issues = gold_mod.load_gold_set(mini_course, verify=True)
     critical = [i for i in issues if getattr(i, "severity", "") == "critical"]
     assert not critical, f"offline gold-set verify produced critical issues: {critical}"
-
-
-def _discover_real_corpus_chunkset() -> Path | None:
-    """Find any in-tree real corpus chunkset, newest-first.
-
-    Tier-2 tests discover slugs dynamically and skip when absent (no hardcoded
-    course slugs in tracked code). Probes the canonical chunkset locations
-    under each LibV2 course dir and returns the first non-empty chunks.jsonl.
-    """
-    courses_root = _REPO_ROOT / "LibV2" / "courses"
-    if not courses_root.is_dir():
-        return None
-    # Mirrors the production chunkset resolver precedence (imscc -> semantik ->
-    # legacy dart -> legacy corpus); dart_chunks/ + corpus/ stay as legacy
-    # dual-read coverage for un-migrated on-disk corpora.
-    rel_paths = (
-        "imscc_chunks/chunks.jsonl",
-        "semantik_chunks/chunks.jsonl",
-        "dart_chunks/chunks.jsonl",
-        "corpus/chunks.jsonl",
-    )
-    for course_dir in sorted(courses_root.iterdir(), reverse=True):
-        if not course_dir.is_dir():
-            continue
-        for rel in rel_paths:
-            chunks_path = course_dir / rel
-            if chunks_path.exists() and chunks_path.stat().st_size > 0:
-                return chunks_path
-    return None
-
-
-def test_real_corpus_retrieval_offline(offline_guard):
-    """Tier-2: BM25 over an in-tree real corpus runs offline (skip if absent).
-
-    Proves the real archived pipeline is offline-clean today, not just the
-    synthetic fixture. Discovers any archived course chunkset dynamically and
-    skips cleanly on a clean checkout / CI where no real corpus is present.
-    """
-    chunks_path = _discover_real_corpus_chunkset()
-    if chunks_path is None:
-        pytest.skip("no in-tree real corpus chunkset found under LibV2/courses/")
-
-    from LibV2.tools.libv2.retriever import LazyBM25
-
-    chunks = _load_jsonl(chunks_path)
-    if not chunks:
-        pytest.skip(f"real corpus chunkset empty: {chunks_path}")
-    bm25 = LazyBM25(chunks)
-    # Query the corpus with a generic token drawn from its own first chunk so
-    # the assertion is corpus-agnostic (no domain-specific query hardcoded).
-    first_text = str(chunks[0].get("text", "")).strip()
-    query = " ".join(first_text.split()[:5]) or "the"
-    results = bm25.search(query, limit=10)
-    assert len(results) >= 1

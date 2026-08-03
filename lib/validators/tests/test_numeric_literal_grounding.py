@@ -21,16 +21,14 @@ Test cases:
 6. Decision-capture fires with dynamic per-block signals.
 7. Skip set (``assessment_item`` / ``objective`` skipped).
 8. Block with no fraction literals → no-op pass (not audited, no event).
-9. The two REAL 7B fabrication blocks flag against the corpus; the grounded
-   blocks pass (mirrors the module's real-data measurement, run only when the
-   fixture corpus is present).
+9. A mixed neutral batch separates fabricated fractions from grounded ones.
 """
 from __future__ import annotations
 
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import pytest
 
@@ -292,89 +290,19 @@ def test_no_fractions_noop_pass() -> None:
 
 
 # --------------------------------------------------------------------- #
-# Test 9: real-data regression (fixture corpus present)
+# Test 9: mixed synthetic regression
 # --------------------------------------------------------------------- #
 
-_ALG_BLOCKS = _REPO_ROOT / "inputs" / "contentgen" / "alg_blocks.json"
-
-
-def _fixture_corpus_slugs() -> set:
-    """Course slugs the ``alg_blocks.json`` fixture was measured against.
-
-    Derived from the fixture's own ``data-cf-source-ids`` (e.g.
-    ``<course_slug>_chunk_00043``) — the identity comes from the
-    fixture DATA, not a hardcoded slug in test code — so the regression binds
-    to the SAME corpus it was calibrated against rather than whatever course
-    happens to sort first on disk. The documented flagged-set (exactly the two
-    -40/88 fabrication blocks) is only reproducible against that corpus; any
-    other course's text grounds/flags different literals.
-    """
-    import re
-
-    if not _ALG_BLOCKS.exists():
-        return set()
-    try:
-        data = json.loads(_ALG_BLOCKS.read_text())
-    except (OSError, ValueError):
-        return set()
-    slugs: set = set()
-    for block in data if isinstance(data, list) else []:
-        html = block.get("rewrite_html", "") if isinstance(block, dict) else ""
-        for group in re.findall(r'data-cf-source-ids="([^"]+)"', html):
-            for tok in group.split():
-                stem = re.sub(r"_chunk_.*$", "", tok.strip().rstrip(","))
-                if stem:
-                    slugs.add(stem.replace("_", "-"))
-    return slugs
-
-
-def _discover_chunks_jsonl() -> Optional[Path]:
-    """The ``dart_chunks/chunks.jsonl`` of the corpus the fixture references.
-
-    Resolves the LibV2 root via the ``ED4ALL_LIBV2_ROOT`` convention
-    (``lib.paths.libv2_path``) and binds specifically to the course named in
-    the fixture's ``data-cf-source-ids`` (slug-free — discovered from fixture
-    data). Returns ``None`` when that calibrated corpus is absent so the
-    regression SKIPS rather than mis-firing against an unrelated course.
-    """
-    from lib.paths import libv2_path
-
-    courses_root = libv2_path() / "courses"
-    if not courses_root.is_dir():
-        return None
-    for slug in sorted(_fixture_corpus_slugs()):
-        chunks = courses_root / slug / "dart_chunks" / "chunks.jsonl"
-        if chunks.is_file():
-            return chunks
-    return None
-
-
-_ALG_CHUNKS = _discover_chunks_jsonl()
-
-
-@pytest.mark.skipif(
-    not (_ALG_BLOCKS.exists() and _ALG_CHUNKS is not None and _ALG_CHUNKS.exists()),
-    reason="no LibV2 course dart_chunks/chunks.jsonl + alg_blocks.json fixture corpus present",
-)
-def test_real_corpus_separates_fabrication_from_grounded() -> None:
-    """The two REAL 7B fabrication blocks (explanation + misconception, both
-    carrying -40/88) flag against the real corpus; the grounded blocks pass.
-    Mirrors the module's documented real-data measurement."""
-    blocks_raw = json.loads(_ALG_BLOCKS.read_text())
-    corpus = " ".join(
-        json.loads(line)["text"] for line in _ALG_CHUNKS.read_text().splitlines() if line.strip()
-    )
+def test_mixed_batch_separates_fabricated_from_grounded() -> None:
+    """Two fabricated fractions flag while two source-grounded blocks pass."""
+    corpus = "Worked examples include − 55 84 and − 3 4 exactly."
     sid = "semantik:corpus#all"
-    blocks = []
-    for i, b in enumerate(blocks_raw):
-        blocks.append(
-            _make_block(
-                block_id=f"page#{b['block_type']}_{i}",
-                block_type=b["block_type"],
-                content=b["rewrite_html"],
-                source_ids=(sid,),
-            )
-        )
+    blocks = [
+        _make_block(block_id="page#worked_0", content=r"<p>\(-\frac{55}{84}\)</p>", source_ids=(sid,)),
+        _make_block(block_id="page#explanation_1", content=r"<p>\(-\frac{40}{88}\)</p>", source_ids=(sid,)),
+        _make_block(block_id="page#example_2", content=r"<p>\(-\frac{3}{4}\)</p>", source_ids=(sid,)),
+        _make_block(block_id="page#misconception_3", block_type="misconception", content=r"<p>\(-\frac{21}{47}\)</p>", source_ids=(sid,)),
+    ]
     res = NumericLiteralGroundingValidator().validate(
         {"blocks": blocks, "source_chunks": {sid: corpus}, "shadow": True}
     )

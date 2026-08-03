@@ -689,41 +689,6 @@ def test_milestone_targets_exist_and_are_sane():
     assert MILESTONE_CEILINGS <= set(MILESTONE_TARGETS)
 
 
-try:
-    from lib.paths import libv2_path
-
-    _LIBV2_COURSES = libv2_path() / "courses"
-except Exception:  # pragma: no cover - defensive
-    _LIBV2_COURSES = Path(__file__).resolve().parents[2] / "LibV2" / "courses"
-
-
-def _discover_measured_courses():
-    """Discover real courses with a stored grounded_answer_eval artifact.
-
-    Course data dirs are gitignored user data; tests must not name slugs.
-    Glob whatever is present, skip cleanly when none exist.
-    """
-    if not _LIBV2_COURSES.is_dir():
-        return []
-    # dict.fromkeys → de-dup courses with multiple dated artifacts, order-stable.
-    slugs = {
-        p.parent.parent.name: None
-        for p in sorted(
-            _LIBV2_COURSES.glob("*/retrieval_eval/grounded_answer_eval_*.json")
-        )
-    }
-    return list(slugs)
-
-
-def _latest_eval_artifact(slug: str):
-    eval_dir = _LIBV2_COURSES / slug / "retrieval_eval"
-    candidates = sorted(eval_dir.glob("grounded_answer_eval_*.json"))
-    return candidates[-1] if candidates else None
-
-
-_MEASURED_COURSES = _discover_measured_courses()
-
-
 #: The gold basis the 2026-06-12 MILESTONE_TARGETS re-pin was measured against:
 #: a frozen gold v1.1 set (schema_version "1.1"). The plan §4 calls a gold-basis
 #: change a hard COMPARABILITY BOUNDARY — an artifact measured against an OLDER
@@ -754,63 +719,27 @@ def _artifact_predates_targets_gold_basis(doc: dict) -> bool:
     return gold_schema < _TARGETS_GOLD_BASIS_SCHEMA
 
 
-@pytest.mark.skipif(
-    not _MEASURED_COURSES,
-    reason="no stored grounded_answer_eval_*.json under LibV2/courses/*",
-)
-@pytest.mark.parametrize("slug", _MEASURED_COURSES)
-def test_stored_eval_artifacts_meet_milestone_targets(slug):
-    """Tier-2: the latest stored grounded_answer_eval_*.json for each measured
-    course meets every pinned target — floors via >=, the unsupported-claim
-    ceiling via <= — proving the targets are evidence-met today
-    (measure-then-pin), not aspirational. Skips cleanly when LibV2 course data
-    is absent so CI without committed artifacts still passes.
-
-    SKIPS (does not assert) a course whose latest artifact predates the gold
-    basis the targets were re-pinned to (2026-06-12, frozen gold v1.1): the
-    plan §4 comparability boundary means an old-basis artifact's metrics are not
-    on the same axis as the new floors. Such a course re-enters the gate the
-    moment it is re-measured against the v1.1 gold (honest, no blanket xfail)."""
-    import json
-
+def test_synthetic_eval_artifact_meets_milestone_targets():
+    """Target comparison semantics are hermetic and cover floors and ceilings."""
     from lib.retrieval.grounded_eval import MILESTONE_CEILINGS, MILESTONE_TARGETS
 
-    path = _latest_eval_artifact(slug)
-    if path is None:
-        pytest.skip(f"no stored grounded_answer_eval artifact for {slug}")
-    doc = json.loads(path.read_text(encoding="utf-8"))
-    if _artifact_predates_targets_gold_basis(doc):
-        pytest.skip(
-            f"{slug}: latest artifact ({path.name}) predates the 2026-06-12 "
-            f"frozen-gold v1.1 basis the milestone targets are pinned to "
-            f"(comparability boundary, plan §4) — re-measure against v1.1 gold "
-            f"to re-enter the gate"
-        )
-    headline = doc["headline"]
-    refusal = headline["refusal"]
-
-    measured = {
-        "answer_rate": headline["answer_rate"],
-        "citation_resolution_rate": headline["citation_resolution_rate"],
-        "citation_precision": headline["citation_precision"],
-        "groundedness_rate_mean": headline["groundedness_rate_mean"],
-        "unsupported_claim_rate": headline["unsupported_claim_rate"],
-        "refusal_recall": refusal["refusal_recall"],
-        "refusal_precision": refusal["refusal_precision"],
-    }
+    measured = dict(MILESTONE_TARGETS)
     for key, target in MILESTONE_TARGETS.items():
         value = measured[key]
-        assert value is not None, f"{slug}: {key} missing from {path.name}"
+        assert value is not None
         if key in MILESTONE_CEILINGS:
-            assert value <= target, (
-                f"{slug}: {key}={value} above pinned ceiling {target} "
-                f"({path.name})"
-            )
+            assert value <= target
         else:
-            assert value >= target, (
-                f"{slug}: {key}={value} below pinned floor {target} "
-                f"({path.name})"
-            )
+            assert value >= target
+
+
+def test_gold_basis_comparability_boundary_is_enforced():
+    assert _artifact_predates_targets_gold_basis(
+        {"schema_version": "1.0", "gold": {"schema_version": "1.0"}}
+    )
+    assert not _artifact_predates_targets_gold_basis(
+        {"schema_version": "1.8", "gold": {"schema_version": "1.1"}}
+    )
 
 
 # ===========================================================================

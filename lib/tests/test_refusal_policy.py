@@ -8,10 +8,9 @@ Covers (no LLM, no models, no network — wave A is deterministic arithmetic):
   threshold; overlapping arms honestly fall back to recommended=None.
 * Deterministic calibration output (same inputs → byte-identical dict).
 * The calibration-report shape.
-* The seed probe sets (any discovered real courses + the mini_course fixture)
-  validate against the schema, every probe is dry-run-verified, and the
-  categories / counts match the authoring procedure. Real courses are
-  discovered dynamically from LibV2/courses/*; tier-2 tests skip when absent.
+* The neutral mini-course refusal-probe fixture validates against the schema,
+  every probe is dry-run-verified, and the categories match the authoring
+  procedure. Ignored operator courses are never test inputs.
 """
 
 from __future__ import annotations
@@ -40,57 +39,6 @@ from lib.retrieval.refusal import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = PROJECT_ROOT / "schemas" / "retrieval" / "refusal_probes.schema.json"
-SCHEMA_PATH_V1_1 = (
-    PROJECT_ROOT / "schemas" / "retrieval" / "refusal_probes.schema.v1_1.json"
-)
-
-
-def _schema_for_version(version: str) -> dict:
-    """Select the probe schema whose const matches the doc's schema_version.
-
-    The frozen-gold P4 work scaled the per-course probe sets to v1.1 (≥25
-    probes, adjacent_domain plurality, per-engine ``dry_runs[]``); legacy seed
-    sets stay v1.0 (9 probes, 3/category). The loader is dual-version, so the
-    test validates each set against the matching schema rather than pinning v1.0.
-    """
-    if str(version) == "1.1":
-        return json.loads(SCHEMA_PATH_V1_1.read_text(encoding="utf-8"))
-    return json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
-
-try:
-    from lib.paths import libv2_path
-
-    _LIBV2_COURSES = libv2_path() / "courses"
-except Exception:  # pragma: no cover - defensive
-    _LIBV2_COURSES = PROJECT_ROOT / "LibV2" / "courses"
-
-
-def _discover_probe_courses():
-    """Dynamically discover real courses carrying a seed refusal_probes.json.
-
-    Course data dirs are gitignored user data; tests must NOT name course
-    slugs. Glob whatever is present and skip cleanly when none exist.
-    """
-    if not _LIBV2_COURSES.is_dir():
-        return []
-    found = []
-    for probe in sorted(_LIBV2_COURSES.glob("*/retrieval_eval/refusal_probes.json")):
-        found.append(probe.parent.parent.name)
-    return found
-
-
-def _discover_calibration_courses():
-    """Discover real courses carrying a committed refusal_calibration.json."""
-    if not _LIBV2_COURSES.is_dir():
-        return []
-    found = []
-    for cal in sorted(
-        _LIBV2_COURSES.glob("*/retrieval_eval/refusal_calibration.json")
-    ):
-        found.append(cal.parent.parent.name)
-    return found
-
-
 # --------------------------------------------------------------------------- #
 # A tiny score-bearing stand-in (duck-typed like RetrievedPassage / RetrievalResult)
 # --------------------------------------------------------------------------- #
@@ -356,104 +304,6 @@ def _load_schema() -> dict:
     return json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
 
 
-def _real_probe_path(slug: str) -> Path:
-    return _LIBV2_COURSES / slug / "retrieval_eval" / "refusal_probes.json"
-
-
-_PROBE_COURSES = _discover_probe_courses()
-
-
-@pytest.mark.skipif(
-    not _PROBE_COURSES,
-    reason="no gitignored seed refusal_probes.json under LibV2/courses/*",
-)
-@pytest.mark.parametrize("slug", _PROBE_COURSES)
-def test_real_course_probe_set_validates_and_is_verified(slug):
-    jsonschema = pytest.importorskip("jsonschema")
-    path = _real_probe_path(slug)
-    if not path.exists():
-        pytest.skip(f"gitignored seed probes absent for {slug}: {path}")
-    doc = json.loads(path.read_text(encoding="utf-8"))
-    version = str(doc.get("schema_version") or "1.0")
-
-    assert doc["course_slug"] == slug
-    probes = doc["probes"]
-    by_cat = {}
-    for p in probes:
-        by_cat.setdefault(p["category"], 0)
-        by_cat[p["category"]] += 1
-        # The load-bearing verified-unanswerable invariant the production loader
-        # + calibration rely on: a human confirmed the top retrieved passage does
-        # NOT answer the probe. Asserted on EVERY probe of both versions.
-        assert p["dry_run"]["top_passage_answers"] is False
-
-    if version == "1.1":
-        # v1.1 probe sets come in two flavours the pipeline both reads: a SCALED
-        # frozen-gold basis (plan §1.2: >= 25 probes, adjacent_domain the
-        # deliberate plurality — it defines the answerable/unanswerable boundary)
-        # AND a smaller SEED set (a course whose gold+probes were seeded from
-        # real learner phrasings but not yet scaled/frozen). Category membership
-        # (incl. the ill_posed near-domain negatives), unique ids, and
-        # top_passage_answers=false hold for BOTH; the >= 25 + adjacent-plurality
-        # scale gate is asserted only once a set has actually scaled up.
-        #
-        # NOTE: strict jsonschema validation against refusal_probes.schema.v1_1
-        # is deliberately NOT run here. The committed P4 v1.1 probe sets carry a
-        # back-compat-shaped single ``dry_run`` (+ per-engine ``dry_runs[]`` with
-        # a ``top_passage_excerpt`` convenience field) that the strict
-        # additionalProperties:false evidence shape rejects; the production probe
-        # loader (grounded_eval._load_probes / refusal.negatives_from_probe_dry_runs)
-        # reads these leniently. Full v1.1 schema conformance of the committed
-        # data is a separate P4 data-migration concern, out of scope for this
-        # P5 calibration-pin work — this test guards the invariants the pipeline
-        # actually relies on (counts, categories, top_passage_answers=false).
-        assert set(by_cat) <= {
-            "off_topic",
-            "off_topic_llm",
-            "adjacent_domain",
-            "out_of_scope_detail",
-            "ill_posed",
-        }
-        _SCALED_PROBE_FLOOR = 25
-        # A GROWN (eval-expansion-era) set is distinguished from the FROZEN
-        # scaled reference by the v1.2-era ``expected_outcome`` field: the
-        # expansion deliberately emphasizes ``ill_posed`` (false-premise) probes,
-        # so the frozen reference's adjacent-domain-plurality shape must not be
-        # asserted against it — only category breadth and the conventional core.
-        _is_grown = any("expected_outcome" in p for p in probes)
-        if len(probes) >= _SCALED_PROBE_FLOOR and not _is_grown:
-            # Scaled frozen-gold basis: the deliberate hard-negative shape.
-            assert {"off_topic", "adjacent_domain", "out_of_scope_detail"} <= set(by_cat)
-            assert by_cat["adjacent_domain"] == max(by_cat.values())
-        elif len(probes) >= _SCALED_PROBE_FLOOR:
-            # Grown expansion-era set: conventional core + ill_posed present,
-            # broad category coverage (>= 4 distinct categories).
-            assert {"off_topic", "adjacent_domain", "out_of_scope_detail", "ill_posed"} <= set(by_cat)
-            assert len(by_cat) >= 4
-        else:
-            # Seed set (not yet scaled): still carries multi-category breadth
-            # (>= 3 distinct categories) so it is a genuine negative panel, not a
-            # single-category stub.
-            assert len(by_cat) >= 3, (
-                f"{slug}: seed v1.1 probe set has only categories {sorted(by_cat)}"
-            )
-    else:
-        # Legacy seed authoring procedure: 9 probes, 3 per category, strict v1.0
-        # schema conformance + every probe verified-not-assumed.
-        jsonschema.validate(doc, _schema_for_version(version))
-        for p in probes:
-            assert p["dry_run"]["verified"] is True
-        assert len(probes) == 9
-        assert by_cat == {
-            "off_topic": 3,
-            "adjacent_domain": 3,
-            "out_of_scope_detail": 3,
-        }
-    # probe_ids unique.
-    ids = [p["probe_id"] for p in probes]
-    assert len(ids) == len(set(ids))
-
-
 def test_mini_course_fixture_probe_set_validates_and_is_verified():
     jsonschema = pytest.importorskip("jsonschema")
     assert MINI_PROBES.exists(), f"mini-course probes missing: {MINI_PROBES}"
@@ -467,23 +317,14 @@ def test_mini_course_fixture_probe_set_validates_and_is_verified():
         assert p["dry_run"]["top_passage_answers"] is False
 
 
-def test_seed_probes_drive_an_end_to_end_overlap_calibration():
-    """Real-corpus distributions overlap (R4): a calibration over the recorded
-    probe top-scores + a plausible answerable arm honestly returns None when the
-    arms interleave — proving the honest-fallback path on real-shaped data.
-
-    Discovers the first available seed probe course dynamically (no hardcoded
-    slug); skips when no real course data is present on this checkout."""
-    if not _PROBE_COURSES:
-        pytest.skip("gitignored seed probes absent")
-    slug = _PROBE_COURSES[0]
-    path = _real_probe_path(slug)
-    doc = json.loads(path.read_text(encoding="utf-8"))
+def test_fixture_probes_drive_an_end_to_end_overlap_calibration():
+    """Overlapping neutral-fixture distributions select honest fallback."""
+    doc = json.loads(MINI_PROBES.read_text(encoding="utf-8"))
     neg_scores = [p["dry_run"]["top_score"] for p in doc["probes"]]
-    # Answerable arm that overlaps the negatives' range (real lexical behaviour).
+    # An identical answerable arm is the worst-case overlap.
     pos_scores = list(neg_scores)  # worst case: identical → must fall back
     result = calibrate_from_distributions(
-        course_slug=slug,
+        course_slug=doc["course_slug"],
         engine="lexical",
         positives=pos_scores,
         negatives=neg_scores,
@@ -593,133 +434,3 @@ def test_unknown_engine_falls_back_to_lexical_default():
     assert policy is DEFAULT_POLICIES["hybrid-rrf"]
     assert policy.policy_version == POLICY_VERSION_UNCALIBRATED
     assert resolve_policy("nonsense") is DEFAULT_POLICIES["lexical"]
-
-
-# --- Tier 2: the pins reproduce the committed calibration verdicts --------- #
-
-
-def _calibration_path(slug: str) -> Path:
-    return _LIBV2_COURSES / slug / "retrieval_eval" / "refusal_calibration.json"
-
-
-def _discover_pinned_calibrations():
-    """Find committed refusal_calibration.json artifacts whose (engine,
-    embedding_model_id) provenance matches a PINNED_POLICIES key.
-
-    Keyed off artifact fields (no hardcoded slug). Returns
-    ``[(slug, key), ...]`` for each discovered artifact that maps to a pin AND
-    carries a clean (non-null) recommendation. Several courses may map to the
-    SAME key (a single pin calibrated across a corpus) — each is returned so the
-    pin is checked safe on every one.
-    """
-    out = []
-    for slug in _discover_calibration_courses():
-        try:
-            doc = json.loads(
-                _calibration_path(slug).read_text(encoding="utf-8")
-            )
-        except Exception:  # pragma: no cover - skip malformed
-            continue
-        key = (doc.get("engine"), doc.get("embedding_model_id"))
-        if key in PINNED_POLICIES and doc.get("recommended") is not None:
-            out.append((slug, key))
-    return out
-
-
-_PINNED_CALIBRATIONS = _discover_pinned_calibrations()
-
-
-def _effective_sweep_row(doc: dict, threshold: float) -> dict:
-    """The sweep row the policy actually applies at ``threshold`` on this course.
-
-    The verdict is ``top_score >= threshold`` (monotone in the threshold), so a
-    threshold falling between two observed scores behaves like the largest
-    observed score that is ``<= threshold``. A cross-course pin (the corpus-wide
-    minimum of the per-course recommendations) is an exact sweep threshold only
-    on the course it was drawn from; on the others it lands between observed
-    scores, so we read the effective row rather than requiring an exact match.
-    """
-    candidates = [
-        r for r in doc["sweep"] if r["threshold"] <= threshold + 1e-9
-    ]
-    assert candidates, "sweep always includes threshold 0.0"
-    return max(candidates, key=lambda r: r["threshold"])
-
-
-@pytest.mark.skipif(
-    not _PINNED_CALIBRATIONS,
-    reason="no committed refusal_calibration.json mapping to a pinned policy",
-)
-@pytest.mark.parametrize(
-    "slug,key",
-    _PINNED_CALIBRATIONS,
-    ids=[f"{s}:{k[0]}" for s, k in _PINNED_CALIBRATIONS],
-)
-def test_pinned_threshold_is_corpus_safe_on_committed_calibration(slug, key):
-    """Tier-2: every committed refusal_calibration.json mapping to a pin must
-    confirm the pinned min_top_score is SAFE on that course — the effective
-    sweep row at the pin still clears the pin rule (refusal_precision >= 0.90
-    AND answer_recall >= 0.95) with zero false refusals on answerable queries.
-
-    A pin shipped in the binary is corpus-wide, not per-course: a single pin can
-    map to several committed artifacts. The cross-course derivation (the MINIMUM
-    of the per-course recommendations) guarantees answer_recall is preserved on
-    every calibrated course — this test enforces that guarantee against the
-    on-disk artifacts rather than trusting the derivation comment.
-
-    Course data dirs are gitignored user data; the (slug, key) pairs are
-    discovered dynamically by the artifact's own (engine, embedding_model_id)
-    provenance, never by a hardcoded slug."""
-    path = _calibration_path(slug)
-    if not path.exists():
-        pytest.skip(f"gitignored calibration absent for {slug}: {path}")
-    doc = json.loads(path.read_text(encoding="utf-8"))
-    assert doc["recommended"] is not None, (
-        f"{slug} calibration has no clean recommendation"
-    )
-
-    pin = PINNED_POLICIES[key]
-    # Engine + embedder match the artifact provenance.
-    assert doc["engine"] == pin.engine
-    assert doc["embedding_model_id"] == pin.embedding_model_id
-
-    # The pin must never EXCEED a course's own clean recommendation — exceeding
-    # it would refuse answerable queries the course's own sweep deemed answerable
-    # (the corpus-wide pin is the MIN across courses, so this always holds).
-    assert pin.min_top_score <= doc["recommended"]["min_top_score"] + 1e-6
-
-    # The effective sweep row at the pin clears the rule on this course.
-    row = _effective_sweep_row(doc, pin.min_top_score)
-    assert row["refusal_precision"] >= 0.90
-    assert row["answer_recall"] >= 0.95
-    assert row["false_refusals_on_positives"] == 0
-
-
-@pytest.mark.skipif(
-    not _PINNED_CALIBRATIONS,
-    reason="no committed refusal_calibration.json mapping to a pinned policy",
-)
-def test_pin_value_anchored_to_a_committed_recommendation():
-    """Tier-2: each pinned key's numeric min_top_score must equal at least one
-    committed artifact's clean recommendation (no drift / invented number).
-
-    The corpus-wide pin is the MINIMUM of the per-course recommendations, so it
-    coincides exactly with one course's committed recommendation; the others it
-    only has to be SAFE on (the per-course test above). This anchors every
-    shipped pin value to an on-disk artifact without requiring a 1:1 mapping."""
-    recs_by_key: dict = {}
-    for slug, key in _PINNED_CALIBRATIONS:
-        doc = json.loads(_calibration_path(slug).read_text(encoding="utf-8"))
-        recs_by_key.setdefault(key, []).append(
-            doc["recommended"]["min_top_score"]
-        )
-    for key, recs in recs_by_key.items():
-        pin = PINNED_POLICIES[key]
-        assert any(
-            pin.min_top_score == pytest.approx(r, abs=1e-6) for r in recs
-        ), (
-            f"pin {key} min_top_score={pin.min_top_score} matches no committed "
-            f"recommendation in {recs}"
-        )
-        # Corpus-wide pin is the minimum across courses.
-        assert pin.min_top_score == pytest.approx(min(recs), abs=1e-6)

@@ -1,19 +1,13 @@
 """Tests for ``ed4all libv2 generate-study-pack`` (Wave 77 Worker δ).
 
-Exercises both the renderer engine and the Click CLI shim. Most tests
-build a synthetic archive in ``tmp_path`` so they remain hermetic; one
-group of integration tests reaches into a real on-disk archive to verify
-the canonical week-7 ordering against production data. The integration
-archive is opt-in: point ``ED4ALL_STUDY_PACK_FIXTURE_SLUG`` at a course
-slug under ``$ED4ALL_LIBV2_ROOT/courses/`` (defaulting to the in-tree
-``LibV2/courses/``); the tests skip when the env var is unset or the
-archive is missing, so no real course slug is hardcoded in the suite.
+Exercises both the renderer engine and the Click CLI shim against synthetic
+archives in ``tmp_path``. Ignored operator courses are always private and are
+never test inputs.
 """
 
 from __future__ import annotations
 
 import json
-import os
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -46,31 +40,6 @@ from LibV2.tools.study_pack_renderer import (
     render_markdown,
     render_study_pack,
 )
-
-
-# ---------------------------------------------------------------------- #
-# Real archive fixture                                                   #
-# ---------------------------------------------------------------------- #
-
-def _libv2_courses_root() -> Path:
-    env_root = os.environ.get("ED4ALL_LIBV2_ROOT")
-    if env_root:
-        return Path(env_root) / "courses"
-    return Path(__file__).resolve().parents[2] / "LibV2" / "courses"
-
-
-def _real_archive_path() -> Optional[Path]:
-    slug = os.environ.get("ED4ALL_STUDY_PACK_FIXTURE_SLUG")
-    if not slug:
-        return None
-    return _libv2_courses_root() / slug
-
-
-REAL_ARCHIVE = _real_archive_path()
-
-
-def _real_archive_available() -> bool:
-    return REAL_ARCHIVE is not None and (REAL_ARCHIVE / "corpus" / "chunks.json").exists()
 
 
 # ---------------------------------------------------------------------- #
@@ -740,118 +709,3 @@ def test_cli_include_exercises_adds_chunks(tmp_path):
     assert plus_n == base_n + 1
     types = [c["chunk_type"] for c in json.loads(plus.output)["chunks"]]
     assert "exercise" in types
-
-
-# ---------------------------------------------------------------------- #
-# Integration test against real archive                                  #
-# ---------------------------------------------------------------------- #
-
-
-@pytest.mark.skipif(
-    not _real_archive_available(),
-    reason="study-pack integration archive not configured (set ED4ALL_STUDY_PACK_FIXTURE_SLUG)",
-)
-def test_real_archive_week_7_emits_18_chunks_in_canonical_order():
-    pack = render_study_pack(
-        REAL_ARCHIVE,
-        weeks=[7],
-        include_exercises=True,
-        include_self_check=True,
-    )
-    assert len(pack.chunks) == 18, [c.chunk_id for c in pack.chunks]
-
-    # Bucket sequence: overview -> content -> application -> self_check -> summary.
-    # Week 7 in the canonical archive has no exercise chunks, so EXERCISES
-    # is skipped between APPLICATION and SELF_CHECK.
-    bucket_order = []
-    for c in pack.chunks:
-        if not bucket_order or bucket_order[-1] != c.bucket:
-            bucket_order.append(c.bucket)
-    # 0=overview, 1=content, 2=application, 4=self_check, 5=summary.
-    assert bucket_order == [0, 1, 2, 4, 5], bucket_order
-
-    # Content_NN ordinals are monotonically nondecreasing in the content bucket.
-    content_chunks = [c for c in pack.chunks if c.bucket == 1]
-    ordinals = [c.content_ordinal for c in content_chunks]
-    assert ordinals == sorted(ordinals)
-    assert ordinals[0] == 1
-    assert ordinals[-1] == 6
-
-
-@pytest.mark.skipif(
-    not _real_archive_available(),
-    reason="study-pack integration archive not configured (set ED4ALL_STUDY_PACK_FIXTURE_SLUG)",
-)
-def test_real_archive_week_7_lesson_plan_has_timings_and_objective_table():
-    pack = render_study_pack(
-        REAL_ARCHIVE,
-        weeks=[7],
-        include_exercises=True,
-        include_self_check=True,
-        lesson_plan=True,
-    )
-    # Every chunk has a non-negative timing estimate, capped at 30 min.
-    for c in pack.chunks:
-        assert 0 <= c.estimated_minutes <= 30
-    # At least the overview chunk has a non-zero estimate.
-    assert any(c.estimated_minutes > 0 for c in pack.chunks)
-    # Objectives table includes TO-04 (the canonical week-7 terminal LO).
-    ids = {str(o.get("id")).lower() for o in pack.objectives_referenced}
-    assert "to-04" in ids
-    # All collected objectives (other than unresolved stubs) carry statements.
-    for obj in pack.objectives_referenced:
-        if obj.get("_unresolved"):
-            continue
-        assert obj.get("statement"), f"empty statement: {obj}"
-
-
-@pytest.mark.skipif(
-    not _real_archive_available(),
-    reason="study-pack integration archive not configured (set ED4ALL_STUDY_PACK_FIXTURE_SLUG)",
-)
-def test_real_archive_week_7_md_format_contains_expected_landmarks():
-    pack = render_study_pack(
-        REAL_ARCHIVE,
-        weeks=[7],
-        include_exercises=True,
-        include_self_check=True,
-    )
-    md = render_markdown(pack)
-    assert md.startswith(f"# {pack.course_code}: Week 7 Study Pack")
-    assert "## Overview" in md
-    assert "## Core Content" in md
-    assert "## Application" in md
-    assert "## Self-Check" in md
-    assert "## Summary" in md
-
-
-@pytest.mark.skipif(
-    not _real_archive_available(),
-    reason="study-pack integration archive not configured (set ED4ALL_STUDY_PACK_FIXTURE_SLUG)",
-)
-def test_real_archive_week_7_html_format_parses_cleanly():
-    pack = render_study_pack(
-        REAL_ARCHIVE,
-        weeks=[7],
-        include_exercises=True,
-        include_self_check=True,
-    )
-    html = render_html(pack)
-    parser = _CountingHTMLParser()
-    parser.feed(html)
-    parser.close()
-    assert not parser.errors
-    assert parser.tag_counts.get("h1", 0) == 1
-    # Five distinct H2 buckets show up for week 7 (overview, content,
-    # application, self-check, summary).
-    assert parser.tag_counts.get("h2", 0) >= 5
-
-
-@pytest.mark.skipif(
-    not _real_archive_available(),
-    reason="study-pack integration archive not configured (set ED4ALL_STUDY_PACK_FIXTURE_SLUG)",
-)
-def test_real_archive_week_99_no_chunks_clear_error():
-    with pytest.raises(StudyPackError) as excinfo:
-        render_study_pack(REAL_ARCHIVE, weeks=[99])
-    assert "no chunks found" in str(excinfo.value).lower()

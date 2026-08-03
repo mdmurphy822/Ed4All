@@ -4,9 +4,8 @@ Tier 1 (always-on, hermetic): builds a course layout in tmp_path from the
 shared mini-course fixture (Executor A) and exercises every loader issue code
 incl. the fail-without-fix corrupted-sha case.
 
-Tier 2 (real-corpus, skip-if-absent): the three seed gold sets authored by
-this executor must load with zero critical issues — the "every gold answer
-actually resolves" exit check.
+The suite never reads operator course archives.  Its end-to-end checks use the
+tracked neutral mini-course copied into ``tmp_path``.
 """
 
 from __future__ import annotations
@@ -241,73 +240,24 @@ def test_ambiguous_quote_warning():
     assert not any(i.code == "GOLD_SET_AMBIGUOUS_QUOTE" and i.severity == "critical" for i in issues)
 
 
-# ---------------------------------------------------------------- tier 2: real seeds
-#
-# Course data dirs are gitignored user data; tier-2 tests discover whatever seed
-# gold sets exist under LibV2/courses/* dynamically (never naming a slug) and
-# skip cleanly when none are present. The pinned chunkset "kind" is read off the
-# artifact itself rather than a hardcoded per-course expectation.
-
-try:
-    from lib.paths import libv2_path
-
-    _LIBV2_COURSES = libv2_path() / "courses"
-except Exception:  # pragma: no cover - defensive
-    _LIBV2_COURSES = PROJECT_ROOT / "LibV2" / "courses"
-
-
-def _discover_seed_courses():
-    if not _LIBV2_COURSES.is_dir():
-        return []
-    return sorted(
-        p.parent.parent.name
-        for p in _LIBV2_COURSES.glob("*/retrieval_eval/gold_set.json")
-    )
-
-
-_SEED_COURSES = _discover_seed_courses()
-
-
-@pytest.mark.skipif(
-    not _SEED_COURSES,
-    reason="no seed gold_set.json under LibV2/courses/*",
-)
-@pytest.mark.parametrize("slug", _SEED_COURSES)
-def test_real_seed_gold_set_zero_critical(slug):
-    """Exit check: every authored seed gold set loads with zero critical
-    issues. Skipped when the course dir / chunkset is absent (clean checkout)."""
-    course_dir = _LIBV2_COURSES / slug
-    gold_path = course_dir / "retrieval_eval" / "gold_set.json"
-    if not gold_path.exists():
-        pytest.skip(f"seed gold set absent for {slug}")
-    gold, issues = load_gold_set(course_dir, verify=True)
+def test_tracked_seed_gold_set_zero_critical(mini_course_dir: Path):
+    """The neutral tracked seed loads and resolves without operator data."""
+    gold, issues = load_gold_set(mini_course_dir, verify=True)
     crit = critical_issues(issues)
     assert not crit, [f"{i.code}: {i.message}" for i in crit]
-    # sanity: a non-empty question set, and the chunkset declares a kind. The
-    # question count is no longer pinned to the 10-question seed — `gold-repin`
-    # (retrieval-answer-eval-set P1) can drop unresolvable orphans, and the
-    # authoring sprint scales the set up, so the count is variable by design.
     assert len(gold["questions"]) >= 1
     assert gold.get("schema_version") in {"1.0", "1.1", "1.2"}
     assert gold["chunkset"]["kind"] in {"imscc", "semantik", "dart", "corpus"}
 
 
-@pytest.mark.skipif(
-    not _SEED_COURSES,
-    reason="no seed gold_set.json under LibV2/courses/*",
-)
-@pytest.mark.parametrize("slug", _SEED_COURSES)
-def test_real_seed_quotes_resolve_via_text_helpers(slug):
-    """Independently verify every seed text_quote is normalized-contained in
+def test_tracked_seed_quotes_resolve_via_text_helpers(mini_course_dir: Path):
+    """Independently verify every fixture text_quote is normalized-contained in
     its cited chunk using the citation-anchor _text helpers (the same
-    normalization the sweep/eval harness uses) — not just the loader's own
-    check. Every discovered seed gold set's questions must resolve."""
+    normalization the sweep/eval harness uses)."""
     from lib.retrieval._text import normalize_ws
 
-    course_dir = _LIBV2_COURSES / slug
+    course_dir = mini_course_dir
     gold_path = course_dir / "retrieval_eval" / "gold_set.json"
-    if not gold_path.exists():
-        pytest.skip(f"seed gold set absent for {slug}")
     gold = json.loads(gold_path.read_text(encoding="utf-8"))
     chunks_rel = gold["chunkset"]["chunks_path"]
     chunks_by_id = {}
@@ -322,26 +272,17 @@ def test_real_seed_quotes_resolve_via_text_helpers(slug):
         for p in q["relevant_passages"]:
             cid = p["chunk_id"]
             quote = p["anchor"]["text_quote"]
-            assert len(quote) >= 40, f"{slug} {q['question_id']} quote < 40 chars"
-            assert cid in chunks_by_id, f"{slug} {q['question_id']} unknown chunk {cid}"
+            assert len(quote) >= 40, f"{q['question_id']} quote < 40 chars"
+            assert cid in chunks_by_id, f"{q['question_id']} unknown chunk {cid}"
             chunk_text = normalize_ws(chunks_by_id[cid]["text"]).lower()
             assert normalize_ws(quote).lower() in chunk_text, (
-                f"{slug} {q['question_id']} quote not in {cid}: {quote!r}"
+                f"{q['question_id']} quote not in {cid}: {quote!r}"
             )
             n_quotes += 1
     # >= one primary per question; count is variable post-repin/scale-up.
     assert n_quotes >= len(gold["questions"])
 
 
-def test_all_seed_questions_present():
-    """Roll-up: each discovered seed gold set carries at least one question. No
-    hardcoded slug list or fixed grand total — keyed off whatever corpora are
-    present (skip when none). The per-set count is no longer pinned to 10: the
-    P1 `gold-repin` ladder can drop unresolvable orphans and the authoring
-    sprint scales sets up, so counts vary by design."""
-    if not _SEED_COURSES:
-        pytest.skip("no seed corpora present")
-    for slug in _SEED_COURSES:
-        gp = _LIBV2_COURSES / slug / "retrieval_eval" / "gold_set.json"
-        n = len(json.loads(gp.read_text(encoding="utf-8"))["questions"])
-        assert n >= 1, f"{slug} seed gold set has {n} questions, expected >= 1"
+def test_tracked_seed_questions_present(mini_course_dir: Path):
+    gp = mini_course_dir / "retrieval_eval" / "gold_set.json"
+    assert len(json.loads(gp.read_text(encoding="utf-8"))["questions"]) >= 1

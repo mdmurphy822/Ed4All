@@ -417,58 +417,12 @@ def test_missing_schema_blocks_with_installation_link(tmp_path, monkeypatch):
     )
 
 
-# The exact XSD-error signature the CC 1.3 imscp profile emits for a <title>
-# child on the ROOT (ItemOrg.Type) organization item — the ONE known legacy
-# defect (see below). lxml's message reads e.g. "Element '{...}title': This
-# element is not expected."
-_ROOT_TITLE_XSD_SIGNATURE = "title': This element is not expected"
-
-
-def test_real_built_cartridge_shape_if_present():
-    """Smoke against a real built cartridge when one is on disk (never fails
-    the suite when absent — keeps the test hermetic).
-
-    The cartridge is located dynamically (no course slug in tracked code).
-
-    2026-07-19: the archived cartridges on disk were all built BEFORE the
-    packager's ROOT-item ``<title>`` fix (``package_multifile_imscc.py`` no
-    longer emits a ``<title>`` on the ROOT ``ItemOrg.Type`` item, which the CC
-    1.3 imscp profile forbids). So the newly-vendored manifest-profile XSDs
-    now legitimately flag that ONE legacy defect as ``CARTRIDGE_XSD_INVALID``.
-    We therefore assert:
-
-      (a) the validator RAN with full XSD coverage — no ``CARTRIDGE_XSD_MISSING``
-          for the imscp manifest namespace (proves the manifest XSDs vendored
-          and routed), and
-      (b) EVERY ``CARTRIDGE_XSD_INVALID`` issue matches the known root-title
-          signature — i.e. the only conformance break on disk is the legacy
-          ROOT-title one, nothing new / unexplained.
-
-    Once the pipeline is re-run end-to-end with the fixed packager, the built
-    cartridge will be fully conformant; at that point tighten this to
-    ``assert result.passed`` (and drop the root-title carve-out below).
-    """
-    candidates = sorted(
-        Path("LibV2/courses").glob("*/source/imscc/*.imscc")
-    ) if Path("LibV2/courses").is_dir() else []
-    if not candidates:
-        pytest.skip("no built cartridge on disk")
+def test_complete_synthetic_cartridge_has_full_xsd_coverage(tmp_path):
+    """A neutral complete cartridge validates with full XSD coverage."""
+    path = _build_zip(tmp_path, _default_members())
     result = CartridgeConformanceValidator().validate(
-        {"imscc_path": str(candidates[0])}
+        {"imscc_path": str(path)}
     )
     codes = _codes(result)
-    # (a) Full XSD coverage: the imscp manifest namespace resolved to a real
-    # vendored schema, so there is no degrade warning for it.
     assert "CARTRIDGE_XSD_MISSING" not in codes, codes
-    # (b) Any XSD-invalid finding must be the single known legacy defect: a
-    # <title> on the ROOT organization item (predates the packager fix).
-    xsd_invalid = [i for i in result.issues if i.code == "CARTRIDGE_XSD_INVALID"]
-    for issue in xsd_invalid:
-        assert _ROOT_TITLE_XSD_SIGNATURE in issue.message, issue.message
-    # And no OTHER critical conformance break beyond that root-title signature.
-    other_critical = [
-        i.code
-        for i in result.issues
-        if i.severity == "critical" and i.code != "CARTRIDGE_XSD_INVALID"
-    ]
-    assert other_critical == [], other_critical
+    assert result.passed, [(i.code, i.message) for i in result.issues]
