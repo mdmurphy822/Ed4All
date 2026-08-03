@@ -37,9 +37,9 @@ carrying the per-edge provenance dict (the surface SPARQL queries can
 join on rule, evidence, confidence). Mirrors Worker A's
 concept_graph_semantic_v1.jsonld convention exactly.
 
-Citations: Q3 (q_20260426_205702_83cd5b5d), Q5 (q_20260426_205702_6d4302e5),
-Q49 (q_20260426_205724_4b21cb83), fresh-retrieve
-q_20260426_230212_b9be9116 (this session).
+Design rationale: named graphs preserve rule-level provenance, support
+cross-run comparison, and keep inferred statements queryable without mixing
+them with asserted content.
 """
 
 from __future__ import annotations

@@ -512,10 +512,10 @@ def _check_bloom_distribution(inst: List[Dict]) -> Dimension:
 
 
 def _check_abstention_coverage(inst: List[Dict]) -> Dimension:
-    """Wave 124 (audit 2026-04-30 follow-up). Counts pairs with
-    ``content_type="abstention_probe"``. Warning when 0 — the cc07cc76
-    corpus had no abstention pairs and scored hallucination_rate=0.63
-    on the eval. Pass-through informational signal when >0 so an
+    """Count pairs with ``content_type="abstention_probe"``.
+
+    Warning when 0 because an abstention-free corpus cannot teach this
+    response. Pass-through informational signal when >0 so an
     operator sees the cohort size before training."""
     count = sum(1 for p in inst if p.get("content_type") == "abstention_probe")
     if count == 0:
@@ -525,10 +525,9 @@ def _check_abstention_coverage(inst: List[Dict]) -> Dimension:
             severity="warning",
             detail=(
                 "0 abstention_probe pairs in instruction_pairs.jsonl. "
-                "Wave 124 fix: re-run synthesis with --with-abstention "
+                "Re-run synthesis with --with-abstention "
                 "to teach the model to say 'the source does not "
-                "establish X'. Closes the cc07cc76 hallucination_rate"
-                "=0.63 regression."
+                "establish X'."
             ),
         )
     return Dimension(
@@ -544,11 +543,10 @@ def _check_abstention_coverage(inst: List[Dict]) -> Dimension:
 
 
 def _check_schema_translation_coverage(inst: List[Dict]) -> Dimension:
-    """Wave 124 (audit 2026-04-30 follow-up). Counts pairs with
+    """Count pairs with
     ``content_type="schema_translation"`` and verifies all 6 RDF/SHACL
     surface forms are covered. Warning when any of the 6 is uncovered
-    — schema-to-English bridge gaps drive faithfulness=0.37 on the
-    cc07cc76 corpus."""
+    because schema-to-English bridge gaps weaken faithfulness."""
     expected = {
         "sh:datatype", "sh:class", "sh:NodeShape", "sh:PropertyShape",
         "rdfs:subClassOf", "owl:sameAs",
@@ -595,11 +593,10 @@ def _check_schema_translation_coverage(inst: List[Dict]) -> Dimension:
 
 
 def _check_citation_coverage(inst: List[Dict]) -> Dimension:
-    """Wave 124 (audit 2026-04-30 follow-up). Counts pairs with
+    """Count pairs with
     ``requires_source_citation=True``. Warning when the rate is below
-    10% of total pairs — the cc07cc76 corpus had 0% citation-trained
-    pairs (only --instruction-variants-per-chunk=3 emits the citation
-    variant), and the audit gate did not exist to flag it."""
+    10% of total pairs. Only ``--instruction-variants-per-chunk=3`` emits the
+    citation variant."""
     if not inst:
         return Dimension(
             name="citation_coverage",
@@ -617,8 +614,7 @@ def _check_citation_coverage(inst: List[Dict]) -> Dimension:
         detail=(
             f"{citations}/{len(inst)} pairs require source citation "
             f"({100 * rate:.1f}%). Threshold: >={100 * threshold:.0f}%. "
-            f"The cc07cc76 corpus shipped 0% citation-trained pairs; "
-            f"raise --instruction-variants-per-chunk to 3 to emit the "
+            f"Raise --instruction-variants-per-chunk to 3 to emit the "
             f"citation variant."
         ),
     )

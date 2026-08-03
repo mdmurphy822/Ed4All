@@ -215,8 +215,8 @@ class BloomLevelInvariant:
 
         # Audit 2026-04-30 fix: substitute the chunk's human-readable
         # label into the prompt instead of the raw chunk-ID literal,
-        # which the model previously echoed back verbatim into prose
-        # (1441 chunk-id token matches in the cc07cc76 eval report).
+        # which the model can otherwise echo verbatim into prose and thereby
+        # confound the classifier.
         self.label_resolver = (
             label_resolver
             if label_resolver is not None

@@ -1,7 +1,7 @@
-"""Abstention SFT pair generator (audit 2026-04-30 fix — Wave 124).
+"""Abstention SFT pair generator.
 
-The cc07cc76 SLM adapter scored hallucination_rate=0.63 / faithfulness=0.37
-because the training corpus had zero pairs that taught the model to say
+A prior evaluation exposed a failure to abstain because the training corpus
+had zero pairs that taught the model to say
 "the source does not establish X" — distinct from "X is false". The eval
 harness probes negative_grounding by asking about concepts the chunk
 does NOT address; without abstention training the adapter happily

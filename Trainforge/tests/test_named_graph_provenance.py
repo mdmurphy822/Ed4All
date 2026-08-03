@@ -25,9 +25,8 @@ Asserts:
   no fork).
 * TriG serialization is lossless under round-trip parse.
 
-Citations: Q3 (q_20260426_205702_83cd5b5d), Q49
-(q_20260426_205724_4b21cb83), Q5 (q_20260426_205702_6d4302e5),
-fresh-retrieve q_20260426_230212_b9be9116.
+Regression coverage pins the provenance shape without relying on
+operator-local retrieval records.
 """
 
 from __future__ import annotations

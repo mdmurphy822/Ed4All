@@ -16,7 +16,7 @@ Behaviour:
   adapter + base, then write the raw results JSON to
   ``<run_dir>/lm_eval_results/results.json``.
 
-Wave 101 default tasks (cheap, ~5 min total on RTX 3070):
+Default tasks (a bounded evaluation subset):
 
 * ``arc_easy``       - elementary-school multiple-choice science
 * ``truthfulqa_mc1`` - factual-truthfulness MC

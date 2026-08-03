@@ -180,7 +180,7 @@ def test_holdout_emits_property_probes_when_manifest_present(tmp_path):
     must emit a ``property_probes`` array with one or more probes per
     declared property. This unblocks PerPropertyEvaluator from the
     silent-skip path that produced all-null per_property_accuracy on
-    the cc07cc76 run.
+    the prior negative-grounding regression.
 
     Asserts coverage for ALL six rdf-shacl manifest properties, every
     probe carries the canonical shape, probe IDs are unique, and every
@@ -285,7 +285,7 @@ def test_probes_do_not_leak_chunk_id_literals(tmp_path, chunk_id_template):
     """Audit 2026-04-30 fix: chunk-anchored probes must substitute the
     chunk's label (or a generic placeholder) for the raw chunk-ID.
     Without this, the model echoes the ID into prose answers (1441
-    chunk-id token matches in the cc07cc76 eval).
+    opaque chunk-ID echo regression).
 
     Parametrized over BOTH chunk-ID forms in production use:
       * canonical ``chunk_NNNNN`` (test fixtures, legacy corpora)

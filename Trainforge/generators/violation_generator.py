@@ -1,7 +1,7 @@
-"""SHACL-violation SFT pair generator (Wave 125 expansion).
+"""SHACL-violation SFT pair generator.
 
-The cc07cc76 adapter scored zero on negative_grounding because the
-training corpus had no pairs that taught it to refuse a graph that
+A prior evaluation exposed a negative-grounding gap because the training
+corpus had no pairs that taught the model to reject a graph that
 violates a shape. Pyshacl is an oracle that gives us ground-truth
 "this graph is invalid because <reason>" labels for free; this
 generator runs pyshacl over a programmatically-expanded catalog of

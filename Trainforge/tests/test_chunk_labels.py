@@ -1,9 +1,9 @@
 """Audit 2026-04-30 — ChunkLabelResolver tests.
 
 The resolver maps chunk-ID literals to human-readable labels for use
-in eval probes. Without it, probes echo `shacl_551_chunk_NNNNN` into
+in eval probes. Without it, probes echo `<course-slug>_chunk_NNNNN` into
 the model's context, the model echoes them back, the classifier
-scores ambiguous → faithfulness collapses (the cc07cc76 bug class).
+scores ambiguous, reproducing the opaque-ID echo regression class.
 """
 from __future__ import annotations
 

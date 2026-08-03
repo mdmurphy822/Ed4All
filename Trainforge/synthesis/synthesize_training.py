@@ -307,10 +307,8 @@ class SynthesisStats:
     # KG-metadata + violation-detection generators.
     kg_metadata_pairs_emitted: int = 0
     violation_pairs_emitted: int = 0
-    # abstention +
-    # schema-translation generators. cc07cc76 hallucination_rate=0.63
-    # was driven by zero abstention pairs + zero schema-to-English
-    # bridge pairs; counters here surface the cohort sizes for the
+    # Abstention and schema-translation generators address zero-abstention and
+    # schema-to-English bridge gaps. Counters surface the cohort sizes for the
     # post-run pilot report and the audit script.
     abstention_pairs_emitted: int = 0
     schema_translation_pairs_emitted: int = 0
@@ -4311,7 +4309,7 @@ def run_synthesis(
 
         # append KG-metadata pairs (yes/no membership
         # probes mirroring faithfulness._RELATION_TEMPLATES). Closes the
-        # zero-KG-metadata-recall regression in the cc07cc76 corpus —
+        # zero-KG-metadata-recall regression —
         # the eval harness asks these questions, the corpus must teach
         # them.
         if with_kg_metadata:
@@ -4449,7 +4447,7 @@ def run_synthesis(
 
         # append abstention
         # probes ('the source does not establish X'). Closes the
-        # cc07cc76 hallucination_rate=0.63 — the eval harness probes
+        # abstention regression — the eval harness probes
         # for absent edges and the corpus must teach the model to
         # abstain rather than hallucinate yes-answers.
         if with_abstention:
@@ -4500,7 +4498,7 @@ def run_synthesis(
         # English bridge pairs. Walks the property manifest's surface
         # forms (sh:datatype, rdfs:subClassOf, ...) and emits one
         # definition + one usage pair per CURIE. Closes the schema-
-        # to-English gap behind faithfulness=0.37.
+        # to-English gap that weakens faithfulness.
         if with_schema_translation:
             from Trainforge.generators.schema_translation_generator import (
                 generate_schema_translation_pairs,
@@ -7467,8 +7465,7 @@ def build_parser() -> argparse.ArgumentParser:
             "instruction_pairs.jsonl. Reads pedagogy_graph.json and "
             "emits one positive + 1-2 negative pairs per relation type, "
             "mirroring Trainforge.eval.faithfulness._RELATION_TEMPLATES. "
-            "Closes the zero-KG-metadata-recall gap behind the cc07cc76 "
-            "adapter's faithfulness=0.37 / negative_grounding=0 result."
+            "Closes the zero-KG-metadata-recall regression."
         ),
     )
     p.add_argument(
@@ -7528,7 +7525,8 @@ def build_parser() -> argparse.ArgumentParser:
             "When unset (default), the entire pyshacl-validated catalog "
             "(>= 800 pairs) is appended. Set this to balance the "
             "violation-detection share of the total corpus when running "
-            "production rebuilds (e.g. 350 for the cc07cc76 retrain). "
+            "production rebuilds. Choose a cap that preserves the intended "
+            "family balance. "
             "Truncation is family-balanced round-robin across surface "
             "forms so every form keeps representation up to the cap."
         ),
@@ -7536,8 +7534,7 @@ def build_parser() -> argparse.ArgumentParser:
     # abstention +
     # schema-translation generators. Both are off by default, parallel
     # to --with-kg-metadata / --with-violation-detection. Closes the
-    # cc07cc76 hallucination_rate=0.63 + zero schema-to-English bridge
-    # gaps the eval harness probes for.
+    # the abstention and schema-to-English bridge gaps the eval harness probes.
     p.add_argument(
         "--with-abstention",
         dest="with_abstention",
@@ -7548,7 +7545,7 @@ def build_parser() -> argparse.ArgumentParser:
             "not establish X') to instruction_pairs.jsonl. Reads "
             "pedagogy_graph.json, samples concepts the chunk does NOT "
             "address, and emits grounded 'no, no evidence' completions. "
-            "Closes the cc07cc76 hallucination_rate=0.63 regression."
+            "Closes the abstention regression."
         ),
     )
     p.add_argument(
@@ -7578,7 +7575,7 @@ def build_parser() -> argparse.ArgumentParser:
             "surface forms (e.g. sh:datatype, rdfs:subClassOf) and "
             "emits one definition pair + one usage pair per CURIE from "
             "a hand-curated table. Closes the schema-to-English bridge "
-            "gap behind the cc07cc76 adapter's faithfulness=0.37."
+            "gap that weakens faithfulness."
         ),
     )
     p.add_argument(

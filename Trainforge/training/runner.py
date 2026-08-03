@@ -1011,7 +1011,7 @@ class TrainingRunner:
 
         # Optional: lm-eval generic-benchmark sweep when explicitly
         # opted in via env var. Default off because a 3-task sweep
-        # costs ~5 min on an RTX 3070.
+        # stays bounded enough for a routine smoke check.
         lm_eval_summary: Optional[Dict[str, Any]] = None
         if os.environ.get("LM_EVAL_ENABLED", "").lower() == "true":
             try:

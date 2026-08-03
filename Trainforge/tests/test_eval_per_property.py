@@ -125,7 +125,7 @@ def test_property_probes_array_scores_all_six_properties(tmp_path: Path) -> None
     PerPropertyEvaluator uses those probes directly instead of
     surface-form-filtering withheld_edges. With ``withheld_edges``
     empty, the legacy path would have produced all-null
-    per_property_accuracy (the cc07cc76 silent-skip bug); the new
+    per_property_accuracy (the prior silent-skip regression); the new
     path scores every declared property the manifest covers.
 
     Asserts coverage of ALL SIX rdf-shacl manifest properties — not

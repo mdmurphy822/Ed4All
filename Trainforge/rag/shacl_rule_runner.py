@@ -4,9 +4,8 @@ The Python rules under ``Trainforge/rag/inference_rules/`` derive typed
 concept-graph edges procedurally. Phase 5 converts a subset of those
 rules to SHACL-AF rules that live alongside the validation shapes in
 ``schemas/context/courseforge_v1.shacl-rules.ttl``. Co-locating
-derivation with validation is the design point — see corpus query
-``q_20260426_205719_89306a21`` (Q38 — SHACL Rules vs RDFS/OWL
-entailment).
+derivation with validation keeps the executable rules beside the constraints
+they extend.
 
 This module is the bridge: it takes a Trainforge concept-graph dict,
 converts the relevant slice (concept nodes + ``occurrences[]``

@@ -146,8 +146,8 @@ def test_evaluate_emits_yes_rate(tmp_path) -> None:
 def test_format_probe_scrubs_chunk_id_via_label_resolver() -> None:
     """Audit 2026-04-30 fix: when an edge's source is a chunk-ID
     literal, the probe must carry the chunk's human-readable label,
-    not the raw `shacl_551_chunk_NNNNN` string. This is what zeroed
-    adapter+RAG faithfulness on the cc07cc76 run.
+    not a raw `<course-slug>_chunk_NNNNN` string. This prevents
+    adapter-plus-retrieval faithfulness regression.
     """
     from Trainforge.eval.retrieval.chunk_labels import ChunkLabelResolver
     from Trainforge.eval.faithfulness import _format_probe

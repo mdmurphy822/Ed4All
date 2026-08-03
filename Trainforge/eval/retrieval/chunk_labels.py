@@ -1,12 +1,10 @@
 """Chunk-ID → human-readable label resolver.
 
-Audit 2026-04-30 found that eval probes in `faithfulness.py`,
-`holdout_builder.py`, and `invariants.py` interpolated raw chunk-IDs
+Eval probes in `faithfulness.py`, `holdout_builder.py`, and `invariants.py`
+formerly interpolated raw chunk IDs
 (`<course-slug>_chunk_NNNNN`) into question text. The model can't
-semantically reason about an opaque ID, so it echoes the literal back
-into its answer (1441 chunk-id token matches in the cc07cc76 eval
-report). The faithfulness classifier then scores those echoes as
-ambiguous → 0/22 correct → faithfulness=0 on the adapter+RAG setup.
+semantically reason about an opaque ID, so it may echo the literal back into
+its answer. Those echoes can then be scored as ambiguous.
 
 This module owns the single mapping from `chunk_id` to a clean label
 the model can reason about (the chunk's `summary`, or the first ~80
