@@ -35,10 +35,8 @@ Contracts pinned here:
 * Per-tree ``def test_*`` count ratchet plus Draft-2020-12
   ``check_schema`` cleanliness on the net-new schemas.
 
-The live ``ed4all run textbook-to-course --dry-run`` leg of Test 1
-skips when ``tests/fixtures/calibration_textbook.pdf`` is absent; the
-in-process aggregator leg asserts the same emit-shape contract and runs
-everywhere without a corpus checkout.
+Test 1 uses an entirely synthetic in-process layout, so this public contract
+never discovers or reads an operator corpus.
 """
 from __future__ import annotations
 
@@ -428,7 +426,7 @@ def _count_test_functions(tree: Path) -> Tuple[int, List[str]]:
 
 
 # --------------------------------------------------------------------------- #
-# Test 1 — full pipeline e2e (skip-gate-aware)
+# Test 1 — synthetic promotion-chain contract
 # --------------------------------------------------------------------------- #
 
 
@@ -445,9 +443,8 @@ def test_1_full_pipeline_promotion_chain_emit_shape(tmp_path) -> None:
     * ``promotion_decision`` / ``validator_set`` / ``source_coverage``
       on every arrow row.
 
-    Live ``--dry-run`` leg: skipped when
-    ``tests/fixtures/calibration_textbook.pdf`` is absent, so the gate
-    runs without a corpus checkout.
+    The fixture is generated entirely beneath ``tmp_path`` and never reads an
+    operator corpus.
     """
     from lib.aggregators.promotion_chain_report import (
         PromotionChainAggregator,
@@ -499,16 +496,6 @@ def test_1_full_pipeline_promotion_chain_emit_shape(tmp_path) -> None:
         f"chain_hash must be 64-char SHA-256 hex; got len={len(chain_hash)}"
     )
     int(chain_hash, 16)  # raises ValueError if not hex
-
-    # Live --dry-run leg: skip cleanly when the fixture isn't present.
-    fixture = PROJECT_ROOT / "tests" / "fixtures" / "calibration_textbook.pdf"
-    if not fixture.exists():
-        pytest.skip(
-            f"Live --dry-run leg requires {fixture}, which is not checked "
-            "into the repo; the synthetic aggregator-build leg above "
-            "already covers the emit-shape contract."
-        )
-
 
 # --------------------------------------------------------------------------- #
 # Test 2 — anti-silent-degradation: every arrow has coverage data
@@ -844,7 +831,7 @@ def test_6_severity_flip_stays_gated_by_calibration_signal(
         f"{CALIBRATION_FLIP_THRESHOLD!r}; expected 0.85."
     )
 
-    course_slug = "calibration_textbook"
+    course_slug = "calibration-fixture"
     report_dir = tmp_path / "courses" / course_slug / "quality"
     report_dir.mkdir(parents=True, exist_ok=True)
     (report_dir / "trainforge_assessment_quality_report.json").write_text(

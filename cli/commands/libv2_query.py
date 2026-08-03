@@ -12,15 +12,15 @@ include their child COs.
 Examples
 --------
 
-    ed4all libv2 query --slug demo-course-1 \\
+    ed4all libv2 query --slug ${COURSE_SLUG} \\
         --chunk-type example --difficulty intermediate
 
-    ed4all libv2 query --slug demo-course-1 --week 7
+    ed4all libv2 query --slug ${COURSE_SLUG} --week 7
 
-    ed4all libv2 query --slug demo-course-1 \\
+    ed4all libv2 query --slug ${COURSE_SLUG} \\
         --outcome to-04 --format count
 
-    ed4all libv2 query --slug demo-course-1 \\
+    ed4all libv2 query --slug ${COURSE_SLUG} \\
         --text "sh:minCount" --limit 5 --format md
 """
 
@@ -176,7 +176,7 @@ _FORMATTERS = {
 @click.option(
     "--slug",
     required=True,
-    help="LibV2 course slug (e.g. demo-course-1).",
+    help="Operator-selected LibV2 course slug.",
 )
 @click.option(
     "--chunk-type",

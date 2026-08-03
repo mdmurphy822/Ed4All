@@ -976,7 +976,7 @@ def _write_calibration_report(
     libv2_root: Path,
     *,
     alignment_rate: float,
-    course_slug: str = "calibration_textbook",
+    course_slug: str = "calibration-fixture",
 ) -> Path:
     """Write a minimal calibration report fixture under <libv2_root>."""
     report_dir = (
@@ -1055,7 +1055,7 @@ def test_calibration_report_missing_defers_flip(tmp_path):
 def test_calibration_signal_missing_defers_flip(tmp_path):
     """Calibration report present but signal field absent → flip
     deferred with reason=calibration_signal_missing."""
-    report_dir = tmp_path / "courses" / "calibration_textbook" / "quality"
+    report_dir = tmp_path / "courses" / "calibration-fixture" / "quality"
     report_dir.mkdir(parents=True, exist_ok=True)
     (report_dir / "trainforge_assessment_quality_report.json").write_text(
         json.dumps({

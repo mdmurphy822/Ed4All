@@ -19,7 +19,7 @@ from pathlib import Path
 from lib.governance.calibration_gate import resolve_severity_flip
 
 
-def _write_report(root: Path, summary: dict, slug: str = "calibration_textbook") -> None:
+def _write_report(root: Path, summary: dict, slug: str = "calibration-fixture") -> None:
     d = root / "courses" / slug / "quality"
     d.mkdir(parents=True, exist_ok=True)
     (d / "trainforge_assessment_quality_report.json").write_text(

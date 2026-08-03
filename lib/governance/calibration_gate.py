@@ -24,12 +24,9 @@ caller's responsibility, since the caller owns the
 event payload pre-built so the caller can hand it directly to
 ``capture.log_decision(**payload)``.
 
-References
-----------
+Reference implementation
+------------------------
 
-* ``plans/gpt-feedback-2-wave3-wiring-telemetry-2026-05.md`` § Worker
-  W3.A — calibration-gated severity flip on
-  ``AssessmentRetrievalGroundingValidator``.
 * ``lib/aggregators/trainforge_assessment_quality_report.py`` — the
   canonical W2.B report this helper reads.
 """
@@ -50,11 +47,10 @@ __all__ = [
 ]
 
 
-#: Default reference course slug for calibration runs. The Wave 2 W2.B
-#: deliverable produces this corpus's
-#: ``trainforge_assessment_quality_report.json`` from
-#: ``tests/fixtures/calibration_textbook.pdf``.
-DEFAULT_CALIBRATION_COURSE_SLUG: str = "calibration_textbook"
+#: Neutral default identifier for a locally generated calibration fixture.
+#: Operator course names and corpus-derived slugs must be passed explicitly
+#: and are never embedded in tracked source.
+DEFAULT_CALIBRATION_COURSE_SLUG: str = "calibration-fixture"
 
 #: Default LibV2 root. Resolved relative to the repo root so a clean
 #: checkout that has never run a calibration build resolves to a
@@ -158,7 +154,7 @@ def resolve_severity_flip(
             whose value drives the flip.
         threshold: Floor at or above which the flip fires.
         course_slug: Reference calibration-run course slug. Defaults
-            to ``calibration_textbook`` (the W2.B canonical fixture).
+            to the neutral ``calibration-fixture`` identifier.
         libv2_root: Override the LibV2 root path. Test-only; production
             callers use the default.
         fallback_signals: Ordered sibling summary fields to try when

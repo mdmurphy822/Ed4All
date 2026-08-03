@@ -14,7 +14,7 @@ Wave 3 W3.A extends the validator with four new authoring-quality
 sub-checks (each emits its own ``GateIssue`` code) plus one severity
 promotion on the existing source-attribution check. Each sub-check
 ships at warning severity until the calibration signal in
-``LibV2/courses/calibration_textbook/quality/trainforge_assessment_quality_report.json::summary.answerability_alignment_rate``
+``LibV2/courses/<calibration-fixture>/quality/trainforge_assessment_quality_report.json::summary.answerability_alignment_rate``
 proves stable above the 0.85 floor; the calibration-readback helper
 (``lib/governance/calibration_gate.py::resolve_severity_flip``) lifts
 the promoted codes to critical when the signal is present and clears
@@ -32,8 +32,7 @@ in the YAML, but their emitted ``GateIssue.severity`` is dynamically
 elevated by the validator at validate() time when the calibration
 signal clears the floor.
 
-Contract per ``plans/gpt-feedback-w2-w7-execution-2026-05.md`` §W2 +
-``plans/gpt-feedback-2-wave3-wiring-telemetry-2026-05.md`` §W3.A:
+Public validation contract:
 
 - Iterate ``inputs["blocks"]`` and filter to ``block.block_type ==
   "assessment_item"``. Non-assessment_item blocks are silently

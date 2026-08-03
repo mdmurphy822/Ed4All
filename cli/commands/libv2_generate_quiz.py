@@ -19,12 +19,12 @@ Examples
 
     # Deterministic 10-question quiz with bloom-balanced sampling
     ed4all libv2 generate-quiz \\
-        --slug demo-course-1 \\
+        --slug ${COURSE_SLUG} \\
         --bloom-mix '{"remember":1,"understand":2,"apply":5,"analyze":1,"create":1}' \\
         --seed 42
 
     # Filter by outcomes + use misconceptions as distractor seeds
-    ed4all libv2 generate-quiz --slug X \\
+    ed4all libv2 generate-quiz --slug ${COURSE_SLUG} \\
         --bloom-mix '{"apply":3}' \\
         --outcomes co-15,co-16,to-04 \\
         --use-misconceptions-as-distractors \\

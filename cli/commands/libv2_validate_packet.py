@@ -17,11 +17,11 @@ preserves the Wave 75 warning-only behavior for the new rules.
 Examples
 --------
 
-    ed4all libv2 validate-packet --slug demo-course-1
-    ed4all libv2 validate-packet --slug X --format json
-    ed4all libv2 validate-packet --slug X --strict
-    ed4all libv2 validate-packet --slug X --strict-coverage --format json
-    ed4all libv2 validate-packet --slug X --strict-typing
+    ed4all libv2 validate-packet --slug ${COURSE_SLUG}
+    ed4all libv2 validate-packet --slug ${COURSE_SLUG} --format json
+    ed4all libv2 validate-packet --slug ${COURSE_SLUG} --strict
+    ed4all libv2 validate-packet --slug ${COURSE_SLUG} --strict-coverage --format json
+    ed4all libv2 validate-packet --slug ${COURSE_SLUG} --strict-typing
 """
 
 from __future__ import annotations
@@ -135,8 +135,8 @@ def libv2_group() -> None:
     "--slug",
     required=True,
     help=(
-        "LibV2 course slug. Resolves to LibV2/courses/<slug>/. "
-        "Example: demo-course-1."
+        "Operator-selected LibV2 course slug. Resolves beneath the private "
+        "LibV2 course archive."
     ),
 )
 @click.option(

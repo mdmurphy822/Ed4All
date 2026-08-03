@@ -17,11 +17,11 @@ Design tenets:
 Examples
 --------
 
-    ed4all libv2 generate-study-pack --slug demo-course-1 --week 7
-    ed4all libv2 generate-study-pack --slug X --week 7 --include-exercises
-    ed4all libv2 generate-study-pack --slug X --week 7 --lesson-plan
-    ed4all libv2 generate-study-pack --slug X --week 7 --format html
-    ed4all libv2 generate-study-pack --slug X --week 1,2,3 --format json
+    ed4all libv2 generate-study-pack --slug ${COURSE_SLUG} --week 7
+    ed4all libv2 generate-study-pack --slug ${COURSE_SLUG} --week 7 --include-exercises
+    ed4all libv2 generate-study-pack --slug ${COURSE_SLUG} --week 7 --lesson-plan
+    ed4all libv2 generate-study-pack --slug ${COURSE_SLUG} --week 7 --format html
+    ed4all libv2 generate-study-pack --slug ${COURSE_SLUG} --week 1,2,3 --format json
 """
 
 from __future__ import annotations
@@ -103,8 +103,8 @@ def _parse_difficulties(spec: Optional[str]) -> Optional[List[str]]:
     "--slug",
     required=True,
     help=(
-        "LibV2 course slug. Resolves to LibV2/courses/<slug>/. "
-        "Example: demo-course-1."
+        "Operator-selected LibV2 course slug. Resolves beneath the private "
+        "LibV2 course archive."
     ),
 )
 @click.option(
