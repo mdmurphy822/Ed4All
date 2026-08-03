@@ -239,11 +239,12 @@ def test_local_seat_resolves_byte_identical_client_config(monkeypatch):
         system_prompt="SYS",
     )
 
-    # Registry-resolved identity matches the pre-migration local defaults.
-    assert p._oa_client.base_url == "http://localhost:11434/v1"
-    assert p._oa_client.model == "qwen2.5:7b-instruct-q4_K_M"
-    assert p._model == "qwen2.5:7b-instruct-q4_K_M"
-    assert p._base_url == "http://localhost:11434/v1"
+    # Registry-resolved identity matches the canonical local seat. The
+    # registry, not this provider or an Ollama-era constant, owns both values.
+    assert p._oa_client.base_url == "http://localhost:8000/v1"
+    assert p._oa_client.model == "nemotron-3-nano-30b-a3b"
+    assert p._model == "nemotron-3-nano-30b-a3b"
+    assert p._base_url == "http://localhost:8000/v1"
     assert p._api_key == "local"
     assert p._oa_client.provider_label == "local"
     # The ``local`` row declares no extra_body → nothing threaded.
@@ -252,7 +253,7 @@ def test_local_seat_resolves_byte_identical_client_config(monkeypatch):
     p._dispatch_call("hello")
     assert bodies, "handler observed a POST"
     body = bodies[0]
-    assert body["model"] == "qwen2.5:7b-instruct-q4_K_M"
+    assert body["model"] == "nemotron-3-nano-30b-a3b"
     for key in ("model", "messages", "temperature", "max_tokens"):
         assert key in body
     # No vendor-specific request-body extras leaked onto the local seat.
