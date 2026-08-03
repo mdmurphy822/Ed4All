@@ -132,8 +132,8 @@ def test_migrated_sites_match_canonical_apply_level():
         "generate_course.apply drift"
     )
 
-    # 4. Trainforge.generators.assessment_generator — nested; verbs only
-    from Trainforge.generators.assessment_generator import (
+    # 4. Trainforge.generators.assessment.generator — nested; verbs only
+    from Trainforge.generators.assessment.generator import (
         BLOOM_LEVELS as ag_levels,
     )
     assert set(ag_levels["apply"]["verbs"]) == canonical_apply, (

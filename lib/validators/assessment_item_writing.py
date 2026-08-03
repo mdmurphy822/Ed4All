@@ -104,7 +104,7 @@ References
   distractor gate this mirrors (input contract, warning-day-1, GateResult).
 * ``lib/validators/qti_well_formed.py`` — ``_iter_local`` / ``_localname`` /
   ``_extract_item_cc_profile`` QTI helpers reused here.
-* ``Trainforge/generators/assessment_generator.py`` —
+* ``Trainforge/generators/assessment/generator.py`` —
   ``_SUBTYPE_BLOOM_CEILING`` (the ceiling table this reads) + the
   ``item_subtype`` universe.
 """
@@ -164,7 +164,7 @@ _BLOOM_ORDER: Dict[str, int] = {
 }
 
 # Fallback ceiling table — MIRRORS
-# ``Trainforge.generators.assessment_generator._SUBTYPE_BLOOM_CEILING``. The
+# ``Trainforge.generators.assessment.generator._SUBTYPE_BLOOM_CEILING``. The
 # live table is imported lazily (see ``_subtype_bloom_ceiling``); this copy is
 # the last-resort default so the check works even if the generator import
 # fails (offline / slim install).
@@ -267,7 +267,7 @@ def _subtype_bloom_ceiling() -> Dict[str, str]:
     offline-safe (the generator import is pure-Python + fast).
     """
     try:
-        from Trainforge.generators.assessment_generator import (  # noqa: WPS433
+        from Trainforge.generators.assessment.generator import (  # noqa: WPS433
             _SUBTYPE_BLOOM_CEILING,
         )
         if isinstance(_SUBTYPE_BLOOM_CEILING, dict) and _SUBTYPE_BLOOM_CEILING:

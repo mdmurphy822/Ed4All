@@ -1,7 +1,7 @@
 """Assessment-dimension for ``quality_report.json``.
 
-Wave 26 adds a pedagogical-quality view of the generated assessments to
-``quality_report.json`` so a human reviewer can see WHICH question is
+This module adds a pedagogical-quality view of generated assessments to
+``quality_report.json`` so a human reviewer can see which question is
 broken, not just an aggregate score. Populated from the same validator
 calls used at phase gates:
 
@@ -112,13 +112,12 @@ def _bucket_by_type(
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Group ``questions`` by canonical ``question_type``.
 
-    Wave 6 W6.B: pure-projection helper consumed by
-    :func:`build_assessment_dimension` to emit the
+    Pure-projection helper consumed by :func:`build_assessment_dimension` to emit the
     ``per_question_type_summary`` block. Question-type resolution
     routes through the canonical
     :func:`lib.validators.assessment._normalize_question_type` helper
-    so the bucket keys match the per-type matrix the W6.A validator
-    publishes (single source of truth for question-type identity).
+    so the bucket keys match the assessment validator's per-type matrix.
+    This is the single source of truth for question-type identity.
     Empty / unknown question_type values bucket under ``""`` so the
     caller can decide whether to skip them.
     """
@@ -147,11 +146,10 @@ def _per_question_issues(
     truth. Otherwise we run AssessmentQualityValidator + BloomAlignment
     strict.
 
-    Wave 6 W6.B: each per-question entry is stamped with
-    ``question_type`` (resolved via the canonical
+    Each per-question entry is stamped with ``question_type`` (resolved via the canonical
     :func:`lib.validators.assessment._normalize_question_type` helper)
-    so downstream consumers (W2.B aggregator, the per-type summary
-    block emitted by :func:`build_assessment_dimension`) can bucket
+    so downstream consumers and the per-type summary emitted by
+    :func:`build_assessment_dimension` can bucket
     issues by question shape without re-scanning the source assessment.
     """
     # Import here to avoid circular import at module load time.
@@ -286,9 +284,8 @@ def build_assessment_dimension(
 
     per_question_issues = _per_question_issues(assessment)
 
-    # Wave 6 W6.B — per-question-type segmentation. The same per-question
-    # issue list is also bucketed by canonical question_type so the
-    # downstream W2.B aggregator + operator-facing report can segment
+    # Bucket the same per-question issue list by canonical question_type so
+    # the downstream aggregator and operator-facing report can segment
     # quality issues by question shape without re-scanning the source.
     issues_by_qid: Dict[str, List[str]] = {
         entry["question_id"]: entry["issues"]

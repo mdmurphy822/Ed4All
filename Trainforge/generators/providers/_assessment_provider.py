@@ -60,7 +60,7 @@ Public surface:
   :class:`Courseforge.generators._base._BaseLLMProvider`.
 - :meth:`AssessmentGeneratorProvider.generate_assessments` — emits a
   list of canonical question dicts (matching
-  :class:`Trainforge.generators.assessment_generator.QuestionData`
+  :class:`Trainforge.generators.assessment.generator.QuestionData`
   ``to_dict()`` shape) consumed by
   ``MCP/tools/trainforge_tools.py::generate_assessments`` under the
   ``TRAINFORGE_ASSESSMENT_PROVIDER`` opt-in. Each question entry

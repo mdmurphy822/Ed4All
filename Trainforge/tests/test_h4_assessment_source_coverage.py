@@ -1,7 +1,7 @@
 """W3.H sub-task H4 — ``AssessmentData.to_dict`` ``source_coverage`` emit.
 
 Pins the canonical W3.H ``source_coverage`` block on the
-``Trainforge/generators/assessment_generator.py::AssessmentData.to_dict``
+``Trainforge/generators/assessment/generator.py::AssessmentData.to_dict``
 serialisation. Four tests:
 
 * canonical shape (5 fields present, coverage_pct calc, dropped_count
@@ -21,7 +21,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from Trainforge.generators.assessment_generator import (  # noqa: E402
+from Trainforge.generators.assessment.generator import (  # noqa: E402
     AssessmentData,
     QuestionData,
     SkippedItem,

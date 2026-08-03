@@ -4,7 +4,7 @@ from collections import Counter
 
 import pytest
 
-from Trainforge.generators.assessment_generator import (
+from Trainforge.generators.assessment.generator import (
     AssessmentGenerator,
     QuestionData,
     SkippedItem,

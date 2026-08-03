@@ -30,7 +30,7 @@ except ImportError:
     HAS_RAG_BRIDGE = False
 
 try:
-    from Trainforge.generators.assessment_generator import (  # noqa: F401
+    from Trainforge.generators.assessment.generator import (  # noqa: F401
         AssessmentGenerator,
         generate_assessment,
     )
@@ -233,7 +233,7 @@ def register_trainforge_tools(mcp):
         Wave 26 unification: this surface no longer hand-rolls question
         payloads with placeholder strings (``"Correct answer based on
         content"``). It dispatches directly to
-        :class:`Trainforge.generators.assessment_generator.AssessmentGenerator`,
+        :class:`Trainforge.generators.assessment.generator.AssessmentGenerator`,
         the same generator used by the internal pipeline. That generator
         performs content grounding, leak checking, and template-fallback
         flagging.
@@ -265,7 +265,7 @@ def register_trainforge_tools(mcp):
                 "error": "AssessmentGenerator unavailable",
                 "cause": "import_failed",
                 "hint": (
-                    "Trainforge.generators.assessment_generator could not "
+                    "Trainforge.generators.assessment.generator could not "
                     "be imported. Verify Trainforge package is on the "
                     "Python path."
                 ),
@@ -578,7 +578,7 @@ def register_trainforge_tools(mcp):
                 # also append onto the AssessmentData.skipped_items
                 # so the operator sees both structural skips + LLM
                 # refusals in one place.
-                from Trainforge.generators.assessment_generator import (  # noqa: PLC0415
+                from Trainforge.generators.assessment.generator import (  # noqa: PLC0415
                     QuestionData as _QData,
                     SkippedItem as _SkipItem,
                 )

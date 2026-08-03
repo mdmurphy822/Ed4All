@@ -39,7 +39,7 @@ if str(PROJECT_ROOT) not in sys.path:
 import MCP.tools.pipeline_tools as pt  # noqa: E402
 from lib.generation import stop_control  # noqa: E402
 from lib.generation.stop_control import GracefulStopRequested  # noqa: E402
-from Trainforge.generators.assessment_generator import (  # noqa: E402
+from Trainforge.generators.assessment.generator import (  # noqa: E402
     AssessmentData,
     QuestionData,
 )
@@ -77,7 +77,7 @@ class _FakeGen:
         double whose signature drifts from the real generator silently routes
         every test through the "generation failed" fallback instead of the
         checkpoint/stop behaviour under test. Keep this signature in lockstep
-        with ``Trainforge/generators/assessment_generator.py::generate``.
+        with ``Trainforge/generators/assessment/generator.py::generate``.
         """
         type(self).calls.append(list(objective_ids))
         if type(self).arm_after and len(type(self).calls) == type(self).arm_after:
@@ -151,7 +151,7 @@ def _run_assess(exports_root: Path, project_id: str, monkeypatch) -> Dict[str, A
     """Drive run_assessment_synthesis; return the parsed JSON envelope."""
     monkeypatch.setattr(pt, "courseforge_exports_dir", lambda: exports_root)
     monkeypatch.setattr(
-        "Trainforge.generators.assessment_generator.AssessmentGenerator", _FakeGen
+        "Trainforge.generators.assessment.generator.AssessmentGenerator", _FakeGen
     )
     registry = pt._build_tool_registry()
     tool = registry["run_assessment_synthesis"]
@@ -213,7 +213,7 @@ def test_fake_generator_signature_covers_real_generator():
     """
     import inspect
 
-    from Trainforge.generators.assessment_generator import AssessmentGenerator
+    from Trainforge.generators.assessment.generator import AssessmentGenerator
 
     real = set(inspect.signature(AssessmentGenerator.generate).parameters) - {"self"}
     fake = set(inspect.signature(_FakeGen.generate).parameters) - {"self"}
@@ -326,7 +326,7 @@ def test_stop_after_n_manifest_not_written_sidecar_survives(
 
     monkeypatch.setattr(pt, "courseforge_exports_dir", lambda: tmp_path)
     monkeypatch.setattr(
-        "Trainforge.generators.assessment_generator.AssessmentGenerator", _FakeGen
+        "Trainforge.generators.assessment.generator.AssessmentGenerator", _FakeGen
     )
     registry = pt._build_tool_registry()
     tool = registry["run_assessment_synthesis"]
@@ -355,7 +355,7 @@ def test_resume_after_stop_byte_equivalent(tmp_path, monkeypatch, _armed_env):
     proj = _seed_project(tmp_path, "P_RESUME")
     monkeypatch.setattr(pt, "courseforge_exports_dir", lambda: tmp_path)
     monkeypatch.setattr(
-        "Trainforge.generators.assessment_generator.AssessmentGenerator", _FakeGen
+        "Trainforge.generators.assessment.generator.AssessmentGenerator", _FakeGen
     )
     registry = pt._build_tool_registry()
     tool = registry["run_assessment_synthesis"]
@@ -384,7 +384,7 @@ def test_pre_armed_sentinel_zero_calls(tmp_path, monkeypatch, _armed_env):
 
     monkeypatch.setattr(pt, "courseforge_exports_dir", lambda: tmp_path)
     monkeypatch.setattr(
-        "Trainforge.generators.assessment_generator.AssessmentGenerator", _FakeGen
+        "Trainforge.generators.assessment.generator.AssessmentGenerator", _FakeGen
     )
     registry = pt._build_tool_registry()
     tool = registry["run_assessment_synthesis"]

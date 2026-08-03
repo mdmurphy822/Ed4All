@@ -90,7 +90,7 @@ PLACEHOLDER_QUESTION = {
 
 class TestContentExtractor:
     def setup_method(self):
-        from Trainforge.generators.content_extractor import ContentExtractor
+        from Trainforge.generators.assessment.content_extractor import ContentExtractor
         self.extractor = ContentExtractor()
 
     def test_extract_key_terms_finds_definitions(self):
@@ -167,7 +167,7 @@ class TestContentExtractor:
 
 class TestContentGroundedGeneration:
     def setup_method(self):
-        from Trainforge.generators.assessment_generator import AssessmentGenerator
+        from Trainforge.generators.assessment.generator import AssessmentGenerator
         self.generator = AssessmentGenerator(capture=None, check_leaks=False)
 
     def test_mcq_with_chunks_not_placeholder(self):
@@ -193,7 +193,7 @@ class TestContentGroundedGeneration:
         class (placeholder strings used to land in the corpus and bias
         the trained adapter).
         """
-        from Trainforge.generators.assessment_generator import SkippedItem
+        from Trainforge.generators.assessment.generator import SkippedItem
 
         result = self.generator._generate_multiple_choice(
             "Q-test-2", "LO-001", "remember",

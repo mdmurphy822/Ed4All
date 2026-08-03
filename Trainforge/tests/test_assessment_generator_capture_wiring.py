@@ -1,7 +1,7 @@
 """Wave W-D1 T1.5 — ``AssessmentGenerator`` capture-wiring regression test.
 
 Pins the per-`generate()` decision-capture event chain emitted by
-``Trainforge/generators/assessment_generator.py``. Closes the audit gap
+``Trainforge/generators/assessment/generator.py``. Closes the audit gap
 flagged by ``plans/wave-D1-p0-fixes-2026-05-07.md`` § 2.5 (#1 of 6) and
 enforces the CLAUDE.md "LLM call-site instrumentation" rule for the
 assessment-generation surface.
@@ -29,7 +29,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.generators.assessment_generator import (  # noqa: E402
+from Trainforge.generators.assessment.generator import (  # noqa: E402
     AssessmentGenerator,
 )
 

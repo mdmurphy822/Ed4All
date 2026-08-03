@@ -300,7 +300,7 @@ See § JSON-LD round-trip for the RDF projection of this shape (edges reify as `
 
 ### Assessment
 
-**Definition:** Python dataclass `AssessmentData` at `Trainforge/generators/assessment_generator.py:111`.
+**Definition:** Python dataclass `AssessmentData` at `Trainforge/generators/assessment/generator.py:111`.
 **Instance production:** `AssessmentGenerator.generate()` (assessment-generator agent).
 **Instance consumption:** brightspace-packager (QTI emit); assessment-validator agent; `trainforge_decision.schema.json`.
 
@@ -312,8 +312,8 @@ See § JSON-LD round-trip for the RDF projection of this shape (edges reify as `
 
 Two closely-related representations exist:
 
-**Definition (factory-side):** dataclass `Question` at `Trainforge/generators/question_factory.py:36`.
-**Definition (generator-side):** dataclass `QuestionData` at `Trainforge/generators/assessment_generator.py:81`.
+**Definition (factory-side):** dataclass `Question` at `Trainforge/generators/assessment/question_factory.py:36`.
+**Definition (generator-side):** dataclass `QuestionData` at `Trainforge/generators/assessment/generator.py:81`.
 
 **Instance production:** `QuestionFactory.create_*` methods (with Bloom-alignment enforcement, line 103); `AssessmentGenerator.generate()`.
 **Instance consumption:** brightspace-packager QTI emit; validators (bloom, question_quality, leak_check).
@@ -327,7 +327,7 @@ Two closely-related representations exist:
 
 ### QuestionChoice
 
-**Definition:** dataclass at `Trainforge/generators/question_factory.py:28`.
+**Definition:** dataclass at `Trainforge/generators/assessment/question_factory.py:28`.
 **Fields:** `text` (str), `is_correct` (bool, default False), `feedback` (Optional[str]).
 
 ### Distractor
@@ -535,7 +535,7 @@ Single table of directed/undirected relations that cross class boundaries. Cardi
 | `typedEdge:is-a` | Concept → Concept | 0..* | yes | TypedEdge type=`is-a` | `Trainforge/rag/inference_rules/is_a_from_key_terms.py` |
 | `typedEdge:prerequisite` | Concept → Concept | 0..* | yes | TypedEdge type=`prerequisite` | `Trainforge/rag/inference_rules/prerequisite_from_lo_order.py` |
 | `typedEdge:related-to` | Concept ↔ Concept | 0..* | no | TypedEdge type=`related-to` | `Trainforge/rag/inference_rules/related_from_cooccurrence.py` |
-| `hasQuestion` | Assessment → Question | 1..* | yes | `AssessmentData.questions` | `Trainforge/generators/assessment_generator.py:117` |
+| `hasQuestion` | Assessment → Question | 1..* | yes | `AssessmentData.questions` | `Trainforge/generators/assessment/generator.py:117` |
 | `hasChoice` | Question → QuestionChoice | 0..* | yes | `Question.choices` | `question_factory.py:45` |
 | `hasDistractor` | Question → Distractor | 0..* | yes | `question_data.distractors[]` | `schemas/events/trainforge_decision.schema.json` |
 | `targetsMisconception` | Distractor → Misconception | 0..1 | yes | `misconception_targeted` | same |
@@ -598,7 +598,7 @@ BLOOM_TO_DOMAIN = {
 
 ### BLOOM_QUESTION_MAP
 
-Source: `Trainforge/generators/question_factory.py:91-98`.
+Source: `Trainforge/generators/assessment/question_factory.py:91-98`.
 
 ```python
 BLOOM_QUESTION_MAP = {
@@ -615,7 +615,7 @@ BLOOM_QUESTION_MAP = {
 
 Two enums exist:
 
-**Trainforge internal (factory):** `Trainforge/generators/question_factory.py:81-89`
+**Trainforge internal (factory):** `Trainforge/generators/assessment/question_factory.py:81-89`
 ```
 multiple_choice, multiple_response, true_false, fill_in_blank, short_answer, essay, matching
 ```
@@ -979,9 +979,9 @@ Sizes (file count + total lines per subfolder, regenerated 2026-05-07):
 | Dataclass | Location | Purpose |
 |---|---|---|
 | `Chunk` (dict shape; no dataclass yet) | `Trainforge/process_course.py:1079-1092` | unit of retrieval |
-| `Question` | `Trainforge/generators/question_factory.py:36` | factory-side question |
+| `Question` | `Trainforge/generators/assessment/question_factory.py:36` | factory-side question |
 | `QuestionChoice` | `question_factory.py:28` | choice option |
-| `QuestionData` | `Trainforge/generators/assessment_generator.py:81` | generator-side question |
+| `QuestionData` | `Trainforge/generators/assessment/generator.py:81` | generator-side question |
 | `AssessmentData` | `assessment_generator.py:112` | assessment bundle |
 | `InputRef` | `lib/provenance.py:37` | provenance input pointer |
 | `OutputRef` | `lib/provenance.py:91` | provenance output pointer |
@@ -1247,10 +1247,10 @@ Exact file:line anchors to key emit/consume sites. Grep-verified against the tre
 
 ### Question generation
 
-- **`BLOOM_QUESTION_MAP`:** `Trainforge/generators/question_factory.py:91-98`.
+- **`BLOOM_QUESTION_MAP`:** `Trainforge/generators/assessment/question_factory.py:91-98`.
 - **`VALID_TYPES` (factory subset, 7 of the canonical 9-value enum):** `question_factory.py:81-89`. Canonical 9-value enum lives at `schemas/taxonomies/question_type.json`; factory excludes `ordering` + `hotspot` (those types ship via the trainforge_decision schema and the courseforge JSON-LD path).
 - **`QuestionChoice` / `Question` dataclasses:** `question_factory.py:28, 36`.
-- **`QuestionData` / `AssessmentData` dataclasses:** `Trainforge/generators/assessment_generator.py:81, 112`.
+- **`QuestionData` / `AssessmentData` dataclasses:** `Trainforge/generators/assessment/generator.py:81, 112`.
 - **Misconception ID generator:** `Trainforge/generators/pairs/preference.py:140-143`.
 
 ### Provenance + ledger

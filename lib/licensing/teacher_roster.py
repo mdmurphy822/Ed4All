@@ -537,7 +537,7 @@ def provider_verdict_roster() -> Dict[str, Dict[str, Any]]:
     """Return an endpoint-registry-shaped ``{provider: {...}}`` license map.
 
     S6→A1 contract: the assessment apply-arm license guard
-    (``Trainforge/generators/assessment_generator.py::
+    (``Trainforge/generators/assessment/generator.py::
     _apply_arm_provider_allowed``) consumes a roster dict keyed by the
     coarse provider/provenance name with a ``license_verdict`` (or
     ``verdict``) field, and refuses any seat whose verdict is ``barred``.

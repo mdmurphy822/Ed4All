@@ -15,14 +15,14 @@ Functions:
     create_essay: Create essay question
 """
 
-from .assessment_generator import (
+from .assessment.generator import (
     BLOOM_LEVELS,
     AssessmentData,
     AssessmentGenerator,
     QuestionData,
     generate_assessment,
 )
-from .question_factory import (
+from .assessment.question_factory import (
     BloomAlignmentError,
     Question,
     QuestionChoice,

@@ -32,7 +32,7 @@ from MCP.tools.pipeline_tools import (
     _safe_assessment_basename,
     _write_assessment_artifacts,
 )
-from Trainforge.generators.assessment_generator import (
+from Trainforge.generators.assessment.generator import (
     AssessmentData,
     QuestionData,
 )

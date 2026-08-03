@@ -74,7 +74,7 @@ logger = logging.getLogger(__name__)
 
 # Assessment-quality overhaul (Phase 2) — item subtypes that legitimately carry
 # more than one correct key on the ``multiple_choice``-typed surface. Mirrors
-# ``Trainforge.generators.assessment_generator`` item_subtype universe; kept as
+# ``Trainforge.generators.assessment.generator`` item_subtype universe; kept as
 # a local constant so the validator never needs the generator at import time.
 _MULTI_KEY_SUBTYPES: frozenset = frozenset({"mc_multiple_response"})
 

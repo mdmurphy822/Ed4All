@@ -53,7 +53,7 @@ from MCP.hardening.gate_input_routing import (  # noqa: E402
     _build_assessment_objective_alignment,
     _build_discussion_assignment_grounding,
 )
-from Trainforge.generators.assessment_generator import (  # noqa: E402
+from Trainforge.generators.assessment.generator import (  # noqa: E402
     AssessmentGenerator,
 )
 

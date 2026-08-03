@@ -80,7 +80,7 @@ def _normalize_question_type(q: Dict[str, Any]) -> str:
 
     W4.B Lesson 1 (pair-schema field-name divergence):
     ``Trainforge/parsers/qti_parser.py:24`` uses ``type:`` while
-    ``Trainforge/generators/assessment_generator.py:101`` uses
+    ``Trainforge/generators/assessment/generator.py:101`` uses
     ``question_type:``. Mirrors W4.B's ``lo_refs`` resolution chain
     (``pair.get("lo_refs") or pair.get("learning_outcome_refs")``).
     Generator surface always emits ``question_type``; QTI surface

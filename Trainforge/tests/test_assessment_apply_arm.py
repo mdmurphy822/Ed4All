@@ -29,13 +29,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.generators.assessment_generator import (  # noqa: E402
+from Trainforge.generators.assessment.generator import (  # noqa: E402
     AssessmentGenerator,
     _apply_arm_enabled,
     _apply_arm_max,
     _apply_arm_provider_allowed,
 )
-from Trainforge.generators.content_extractor import (  # noqa: E402
+from Trainforge.generators.assessment.content_extractor import (  # noqa: E402
     ContentExtractor,
     _numeric_recovery_enabled,
 )
@@ -267,7 +267,7 @@ def test_numeric_recovery_default_off_byte_identical(monkeypatch):
     # And the numeric-FIB builder finds nothing in a plain-text scan chunk.
     gen = AssessmentGenerator(capture=None, check_leaks=False)
     r = gen.build_numeric_fib("Q1", "TO-01", "apply", [_PLAINTEXT_SOLUTION_CHUNK])
-    from Trainforge.generators.assessment_generator import SkippedItem
+    from Trainforge.generators.assessment.generator import SkippedItem
     assert isinstance(r, SkippedItem)
 
 
@@ -280,7 +280,7 @@ def test_numeric_recovery_on_yields_verified_item(monkeypatch):
     assert any("=" in frag for frag, _cid in cands)
     gen = AssessmentGenerator(capture=None, check_leaks=False)
     q = gen.build_numeric_fib("Q1", "TO-01", "apply", [_PLAINTEXT_SOLUTION_CHUNK])
-    from Trainforge.generators.assessment_generator import QuestionData
+    from Trainforge.generators.assessment.generator import QuestionData
     assert isinstance(q, QuestionData)
     assert q.correct_answer == "5"
     assert q.item_subtype == "fib_numeric"

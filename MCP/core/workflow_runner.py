@@ -241,7 +241,7 @@ _CORPUS_GENERALIZATION_ENV_DEFAULTS: Dict[str, str] = {
     # (every flagged string carries a real fused apparatus marker). Contaminated
     # items become SkippedItem so the fill loop draws a replacement — never a
     # padded placeholder. Deterministic, domain-agnostic, selects no LLM
-    # provider/model. See Trainforge/generators/content_extractor.py.
+    # provider/model. See Trainforge/generators/assessment/content_extractor.py.
     "ED4ALL_ASSESSMENT_APPARATUS_STRICT": "true",
     # Prose-only MINING VIEW for assessment_synthesis. The marker guard above
     # is a last-line filter on strings the generator already chose; this stops

@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
-from Trainforge.generators.assessment_generator import (
+from Trainforge.generators.assessment.generator import (
     AssessmentGenerator,
     QuestionData,
     SkippedItem,

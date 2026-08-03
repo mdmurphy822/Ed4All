@@ -40,16 +40,14 @@ _BARE_INTEGER_ONLY = re.compile(r"^\s*\d+\s*$")
 # scaffolding (a "Solution:" / "Check:" label, a "Try It" prompt, an "In the
 # following exercises" banner). These are the generic pedagogy-label vocabulary
 # class used generically, NOT publisher-specific vocabulary, so they stay in
-# code. Publisher-SPECIFIC exercise banners ("Practice Makes Perfect", …) are
-# DATA, loaded from the shared apparatus lexicon by ``_apparatus_banner_re``
-# (owner rule: publisher vocab = data-driven lexicons, never hardcoded).
+# code. Publisher-specific exercise banners are data loaded from the shared
+# apparatus lexicon by ``_apparatus_banner_re`` rather than hardcoded here.
 #
 # ``Show answer`` is one member of a synonym family the same authoring surface
 # emits interchangeably ("Show answer" / "Show solution" / "Show work" /
 # "Show steps"); a colon never accompanies any of them, so a colon-anchored
-# rule cannot see them. Matching the family rather than the single phrase
-# closes the leak that shipped "Show solution The opposite of 7 is -7 …" as a
-# true/false stem. Capitalised ``Show`` is required (the pattern is
+# rule cannot see them. Matching the family keeps these apparatus labels out of
+# assessment stems. Capitalised ``Show`` is required (the pattern is
 # case-SENSITIVE), so mid-sentence prose — "the graph will show solution
 # sets" — is untouched.
 _APPARATUS_RE = re.compile(
@@ -95,8 +93,9 @@ def _apparatus_banner_re() -> "re.Pattern[str]":
 
 
 #: Env flag for the WIDENED generic-apparatus marker set below. Default off →
-#: :func:`_is_apparatus_text` keeps the exact legacy marker set (byte-identical
-#: harvest on every existing corpus). A5 auto-ons it for pipeline runs.
+#: :func:`_is_apparatus_text` keeps the baseline marker set and therefore
+#: preserves flag-off extraction output. Pipeline orchestration enables the
+#: stricter mode explicitly when required.
 _APPARATUS_STRICT_ENV = "ED4ALL_ASSESSMENT_APPARATUS_STRICT"
 
 
@@ -114,8 +113,7 @@ def resolve_apparatus_strict() -> bool:
 # Widened GENERIC apparatus markers (gated by ``_APPARATUS_STRICT_ENV``). Same
 # vocabulary CLASS as ``_APPARATUS_RE`` — pedagogical-label / figure-apparatus
 # scaffolding, never subject words — so these stay in code alongside it;
-# publisher-specific banners remain DATA in the lexicon. Each pattern closes a
-# measured leak on an OCR'd scan corpus where the legacy set matched nothing:
+# publisher-specific banners remain data in the lexicon. The patterns recognize:
 #
 #   * ``Solution`` / ``Check`` WITHOUT the colon the legacy pattern requires —
 #     OCR routinely drops it ("Solution A gray checkmark inside a circle").
@@ -140,9 +138,8 @@ _GLYPH_ALT_TEXT_RE = re.compile(
     r"\b(?:checkmark|check\s*mark|arrow|icon|symbol|bullet|glyph|"
     r"circle|square|triangle|rectangle|box|star)\b"
     r"[\w\s\-,]{0,60}?,\s*"
-    # NB: "showing" is deliberately EXCLUDED — it is common in legitimate
-    # math prose ("a box plot ... showing the median"), so including it
-    # produced measured false positives. Glyph alt-text reliably uses the
+    # "showing" is deliberately excluded because it is common in legitimate
+    # math prose ("a box plot ... showing the median"). Glyph alt-text uses the
     # state-describing participles below.
     r"(?:indicating|representing|denoting|signifying)\b",
     re.IGNORECASE,
@@ -157,13 +154,9 @@ _BARE_STEP_LABEL_RE = re.compile(r"^\s*Step\s+\d+\s*[.:)]?\s*$", re.IGNORECASE)
 
 #: A worked-solution step that LEADS its candidate: the label plus a delimiter
 #: plus the step body ("Step 2: Since -9 is 9 units from 0, |-9| = 9."). The
-#: bare-label pattern above only fires when the label is the WHOLE candidate,
-#: so a sentence-splitter that hands the guard one complete step sentence saw
-#: no marker at all and the step shipped as a true/false statement, as a
-#: fill-in-the-blank context sentence, and as a key TERM. That is the single
-#: most common shape of worked-solution apparatus in both OCR'd source scans
-#: and in generated worked-example prose, so it must be matched wherever it
-#: LEADS the candidate.
+#: bare-label pattern above only fires when the label is the whole candidate;
+#: this prefix form also excludes complete worked-solution step sentences from
+#: true/false statements, fill-in-the-blank contexts, and key terms.
 #:
 #: The trailing delimiter is REQUIRED, which is what keeps ordinary prose
 #: intact: "Step 1 is to isolate the variable" has no ``.``/``:``/``)`` after
@@ -242,10 +235,9 @@ def _is_apparatus_text(text: str) -> bool:
         return False
     # Match against the TAG-STRIPPED text as well. Several widened patterns are
     # ``^``-anchored (leading figure/table caption, glyph alt-text, a bare
-    # "Step N" label), and the assessment emitter wraps choice / answer text in
-    # ``<p>…</p>`` — so on the real emit the anchor never fired and apparatus
-    # shipped anyway. Testing both forms keeps the raw-text behaviour identical
-    # while closing the wrapped case.
+    # "Step N" label), while the assessment emitter wraps choice and answer
+    # text in ``<p>…</p>``. Testing both forms applies the same guard to raw and
+    # rendered text.
     candidates = [t]
     stripped = re.sub(r"<[^>]+>", " ", t).strip()
     if stripped and stripped != t:
@@ -283,13 +275,10 @@ def _has_anaphoric_subject(subject: str) -> bool:
 def _is_apparatus_key_term(term: str, definition: str, context: str) -> bool:
     """True when a key-term candidate is apparatus in ANY of its three parts.
 
-    ``extract_key_terms`` historically screened only the DEFINITION, which let
-    a worked-solution step become the *term* itself. Measured on a real
-    generated course: ``"Step 1: Find the opposite of 7: it"`` /
-    ``"Try It: Determine whether 30"`` / ``"Show answer Yes, 42"`` /
-    ``"Solution"`` all shipped as key terms — and a key term is reused as the
-    fill-in-the-blank ANSWER and as the MCQ stem subject, so the apparatus
-    surfaced on both the question and the answer key.
+    ``extract_key_terms`` screens both the term and its definition because a
+    worked-solution label can otherwise become the term itself. Key terms are
+    reused as fill-in-the-blank answers and multiple-choice stem subjects, so
+    apparatus on any candidate surface would contaminate multiple item types.
 
     Screening all three parts is the same guard applied to the whole
     candidate rather than a third of it. Domain-agnostic: the marker set is
@@ -530,10 +519,9 @@ def _split_sentences(text: str) -> List[str]:
 # Relationship-concept term-likeness guard.
 #
 # ``RELATIONSHIP_PATTERNS`` capture ``([^,.]+?)`` — an arbitrary clause up to
-# the next comma/period — as each "concept". On real prose that grabs a full
-# CLAUSE ("X replicates your data across multiple nodes so that the loss of a
-# single node doesn't") instead of a concept term, and the "relationship
-# between X and Y" stem template then emits word salad. Only mint a
+# the next comma/period — as each "concept". That capture can be a full clause
+# rather than a concept term, which would make the "relationship between X and
+# Y" stem incoherent. Only mint a
 # ConceptRelationship when BOTH captures read as genuine short noun-phrase
 # terms: bounded length/word count, no finite verbs / clause connectives, and
 # passing the canonical fragment-phrase filter from ``lib.ontology``.
@@ -752,7 +740,7 @@ class ContentExtractor:
     # Four of the five patterns are already bounded on the left by
     # ``(?:^|(?<=\.\s))``, a genuine sentence-start anchor, so their ``[A-Z]``
     # is redundant with it and case-insensitivity there costs nothing: it only
-    # admits sentence starts that are lowercase, which real content produces (an
+    # admits lowercase sentence starts produced by OCR or flattened glossaries (an
     # OCR'd line, a flattened glossary key — "denominator The denominator is the
     # number below the fraction bar"). Those stay tolerant.
     #

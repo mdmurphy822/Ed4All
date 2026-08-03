@@ -5,7 +5,7 @@ only — a user reviewing it couldn't see WHICH question was broken, just
 an aggregate score. Wave 26 grafts an ``assessments`` dimension onto the
 report that surfaces per-question issues.
 
-See :func:`Trainforge.generators.assessment_quality_report.build_assessment_dimension`.
+See :func:`Trainforge.generators.assessment.quality_report.build_assessment_dimension`.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.generators.assessment_quality_report import (  # noqa: E402
+from Trainforge.generators.assessment.quality_report import (  # noqa: E402
     build_assessment_dimension,
 )
 

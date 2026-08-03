@@ -11,7 +11,7 @@ Predecessors landing:
   (:data:`_PER_QUESTION_TYPE_THRESHOLDS`,
   :func:`_normalize_question_type`, per-bucket diversity sub-checks
   emitting type-suffixed warnings like ``LOW_STEM_DIVERSITY_ESSAY``).
-* W6.B — :func:`Trainforge.generators.assessment_quality_report.
+* W6.B — :func:`Trainforge.generators.assessment.quality_report.
   build_assessment_dimension` emits the ``per_question_type_summary``
   bucket dict and stamps each ``per_question_issues[]`` entry with
   ``question_type``.
@@ -449,7 +449,7 @@ def test_per_question_type_summary_in_quality_report() -> None:
         ``distinct_correct_answer_ratio``).
       * the ``per_question_issues[]`` per-entry ``question_type`` stamp.
     """
-    from Trainforge.generators.assessment_quality_report import (
+    from Trainforge.generators.assessment.quality_report import (
         build_assessment_dimension,
     )
 

@@ -13,7 +13,7 @@ edge::
 Federation-by-convention: ``source`` is a misconception ID
 (``mc_[0-9a-f]{16}``); ``target`` is a question ID (e.g. ``MCQ-<8hex>``,
 ``MRQ-<8hex>``, ``TF-<8hex>``, ``FIB-<8hex>`` per
-``Trainforge/generators/question_factory.py``, or the deterministic
+``Trainforge/generators/assessment/question_factory.py``, or the deterministic
 ``q_<chunk_id>_<lo_ref>`` form per
 ``process_course.py::_build_questions_for_graph``). No new node types
 are added to the concept-graph schema.

@@ -7,7 +7,7 @@ externally-registered ``generate_assessments`` tool got placeholder
 output.
 
 Wave 26 fix: the tool dispatches through
-:class:`Trainforge.generators.assessment_generator.AssessmentGenerator`,
+:class:`Trainforge.generators.assessment.generator.AssessmentGenerator`,
 the same generator the internal pipeline uses. On generator error the
 tool returns a structured error — never placeholder success.
 """
@@ -96,11 +96,11 @@ def test_dispatches_through_assessment_generator(generate_assessments_tool, tmp_
     imscc_path = _build_imscc(tmp_path)
 
     with patch(
-        "Trainforge.generators.assessment_generator.AssessmentGenerator.generate",
+        "Trainforge.generators.assessment.generator.AssessmentGenerator.generate",
         wraps=None,
     ) as mock_gen:
         # Return a minimal AssessmentData-shaped object.
-        from Trainforge.generators.assessment_generator import (
+        from Trainforge.generators.assessment.generator import (
             AssessmentData,
             QuestionData,
         )

@@ -248,7 +248,7 @@ def test_qti_field_normalization() -> None:
     W4.B Lesson 1 defense: pair-schema field-name divergence (lo_refs
     vs learning_outcome_refs) was caught in flight on Wave 4. Same
     class of risk applies here — ``Trainforge/parsers/qti_parser.py:24``
-    uses ``type:`` while ``Trainforge/generators/assessment_generator.py:101``
+    uses ``type:`` while ``Trainforge/generators/assessment/generator.py:101``
     uses ``question_type:``. Day-1 only generator-emit reaches this
     validator; this helper is defense-in-depth against a future call
     site that routes QTI-parsed dicts directly.

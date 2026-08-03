@@ -31,7 +31,7 @@ All fixtures are inline.
 
 import pytest
 
-from Trainforge.generators.content_extractor import (
+from Trainforge.generators.assessment.content_extractor import (
     ContentExtractor,
     _is_definitional_subject,
 )

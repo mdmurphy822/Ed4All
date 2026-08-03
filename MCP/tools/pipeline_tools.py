@@ -727,7 +727,7 @@ def _harvest_questions_from_imscc(
     import xml.etree.ElementTree as _ET  # noqa: PLC0415
     import zipfile as _zipfile  # noqa: PLC0415
 
-    from Trainforge.generators.assessment_generator import (  # noqa: PLC0415
+    from Trainforge.generators.assessment.generator import (  # noqa: PLC0415
         QuestionData,
     )
     from Trainforge.parsers.qti_parser import QTIParser  # noqa: PLC0415
@@ -27189,7 +27189,7 @@ def _build_tool_registry() -> dict:
             # shape. Decision capture via create_trainforge_capture
             # writes the rationale stream.
             try:
-                from Trainforge.generators.assessment_generator import AssessmentGenerator
+                from Trainforge.generators.assessment.generator import AssessmentGenerator
             except Exception as e:
                 logger.error(
                     "generate_assessments: FAILING LOUD — "
@@ -27262,7 +27262,7 @@ def _build_tool_registry() -> dict:
                         ),
                         "chunks_path": str(chunks_path),
                     })
-                from Trainforge.generators.assessment_generator import (  # noqa: PLC0415,E501
+                from Trainforge.generators.assessment.generator import (  # noqa: PLC0415,E501
                     AssessmentData as _AssessmentData,
                 )
                 assessment = _AssessmentData(
@@ -27367,7 +27367,7 @@ def _build_tool_registry() -> dict:
             # re-running validators. Best-effort: on any error we preserve
             # the existing quality report unchanged.
             try:
-                from Trainforge.generators.assessment_quality_report import (
+                from Trainforge.generators.assessment.quality_report import (
                     build_assessment_dimension,
                 )
                 qr_path = trainforge_dir / "quality" / "quality_report.json"
@@ -32886,7 +32886,7 @@ def _build_tool_registry() -> dict:
         # 1. OBJECTIVE QUIZ ITEMS — reuse AssessmentGenerator per TO.     #
         # ============================================================== #
         try:
-            from Trainforge.generators.assessment_generator import (
+            from Trainforge.generators.assessment.generator import (
                 AssessmentGenerator,
             )
         except Exception as exc:

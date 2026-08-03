@@ -450,7 +450,7 @@ def test_absent_fields_render_explicitly_absent():
 # 8. Accepts QuestionData dataclass instances
 # --------------------------------------------------------------------------- #
 def test_accepts_questiondata_dataclass_instances():
-    from Trainforge.generators.assessment_generator import (
+    from Trainforge.generators.assessment.generator import (
         AssessmentData, QuestionData,
     )
     q = QuestionData(

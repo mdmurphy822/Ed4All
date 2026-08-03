@@ -2,7 +2,7 @@
 
 GPT Feedback v2 Wave 2 net-new validator that closes the regression
 loop on the padded-distractor bug killed at the source in
-``Trainforge/generators/assessment_generator.py``. The pre-W2.D path
+``Trainforge/generators/assessment/generator.py``. The pre-W2.D path
 emitted a literal ``f"A concept unrelated to {target.term} in this
 context"`` template string into the choices[] when the
 misconception/distractor synthesis exhausted plausible options. The
@@ -60,7 +60,7 @@ rationale). Decision-type enum entry was added in Wave 1 (commit
 ``d6e19a1`` per the plan handoff).
 
 References:
-    - ``Trainforge/generators/assessment_generator.py`` — Part A site
+    - ``Trainforge/generators/assessment/generator.py`` — Part A site
       where the padded-fallback was killed (``_generate_multiple_choice``).
     - ``lib/validators/distractor_structural.py`` — sibling W2.C
       validator; this module mirrors its Block import bridge,

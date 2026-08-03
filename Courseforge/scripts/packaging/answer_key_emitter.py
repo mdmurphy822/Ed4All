@@ -16,7 +16,7 @@ Two products, written side-by-side into ``<export>/06_assessments/``:
 
 **Grounding contract (anti-fabrication).** This module NEVER invents content.
 It reshapes ONLY what the generator emitted on each ``QuestionData`` (read via
-``Trainforge/generators/assessment_generator.py``): the correct answer(s), the
+``Trainforge/generators/assessment/generator.py``): the correct answer(s), the
 authored ``feedback`` (rendered as the worked-solution step body), the
 per-distractor ``misconception_note`` on ``choices[]``, and the stamped
 ``source_chunks``. A field the generator did not populate renders as *explicitly

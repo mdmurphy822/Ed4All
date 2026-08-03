@@ -1,7 +1,7 @@
 """GPT Feedback v2 Wave 1 / W1.A — QuestionData observed_bloom round-trip tests.
 
 Pins three contracts on
-``Trainforge/generators/assessment_generator.py::QuestionData``:
+``Trainforge/generators/assessment/generator.py::QuestionData``:
 
   1. The two new fields (``observed_bloom_level``, ``bloom_alignment``)
      default to ``None`` when not supplied — legacy constructor calls
@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from Trainforge.generators.assessment_generator import QuestionData
+from Trainforge.generators.assessment.generator import QuestionData
 
 
 def _legacy_question(**overrides) -> QuestionData:

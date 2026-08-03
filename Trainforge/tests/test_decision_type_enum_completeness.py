@@ -61,7 +61,7 @@ def _scrape_decision_types(source: Path) -> set:
 # ---------------------------------------------------------------------------
 
 _EMIT_SITES = [
-    PROJECT_ROOT / "Trainforge" / "generators" / "assessment_generator.py",
+    PROJECT_ROOT / "Trainforge" / "generators" / "assessment" / "generator.py",
     PROJECT_ROOT / "Trainforge" / "process_course.py",
     # The ``content_selection`` emit lives in the pipeline-tool boundary.
     PROJECT_ROOT / "MCP" / "tools" / "pipeline_tools.py",

@@ -388,7 +388,7 @@ def test_assignment_without_points_omits_gradable():
 # Dataclass input (to_dict) path
 # ---------------------------------------------------------------------------
 def test_accepts_dataclass_to_dict_input():
-    from Trainforge.generators.assessment_generator import AssessmentData, QuestionData
+    from Trainforge.generators.assessment.generator import AssessmentData, QuestionData
 
     q = QuestionData(
         question_id="q-dc-001",

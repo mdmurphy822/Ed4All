@@ -411,7 +411,7 @@ def test_4_padded_distractor_fallback_eliminated() -> None:
     """
     import re
 
-    from Trainforge.generators.assessment_generator import (
+    from Trainforge.generators.assessment.generator import (
         AssessmentGenerator,
         SkippedItem,
     )
@@ -468,7 +468,7 @@ def test_4_padded_distractor_fallback_eliminated() -> None:
     assert not pad_hits, (
         "Pre-W2.D padded-distractor template re-introduced into "
         f"AssessmentGenerator output: {pad_hits!r}. The W2.D fix at "
-        "Trainforge/generators/assessment_generator.py "
+        "Trainforge/generators/assessment/generator.py "
         "(``_generate_multiple_choice``) MUST short-circuit to a "
         "SkippedItem when fewer than 3 plausible distractors resolve."
     )
@@ -701,12 +701,13 @@ def test_5_per_pair_promotion_drop_is_visible() -> None:
         f"Test design bug: expected 10 bad pairs; got {len(bad_pairs)}"
     )
 
-    # Two validator instances: the default ensemble agrees on "remember" (so
-    # no Bloom rejection), while the second is wired with a "create"
-    # classifier so the low_bloom_alignment pair actually fires.
+    # The primary validator pins the contract's 0.40 confidence floor so its
+    # "remember" observation rejects the fixture's declared "create" level.
+    # The second validator provides the inverse-order negative control.
     default_validator = TrainingPairPromotionValidator(
         embedder=_StubEmbedder(),
         bloom_classifier=_StubBloomEnsemble(level="remember", score=0.85),
+        bloom_alignment_min_confidence=0.40,
     )
     # A "create"-winning ensemble: kept as the NEGATIVE control for the
     # low_bloom_alignment fixture below.  The criterion fires on
@@ -733,8 +734,8 @@ def test_5_per_pair_promotion_drop_is_visible() -> None:
     )
 
     for pair, kind, expected_reason in bad_pairs:
-        # Every case now runs the default validator; the "create"-winning
-        # ensemble is exercised by the negative control above instead.
+        # Every rejection fixture uses the pinned contract validator; the
+        # "create" observation is exercised only by the negative control.
         v = default_validator
         status, reason, _new_fields = v.validate_pair(
             pair, kind=kind, chunk=chunk, decision_capture=capture

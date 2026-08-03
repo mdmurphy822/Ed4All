@@ -339,9 +339,11 @@ risk. Completed items are marked below.
    violation, abstention, and schema-translation programs now live under
    `deterministic/`; these internal modules had no package export, CLI,
    dynamic-dispatch, or external compatibility obligation, and all tracked
-   callers use the canonical paths. The exact loose-module cap is now 12.
-   The remaining assessment orchestration family is a candidate for a later
-   bounded move.
+   callers use the canonical paths. Assessment source extraction, question
+   construction, generation orchestration, and quality reporting now live
+   under `assessment/`. The documented generator and question-factory imports
+   retain identity-preserving aliases; the internal extractor and report moved
+   without aliases. The exact loose-module cap is now 10.
 8. **`LibV2/tools/libv2/` — IN PROGRESS.** Evaluation implementations live
    under `evaluation/`, with three documented compatibility modules retained
    at the package root through their deprecation window. Cross-package concept

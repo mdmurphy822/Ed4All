@@ -1,7 +1,7 @@
 """W7.3 — SynthesizedQuizDistractorValidator (assessment_synthesis phase).
 
 The W10 ``assessment_synthesis`` phase synthesizes learner-facing QTI quizzes
-via ``Trainforge.generators.assessment_generator.AssessmentGenerator`` and emits
+via ``Trainforge.generators.assessment.generator.AssessmentGenerator`` and emits
 them as QTI 1.2 XML into ``<export>/06_assessments/``. Those synthesized MCQ
 items are gated for QTI well-formedness (``qti_well_formed``) and objective
 grounding (``assessment_objective_alignment``), but their DISTRACTORS bypass

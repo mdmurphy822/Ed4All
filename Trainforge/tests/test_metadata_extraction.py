@@ -11,7 +11,7 @@ Verifies:
 """
 
 
-from Trainforge.generators.content_extractor import ContentExtractor
+from Trainforge.generators.assessment.content_extractor import ContentExtractor
 from Trainforge.parsers.html_content_parser import (
     HTMLContentParser,
 )

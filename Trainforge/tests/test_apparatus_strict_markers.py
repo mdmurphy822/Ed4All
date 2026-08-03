@@ -1,7 +1,7 @@
 """Regression net for the widened GENERIC apparatus marker set.
 
 Covers ``ED4ALL_ASSESSMENT_APPARATUS_STRICT`` in
-``Trainforge/generators/content_extractor.py``. The legacy marker set requires
+``Trainforge/generators/assessment/content_extractor.py``. The legacy marker set requires
 a colon (``Solution:``), which an OCR'd scan lane routinely drops, so figure
 captions, all-caps HOW-TO banners and glyph alt-text leaked into assessment
 distractors AND correct answers.
@@ -17,7 +17,7 @@ Two contracts are pinned here:
 
 import pytest
 
-from Trainforge.generators.content_extractor import (
+from Trainforge.generators.assessment.content_extractor import (
     _is_apparatus_text,
     resolve_apparatus_strict,
 )

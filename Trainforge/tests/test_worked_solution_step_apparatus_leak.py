@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import pytest
 
-from Trainforge.generators.content_extractor import (
+from Trainforge.generators.assessment.content_extractor import (
     ContentExtractor,
     _is_apparatus_text,
 )
@@ -325,7 +325,7 @@ def test_callout_and_lo_rules_are_off_without_the_strict_flag(monkeypatch) -> No
 # --------------------------------------------------------------------------- #
 
 def test_anaphoric_subject_detection() -> None:
-    from Trainforge.generators.content_extractor import _has_anaphoric_subject
+    from Trainforge.generators.assessment.content_extractor import _has_anaphoric_subject
 
     for bare in ("This", "That", "It", "They", "There", "one", "Such"):
         assert _has_anaphoric_subject(bare) is True, bare

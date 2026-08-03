@@ -38,7 +38,7 @@ def test_provider_verdict_roster_shape_for_apply_arm():
 def test_provider_verdict_roster_integrates_with_apply_arm_guard():
     """SFT-C flow-down: the roster shape feeds the assessment apply-arm license
     guard, which refuses a barred teacher and admits a safe one."""
-    from Trainforge.generators.assessment_generator import (
+    from Trainforge.generators.assessment.generator import (
         _apply_arm_provider_allowed,
     )
 

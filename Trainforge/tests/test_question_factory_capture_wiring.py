@@ -1,7 +1,7 @@
 """Wave W-D1 T1.5 — ``QuestionFactory`` capture-wiring regression test.
 
 Pins one ``question_creation`` event per ``create_*`` call (six call
-sites at ``Trainforge/generators/question_factory.py:158-413``) plus
+sites at ``Trainforge/generators/assessment/question_factory.py:158-413``) plus
 the ``bloom_alignment_rejection`` event emitted by
 ``validate_bloom_alignment`` at
 ``question_factory.py:455-460`` when a question type doesn't match its
@@ -36,7 +36,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.generators.question_factory import QuestionFactory  # noqa: E402
+from Trainforge.generators.assessment.question_factory import QuestionFactory  # noqa: E402
 
 
 # T1.5 stub — see plan §2 "Shared test-stub helpers". The
