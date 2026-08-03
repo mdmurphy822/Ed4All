@@ -1,13 +1,14 @@
 <div align="center">
 
 <pre align="center">
-╭───────────────────────────────╮
-│ █     █████ ████  █   █  ███  │
-│ █       █   █   █ █   █ █   █ │
-│ █       █   ████  █   █    █  │
-│ █       █   █   █  █ █    █   │
-│ █████ █████ ████    █   █████ │
-╰───────────────────────────────╯
+╭────────────────────────────────────────────╮
+│  ██╗      ██╗ ██████╗  ██╗   ██╗ ██████╗   │
+│  ██║      ██║ ██╔══██╗ ██║   ██║ ╚════██╗  │
+│  ██║      ██║ ██████╔╝ ██║   ██║  █████╔╝  │
+│  ██║      ██║ ██╔══██╗ ╚██╗ ██╔╝ ██╔═══╝   │
+│  ███████╗ ██║ ██████╔╝  ╚████╔╝  ███████╗  │
+│  ╚══════╝ ╚═╝ ╚═════╝    ╚═══╝   ╚══════╝  │
+╰────────────────────────────────────────────╯
 </pre>
 
 # LibV2
@@ -158,6 +159,7 @@ backup, migration, and index consistency checks remain in the loop.
 ## Documentation
 
 - [LibV2 operating contract and command reference](CLAUDE.md)
+- [LibV2 architecture](architecture.md)
 - [Retrieval and serving architecture](../docs/architecture/retrieval-and-serving.md)
 - [Library versioning and migration](../docs/operations/library-versioning.md)
 - [Installation and local dependencies](../docs/operations/installation.md)
