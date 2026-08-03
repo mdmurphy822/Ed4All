@@ -9,6 +9,5 @@ Qwen base model and never co-tenant on the 8 GB GPU:
     gap_fill   : per-GapSlot completion (Stage 9b consumer)
 
 Every specialist invocation goes through `AdapterSwap`, which enforces
-**serial** entry. Two simultaneous swaps poison the CUDA context on the
-3060 — see feedback_qwen_build_serial.md.
+**serial** entry so model contexts never overlap accelerator residency.
 """

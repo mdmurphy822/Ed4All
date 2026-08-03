@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Plan 12 — the remaining GPU queue, serialized (Plan 12 D1 / C1 / D3).
+# Serialized specialist-training queue.
 #
-# USER-LAUNCHED ONLY. The 3070 is shared with other projects; this script
+# USER-LAUNCHED ONLY. This script requires exclusive accelerator access and
 # refuses to start while anything else holds the device, and each stage's
 # own training-lock guard re-checks. Run it when the GPU is yours:
 #

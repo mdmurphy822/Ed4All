@@ -2,11 +2,10 @@
 
 Two interlocked guards, both hard:
 
-    1. ``nvidia-smi`` poll — refuse to start if any python process
-       (other than ours) is currently using GPU memory. The 8 GB 3060
-       is too small to co-tenant; a second trainer poisons the CUDA
-       allocator and both jobs OOM-loop without surfacing a clean
-       error. The poll is two-stage:
+    1. ``nvidia-smi`` poll — refuse to start if any Python process
+       (other than ours) is currently using accelerator memory. Concurrent
+       trainers can exhaust the allocator and enter an OOM loop without a
+       clean failure. The poll is two-stage:
          a. List PIDs touching the GPU.
          b. Filter out our own PID (so the test harness can call this
             from inside a process that itself owns GPU memory — useful
@@ -21,8 +20,8 @@ Two interlocked guards, both hard:
 Why both: the GPU poll catches "another job started before we did";
 the flock catches "another job started in the same second as we did,
 and nvidia-smi hasn't seen its allocation yet." Together they are
-sufficient for the local 3060 setup. On a multi-GPU box this would be
-replaced with a real scheduler.
+sufficient for this single-job guard. Multi-device scheduling remains the
+operator's responsibility.
 """
 from __future__ import annotations
 

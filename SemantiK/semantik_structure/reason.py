@@ -107,8 +107,8 @@ def load_reasoner(base_model: str = QWEN_DEFAULT_MODEL,
     explicitly so call sites can override (e.g., to test against a
     different base).
 
-    `quantize_4bit` — keep on for the 3060 8GB. Turn off only for
-    post-training adapter merges that need fp16/bf16 weights.
+    `quantize_4bit` bounds model residency during inference. Turn it off only
+    for post-training adapter merges that require fp16/bf16 weights.
     """
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig

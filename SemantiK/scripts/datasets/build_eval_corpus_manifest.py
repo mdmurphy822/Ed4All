@@ -87,8 +87,7 @@ DEFAULT_SUBJECTS = (
 DEFAULT_PER_SUBJECT = 4
 DEFAULT_N_WIKIPEDIA = 5
 DEFAULT_N_OPENSTAX = 5
-# Skip pathological inputs: at ~15-40 min/PDF on the 3070 a 100MB scan-like
-# PDF would blow the wall-clock budget for the whole run.
+# Skip scan-heavy inputs that would dominate the evaluation run's wall time.
 DEFAULT_MAX_PDF_MB = 20
 
 # Planned-but-absent sources (Plan 12 C2 / data-expansion plan). Recorded in

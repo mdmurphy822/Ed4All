@@ -139,8 +139,8 @@ training = [
     # Wave 101: optional generic-benchmark sanity floor via the
     # EleutherAI lm-evaluation-harness. Wired through
     # ``Trainforge/eval/lm_eval_wrapper.py``; gated at runtime by
-    # ``LM_EVAL_ENABLED=true`` because a 3-task sweep adds ~5 min on
-    # an RTX 3070. The wrapper handles missing-package gracefully so
+    # ``LM_EVAL_ENABLED=true`` because the multi-task sweep is intentionally
+    # opt-in. The wrapper handles missing-package gracefully, so
     # this pin is only required when LM_EVAL_ENABLED is set.
     "lm-eval>=0.4.0,<1.0.0",
 ]
@@ -203,7 +203,7 @@ full = ["ed4all[server,dev,gui]"]
 # ``pip install -e '.[semantik]'`` into a venv that already has the ML
 # stack. Two deps are HANDLED OUT-OF-BAND (not listed here):
 #   1. llama-cpp-python — needs a CUDA *source* build, NOT the CPU wheel:
-#        CMAKE_ARGS="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=86" \
+#        CMAKE_ARGS="-DGGML_CUDA=on" \
 #          pip install --no-binary llama-cpp-python llama-cpp-python
 #      (Stage-6 specialists can alternatively use the NVIDIA endpoint via
 #      SEMANTIK_SPECIALIST_PROVIDER=nvidia, so local llama is optional for

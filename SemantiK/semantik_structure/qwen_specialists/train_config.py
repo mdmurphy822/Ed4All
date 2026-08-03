@@ -70,14 +70,10 @@ ADAPTER_CONFIGS: dict[str, AdapterTrainConfig] = {
         total_step_cap=30000,
     ),
     "table": AdapterTrainConfig(
-        # max_len 2048 (was 1024): the multi-source table set is ~2× longer
-        # than prose/math — the prompt carries the full cell_grid AND the
-        # target repeats every cell (p50≈2135 tok; 1024 kept only 17% of
-        # tables). See Plans/06 §4. VRAM-heavier on the 8GB 3070; the dry-run
-        # at step 0 will OOM *loudly* if 2048 doesn't fit (the fallback ladder
-        # is unused — no silent downgrade to 1024). lora_r kept at 8 for VRAM
-        # headroom at 2048; revisit r=16 if it fits. total_step_cap 1500 ≥ the
-        # ~1,300 steps that 3 epochs over ~3.46K train rows needs.
+        # Table prompts carry the complete cell grid and targets repeat every
+        # cell, so they require the 2048-token window. The dry-run fails loudly
+        # if that window does not fit; there is no silent downgrade. Rank 8
+        # preserves memory headroom for the longer sequence.
         max_len=2048,
         epochs=3,
         grad_accum=8,

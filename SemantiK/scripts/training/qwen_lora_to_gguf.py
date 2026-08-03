@@ -129,7 +129,7 @@ def main() -> int:
     ap.add_argument("--out", required=True, type=Path,
                     help="Final quantized GGUF path.")
     ap.add_argument("--quant", default="Q4_K_M",
-                    help="llama-quantize type. Q4_K_M is the 3060-friendly default.")
+                    help="llama-quantize type. Q4_K_M balances quality and memory use.")
     ap.add_argument("--base-model", default="Qwen/Qwen3-4B-Instruct-2507")
     ap.add_argument("--keep-merged", action="store_true",
                     help="Don't delete the intermediate fp16 HF dir.")

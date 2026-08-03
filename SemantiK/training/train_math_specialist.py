@@ -4,9 +4,8 @@ Two heads:
     * math_type      ∈ {inline, display, numbered, multiline, matrix}    (5)
     * eq_num_assoc   ∈ {none, attached_left, attached_right, separate}   (4)
 
-Hardware budget: RTX 3060 8 GB. The base encoder is loaded in bf16; LoRA
-matrices are r=16, alpha=32, targeting attention modules (DeBERTa
-convention). Total trainable parameters end up well under 5 M.
+The base encoder uses bf16 while rank-16 LoRA adapters target the attention
+modules, keeping the trainable parameter set compact.
 
 Mirrors the structure of ``train_classifier.py`` (custom Trainer with
 class-weighted CE + WeightedRandomSampler oversample) but replaces the

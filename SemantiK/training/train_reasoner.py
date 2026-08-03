@@ -7,7 +7,7 @@ Output: a LoRA adapter under <output-dir>/final that can be loaded via
 reason.load_reasoner(path) once adapter-loading support is wired in.
 
 Design notes:
-  - 4-bit NF4 quant to fit the 3060 8GB. LoRA on q/k/v/o projections.
+  - 4-bit NF4 quantization bounds model residency; LoRA targets q/k/v/o.
   - completion_only_loss=True so loss is computed only over the
     assistant tokens (the JSON array), not the system prompt or the
     user's block dump.
@@ -66,9 +66,8 @@ def main() -> None:
                     help="Cap training set to N rows after shuffle. Useful "
                          "for time-boxing a local run.")
     ap.add_argument("--eval-size", type=int, default=200,
-                    help="Cap eval set to this many rows (shuffled). Full val "
-                         "set is ~1300 rows and costs ~2s each on 3070 — "
-                         "capping keeps total wall-time reasonable.")
+                    help="Cap the shuffled evaluation set so validation does "
+                         "not dominate total wall time.")
     ap.add_argument("--smoke", action="store_true",
                     help="Smoke mode: cap steps, skip eval, log more often")
     args = ap.parse_args()
@@ -123,9 +122,7 @@ def main() -> None:
         ds["train"] = ds["train"].shuffle(seed=args.seed).select(
             range(min(args.subsample_train, len(ds["train"])))
         )
-    # Cap eval size — on a 3070 each val example costs ~2s, so a full
-    # 1336-row val set would dominate total wall-time. 200 is plenty for
-    # a loss signal.
+    # Bound evaluation cost while retaining enough examples for a loss signal.
     if "val" in ds and len(ds["val"]) > args.eval_size:
         ds["val"] = ds["val"].shuffle(seed=args.seed).select(range(args.eval_size))
     print(f"  splits: {list(ds.keys())}")

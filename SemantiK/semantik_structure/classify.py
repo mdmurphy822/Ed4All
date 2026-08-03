@@ -185,9 +185,8 @@ def classify_blocks(features: list[FeatureBlock],
     (stage 3b) depends on every block having a real DistilBERT hint.
     Rules are only consulted as a fallback when no model is loaded.
 
-    Batching matters: on a 37K-block paper, single-block inference
-    takes 30+ minutes; batched inference at batch_size=64 is well under
-    a minute on a 3070.
+    Batching amortizes model overhead across large block collections and is
+    required for practical document-scale inference.
     """
     if model is not None:
         return _model_classify_batched(model, features, batch_size=batch_size)

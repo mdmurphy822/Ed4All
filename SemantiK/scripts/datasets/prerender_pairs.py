@@ -6,8 +6,8 @@ cache path (see semantik_structure.prerender_cache) and render the
 the cache, so the script is idempotent and safely resumable.
 
 Parallelized across N worker processes; each worker owns its own
-HtmlValidator (Chromium) instance. 4-8 workers saturates a 3060-era
-CPU without thrashing.
+HtmlValidator (Chromium) instance. Keep the worker count bounded to balance
+rendering throughput against browser-process memory pressure.
 
 Usage:
     python scripts/datasets/prerender_pairs.py                   # default: 4 workers

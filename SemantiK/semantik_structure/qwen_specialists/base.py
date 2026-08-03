@@ -1,8 +1,8 @@
 """AdapterSwap — serial-only Qwen LoRA adapter context manager.
 
-The 3060 has 8 GB of VRAM. Loading two Qwen LoRA adapter contexts at the
-same time poisons the CUDA allocator and the second adapter silently
-emits garbage tokens — see feedback_qwen_build_serial.md.
+Loading two Qwen LoRA adapter contexts concurrently can exhaust or fragment
+accelerator memory and corrupt generation. Adapter residency is therefore
+strictly serialized.
 
 `AdapterSwap` is a process-level mutex over adapter loading. It is NOT
 re-entrant: nested entry (whether by the same instance or two distinct

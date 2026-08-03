@@ -37,8 +37,8 @@ def load_glm_ocr(model_path: str = GLM_OCR_DEFAULT,
                  *, quantize_4bit: bool = False) -> dict:
     """Load GLM-OCR. Returns {'processor', 'model'}.
 
-    `quantize_4bit` — the model is small enough (0.9B) that fp16 fits the
-    3070 8GB easily. Enable only if co-loading with Qwen reasoner.
+    `quantize_4bit` reduces memory pressure when co-loading the Qwen reasoner;
+    standalone GLM-OCR normally uses fp16.
     """
     import torch
     from transformers import AutoModelForImageTextToText, AutoProcessor

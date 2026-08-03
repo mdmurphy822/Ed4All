@@ -208,7 +208,7 @@ playwright install chromium
 
 # 3. llama-cpp-python for the LOCAL Stage-6 GGUF specialists — a CUDA
 #    *source* build, NOT the CPU wheel:
-CMAKE_ARGS="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=86" \
+CMAKE_ARGS="-DGGML_CUDA=on" \
   pip install --no-binary llama-cpp-python llama-cpp-python
 ```
 

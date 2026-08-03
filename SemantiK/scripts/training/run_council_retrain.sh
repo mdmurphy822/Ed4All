@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Plan 15 — council retrain queue (OpenStax + legal), serialized & gated.
+# Serialized and gated specialist retraining queue.
 #
-# USER-LAUNCHED ONLY. The 3070 is shared; this refuses to start while another
-# process holds the device. Every stage is a single CUDA context — NEVER run a
+# USER-LAUNCHED ONLY. This refuses to start while another process holds the
+# accelerator. Every stage is a single CUDA context — never run a
 # second one (no pytest, no build_qwen) while this is running
 # (feedback_train_cuda_context_guard). Launch when the GPU is yours:
 #

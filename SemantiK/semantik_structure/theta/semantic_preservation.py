@@ -193,8 +193,7 @@ PROSE_KINDS = frozenset({"paragraph", "list", "blockquote"})
 #: under the 512-token encoder limit (training MAX_REGION_TOKENS was 450).
 MAX_GROUP_WORDS = 300
 
-#: Cross-encoder forward batch size. Calibrated for the 8GB RTX 3060 with
-#: max_length=512 — DeBERTa-v3-small + LoRA fits 64 in well under 4GB.
+#: Bounded cross-encoder forward batch size for max_length=512.
 BATCH_SIZE = 64
 
 #: max_length passed to the tokenizer (truncation="longest_first").

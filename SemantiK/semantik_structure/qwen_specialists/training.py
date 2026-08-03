@@ -23,9 +23,8 @@ acceptance gates):
       val_loss > train_loss + 0.5 for 3 consecutive evals trips an
       EarlyStop exception and writes a ``divergence.json`` flag.
 
-On-demand checkpointing — drop a sentinel file into ``out_dir`` to
-force a save off the ``save_steps`` cadence (handled within one
-optimizer step, ~6s on the 3060):
+On-demand checkpointing uses sentinel files in ``out_dir`` to request a save
+at the next optimizer-step boundary:
 
     touch <out_dir>/.checkpoint_now       # save, then keep training
     touch <out_dir>/.checkpoint_and_stop  # save, then stop gracefully

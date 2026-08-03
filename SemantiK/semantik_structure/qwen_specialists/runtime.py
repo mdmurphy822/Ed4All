@@ -14,10 +14,10 @@ The factory ``make_runtime("mock"|"real")`` is the single entry point
 the runner uses; it stays in this module so callers don't import the
 backend names directly.
 
-Why llama-cpp-python and not transformers + bnb-NF4? See architecture.md
-§4.1 — Q4_K_M / Q5_K_M GGUFs leave more headroom on the 8 GB 3060 with
-Chromium + axe-core concurrently, and per-token latency is lower for
-batched generation. Council BERTs stay on transformers + PEFT.
+The llama.cpp backend uses Q4_K_M / Q5_K_M GGUFs to preserve accelerator
+headroom while Chromium and axe-core run concurrently and to support efficient
+batched generation. Other transformer components remain isolated from this
+runtime.
 
 Real-mode contract
 ------------------
@@ -609,8 +609,8 @@ class LlamaCppRuntime:
         # 960 (1024 offline), so the 512 default truncates long display /
         # numbered / multiline equations the eval scored as complete (the
         # eval ran via llama-server with a larger context). 4096 holds the
-        # region prompt + the largest configured generation with headroom;
-        # KV cache at this ctx is a few hundred MB on the 8GB 3070.
+        # region prompt + the largest configured generation with headroom while
+        # keeping the KV-cache allocation bounded.
         self._handle = Llama(
             model_path=str(gguf_path),
             n_gpu_layers=-1,

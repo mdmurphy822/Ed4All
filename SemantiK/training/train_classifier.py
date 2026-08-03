@@ -5,8 +5,7 @@ Task: multi-class text classification.
     output: one of 21 Role labels
 
 Base: distilbert-base-uncased (66M params, Apache 2.0).
-Fits comfortably on the 3070 8GB in fp32 — no QLoRA needed. Training on
-~61K examples for 3 epochs takes ~10-15 min.
+The compact encoder trains directly in fp32; QLoRA is unnecessary.
 
 Usage:
     python train_classifier.py
