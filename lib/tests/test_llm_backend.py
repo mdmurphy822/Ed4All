@@ -772,8 +772,8 @@ class TestProviderRegistry:
             monkeypatch.delenv(k, raising=False)
 
         backend = resolve_openai_compatible_backend("local")
-        assert backend.base_url == "http://localhost:11434/v1"
-        assert backend.default_model == "qwen2.5:7b-instruct-q4_K_M"
+        assert backend.base_url == "http://localhost:8000/v1"
+        assert backend.default_model == "nemotron-3-nano-30b-a3b"
         # Local-style providers ship a placeholder so reverse-proxy
         # auth-checking servers see a stable string.
         assert backend.api_key == "local"
