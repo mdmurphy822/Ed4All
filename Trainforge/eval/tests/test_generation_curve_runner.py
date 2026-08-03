@@ -1,4 +1,4 @@
-"""Tests for the W5 C0..C5 generation-quality curve runner (§5 case 10).
+"""Tests for the C0..C5 generation-quality technique-curve runner.
 
 Runs the curve on a fake ``eval_fn`` whose candidate quality improves per mode
 (C0 worst → C5 best) and asserts the per-arm ``block_prose_grounding_rate`` is
@@ -22,7 +22,6 @@ from Trainforge.eval.runners.generation_curve_runner import (  # noqa: E402
     DEFAULT_MODES,
     run_generation_curve,
 )
-
 
 # Monotone grounding per mode (C0 worst → C5 best).
 _MODE_GROUNDING = {"C0": 0.30, "C1": 0.71, "C2": 0.78, "C3": 0.85, "C4": 0.87, "C5": 0.93}
@@ -52,7 +51,7 @@ def test_curve_monotone_and_deltas():
     assert modes == DEFAULT_MODES
     rates = [arm["headline"]["block_prose_grounding_rate"] for arm in curve["arms"]]
     # Monotone non-decreasing.
-    assert all(b >= a for a, b in zip(rates, rates[1:])), rates
+    assert all(b >= a for a, b in zip(rates, rates[1:], strict=False)), rates
 
     # Delta table attributes the lift per technique.
     techniques = [d["technique"] for d in curve["deltas"]]
@@ -64,10 +63,14 @@ def test_curve_monotone_and_deltas():
     assert c0c1["block_prose_grounding_rate"] == pytest.approx(0.41)
     assert c0c1["contradicted_block_count"] == -5  # 7 → 2
 
-    # Ceiling reports the C5 number + reserves a Spark row note.
+    # The ceiling identifies the active best-of-N result and comparison rule.
     assert curve["ceiling"]["mode"] == "C5"
     assert curve["ceiling"]["block_prose_grounding_rate"] == pytest.approx(0.93)
-    assert "C5-70b" in curve["ceiling"]["note"]
+    assert curve["ceiling"]["note"] == (
+        "C5 reports the configured best-of-N ceiling for this run; compare "
+        "additional model configurations as named arms under the same "
+        "evaluation contract."
+    )
 
 
 def test_curve_subset_modes():
@@ -90,7 +93,7 @@ def test_curve_reselect_basis_recorded():
 
 def test_curve_writes_file(tmp_path):
     out = tmp_path / "curve.json"
-    curve = run_generation_curve(
+    run_generation_curve(
         _REPO_ROOT, "test-course", eval_fn=_fake_eval,
         write=True, output_path=out,
     )

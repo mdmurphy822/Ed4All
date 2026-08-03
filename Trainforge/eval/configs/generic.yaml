@@ -32,8 +32,9 @@ evaluators:
   # compatibility scaffold: no reliable classifier is provisioned and its
   # dispatch is unimplemented, so the metric returns rate=None with the
   # compatibility deps_missing=True marker. A separate zero-shot NLI
-  # heuristic does not make this evaluator a trained Bloom classifier. The
-  # configured MultiBERT training path is staged but unproven and unavailable.
+  # heuristic does not make this evaluator a trained Bloom classifier.
+  # Synthesized-corpus classifier-head training is only a staged design
+  # concept: Trainforge does not implement or provision it, and it is unproven.
   answerable_rate: true
   single_correct_rate: true
   distractor_entropy: true

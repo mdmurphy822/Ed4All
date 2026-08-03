@@ -8,7 +8,7 @@ with the QLoRA defaults specified by the per-base
 Heavy ML deps (``trl``, ``peft``, ``transformers``, ``bitsandbytes``,
 ``torch``) are imported INSIDE the methods. A bare
 ``import Trainforge.training.peft_trainer`` stays cheap on CPU-only
-boxes; the deps are only required when one of the ``fit_*`` methods is
+environments; the dependencies are required only when a ``fit_*`` method is
 actually called. Missing-deps surface a clear
 ``RuntimeError("install with: pip install 'ed4all[training]'")``.
 
@@ -116,7 +116,7 @@ def _write_training_diagnostics(
 # (< one optimizer update); resume replays from the native checkpoint.
 #
 # The reaction logic lives in ``_GracefulStopMixin`` (NO ``transformers``
-# import) so it is unit-testable on a CPU-only box; ``_build_stop_callback``
+# import) so it is unit-testable without accelerator dependencies; ``_build_stop_callback``
 # mixes it in front of the real ``TrainerCallback`` at call time.
 
 
@@ -363,7 +363,7 @@ def _require_training_deps() -> None:
 
     ``bitsandbytes`` is only probed when 4-bit (QLoRA) loading is
     requested — the bf16 LoRA default path (``use_4bit=False``) never
-    imports it, so a CUDA box without a bitsandbytes wheel can still
+    imports it, so a CUDA environment without a bitsandbytes wheel can still
     train the default recipe. Pass ``require_bnb=False`` to skip it.
     """
     return _require_training_deps_impl(require_bnb=True)
@@ -423,7 +423,7 @@ def _accepted_kwarg(
 
     ``target`` is a class or callable; its ``__init__``/signature is
     introspected. First-match-wins so the OLD spelling is preferred when
-    both somehow exist (keeps a mixed-version box byte-stable). When the
+    both somehow exist (keeps a mixed-version environment byte-stable). When the
     signature exposes ``**kwargs`` (VAR_KEYWORD) and no candidate matches
     explicitly (the test-double case), fall back to ``default``. When the
     signature is real, has no ``**kwargs``, and matches NONE of the
@@ -448,7 +448,7 @@ def _accepted_kwarg(
     if has_var_kw:
         return default
     trl_version = "unknown"
-    try:  # pragma: no cover - trl absent on CPU boxes
+    try:  # pragma: no cover - optional trl dependency may be absent
         import trl  # type: ignore
 
         trl_version = getattr(trl, "__version__", "unknown")
@@ -496,7 +496,7 @@ def _assert_completion_only_masked(labels_rows: Any) -> None:
     prompt tokens, silently degrading a course-tutor adapter — or when a
     row is entirely masked (nothing to learn).
 
-    Pure + dependency-free so it is unit-testable on a CPU-only box; the
+    Pure and dependency-free so it is unit-testable without an accelerator;
     caller extracts ``batch["labels"]`` from a real dataloader and hands the
     rows here.
     """
@@ -819,7 +819,7 @@ class PEFTTrainer:
 
         # bf16 LoRA is now the DEFAULT recipe (use_4bit=False); QLoRA stays
         # reachable behind config. Only probe for bitsandbytes when the 4-bit
-        # path is actually requested so a plain bf16 CUDA box trains without it.
+        # path is requested so bf16 CUDA training does not require it.
         use_4bit = bool(self.training_config.get("use_4bit", False))
         _require_training_deps_impl(require_bnb=use_4bit)
         _assert_supported_runtime()
@@ -1088,10 +1088,9 @@ class PEFTTrainer:
         # runner must not emit a "completed" adapter / model card.
         _raise_if_stopped(stop_cb, "trainforge_train.fit_sft")
         if self._checkpoint_selection_enabled():
-            # A Nano BF16 base occupies roughly half of a 121-GB Spark.  The
-            # downstream probe loads the same pinned base plus one checkpoint;
-            # release Trainer's training copy first so selection is strictly
-            # sequential rather than attempting two base models concurrently.
+            # Release the training model before the downstream probe loads the
+            # pinned base and a checkpoint, keeping peak model, activation, and
+            # backend-workspace memory within the available accelerator budget.
             del trainer
             del model
             gc.collect()

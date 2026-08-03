@@ -10,8 +10,8 @@ tokenizes + generates + decodes deterministically.
 
 Heavy ML deps (``torch``, ``transformers``, ``peft``, ``bitsandbytes``)
 are imported INSIDE :meth:`__init__`. A bare ``import
-Trainforge.eval.retrieval.adapter_callable`` stays cheap on CPU-only boxes -
-matches the Wave 90 :class:`PEFTTrainer` pattern.
+Trainforge.eval.retrieval.adapter_callable`` stays cheap in environments
+without accelerator dependencies, matching the :class:`PEFTTrainer` pattern.
 
 Wave 101 design constraints:
 
@@ -275,11 +275,11 @@ class AdapterCallable:
     def adapter_disabled(self) -> Iterator[None]:
         """Temporarily evaluate the pinned base without loading a second copy.
 
-        Nano's BF16 base is roughly 59 GiB.  Keeping an adapter model and an
-        independent base-only model resident would consume essentially the
-        whole 121-GiB Spark before activations.  PEFT's supported
-        ``disable_adapter`` context evaluates the frozen base through the same
-        object and restores the adapter on exit.
+        The BF16 base consumes substantial accelerator memory. Keeping an
+        adapter model and an independent base-only model resident can exhaust
+        available memory before activations and backend workspaces are
+        allocated. PEFT's supported ``disable_adapter`` context evaluates the
+        frozen base through the same object and restores the adapter on exit.
         """
         disable = getattr(self._model, "disable_adapter", None)
         if disable is None:

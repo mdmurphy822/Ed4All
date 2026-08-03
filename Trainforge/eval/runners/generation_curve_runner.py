@@ -1,11 +1,10 @@
-"""C0..C5 generation-quality curve runner (W5 §6).
+"""C0..C5 generation-quality technique-curve runner.
 
 Models the arm-comparison pattern of ``Trainforge/eval/runners/ablation_runner.py`` +
 ``headline_delta.py``: a list of technique modes → per-arm
-``generation_quality_eval`` report → a per-technique delta table answering "how
-much does each lever buy on 7B." The ``ceiling`` block reports the C5 numbers
-(the 7B-alone ceiling) and reserves a Spark ``C5-70b`` row so the
-70B-single-sample-vs-7B-best-of-N comparison is a one-row add later.
+``generation_quality_eval`` report → a per-technique delta table showing how
+much each configured technique contributes. The ``ceiling`` block reports the
+C5 best-of-N result under the active model and evaluation configuration.
 
 For each mode the runner: ``apply_mode_to_env(resolve_technique_mode(mode), env)``
 → ``synthesize_fn(course_slug)`` (re-synthesize) OR reuse a pre-synthesized
@@ -13,9 +12,9 @@ per-mode artifact pool (re-select) → ``run_generation_quality_eval(...,
 technique_config=mode)`` → collect the headline. ``arm_basis`` records
 ``resynthesized`` vs ``reselected`` so each delta is honestly attributed.
 
-CI never runs the real-model curve (the report-shape test runs it on the fixture
-with fakes). Boundary: this runner consumes W5's own harness + technique-mode
-resolver; it does NOT author synthesis (W2 owns ``synthesize_fn``).
+CI exercises the report contract with injected fakes rather than model calls.
+This runner consumes the generation-quality harness and technique-mode resolver;
+the injected ``synthesize_fn`` owns synthesis.
 """
 from __future__ import annotations
 
@@ -27,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-#: Curve report schema version (§6.2).
+#: Curve report schema version.
 CURVE_SCHEMA_VERSION = "1.0"
 
 #: Default mode sequence (lowest→highest lever).
@@ -70,13 +69,13 @@ def run_generation_curve(
     write: bool = True,
     output_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Run the C0..C5 curve and emit the per-technique delta report (§6.1).
+    """Run the C0..C5 curve and emit the per-technique delta report.
 
     For each mode the technique env is projected, synthesis re-runs (or the
     selector re-applies to a fixed pool for C3+ when ``reselect_from_c3``), and
     the generation-quality harness scores the artifacts. Returns the curve dict.
 
-    ``synthesize_fn`` is injected by W2 (re-runs synthesis under the active env);
+    ``synthesize_fn`` re-runs synthesis under the active environment;
     when absent the runner reuses pre-synthesized per-mode artifacts via
     ``eval_fn`` alone (the default eval_fn loads on-disk artifacts). ``eval_fn``
     defaults to ``run_generation_quality_eval`` and is injectable for tests.
@@ -129,7 +128,7 @@ def run_generation_curve(
 
     # Build the per-technique delta table.
     deltas: List[Dict[str, Any]] = []
-    for prev, cur in zip(arms, arms[1:]):
+    for prev, cur in zip(arms, arms[1:], strict=False):
         from_h = prev["headline"]
         to_h = cur["headline"]
         edge = (prev["mode"], cur["mode"])
@@ -158,9 +157,9 @@ def run_generation_curve(
             c5_arm["headline"].get("block_prose_grounding_rate") if c5_arm else None
         ),
         "note": (
-            "C5 numbers are the 7B-alone ceiling; the 70B/120B single-sample "
-            "comparison is one config-row away when the Spark arrives "
-            "(add a C5-70b arm)."
+            "C5 reports the configured best-of-N ceiling for this run; compare "
+            "additional model configurations as named arms under the same "
+            "evaluation contract."
         ),
     }
 

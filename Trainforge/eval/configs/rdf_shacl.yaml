@@ -23,9 +23,9 @@ evaluators:
   disambiguation: true
   # Source matching complements faithfulness with citation precision.
   source_match: true
-  # Six per-question metrics mirror generic.yaml. The
-  # two ML-driven metrics gate on optional pyproject extras at runtime
-  # and degrade gracefully when absent.
+  # Six per-question metrics mirror generic.yaml. Source support uses an
+  # optional NLI integration. Bloom alignment explicitly abstains because no
+  # reliable Bloom classifier is currently implemented or provisioned.
   answerable_rate: true
   single_correct_rate: true
   distractor_entropy: true

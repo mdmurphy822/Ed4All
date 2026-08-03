@@ -6,8 +6,9 @@ reliable classifier is currently provisioned and default member dispatch is
 unimplemented, so the compatibility scaffold loads no members and the metric
 returns ``bloom_alignment_rate=None``. Injected implementations can still use
 the existing alignment contract: a question is aligned when the classifier
-winner matches its declared ``bloom_level``. The configured MultiBERT training
-path is staged but remains unproven and unavailable to this evaluator.
+winner matches its declared ``bloom_level``. Training a classifier head from
+synthesized corpus labels is only a staged design concept: Trainforge does not
+implement or provision that classifier, and the approach remains unproven.
 
 Abstention contract: when no classifier members are available,
 :meth:`evaluate` returns ``{bloom_alignment_rate: None,
@@ -63,7 +64,7 @@ class BloomAlignmentRateEvaluator:
             return None
         try:
             self._ensemble = BloomBertEnsemble()
-        except Exception as exc:  # noqa: BLE001 — graceful degrade
+        except Exception as exc:  # noqa: BLE001 — report explicit abstention
             logger.warning(
                 "BloomAlignmentRateEvaluator: "
                 "BloomBertEnsemble instantiation failed (%s); deps missing.",
@@ -113,7 +114,7 @@ class BloomAlignmentRateEvaluator:
         # provisioned; injected implementations may provide members.
         try:
             members = ensemble._load_members()
-        except Exception as exc:  # noqa: BLE001 — graceful degrade
+        except Exception as exc:  # noqa: BLE001 — report explicit abstention
             logger.warning(
                 "BloomAlignmentRateEvaluator: "
                 "ensemble._load_members() raised %s; deps missing.",
@@ -156,7 +157,7 @@ class BloomAlignmentRateEvaluator:
                 continue
             try:
                 result = ensemble.classify(str(stem))
-            except Exception as exc:  # noqa: BLE001 — graceful degrade
+            except Exception as exc:  # noqa: BLE001 — skip unscored questions
                 logger.warning(
                     "BloomAlignmentRateEvaluator: ensemble.classify "
                     "raised on %s (%s); skipping.",

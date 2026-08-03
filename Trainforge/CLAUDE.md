@@ -1031,12 +1031,13 @@ Each gate fire writes a `eval_gating_decision` decision-capture event (rationale
 
 **Per-question-type segmentation in `eval_report.json`.** Each of the six per-question metric blocks (`answerable_rate`, `single_correct_rate`, `distractor_entropy`, `bloom_alignment_rate`, `placeholder_rate`, `source_support_rate`) carries a `per_question_type: Dict[str, Dict[str, Any]]` field keyed by the canonical five-type universe also used by `quality_report.json::assessments.per_question_type_summary` (`multiple_choice` / `true_false` / `short_answer` / `essay` / `fill_in_blank`). Each bucket carries `{<metric_name>: float, total_questions: int, <metric>_count: int, relevant: bool}`. The bucketing helper lives at `Trainforge/eval/metrics/_per_type_helpers.py` (`bucket_per_question_records` + `attach_relevance` + `RELEVANT_QUESTION_TYPES`); the eval surface keeps its own normalization chain so the eval module DAG remains independent of `lib.validators.assessment`. The empty-string ("type unknown") bucket is omitted so inputs without `question_type` do not pollute downstream consumers. `Trainforge/eval/runners/slm_eval_harness.py` routes evaluator return dictionaries verbatim into `eval_report.json`, so the per-type blocks remain nested inside each metric result. `eval_report.json` has no schema under `schemas/`.
 
-`RELEVANT_QUESTION_TYPES` is the canonical relevance table: `single_correct_rate` and `distractor_entropy` are MC-only (T/F → entropy=0 because there's no distractor list; SA / essay / fill_in_blank → empty distractor list, single_correct_marker counting is structurally meaningless), so non-MC buckets carry `relevant=False` and the W7.D gate consumer skips them. The other four metrics are relevant across all 5 types so every bucket marks `relevant=True`.
+`RELEVANT_QUESTION_TYPES` is the canonical relevance table: `single_correct_rate` and `distractor_entropy` are MC-only (T/F → entropy=0 because there's no distractor list; SA / essay / fill_in_blank → empty distractor list, single_correct_marker counting is structurally meaningless), so non-MC buckets carry `relevant=False` and the gate consumer skips them. The other four metrics are relevant across all 5 types so every bucket marks `relevant=True`.
 
 **Unavailable-classifier pattern.** `bloom_alignment_rate` has no reliable,
 provisioned Bloom classifier: the legacy ensemble path always abstains. The
-MultiBERT/Ed4All-head route trained on synthesized corpus labels is staged and
-unproven pending validation and weight provisioning. The current metric
+idea of training a classifier head on synthesized corpus labels is staged only
+as a future design concept. Trainforge does not implement or provision that
+classifier, and the approach remains unproven. The current metric
 therefore reports
 `per_question_type: None` with `deps_missing: True`; the gate consumer skips
 that metric cleanly. `source_support_rate` uses the separate, active DeBERTa

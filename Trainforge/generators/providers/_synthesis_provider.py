@@ -12,9 +12,9 @@ subclasses" principle and mirrors the existing registry-driven
 templates :class:`Trainforge.generators.providers._assessment_provider.AssessmentGeneratorProvider`
 and :func:`lib.objectives.objective_review._build_review_client`.
 
-Adding a future provider (a hosted Mistral row, a DGX Spark vLLM box,
-…) is a one-row change to ``config/endpoints.yaml`` — zero new code,
-zero new provider classes.
+Adding a provider backed by a hosted service or an available
+OpenAI-compatible endpoint is a one-row change to ``config/endpoints.yaml``
+— zero new code and zero new provider classes.
 
 Design:
 

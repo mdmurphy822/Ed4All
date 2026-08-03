@@ -1101,9 +1101,8 @@ class TrainingRunner:
             base_model_repo=self.spec.huggingface_repo,
             **callable_kwargs,
         )
-        # One BF16 Nano base only: the base arm temporarily disables PEFT on
-        # the same resident model.  Two ~59-GiB bases cannot safely coexist on
-        # a 121-GiB Spark once activations/workspaces are included.
+        # Reuse one resident BF16 base for both arms so model weights,
+        # activations, and backend workspaces stay within available memory.
         base_callable = AdapterDisabledCallable(adapter_callable)
         adapter_rag = RAGCallable(
             base_callable=adapter_callable,
