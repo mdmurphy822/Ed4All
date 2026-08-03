@@ -22,7 +22,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import sys
 import time
 from dataclasses import asdict, dataclass, field
@@ -308,7 +307,7 @@ def check_tool_registry(verbose: bool = False) -> CheckResult:
     )
 
     try:
-        from lib.tool_registry import ToolRegistry, get_registry
+        from lib.tool_registry import get_registry
 
         registry = get_registry()
 
@@ -387,9 +386,9 @@ def check_config_files(config_path: Path, verbose: bool = False) -> CheckResult:
                 result.details["hardening_keys"] = list(hardening.keys())
 
             if verbose:
-                logger.info(f"  workflows.yaml: Valid")
+                logger.info("  workflows.yaml: Valid")
                 if "hardening" in config:
-                    logger.info(f"  Hardening section present")
+                    logger.info("  Hardening section present")
 
         except Exception as e:
             result.errors.append(f"workflows.yaml: {e}")
@@ -463,11 +462,11 @@ def check_sample_finalization(runs_path: Path, verbose: bool = False) -> CheckRe
     try:
         from lib.run_finalizer import RunFinalizer
 
-        finalizer = RunFinalizer(test_run)
+        finalizer = RunFinalizer(test_run, run_id=test_run.name)
         report = finalizer.verify_only()
 
         result.details["finalization_valid"] = report.success
-        result.details["hash_chain_valid"] = report.hash_chain_valid
+        result.details["hash_chain_valid"] = report.all_chains_valid
         result.details["artifact_count"] = report.artifact_count
 
         if not report.success:
@@ -513,8 +512,8 @@ def check_path_security(verbose: bool = False) -> CheckResult:
 
     try:
         from lib.path_constants import (
-            MAX_PATH_LENGTH,
             DISALLOW_PARENT_TRAVERSAL,
+            MAX_PATH_LENGTH,
             get_project_root,
             load_hardening_config,
         )
@@ -576,8 +575,8 @@ def check_write_facade(verbose: bool = False) -> CheckResult:
     )
 
     try:
-        from lib.write_facade import WriteFacade, WriteResult
         from lib.path_constants import is_write_facade_enforced
+        from lib.write_facade import WriteFacade
 
         result.details["write_facade_available"] = True
         result.details["enforcement_enabled"] = is_write_facade_enforced()
