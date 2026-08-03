@@ -9,7 +9,7 @@ tools: Bash, Read, Grep, Glob
 You audit SHACL shape changes against the project's governance contract,
 which is enforced programmatically by
 `schemas/tests/test_shacl_governance.py` (Phase 7.2 + 7.4 of
-`plans/rdf-shacl-enrichment-2026-04-26.md`). Treat that test as the source of
+the operator-local design record). Treat that test as the source of
 truth — your job is to catch issues *before* the test runs and explain them
 in human terms.
 

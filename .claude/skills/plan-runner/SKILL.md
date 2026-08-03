@@ -1,12 +1,12 @@
 ---
 name: plan-runner
-description: Report phase-status of a plans/*.md file by cross-referencing git log. Use when a plan amendment is needed or to gauge progress on a multi-phase plan.
+description: Report phase status of an operator-local plan file by cross-referencing git log. Use when a plan amendment is needed or to gauge progress on a multi-phase plan.
 disable-model-invocation: true
 ---
 
 # Plan Runner
 
-Report the phase status of an Ed4All `plans/*.md` file by cross-referencing
+Report the phase status of an Ed4All operator-local `plan/*.md` file by cross-referencing
 the git commit log. Useful when amending a plan, scoping the next wave, or
 deciding whether a phase is actually done.
 
@@ -15,7 +15,7 @@ deciding whether a phase is actually done.
 The user names a plan file (relative or absolute path), e.g.
 
 ```
-plan-runner plans/rdf-shacl-enrichment-2026-04-26.md
+plan-runner plan/<PLAN_FILE>.md
 ```
 
 If the path doesn't exist, ask the user for clarification. Otherwise proceed.
@@ -25,7 +25,7 @@ If the path doesn't exist, ask the user for clarification. Otherwise proceed.
 ### 1. Read the plan, extract phase identifiers
 
 ```bash
-PLAN="plans/rdf-shacl-enrichment-2026-04-26.md"   # whatever was passed in
+PLAN="plan/<PLAN_FILE>.md"   # whatever was passed in
 grep -nE '^#{2,4}.*Phase [0-9]+(\.[0-9]+)?' "$PLAN"
 ```
 
@@ -94,7 +94,7 @@ Summary: 2 of 5 phases complete, 1 in-flight, 1 pending, 1 deferred.
 
 ## Reference example
 
-`plans/rdf-shacl-enrichment-2026-04-26.md` had 7 numbered phases with
+The audited plan had 7 numbered phases with
 sub-phases (Phase 1, 1.5, 2, 2.5, 2.6, 3, 4). The Wave 81 commits
 (`fc2675d`, `993cdf2`, `0579d7b`, `07c3f26`) match Phases 1 and 1.5; later
 phases were in-flight or deferred at audit time.

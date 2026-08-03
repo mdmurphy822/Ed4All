@@ -91,7 +91,7 @@ separate from the pipeline registry — they never appear in
 | `chunk-emission-reviewer` | Trainforge chunk emission, `lib/ontology/` reuse, `chunk_v4` schema conformance |
 | `decision-capture-reviewer` | `DecisionCapture` wiring on new LLM call sites |
 | `doc-sanitation-reviewer` | Tracked-doc hygiene, hardcoded slugs, index/count drift |
-| `plan-coherence-reviewer` | `plans/*.md` amendments vs git history and live code |
+| `plan-coherence-reviewer` | operator-local `plan/*.md` amendments vs git history and live code |
 | `semantik-chunk-interrogator` | Converted HTML / `chunks.jsonl` for conversion defects |
 | `shacl-shape-reviewer` | SHACL shapes under `schemas/context/` and `lib/validators/shacl/` |
 | `slm-evaluator` | Post-training adapter evaluation, promote/hold/reject |

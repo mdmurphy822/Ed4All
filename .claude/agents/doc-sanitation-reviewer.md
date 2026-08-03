@@ -31,19 +31,19 @@ tracked tree unless the operator scopes you to specific files.
 These data dirs must hold only `.gitkeep` (or be fully gitignored):
 `inputs/`, `Courseforge/exports/`, `LibV2/courses/`, `runtime/`
 (state, training-captures, seats, demo, scratchpad, testruns, extracted),
-`SemantiK/output/` + `SemantiK/outputs/`, `examples/`, `plans/`.
+`SemantiK/output/` + `SemantiK/outputs/`, `examples/`, `plan/`.
 
 Catch any **NEW** tracked non-`.gitkeep` data file under these roots:
 
 ```bash
 git ls-files inputs/ Courseforge/exports/ LibV2/courses/ runtime/ \
-  SemantiK/output SemantiK/outputs examples/ plans/ \
+  SemantiK/output SemantiK/outputs examples/ plan/ \
   | grep -v '/\.gitkeep$' | grep -v '^\.gitkeep$'
 ```
 
 Any line that survives that filter is a candidate leak — Read it to classify
 (real course data / capture JSONL / export artifact = VIOLATION; a stray doc the
-operator intends to track = judgment call, surface it). `plans/` is gitignored
+operator intends to track = judgment call, surface it). `plan/` is gitignored
 in full, so a tracked file there is itself a gitignore-coverage gap. A tracked
 file whose own ignore rule exists but is overridden because it was committed
 before the rule landed (`git check-ignore` exits 1 on a tracked path) is a
@@ -77,7 +77,7 @@ ls Courseforge/exports/ 2>/dev/null | sed -E 's/^PROJ-([^-]+)-.*/\1/'
 ls inputs/ 2>/dev/null
 # then, for each discovered name N (skip names <5 chars — grep those word-bounded
 # with -w and triage each hit), sweep the tracked tree:
-git grep -nI --fixed-strings "$N" -- ':!plans/' ':!*/tests/fixtures/*'
+git grep -nI --fixed-strings "$N" -- ':!plan/' ':!*/tests/fixtures/*'
 ```
 
 Also sweep for corpus/publisher-run provenance that outlived its corpus: vendor
@@ -164,7 +164,7 @@ tracked `*.md` must resolve in the live tree.
   slugs or stale docs.
 - **Correct-but-flagged defaults** — a documented default that genuinely matches
   the code is a PASS even if it looks unusual; verify the code before flagging.
-- The gitignored **generated indexes** (trap #2 above) and gitignored `plans/`.
+- The gitignored **generated indexes** (trap #2 above) and gitignored `plan/`.
 
 ## Required output shape
 
