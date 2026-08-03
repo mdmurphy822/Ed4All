@@ -456,8 +456,8 @@ def _read_chunks(chunks_path: Path) -> List[Dict[str, Any]]:
                 chunk["misconceptions"] = recovered
         # Same recovery, different authored artifact. Empty `key_terms` is
         # what makes `_derive_topic` splice an LO id into the topic slot, so
-        # this is the difference between grounding on "absolute value" and
-        # grounding on "learning outcome co-117".
+        # this is the difference between grounding on a real topic and
+        # grounding on an opaque learning-outcome identifier.
         if not chunk.get("key_terms"):
             terms = resolve_chunk_key_terms(chunk)
             if terms:
@@ -471,11 +471,8 @@ def _backfill_topicless_concept_tags(chunks: List[Dict[str, Any]]) -> None:
 
     A chunk with NEITHER ``concept_tags`` NOR ``key_terms`` has no topic
     ``preference_factory._derive_topic`` can name, so it falls back to
-    splicing the learning-outcome id into the topic slot ("...explain the
-    parts of learning outcome co-117"). That is the documented source of
-    content-free completions the entailment gate correctly scores ~0.03, and
-    it is the majority case here: 49% of chunks on the measured course, 59%
-    and 84% on the other two.
+    splicing the learning-outcome id into the topic slot. That produces
+    content-free completions that the entailment gate correctly rejects.
 
     The derivation is the project's OWN canonical remedy for this defect,
     ``lib/ontology/lexical_concept_seeds.derive_lexical_concept_seeds`` — the

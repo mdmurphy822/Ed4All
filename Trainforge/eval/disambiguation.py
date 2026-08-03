@@ -1,13 +1,11 @@
-"""Wave 92 — Tier 3 cross-concept disambiguation.
+"""Tier 3 cross-concept disambiguation.
 
 For each ``interferes_with`` edge in the pedagogy graph
 (misconception -> concept), pose a "distinguish X from Y" prompt and
 verify the model's response surfaces the corpus-stored distinction.
 
-Schema correction: misconceptions are first-class graph nodes
-(class=Misconception, 34 of them in the RDF/SHACL calibration
-corpus). The ``interferes_with`` edge type — 365 edges in the RDF/SHACL
-calibration corpus — is the
+Schema contract: misconceptions are first-class graph nodes. The
+``interferes_with`` edge type is the
 canonical anchor for misconception-to-concept linkage. There is **no
 ``misconception-of`` edge type** in the pedagogy graph; that slug
 exists on the ``concept_graph_semantic`` artifact (a different
@@ -93,7 +91,7 @@ class DisambiguationEvaluator:
 
     def _index_corrections(self) -> Dict[str, List[str]]:
         """Map misconception statement fragments -> their corrections."""
-        # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
+        # Prefer the canonical IMSCC chunkset, with legacy archive support.
         from lib.libv2_storage import resolve_imscc_chunks_path
         chunks_path = resolve_imscc_chunks_path(self.course_path, "chunks.jsonl")
         out: Dict[str, List[str]] = {}

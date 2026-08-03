@@ -659,7 +659,7 @@ class AssessmentGenerator:
     Usage:
         generator = AssessmentGenerator(capture=capture)
         assessment = generator.generate(
-            course_code="TST_908",
+            course_code="<COURSE_CODE>",
             objective_ids=["LO-001", "LO-002"],
             bloom_levels=["understand", "apply"],
             question_count=10

@@ -18,7 +18,7 @@ training data without altering load-bearing metadata. Used by
 ```json
 {
   "kind": "instruction",
-  "chunk_id": "demo_course_1_chunk_00054",
+  "chunk_id": "<CHUNK_ID>",
   "chunk_text": "RDFS allows authors to declare classes and properties...",
   "draft": {
     "prompt": "Original mock-factory prompt",
@@ -27,7 +27,7 @@ training data without altering load-bearing metadata. Used by
     "bloom_level": "understand",
     "content_type": "explanation",
     "lo_refs": ["TO-01"],
-    "chunk_id": "demo_course_1_chunk_00054"
+    "chunk_id": "<CHUNK_ID>"
   },
   "expected_keys": ["prompt", "completion"]
 }
@@ -66,7 +66,7 @@ parses the response as raw JSON.
    MUST be removed — they are mock-factory scaffolding.
 4. For `kind: "instruction"` whose `draft.requires_source_citation` is
    `true`, the rewritten `completion` MUST end with `[<chunk_id>]` exactly
-   (e.g. `[demo_course_1_chunk_00054]`).
+   (e.g. `[<CHUNK_ID>]`).
 5. Keep `prompt` length 20–800 chars; keep `completion` / `chosen` /
    `rejected` length 60–1500 chars. The provider re-clamps but rejecting
    the draft outright by returning extreme lengths wastes a dispatch.

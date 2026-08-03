@@ -720,14 +720,13 @@ def iter_mineable_records(
 # =============================
 #
 # Most current rejects are DEGENERATE: a fixed pedagogical tail with a database
-# key spliced into the topic slot ("...break this down and explain the parts of
-# learning outcome co-117", entailment 0.028). On 20 of 26 audited chunks every
-# content source was empty, so those are CORRECT rejections. They are also
+# key spliced into the topic slot. When every content source is empty, those
+# are correct rejections. They are also
 # terrible DPO negatives — trivially separable, so the preference teaches
 # DISTRIBUTION discrimination ("template junk vs real prose") instead of QUALITY
 # discrimination ("grounded vs subtly unsupported"). FLAME (arXiv:2405.01525)
-# measured naive DPO REDUCING factuality 44.7 -> 42.3 FActScore exactly this
-# way. The valuable negative is the NEAR-MISS: fluent, on-topic, plausible
+# measured naive DPO reducing factuality in this failure mode. The valuable
+# negative is the NEAR-MISS: fluent, on-topic, plausible
 # prose that drifts just past what the source supports.
 #
 # Degenerates are excluded FOUR independent ways, every one of which fires on
@@ -799,7 +798,7 @@ def _is_lo_id_token(token: str) -> bool:
 
     1. :func:`validate_lo_id` — the canonical ``^[A-Z]{2,}-\\d{2,}$`` shape.
        Matched case-insensitively because the measured splice was lowercased
-       prose ("...learning outcome co-117").
+       prose containing the identifier.
     2. :func:`hierarchy_from_id` — the PREFIX must be a recognized LO
        hierarchy (sourced from ``schemas/taxonomies/lo_hierarchy.json``:
        TO/CO/MO/PO/UO/LO/SO).
@@ -808,7 +807,7 @@ def _is_lo_id_token(token: str) -> bool:
     this into "any 2+ letter token, a hyphen, 2+ digits", which accepts
     ordinary technical identifiers — ``ISO-8601``, ``RFC-2119``, ``COVID-19``.
     Those are legitimate near-miss content, and treating them as the degenerate
-    ``co-117`` splice signature silently deletes candidates on any standards,
+    learning-objective splice signature silently deletes candidates on standards,
     CS, or medical corpus. Gating on the canonical prefix taxonomy keeps the
     measured signature while making the detector corpus-agnostic — and it stays
     data-driven, so a course family adopting a new prefix needs no code edit.
@@ -1282,7 +1281,7 @@ def select_mined_pairs(
             continue
         support, worst, n_claims = banded
 
-        # D1 — the measured "...learning outcome co-117" splice signature.
+        # D1 — a learning-outcome identifier spliced into generated prose.
         if _lo_id_tokens(candidate.completion):
             funnel.lo_id_splice += 1
             continue

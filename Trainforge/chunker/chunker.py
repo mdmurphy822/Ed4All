@@ -1,12 +1,8 @@
 """Canonical chunker logic lifted out of ``Trainforge/process_course.py``.
 
-Historical context: Phase 7a Subtask 4 originally lifted the chunker
-proper into a standalone ``ed4all-chunker`` workspace package so DART,
-Courseforge, and Trainforge could share one chunker implementation;
-the post-Phase-8 review re-merged that package back into
-``Trainforge.chunker`` (this module's current home) to remove the
-workspace-member friction. Public names and the ``ChunkerContext``
-callback contract are unchanged. The functions in this module
+The canonical implementation lives in ``Trainforge.chunker`` and is shared by
+the pipeline's conversion and course-package paths. Public names and the
+``ChunkerContext`` callback contract are stable. The functions in this module
 orchestrate:
 
     1. ``chunk_content`` — top-level loop over parsed IMSCC items;
@@ -41,8 +37,7 @@ chunk dict from text + html + item-state) is deeply coupled to the
 ``self.NON_CONCEPT_TAGS``, ``self.capture``, ``self.stats``,
 ``self._all_concept_tags``, ``self.course_code``. Lifting that body
 into the package would require lifting the whole ontology / metadata
-/ provenance surface of Trainforge — outside the scope of Phase 7a
-(Subtask 4 estimate of ~450 LOC).
+/ provenance surface of Trainforge.
 
 Pragmatic resolution: this module owns the orchestration flow
 (looping, merging, splitting, boilerplate, feedback, xpath/char-span
@@ -539,8 +534,7 @@ def fold_fragment_texts(pieces: List[str], fragment_floor: int) -> List[str]:
 # buffer is still under target. When ``ED4ALL_CHUNK_SECTION_HARD_BREAK`` is on,
 # crossing a SECTION-heading boundary forces a flush before the new section is
 # accumulated, so a chunk never straddles two textbook sections. Default off →
-# byte-identical legacy merge (the RDF/SHACL calibration corpus, whose
-# Courseforge pages carry "Learning Objectives" headings, stays byte-stable).
+# byte-identical legacy merge for existing corpora.
 # ---------------------------------------------------------------------------
 
 #: Env var gating the section-boundary hard break. Default OFF → byte-identical.
@@ -975,13 +969,9 @@ def type_from_heading(heading: str) -> str:
     Default behaviour is the legacy pure-substring matcher. Setting
     ``TRAINFORGE_CHUNK_TYPE_CONTENT_AWARE=true`` swaps in the
     whole-word / course-title-aware classifier
-    (:func:`_type_from_heading_content_aware`) which fixes the ~7%
-    chunk-type misclassification audited on the NVIDIA corpus
-    (substring hits on class names like "DocumentSummaryBase",
-    bare "NVIDIA Course NN:" page titles mis-typed off an incidental
-    word, and "[Exercise] ... Example" headings losing to ``example``).
-    Default off so the RDF/SHACL calibration corpus stays
-    byte-identical on rebuild.
+    (:func:`_type_from_heading_content_aware`) which avoids substring hits on
+    class-like names, course-title chrome, and competing heading markers.
+    Default off so existing corpora stay byte-identical on rebuild.
     """
 
     import os
@@ -1152,8 +1142,8 @@ def _type_from_heading_content_aware(heading: str) -> str:
 # (schemas/taxonomies/{semantik_lexicon,exercise_apparatus_lexicon}.json) via
 # the canonical loaders — only the leading-window COMPOSITION is code here.
 # Deterministic, no LLM, no new behavior flag (a correctness restore of the
-# always-on demotion class, byte-identical for corpora without these banners —
-# e.g. the RDF/SHACL calibration corpus). CHUNKER_SCHEMA_VERSION stays "v4":
+# always-on demotion class, byte-identical for corpora without these banners).
+# CHUNKER_SCHEMA_VERSION stays "v4":
 # the chunk SHAPE is unchanged; only a per-chunk chunk_type VALUE is corrected.
 # ---------------------------------------------------------------------------
 
@@ -1334,7 +1324,7 @@ def _merge_objective_alignment_dedup(
 ) -> List[Dict[str, Any]]:
     """Union two ``objective_alignment`` lists, dedupe by ``objective_id``.
 
-    Wave 5 (W5.F — chunker merge-path provenance preservation). Mirrors
+    Preserves chunker merge-path provenance and mirrors
     :func:`merge_section_source_ids` (`:260-276`) — first-seen-wins
     dedupe; mutates ``accumulated`` in place AND returns it for chaining.
 
@@ -1374,7 +1364,7 @@ def _merge_objective_alignment_dedup(
 class MergedSectionResult:
     """One merged-section result emitted by :func:`merge_small_sections`.
 
-    Wave 5 (W5.F) bumped the legacy 5-tuple return to a dataclass so the
+    The legacy five-tuple return became a dataclass so the
     new W1.5 ``key_claims`` and W1.7 ``objective_alignment`` audit fields
     can ride alongside the legacy ``merged_source_ids`` /
     ``merged_headings`` without forcing every caller to switch to a
@@ -1491,9 +1481,9 @@ def merge_small_sections(
     fields via attribute access:
 
     * ``merged_source_ids`` — union of every section's
-      ``data-cf-source-ids`` attribute (Wave 10), deduped first-seen.
+      ``data-cf-source-ids`` attribute, deduped first-seen.
     * ``merged_headings`` — ordered list of every heading that
-      collapsed into the buffer (Wave 84 Bug 1 fix).
+      collapsed into the buffer.
     * ``merged_key_claims`` — concatenation of every section's
       ``key_claims`` array (W1.5 per-claim attribution; per-claim
       entries are independent, so concat is safe — see W5.F brief).
@@ -1502,9 +1492,8 @@ def merge_small_sections(
       first-seen-wins (W1.7 per-objective tri-axis audit; mirrors the
       ``merge_section_source_ids`` first-seen policy).
 
-    Without the W5.F merge-path carry, ~30-50% of chunks (every chunk
-    built from a merge boundary on small-section corpora like
-    the RDF/SHACL calibration corpus) would silently drop the W1.5 / W1.7 audit signals
+    Without the merge-path carry, chunks built across small-section merge
+    boundaries would silently drop the per-claim and per-objective audit signals
     that the W5.A parser-side carry just landed on the section objects.
     """
 
@@ -1527,7 +1516,7 @@ def merge_small_sections(
     buffer_boundary = False
 
     def _resolve_buffer_type() -> str:
-        # Wave 81: prefer template_type when present and canonical.
+        # Prefer template_type when present and canonical.
         if buffer_template_type and buffer_template_type in CANONICAL_CHUNK_TYPES:
             return buffer_template_type
         return buffer_type
@@ -1706,7 +1695,7 @@ def chunk_text_block(
     objective refs, bloom level, etc.) — see the module docstring for
     the architectural rationale.
 
-    Wave 5 (W5.F): accepts ``merged_key_claims`` /
+    Accepts ``merged_key_claims`` /
     ``merged_objective_alignment`` kwargs threaded from
     :func:`merge_small_sections` and forwards them to the
     ``ctx.create_chunk`` callback. The callback (W5.B's

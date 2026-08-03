@@ -474,7 +474,7 @@ def test_run_synthesis_no_pilot_report_when_no_manifest(
     course_dir = _make_working_copy(tmp_path)
 
     def _raise(*_a, **_kw):
-        raise FileNotFoundError("no manifest for test slug")
+        raise FileNotFoundError("no manifest for synthetic fixture")
 
     monkeypatch.setattr(
         "lib.ontology.property_manifest.load_property_manifest", _raise,
@@ -493,10 +493,13 @@ def test_run_synthesis_no_pilot_report_when_no_manifest(
         pilot_report_helpers, "write_pilot_report_atomic", _tracking_writer,
     )
 
-    with caplog.at_level(logging.INFO, logger="Trainforge.synthesize_training"):
+    with caplog.at_level(
+        logging.INFO,
+        logger="Trainforge.synthesis.synthesize_training",
+    ):
         run_synthesis(
             corpus_dir=course_dir,
-            course_code="bogus-course-no-manifest",
+            course_code="test-course",
             provider="mock",
             seed=11,
             pilot_report_every=5,

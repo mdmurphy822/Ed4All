@@ -230,8 +230,8 @@ def write_hf_readme(
             tags are appended to the default tag list. Falls back to
             the legacy substring-sniff over ``course_slug`` when
             absent or when the manifest declares no tags. Lets
-            non-RDF/SHACL courses (chemistry-201, owl-axioms-501, ...)
-            ship correct HF discovery tags without code changes.
+            course families ship correct HF discovery tags without code
+            changes.
 
     Returns:
         Path to the written README.md.

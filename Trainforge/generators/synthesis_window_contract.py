@@ -441,20 +441,18 @@ def resolve_chunk_key_terms(
 ) -> list[Dict[str, str]]:
     """Return a chunk's ``key_terms``, recovering authored vocabulary cards.
 
-    ``key_terms`` is populated on **0%** of every archived course measured
-    (three independently built corpora), because the parser harvests it only from JSON-LD
+    ``key_terms`` can be absent from archived courses because the parser
+    harvests it only from JSON-LD
     (``keyTerms`` / ``blocks[].key_terms``) and the rewrite tier emits
     vocabulary as HTML cards instead. The content is right there in the chunk:
-    one measured course carries 300 ``vocab_card`` blocks, 248
-    ``definition-box`` and 107 ``vocab-term`` spans while reporting zero key
-    terms.
+    vocabulary cards and definition spans may therefore coexist with an empty
+    structured key-term list.
 
     That emptiness is load-bearing, not cosmetic.
     ``preference_factory._derive_topic`` needs ``concept_tags`` OR
     ``key_terms`` to name a topic; with both empty it falls back to splicing a
-    database key into the topic slot ("...explain the parts of learning
-    outcome co-117"), which is the documented source of content-free
-    completions that NLI correctly scores ~0.03 entailment. Recovering the
+    database key into the topic slot, which produces content-free completions.
+    Recovering the
     authored terms gives the generator a real topic and a real definition to
     ground against.
 

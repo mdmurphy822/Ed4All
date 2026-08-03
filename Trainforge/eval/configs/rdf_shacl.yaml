@@ -1,4 +1,4 @@
-# Wave 92 — RDF/SHACL eval profile.
+# RDF/SHACL evaluation profile.
 # Picked when manifest.classification.subdomains contains "semantic web"
 # or topics contains "rdf and shacl" / "shacl".
 
@@ -21,13 +21,9 @@ evaluators:
   regression: true
   key_term_precision: true
   disambiguation: true
-  # Wave 105: source-match was wired into SLMEvalHarness in Wave 102
-  # but never enabled in this profile, so the metric stayed at None
-  # for every probe in the RDF/SHACL calibration corpus ablation. Enabling it here
-  # closes the gap so the precision-of-citation column lights up
-  # alongside faithfulness in eval_report.json.
+  # Source matching complements faithfulness with citation precision.
   source_match: true
-  # Wave 3 W3.F — 6 per-question metrics (mirrors generic.yaml). The
+  # Six per-question metrics mirror generic.yaml. The
   # two ML-driven metrics gate on optional pyproject extras at runtime
   # and degrade gracefully when absent.
   answerable_rate: true

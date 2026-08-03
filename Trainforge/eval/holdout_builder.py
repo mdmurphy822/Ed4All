@@ -357,10 +357,9 @@ class HoldoutBuilder:
             src = edge.get("source")
             tgt = edge.get("target")
             rel = edge.get("relation_type")
-            # Wave 105: a chunk source can be either the canonical
+            # A chunk source can be either the canonical
             # ``chunk_NNNN`` form or a corpus-prefixed
-            # ``<corpus>_chunk_NNNN`` form (the RDF/SHACL calibration corpus graph
-            # uses the prefixed form). Detect both — substring search
+            # ``<corpus>_chunk_NNNN`` form. Detect both — substring search
             # for ``chunk_`` is sufficient because no other node class
             # in the pedagogy graph contains that token.
             gt_chunk = (
@@ -370,9 +369,9 @@ class HoldoutBuilder:
             gt_chunk_ids = list(gt_chunk_index.get((tgt, rel), []))
             if gt_chunk and gt_chunk not in gt_chunk_ids:
                 gt_chunk_ids.insert(0, gt_chunk)
-            # Audit 2026-04-30 fix: substitute chunk-IDs with human
+            # Substitute chunk IDs with human-readable
             # labels so the model isn't asked to reason about raw
-            # `shacl_551_chunk_NNNNN` literals.
+            # labels so raw corpus-prefixed identifiers never enter prompts.
             src_label = (
                 label_resolver.scrub(src)
                 if label_resolver is not None and isinstance(src, str)

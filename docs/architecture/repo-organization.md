@@ -285,7 +285,8 @@ risk. Completed items are marked below.
    repeatable experiments in `harness/`, contract helpers in `maintenance/`,
    and proven-obsolete campaigns move to the ignored local `regression/`
    shelf; its loose-file cap is now zero. The retired staged-window/Gate-D
-   campaign is preserved there locally rather than shipped as public source.
+   and completion-cap qualification campaigns are preserved there locally
+   rather than shipped as public source.
 2. **`Trainforge/` synthesis cluster — DONE.** The nine implementation
    modules now live in `Trainforge/synthesis/`. Root-level compatibility
    shims preserve the documented CLI/import surface and MCP dotted dispatch,

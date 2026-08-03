@@ -1,4 +1,4 @@
-# Wave 92 — Generic-domain eval profile.
+# Generic-domain evaluation profile.
 # Used for any course whose manifest.classification doesn't match a
 # Tier-1-capable domain (currently only rdf-shacl). Tier-1 is OFF
 # because we have no machine-verifiable surface for arbitrary
@@ -26,7 +26,7 @@ evaluators:
   regression: true
   key_term_precision: true
   disambiguation: true
-  # Wave 3 W3.F — 6 per-question metrics. Default true for the cheap
+  # Six per-question metrics. Default true for the cheap
   # signals; the two ML-driven metrics (bloom_alignment_rate +
   # source_support_rate) gate on the optional [embedding] / [bert]
   # pyproject extras at runtime via NliClassifier.get_or_load /

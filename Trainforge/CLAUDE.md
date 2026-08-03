@@ -32,7 +32,7 @@ package = parser.parse("<IMSCC_PATH>")
 # Generate assessments (with optional decision capture)
 generator = AssessmentGenerator(capture=None)
 assessment = generator.generate(
-    course_code="TST_908",
+    course_code="<COURSE_CODE>",
     objective_ids=["TO-01", "TO-02"],
     bloom_levels=["understand", "apply"],
     question_count=10
@@ -1009,8 +1009,8 @@ Each gate fire writes a `eval_gating_decision` decision-capture event (rationale
 
 **Property-targeted training.** A course-specific property manifest declares the canonical surface forms (URIs / CURIEs / text patterns) the SLM adapter must teach. The synthesis + eval surfaces both consume the same manifest:
 
-- `schemas/training/property_manifest.<family>.yaml` — declared properties (e.g. the 6 RDF/SHACL surface forms for the RDF/SHACL calibration corpus: `sh:datatype`, `sh:class`, `sh:NodeShape`, `sh:PropertyShape`, `rdfs:subClassOf`, `owl:sameAs`). Schema-validated by `schemas/training/property_manifest.schema.json`.
-- `lib/ontology/property_manifest.py::load_property_manifest(course_slug)` — loader. Family-slug resolution: `<course-slug>` → `<family>` (the slug's first two hyphen-tokens joined by underscore, e.g. `chemistry-201-organic` → `chemistry_201`).
+- `schemas/training/property_manifest.<family>.yaml` — declared properties for a course family. Schema-validated by `schemas/training/property_manifest.schema.json`.
+- `lib/ontology/property_manifest.py::load_property_manifest(course_slug)` — loader. Family-slug resolution maps the first two course-slug tokens to an underscore-joined family name.
 - `lib/validators/property_coverage.py::PropertyCoverageValidator` — synthesis-side gate. Wired as `property_coverage` on `textbook_to_course::training_synthesis`. Critical-fails when any declared property has fewer than `min_pairs` instruction-pair rows. No-ops on courses without a manifest (so the gate doesn't break legacy workflows).
 - `Trainforge/eval/metrics/property_eval.py::PerPropertyEvaluator` — eval-side companion. Filters holdout probes by surface-form match and reports per-property accuracy. Wired into `SLMEvalHarness.run_all` and surfaced as `eval_report.json::per_property_accuracy`.
 - `lib/validators/eval_gating.py::EvalGatingValidator` — adds the `min_per_property_accuracy` threshold (default 0.40, override via gate `inputs.thresholds`). Critical-fails when any scored property is below the floor; properties with no matching probes (None accuracy) are skipped.
@@ -1018,7 +1018,7 @@ Each gate fire writes a `eval_gating_decision` decision-capture event (rationale
 
 Together: a corpus rebuild that drops a hard surface form (e.g. the LLM rewriter prefers natural English over `owl:sameAs`) is caught at synthesis time (coverage gate); a trained adapter that fails to learn one of the declared properties is caught at promotion time (per-property eval gate).
 
-**Authoring a manifest for a new course family**: copy `schemas/training/property_manifest.generic.yaml.example` to `schemas/training/property_manifest.<family>.yaml`. The family slug is the course slug's first two hyphen-tokens joined by underscore — `chemistry-201-organic` → `chemistry_201`. Drop the file in; the validators auto-discover it on the next run. The gate no-ops for courses without a matching manifest, so adding one is a non-destructive operation.
+**Authoring a manifest for a new course family**: copy `schemas/training/property_manifest.generic.yaml.example` to `schemas/training/property_manifest.<family>.yaml`. The family name is derived from the course slug's first two hyphen-separated tokens, joined by an underscore. Drop the file in; the validators auto-discover it on the next run. The gate no-ops for courses without a matching manifest, so adding one is a non-destructive operation.
 
 **Synthesis budget controls.** Three additions make a Claude-Max-driven rebuild safe:
 
@@ -1026,7 +1026,7 @@ Together: a corpus rebuild that drops a hard surface form (e.g. the LLM rewriter
 - A new `--max-dispatches N` CLI flag on `synthesize_training.py` (and `max_dispatches=` kwarg on `run_synthesis`) caps the run; when hit, the provider raises `SynthesisBudgetExceeded` mid-run *before* burning the next dispatch. The cache + telemetry remain on disk so a re-run with a higher cap resumes for free.
 - `lib/validators/synthesis_quota.py::SynthesisQuotaValidator` is a warning-severity pre-flight gate (wired as `synthesis_quota` on `textbook_to_course::training_synthesis`). It estimates `eligible_chunks × (instruction_variants + 1)` dispatches and surfaces a warning when above the configured ceiling (default 1500). Flip to critical via per-run gate inputs for unattended batches.
 
-Together: a real rebuild on the RDF/SHACL calibration corpus (~500 chunks → ~1000 dispatches) gets a green warning gate; a reckless 5-variant run on a 1000-chunk corpus (~6000 dispatches) gets flagged before the synthesis stage starts; a partial run that hits its cap leaves a resumable cache + telemetry trail.
+Together: a bounded rebuild can pass the warning gate while an oversized multi-variant run is flagged before synthesis starts; a partial run that reaches its cap leaves a resumable cache and telemetry trail.
 
 **Production rebuild safety.** Three additions harden the rebuild path against operator pain modes:
 

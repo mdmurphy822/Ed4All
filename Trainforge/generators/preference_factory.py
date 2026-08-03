@@ -151,7 +151,7 @@ def _derive_topic(chunk: Dict[str, Any]) -> str:
     """Return a human-readable topic phrase, or ``""`` when none exists.
 
     Mirrors ``instruction_factory._derive_topic``: there is deliberately NO
-    LO-id fallback. Interpolating ``learning outcome co-117`` into a
+    LO-id fallback. Interpolating an opaque learning-outcome identifier into a
     learner-facing prompt slot produces syntactically valid, semantically
     empty preference data. The caller treats ``""`` as an ineligibility
     signal (no design-intent fallbacks).

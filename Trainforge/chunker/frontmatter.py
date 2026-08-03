@@ -35,12 +35,11 @@ Design goals (high precision, low false-positive):
   like ``EXAMPLE 1.1`` / ``TRY IT``, arithmetic operators, equations, OR a
   dense cluster of distinct math terms in running prose) is NEVER classified
   front-matter, regardless of how many marketing signatures it also hits.
-  This is the guard that protects real algebra content.
+  This is the guard that protects real instructional content.
 
-* **The "Foundations" false-positive guard.** 68/72 chunks of a real
-  algebra-textbook corpus contain the word "foundation" — almost entirely
-  because of the legitimate running header / chapter title "Chapter 1
-  Foundations". The donor signal therefore matches the *acknowledgement
+* **The "Foundations" false-positive guard.** Instructional material may use
+  "foundation" legitimately in running headers and chapter titles. The donor
+  signal therefore matches the *acknowledgement
   context* ("Foundation, Inc.", named-donor patterns) and NEVER bare
   "Foundation" / "Foundations". A chunk whose only "foundation" hit is the
   chapter title is not even a candidate.
@@ -163,9 +162,9 @@ DEFAULT_COVER_REGION_CHUNKS: int = 8
 # enumerate math TOPICS as menu entries ("1.5 Visualize Fractions", "Chapter 7
 # Factoring") without containing a single worked step. Vocabulary-only matching
 # let every TOC / preface chunk falsely veto out of the front-matter set.
-# Measured separation on the real algebra corpus: front-matter chunks (cover /
-# authors / copyright / donor / marketing / TOC / preface) carry ZERO of these
-# markers; every real instructional chunk carries ≥1.
+# Front-matter chunks (cover / authors / copyright / donor / marketing / TOC /
+# preface) should carry none of these markers; instructional chunks should
+# carry at least one.
 # ---------------------------------------------------------------------------
 
 _MATH_CONTENT_RE = re.compile(

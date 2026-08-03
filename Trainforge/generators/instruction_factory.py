@@ -223,8 +223,8 @@ def _trim_completion(text: str, max_len: int = COMPLETION_MAX) -> str:
     return hard.rstrip() + "..."
 
 
-# Assessment-outline scaffolding patterns, e.g. "Question 1 (CO-07,
-# Bloom: Understand). Question 2 (CO-07, Bloom: Apply)...". Quiz-outline
+# Assessment-outline scaffolding patterns containing question numbers,
+# objective identifiers, and Bloom levels. Quiz-outline
 # source content leaking into a pair is structural contamination — the
 # model would learn to emit quiz-outline debris inside normal
 # explanations — so reject any pair whose completion / chosen carries it.
@@ -237,7 +237,7 @@ _ASSESSMENT_SCAFFOLD_PATTERNS = [
 
 def _contains_assessment_scaffolding(text: str) -> bool:
     """True when ``text`` contains an assessment-outline marker —
-    structured patterns like "Question 1 (CO-07, Bloom: Understand)"
+    structured question patterns containing objective and Bloom metadata
     that come from quiz-outline source content. These flow through
     deterministic templates undetected by chunk-text leakage gates
     because they live in chunk metadata fields rather than chunk.text.
@@ -280,9 +280,8 @@ def _derive_topic(chunk: Dict[str, Any]) -> str:
 
     There is deliberately NO fallback here. The previous
     ``f"learning outcome {lo_refs[0]}"`` branch interpolated a database key
-    into a learner-facing slot, producing prompts/completions like
-    "explain the parts of learning outcome co-117" — syntactically valid,
-    semantically empty, and unusable as training data. Per the project's
+    into a learner-facing slot, producing syntactically valid but semantically
+    empty prompts and completions. Per the project's
     no-design-intent-fallbacks rule the unit fails loudly instead.
     """
     tags = chunk.get("concept_tags") or []
@@ -291,8 +290,8 @@ def _derive_topic(chunk: Dict[str, Any]) -> str:
         if t:
             # deslugify_concept strips a trailing ``-(co|to)-NN`` LO-ref
             # suffix before the hyphen-to-space transform, so
-            # ``property-paths-co-15`` -> ``property paths`` rather than
-            # ``property paths co 15``.
+            # a concept slug with an objective-id suffix resolves to the
+            # human-readable concept phrase rather than retaining the ID.
             derived = deslugify_concept(t).strip()
             if derived:
                 return derived
@@ -860,8 +859,7 @@ def synthesize_instruction_pair(
         completion_leaked = _contains_verbatim_span(completion, chunk_text)
 
     # Assessment-scaffolding contamination check. Same retry pattern as
-    # the leak gate — if the first build leaked an outline like
-    # "Question 1 (CO-07, Bloom: Understand)...", retry without the
+    # the leak gate — if the first build leaked an assessment outline, retry without the
     # summary path, which is the typical carrier.
     completion_has_assessment = _contains_assessment_scaffolding(completion)
     if completion_has_assessment:

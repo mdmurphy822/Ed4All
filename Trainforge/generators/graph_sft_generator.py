@@ -1,10 +1,10 @@
-"""Concept-graph -> SFT pair generator (SFT data program Phase 2 / S5).
+"""Concept-graph to SFT pair generator.
 
 Deterministic, LLM-free emitter that turns ``concept_graph_semantic.json`` +
 its prerequisite DAG into open-book, verbalized instruction pairs for the
 course-pinned 1.5B LoRA adapter.
 
-Design contract (``runtime/scratchpad/sft_data_program.md`` §A rows 8-10 + §D-Phase-2):
+Design contract:
 
 * **Open-book, verbalized.** Every pair is grounded in the graph frame itself
   (the concept labels + typed edges supplied in the prompt), never free-form
@@ -65,28 +65,26 @@ _EXCLUDED_EDGE_STATUS: Set[str] = {"contradicted", "retracted"}
 # Edge types that record where a node CAME FROM rather than how two topics
 # relate to each other. Verbalizing them produces "explain how X relates to
 # Y" pairs over pipeline bookkeeping, so they never become training signal.
-# (On a representative course these were 8,922 of 10,000 edges.)
 _PROVENANCE_EDGE_TYPES: Set[str] = {"derived-from-objective"}
 
 # A graph node is only verbalizable if it carries a HUMAN label. Concept
 # graphs also hold evidence/bookkeeping nodes (``class: "Chunk"``,
 # ``ComponentObjective``, ``Outcome``) whose ``label`` is just their own
-# opaque id -- e.g. ``<course>_chunk_00633`` or ``co-01``. Emitting those
+# opaque identifier. Emitting those
 # teaches the model to answer with internal identifiers, so a node whose
 # label is identifier-shaped is skipped entirely rather than verbalized.
 # Deliberately shape-based, not class-based: a graph whose objective nodes
 # DO carry real statements stays eligible.
 # NOTE on the digit terminator: ``\b`` is wrong here, because ``_`` is a word
-# character -- ``..._chunk_00190_co-01`` has no word boundary after the digit
+# character, so compound identifiers have no word boundary after the digit
 # run, so a ``\b``-anchored pattern silently misses every compound id.
 _OPAQUE_LABEL_RES: Tuple[re.Pattern, ...] = (
     re.compile(r"(?:^|[_\s-])chunk[_\s-]?\d{2,}(?!\d)", re.I),  # ..._chunk_00633
-    re.compile(r"^[a-z]{1,4}[-_\s]?\d{1,5}$", re.I),            # co-01, to-1, q12
+    re.compile(r"^[a-z]{1,4}[-_\s]?\d{1,5}$", re.I),            # short objective/item ID
     re.compile(r"^[0-9a-f]{8,}$", re.I),                        # bare hash/uuid
 )
 
-# A slug-shaped token run with an embedded digit group, e.g.
-# ``q_sample_course_chunk_00190_co-01``. Used only when the declared label is
+# A slug-shaped token run with an embedded digit group. Used only when the declared label is
 # byte-identical to the node id, which is the tell that no human label exists.
 _ID_SHAPED_RE = re.compile(r"^\S+$")
 _DIGIT_RUN_RE = re.compile(r"\d{2,}")

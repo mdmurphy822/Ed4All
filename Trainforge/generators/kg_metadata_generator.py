@@ -1,9 +1,8 @@
 """KG-metadata SFT pair generator.
 
-Audit 2026-04-30 found that the cc07cc76 adapter scored
-faithfulness=0.37 / negative_grounding=0 because the training corpus
-had zero pairs that taught literal KG-membership facts (does chunk X
-assess concept Y? does chunk X belong to module Y?). The eval harness
+The generator addresses corpora that lack pairs teaching literal
+KG-membership facts (does chunk X assess concept Y? does chunk X belong to
+module Y?). The eval harness
 asks exactly those yes/no questions via
 :mod:`Trainforge.eval.faithfulness`'s ``_RELATION_TEMPLATES``, so the
 adapter never had a training signal to learn them.
@@ -56,13 +55,13 @@ logger = logging.getLogger(__name__)
 
 
 # Relation -> (positive template, negative template).
-# Wave 132a: imported from `lib.ontology.relation_templates.RELATION_TEMPLATES`
+# Imported from the canonical relation-template registry
 # so the wording stays bytewise-aligned with the eval-side
 # `Trainforge/eval/faithfulness.py::_RELATION_TEMPLATES`. Drift between
 # train + eval would desync the adapter's training signal from the eval
 # probe — the canonical map is the single source of truth.
 #
-# Pre-Wave-132a this module hand-defined three relations (assesses,
+# The former local table hand-defined three relations (assesses,
 # belongs_to_module, at_bloom_level); the `assesses` wording had drifted
 # vs faithfulness ("chunk" vs "assessment"). The canonical map carries
 # the eval-aligned wording for all 12 relations, so any future relation
@@ -265,7 +264,7 @@ def _last_event_id(capture: Any) -> str:
     """Return the event_id of the most recent decision logged via `capture`.
 
     Mirrors `synthesize_training._last_event_id` so the emitted pairs
-    carry valid `decision_capture_id` strings (Wave 112 invariant).
+    carry valid `decision_capture_id` strings.
     """
     decisions = getattr(capture, "decisions", None) or []
     if not decisions:
@@ -398,10 +397,8 @@ def generate_kg_metadata_pairs(
                 {
                     "option": "all triples (no per-relation cap)",
                     "reason_rejected": (
-                        "graph-rich relations (prerequisite_of has "
-                        "4160 edges in the RDF/SHACL calibration corpus) would crowd out "
-                        "low-volume relations like assessment_validates_"
-                        "outcome (20 edges)."
+                        "high-volume relations would crowd out "
+                        "lower-volume relation families."
                     ),
                 },
             ],
