@@ -43,8 +43,8 @@ logger = logging.getLogger(__name__)
 
 # Pre-compiled alternation of all canonical Bloom verbs, sorted longest
 # first so multi-word verbs (future additions) bind before their prefixes.
-# Source of truth: schemas/taxonomies/bloom_verbs.json via
-# lib.ontology.bloom. Migrated in Wave 1.2 / Worker H (REC-BL-01).
+# Source of truth: ``schemas/taxonomies/bloom_verbs.json`` through
+# ``lib.ontology.bloom``.
 _BLOOM_VERB_ALT = "|".join(
     re.escape(v)
     for v in sorted(_get_all_canonical_verbs(), key=len, reverse=True)
@@ -110,7 +110,7 @@ class TrainforgeRAG:
     - Course-specific and cross-course retrieval
 
     Usage:
-        rag = TrainforgeRAG("int-101")
+        rag = TrainforgeRAG("course-a")
         chunks = rag.retrieve("What is instructional design?", top_k=10)
         for chunk in chunks:
             print(chunk.text, chunk.score)
@@ -121,9 +121,9 @@ class TrainforgeRAG:
         Initialize RAG interface for a course.
 
         Args:
-            course_slug: Course slug (e.g., "int-101")
+            course_slug: Course slug (e.g., "course-a")
         """
-        # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
+        # Resolve the active chunk directory across supported archive layouts.
         from lib.libv2_storage import resolve_imscc_chunks_dir
 
         self.course_slug = course_slug

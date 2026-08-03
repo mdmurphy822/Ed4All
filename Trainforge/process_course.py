@@ -9,7 +9,7 @@ Usage:
     python -m Trainforge.process_course \
         --imscc <IMSCC_PATH> \
         --course-code <course-code> \
-        --division ARTS --domain education --subdomain instructional-design \
+        --division <DIVISION> --domain <DOMAIN> --subdomain <SUBDOMAIN> \
         --output <OUTPUT_DIR>
 
     # With objectives file for Bloom's-based difficulty mapping:
@@ -17,7 +17,7 @@ Usage:
         --imscc <IMSCC_PATH> \
         --objectives <OBJECTIVES_JSON> \
         --course-code <course-code> \
-        --division ARTS --domain education \
+        --division <DIVISION> --domain <DOMAIN> \
         --output <OUTPUT_DIR> \
         --import-to-libv2
 """
@@ -95,7 +95,7 @@ from Trainforge.rag.wcag_canonical_names import canonicalize_sc_references
 # v3: adds outcome_reverse_coverage (metric) + integrity.uncovered_outcomes
 #     (list); guaranteed bloom_level on every chunk via verb/default fallback;
 #     pedagogy_model.json grows module_sequence, bloom_progression,
-#     prerequisite_chain, prerequisite_violations. (Session 1)
+#     prerequisite_chain, prerequisite_violations.
 # v4: adds five flow metrics that surface silent metadata drops:
 #     content_type_label_coverage, key_terms_coverage,
 #     key_terms_with_definitions_rate, misconceptions_present_rate,
@@ -115,8 +115,7 @@ METRICS_SEMANTIC_VERSION = 5
 #   - `source.html_xpath` and `source.char_span`: audit-trail
 #     provenance stamped on every chunk.
 # The string also lands on manifest.json as `chunk_schema_version`. One bump
-# per release train; see ADR-001 Contract 1 and docs/architecture/workers.md
-# for the rebase protocol.
+# per release train; see ADR-001 Contract 1 for the compatibility protocol.
 CHUNK_SCHEMA_VERSION = "v4"
 
 
@@ -129,10 +128,8 @@ CHUNK_SCHEMA_VERSION = "v4"
 # chunk_type. Source of truth:
 # ``schemas/taxonomies/content_type.json::ChunkType``.
 #
-# lifted into the Trainforge.chunker package
-# (``Trainforge.chunker.chunker.CANONICAL_CHUNK_TYPES``). Re-exported here so
-# external importers (``scripts/archive/wave81_reclassify_chunks.py``) keep
-# working without modification.
+# Owned by ``Trainforge.chunker.chunker.CANONICAL_CHUNK_TYPES`` and re-exported
+# here as part of the public ``CourseProcessor`` compatibility surface.
 CANONICAL_CHUNK_TYPES = _PKG_CANONICAL_CHUNK_TYPES
 
 
@@ -146,8 +143,8 @@ USE_CONTENT_HASH_IDS = os.getenv("TRAINFORGE_CONTENT_HASH_IDS", "").lower() == "
 
 
 # env-var-first target-models resolution for the
-# operator-readable `dataset_config.json::target_models` list. Default
-# preserves the previous hardcoded `["claude-opus-4-6",
+# operator-readable `dataset_config.json::target_models` list. The default
+# remains `["claude-opus-4-6",
 # "claude-sonnet-4-6"]` pair; operators retraining against a different
 # teacher set TRAINFORGE_TARGET_MODELS as a comma-separated list.
 TARGET_MODELS_ENV = "TRAINFORGE_TARGET_MODELS"
@@ -225,11 +222,8 @@ def _load_chunk_validator() -> Any:
         _CHUNK_SCHEMA_LOAD_FAILED = True
         return None
 
-    # W-D6: lift the Draft 2020-12 + ``referencing.Registry`` construction
-    # to :func:`lib.utils.build_validator`. The deprecated ``RefResolver``
-    # fallback is dropped — the project depends on ``referencing``
-    # everywhere else, so the historical defensive branch is no longer
-    # load-bearing.
+    # Use the shared Draft 2020-12 validator and referencing registry so schema
+    # resolution follows the repository-wide contract.
     try:
         from lib.utils import build_validator
 
@@ -708,11 +702,9 @@ LOGISTICS_TAG_SET: Set[str] = {
     "correct", "incorrect", "submit", "deadline", "grading",
     "readings", "resources", "learning-objectives",
     "estimated-time", "time", "minutes", "hours",
-    # "feedback" is legitimate pedagogy vocabulary (formative feedback in
-    # course theory courses). For domain courses it reliably pollutes the
-    # concept graph via boilerplate like "you'll receive immediate feedback"
-    # in quiz intros. Routing it to pedagogy_graph keeps the signal without
-    # polluting the domain graph.
+    # ``feedback`` describes a pedagogical interaction rather than a domain
+    # concept. Routing it to the pedagogy graph prevents instructional chrome
+    # from contaminating the domain graph.
     "feedback",
 }
 
@@ -986,34 +978,22 @@ class CourseProcessor:
         # optional path to a pre-built pedagogy graph emitted
         # upstream by the ``concept_extraction`` workflow phase
         # (``MCP/tools/pipeline_tools.py::_run_concept_extraction``). When
-        # provided AND readable, ``_generate_pedagogy_graph`` short-circuits
-        # the in-process ``build_pedagogy_graph`` call and loads the graph
-        # from this path instead. Eliminates redundant graph rebuilds when
-        # the upstream phase already materialised an authoritative graph at
+        # provided and readable, ``_generate_pedagogy_graph`` loads the
+        # authoritative upstream graph instead of rebuilding it at
         # ``LibV2/courses/<slug>/concept_graph/concept_graph_semantic.json``.
-        # When None (legacy / pre-Phase-6 corpora) the existing build path
-        # runs unchanged. The fallback also fires on a missing/unreadable
-        # path so a stale phase-output handoff degrades gracefully rather
-        # than crashing the run.
+        # A missing or unreadable path uses the in-process graph builder.
         self.concept_graph_path: Optional[Path] = (
             Path(concept_graph_path) if concept_graph_path else None
         )
         # optional path to a pre-built IMSCC chunkset emitted
         # upstream by the ``imscc_chunking`` workflow phase
         # (``MCP/tools/pipeline_tools.py::_run_imscc_chunking``). When
-        # provided AND readable, ``process()`` short-circuits the in-process
-        # ``self._chunk_content(parsed_items)`` call and loads the
-        # canonical chunks from this JSONL instead. The
-        # ``imscc_chunking`` phase already runs the canonical chunker
-        # against the packaged IMSCC zip and writes
+        # provided and readable, ``process()`` loads canonical chunks from
+        # this JSONL instead of invoking the in-process chunker. The
+        # ``imscc_chunking`` phase writes
         # ``LibV2/courses/<slug>/imscc_chunks/chunks.jsonl`` BEFORE
-        # ``trainforge_assessment`` dispatches the CourseProcessor — so
-        # re-running the chunker here is purely redundant work. When
-        # None (legacy / pre-Phase-8 callers, e.g. ``python -m
-        # Trainforge.process_course`` standalone) the existing
-        # in-process build path runs unchanged. The fallback also fires
-        # on a missing/unreadable path so a stale phase-output handoff
-        # degrades gracefully rather than crashing the run.
+        # ``trainforge_assessment`` dispatches the processor. A missing or
+        # unreadable path uses the in-process chunker.
         self.imscc_chunks_path: Optional[Path] = (
             Path(imscc_chunks_path) if imscc_chunks_path else None
         )
@@ -1099,15 +1079,9 @@ class CourseProcessor:
             resolved_objectives_path = Path(objectives_path)
             self._objectives_source = "kwarg"
         else:
-            # When no objectives_path is supplied, probe the
-            # canonical auto-synthesized location the planner writes at
-            # ``{project_path}/01_learning_objectives/synthesized_objectives.json``.
-            # ``CourseProcessor`` is invoked with ``output_dir`` pointing
-            # at the Trainforge nested workspace (usually
-            # ``{project_path}/trainforge/``) — the synthesized objectives
-            # live one level up so ``output_dir.parent`` is the first
-            # candidate. For callers who pass the project root
-            # directly we also probe ``output_dir`` itself.
+            # Resolve planner-authored objectives from the canonical location.
+            # A nested Trainforge workspace checks its parent first; a caller
+            # using the project root resolves from ``output_dir`` itself.
             for _candidate_root in (self.output_dir.parent, self.output_dir):
                 _candidate = (
                     _candidate_root
@@ -1146,13 +1120,8 @@ class CourseProcessor:
             _build_outcome_vocabularies(self.objectives)
         )
 
-        # Decision capture
-        # Phase value must be in the canonical enum at
-        # ``schemas/events/decision_event.schema.json`` (hyphenated). Prior
-        # emit used the underscore form ``"content_extraction"`` which failed
-        # closed under ``DECISION_VALIDATION_STRICT=true``. The canonical
-        # enum value for Trainforge's first stage is
-        # ``"trainforge-content-analysis"``.
+        # Decision capture uses the canonical phase enum declared in
+        # ``schemas/events/decision_event.schema.json``.
         self.capture = DecisionCapture(
             course_code=course_code,
             phase="trainforge-content-analysis",
@@ -1821,7 +1790,7 @@ class CourseProcessor:
         if isinstance(_src_doc_sha, str) and _src_doc_sha:
             source["source_document_sha256"] = _src_doc_sha
 
-        # fold DART source provenance into source.source_references[].
+        # fold source-block provenance into ``source.source_references``.
         # Precedence chain (same first-seen-wins policy as the parser):
         #   1. page-level JSON-LD sourceReferences (full shape)
         #   2. section-level JSON-LD sourceReferences (full shape)
@@ -2025,37 +1994,26 @@ class CourseProcessor:
         # ``_extract_section_metadata`` from the matched JSON-LD
         # ``blocks[]`` entry. Conditional on truthy — empty list / None
         # means absent, preserving the back-compat contract that legacy
-        # chunks (built from blocks without the audit arrays, or via the
-        # data-cf-* fallback path) don't carry the new keys at all (not
-        # even as ``[]``). The chunk_v4 schema admits both fields as
-        # optional (W5.C) so strict validation is unaffected when absent.
+        # Chunks without source audit arrays omit these optional fields rather
+        # than emitting empty arrays; the chunk_v4 schema accepts both shapes.
         if section_metadata_extras.get("key_claims"):
             chunk["key_claims"] = section_metadata_extras["key_claims"]
         if section_metadata_extras.get("objective_alignment"):
             chunk["objective_alignment"] = section_metadata_extras["objective_alignment"]
 
-        # W5.G — per-chunk reverse map: for every LO this chunk
-        # claims to teach (chunk["learning_outcome_refs"]), look up the
-        # source-chunk-IDs the page-level JSON-LD declares for that LO
-        # and stamp a {lo_id: [chunk_id, ...]} projection. Lets downstream
-        # consumers (training-pair synthesizer, eval harness) resolve
-        # "which DART/Courseforge chunk(s) source TO-05?" without
-        # re-loading synthesized_objectives.json off disk.
+        # Project each referenced outcome to the source chunk IDs declared by
+        # page-level JSON-LD so downstream consumers can resolve provenance
+        # without reloading the synthesized objectives artifact.
         reverse_map = self._build_learning_outcome_source_refs(
             item, chunk.get("learning_outcome_refs") or []
         )
         if reverse_map:
             chunk["learning_outcome_source_refs"] = reverse_map
 
-        # (W5.F): when the chunk was emitted from a merge_small_sections
-        # boundary, the merged audit arrays passed in via the chunker callback
-        # take precedence (or supplement) the per-section JSON-LD harvest.
-        # ``merge_small_sections`` collapses multiple ContentSections into one
-        # text body; each section may carry its own per-block audit arrays
-        # that the merge collects (concat for key_claims; first-seen-wins
-        # dedupe for objective_alignment). Without this stamp, chunks emitted
-        # from a merge boundary silently drop the audit arrays even when the
-        # source sections carried them.
+        # Merged-section audit arrays take precedence over the per-section
+        # harvest because they represent every source section in the combined
+        # chunk. Key claims concatenate; objective alignment is deduplicated
+        # in first-seen order by the chunker.
         if merged_key_claims:
             chunk["key_claims"] = list(merged_key_claims)
         if merged_objective_alignment:
@@ -2078,8 +2036,8 @@ class CourseProcessor:
         # downstream consumers read the chunk's complete additive reference set.
         retag_chunk_outcomes(
             chunk,
-            parent_map=self._lo_parent_map,
-            vocabularies=self._lo_vocabularies,
+            parent_map=getattr(self, "_lo_parent_map", None),
+            vocabularies=getattr(self, "_lo_vocabularies", None),
         )
 
         # propagate targetedConcepts[] from LOs onto chunks
@@ -2135,12 +2093,8 @@ class CourseProcessor:
             learning_outcome_refs=chunk.get("learning_outcome_refs"),
         )
 
-        # Optional retrieval_text: summary + " " + key_terms_joined. Emitted
-        # only when key_terms exist, since otherwise the field would just
-        # duplicate `summary`. Benchmarked in
-        # Trainforge/rag/retrieval_benchmark.py — on a representative real
-        # course at commit time, retrieval_text lifted recall@5 from 0.0369
-        # (text) to 0.0399 (retrieval_text); small but positive, so we ship it.
+        # Emit ``retrieval_text`` only when key terms add information beyond
+        # the summary; otherwise the field would duplicate ``summary``.
         kt = chunk.get("key_terms")
         if kt:
             kt_parts: List[str] = []
@@ -2189,11 +2143,8 @@ class CourseProcessor:
         # 8601 UTC. Both fields are optional at the schema level — legacy
         # chunks without them continue to validate.
         #
-        # `capture` may be absent in unit tests that bypass __init__
-        # (test_provenance.py pattern); mirror the defensive getattr used
-        # for bloom_source logging at L1346. When capture is absent we
-        # still stamp created_at (datetime.now is always available) but
-        # skip run_id — a run_id requires a DecisionCapture instance.
+        # ``capture`` is optional for callers that construct chunks directly.
+        # ``created_at`` is always available; ``run_id`` requires a capture.
         capture_for_run_id = getattr(self, "capture", None)
         if capture_for_run_id is not None:
             run_id = getattr(capture_for_run_id, "run_id", None)
@@ -2201,18 +2152,17 @@ class CourseProcessor:
                 chunk["run_id"] = run_id
         chunk["created_at"] = datetime.now(timezone.utc).isoformat()
 
-        # CURIE anchoring (U3): fold the data-cf-curie tokens harvested
+        # Fold the ``data-cf-curie`` tokens harvested
         # from the source HTML (force-injected CURIE anchor spans, per
         # the authoritative CURIE set) together with any CURIEs that appear
-        # verbatim in the chunk prose (RDF/SHACL corpora) into the
+        # verbatim in source prose into the
         # chunk's ``curies`` / ``forced_curies`` fields. The downstream
         # ``curie_anchoring`` gate consumes ``curies`` as the
         # authoritative source-CURIE set for a chunk.
         #
         # Conditional stamping (mirrors source_document_sha256 /
         # key_terms): a chunk whose source HTML had no data-cf-curie
-        # span AND no CURIE in prose emits neither key, so legacy / RDF
-        # corpora stay byte-identical except where real CURIEs exist.
+        # span and no CURIE in prose emits neither key.
         # ``forced_curies`` is intersected with ``curies`` to enforce
         # the chunk_v4 subset invariant.
         from lib.ontology.curie_extraction import extract_curies as _extract_curies
@@ -2224,22 +2174,19 @@ class CourseProcessor:
             if _forced:
                 chunk["forced_curies"] = _forced
 
-        # SemantiK migration §4 — chunk-accompanying provenance enrichment.
-        # Six optional chunk-root fields. All omit-when-absent (no null-filled
-        # fields on legacy corpora — mirrors source_document_sha256 / key_terms):
+        # Six optional chunk-root provenance fields use omit-when-absent
+        # semantics, matching ``source_document_sha256`` and ``key_terms``:
         #   * 3 HTML-harvested (block_role / confidence / wcag): from the
-        #     per-chunk ``dart_source_refs`` the chunker resolved off
+        #     per-chunk source references resolved from
         #     data-dart-block-role / data-dart-confidence / data-dart-wcag on
         #     the SAME element as data-dart-block-id (helpers.py same-element
-        #     pairing). When a chunk spans several DART blocks, the FIRST
+        #     pairing). When a chunk spans several source blocks, the FIRST
         #     resolved block (document order) supplies the role/confidence/wcag.
         #   * figure_alt: DOM-side recovery of <figcaption>/<img alt> for a
         #     figure chunk (retrieval-text augmentation + a11y audit).
         #   * 2 doc-level (semantic_preservation_score / certification_status):
-        #     the SemantiK Stage-13 theta + exit-mode signals, stamped from the
-        #     CourseProcessor instance (set by the P3 seam from the doc-level
-        #     sidecar / PipelineV2Result), same value across every chunk of a
-        #     doc (mirrors _source_document_sha256).
+        #     semantic-preservation and exit-certification signals supplied at
+        #     document scope, with the same value on every chunk.
         self._stamp_semantik_chunk_enrichment(
             chunk, dart_source_refs=dart_source_refs, html=html,
             chunk_type=chunk_type,
@@ -2267,15 +2214,13 @@ class CourseProcessor:
         self.stats["difficulty_distribution"][difficulty] += 1
         self._all_concept_tags.update(concept_tags)
 
-        # Add pedagogical-role metadata harvested
-        # from data-dart-unit / data-dart-flow / data-dart-opener). Omit-when-
-        # absent so non-SemantiK IMSCC corpora stay byte-identical.
+        # Add pedagogical-role metadata harvested from source-unit attributes.
+        # Omit it when absent so ordinary IMSCC inputs retain their shape.
         if composite_unit:
             chunk["composite_unit"] = composite_unit
         if unit_roles:
             chunk["unit_roles"] = list(unit_roles)
-        # Build #23 Tier-3: the composite-unit subclass (rides the unit). Omit-
-        # when-absent so non-SemantiK / un-subclassed corpora stay byte-identical.
+        # The optional subclass refines a composite unit without replacing it.
         if unit_subclass:
             chunk["unit_subclass"] = unit_subclass
 
@@ -2321,13 +2266,11 @@ class CourseProcessor:
     ) -> None:
         """Populate the six SemantiK §4 chunk-accompanying-data fields.
 
-        Omit-when-absent throughout — a legacy / non-SemantiK chunk (no
-        enrichment on its source HTML and no doc-level signals on the
-        instance) is stamped with NONE of these fields and stays
-        byte-identical (back-compat, mirrors ``source_document_sha256``).
+        Omit all fields when source HTML and document-level provenance provide
+        no enrichment signals, matching ``source_document_sha256`` semantics.
         """
         # --- 3 HTML-harvested fields (block_role / confidence / wcag) -------
-        # The chunker resolved the DART block(s) overlapping this chunk; the
+        # The chunker resolved the source block(s) overlapping this chunk; the
         # first (document order) supplies the per-block enrichment.
         first_ref: Optional[Dict[str, Any]] = None
         for ref in dart_source_refs or []:
@@ -2356,10 +2299,9 @@ class CourseProcessor:
             if alt:
                 chunk["figure_alt"] = alt
 
-        # --- 2 doc-level fields (theta + exit certification) ----------------
-        # Stamped from CourseProcessor instance attributes the P3 seam sets
-        # from the doc-level sidecar / PipelineV2Result (same value across
-        # every chunk of a doc). Absent attribute / out-of-range value -> omit.
+        # --- 2 document-level fields (semantic score + certification) -------
+        # These processor attributes come from document-level provenance and
+        # apply uniformly to every chunk. Omit absent or invalid values.
         theta = getattr(self, "_semantic_preservation_score", None)
         if isinstance(theta, (int, float)) and not isinstance(theta, bool):
             theta_f = float(theta)
@@ -2531,8 +2473,8 @@ class CourseProcessor:
         re-walking ``courseforge_metadata`` downstream. Shape:
 
           ``{
-                "key_claims":         List[Dict[str, Any]],   # W1.5 / W5.A
-                "objective_alignment": List[Dict[str, Any]],  # W1.7 / W5.A
+                "key_claims":         List[Dict[str, Any]],
+                "objective_alignment": List[Dict[str, Any]],
             }``
 
         Empty lists when the matched block didn't carry the field, when
@@ -2544,28 +2486,23 @@ class CourseProcessor:
         ``trace`` names the
         source path for each field. Values:
 
-          - ``jsonld_blocks_match``         — JSON-LD ``blocks[]`` matched +
-                                              populated (W5.B for the new
-                                              ``key_claims`` / ``objective_alignment``
-                                              entries; pre-existing usage on
-                                              content_type_label / key_terms)
+          - ``jsonld_blocks_match``         — JSON-LD ``blocks[]`` matched and
+                                              populated the requested field
           - ``jsonld_section_match``        — JSON-LD section matched + populated
           - ``jsonld_section_match_empty``  — JSON-LD section matched but that
                                               specific field was empty on it
-                                              (the H3 short-circuit signature
-                                              for key_terms when contentType
-                                              is present but keyTerms is not)
+                                              for key terms when content type
+                                              is present but key terms are not
           - ``data_cf_fallback``            — data-cf-* section path populated
-          - ``none_no_jsonld_sections``     — `cf_meta.sections` absent (H2)
+          - ``none_no_jsonld_sections``     — `cf_meta.sections` absent
           - ``none_jsonld_parse_failed``    — JSON-LD `<script>` present in
-                                              raw HTML but parse failed (H5)
+                                              raw HTML but parsing failed
           - ``none_heading_mismatch``       — sections exist but no heading
-                                              matched the chunk heading (H1)
+                                              matched the chunk heading
           - ``none_no_sections_path``       — this chunk came via the
                                               `item["sections"] is empty`
-                                              code path in `_chunk_content`
-                                              (H4 signature — `section_heading`
-                                              equals the page title, and no
+                                              code path in `_chunk_content`;
+                                              `section_heading` equals the page title and no
                                               section with that heading exists
                                               in the JSON-LD `sections` list)
           - ``none``                        — residual missing
@@ -2573,11 +2510,8 @@ class CourseProcessor:
         bloom_level: Optional[str] = None
         content_type_label: Optional[str] = None
         key_terms: List[Dict[str, str]] = []
-        # Per-block audit arrays harvested from the matched
-        # JSON-LD block. Empty lists by default — populated below when a
-        # ``blocks[]`` entry matches the section heading and carries the
-        # field, or via the data-cf-* fallback path (no-op day-1 — see
-        # comment at the fallback site).
+        # Per-block audit arrays come from the matched JSON-LD block or its
+        # data-cf attribute fallback and remain empty when neither is present.
         section_metadata_extras: Dict[str, Any] = {
             "key_claims": [],
             "objective_alignment": [],
@@ -2586,10 +2520,8 @@ class CourseProcessor:
             "content_type_label": "none",
             "key_terms": "none",
             # Trace entries for the audit fields.
-            # Values: "jsonld_blocks_match" when the matched block populated
-            # the field, "none" otherwise. data-cf-* fallback never sets
-            # these (no current attribute carries them) — symmetric path
-            # left in place for future use.
+            # Values identify whether the matched block populated the field;
+            # current data-cf attributes do not carry these audit arrays.
             "key_claims": "none",
             "objective_alignment": "none",
         }
@@ -2616,19 +2548,16 @@ class CourseProcessor:
         jsonld_has_blocks = bool(cf_meta and cf_meta.get("blocks"))
         jsonld_parse_failed = bool(item.get("_jsonld_parse_failed"))
 
-        # prefer JSON-LD ``blocks[]`` when present.
-        # Courseforge with ``COURSEFORGE_EMIT_BLOCKS=true`` emits a
-        # canonical Phase-2 ``blocks[]`` projection on every page; for
-        # the section-type entries, the legacy ``_section_jsonld()``
+        # Prefer JSON-LD ``blocks[]`` when present. Courseforge with
+        # ``COURSEFORGE_EMIT_BLOCKS=true`` emits this projection on every page;
+        # section-type entries use the ``_section_jsonld()``
         # shape (``{heading, contentType, keyTerms?, bloomRange?, ...}``)
         # is the wire shape. Walk those first and match by heading;
         # populate ``bloom_level``/``content_type_label``/``key_terms``
         # from the matched block. Trace value ``"jsonld_blocks_match"``.
-        # When no block matches in ``blocks[]`` (legacy emit, or a
+        # When no block matches in ``blocks[]`` (absent projection or a
         # heading that drifts from the JSON-LD-keyed heading), fall
-        # through to the existing ``cf_meta["sections"]`` path so
-        # legacy corpora keep their pre-Phase-2 metadata-extraction
-        # semantics unchanged.
+        # through to ``cf_meta["sections"]`` metadata extraction.
         if jsonld_has_blocks:
             for cand in candidate_headings:
                 matched_block = None
@@ -2661,9 +2590,8 @@ class CourseProcessor:
                             {"term": kt["term"], "definition": kt.get("definition", "")}
                         )
                     elif isinstance(kt, str) and kt:
-                        # Phase-2 ``_minimal_block_jsonld`` shape carries
-                        # ``keyTerms`` as a string list (slugs); the
-                        # legacy ``_section_jsonld`` shape carries it as
+                        # Minimal block JSON-LD carries ``keyTerms`` as a
+                        # string list; section JSON-LD carries it as
                         # ``[{term, definition}]`` dicts. Honor both so
                         # the consumer is robust to either emit shape.
                         key_terms.append({"term": kt, "definition": ""})
@@ -2724,7 +2652,7 @@ class CourseProcessor:
                 if key_terms:
                     trace["key_terms"] = "jsonld_section_match"
                 elif content_type_label:
-                    # H3 signature: section matched, contentType set,
+                # The section matched and declared a content type but no key terms.
                     # but keyTerms empty on the section. The data-cf-*
                     # fallback below is gated by `if not content_type_label`
                     # so it never runs — key_terms stays empty.
@@ -2750,20 +2678,10 @@ class CourseProcessor:
                 if matched_section.key_terms:
                     key_terms = [{"term": t, "definition": ""} for t in matched_section.key_terms]
                     trace["key_terms"] = "data_cf_fallback"
-                # Symmetric data-cf-* fallback for the
-                # audit arrays. Day-1 NO-OP — no current data-cf-*
-                # attribute carries ``key_claims`` / ``objective_alignment``
-                # so ``ContentSection.key_claims`` / ``.objective_alignment``
-                # only ever populate via the JSON-LD ``blocks[]`` projection
-                # path in
-                # ``HTMLContentParser._content_sections_from_blocks``
-                # (W5.A). The fallback path is wired in for symmetry with
-                # the content_type / key_terms gates above so a future
-                # data-cf-* attribute (e.g. ``data-cf-key-claims-json``)
-                # would slot in cleanly. When the originating section
-                # carries the field via ``ContentSection`` it lifts here
-                # without further changes; back-compat preserved because
-                # the dataclass defaults to ``[]``.
+                # Mirror the content-type/key-term fallback for audit arrays.
+                # Current data-cf attributes do not carry these values, but a
+                # populated ``ContentSection`` lifts them through this path;
+                # empty dataclass defaults preserve omit-when-absent behavior.
                 section_key_claims = getattr(matched_section, "key_claims", None) or []
                 if section_key_claims and not section_metadata_extras["key_claims"]:
                     section_metadata_extras["key_claims"] = section_key_claims
@@ -2781,27 +2699,24 @@ class CourseProcessor:
                     trace["objective_alignment"] = "data_cf_attr_match"
                 break
 
-        # Categorize remaining `none` values by hypothesis so the trace report
-        # can attribute each failure to H1/H2/H4/H5.
+        # Categorize missing values so the trace report identifies the failed
+        # resolution condition.
         if trace["content_type_label"] == "none":
             if jsonld_parse_failed:
                 trace["content_type_label"] = "none_jsonld_parse_failed"
             elif not jsonld_has_sections:
-                # H2 — JSON-LD for the page either absent or has an empty
-                # `sections` array. No section metadata to match against.
+                # No JSON-LD section metadata is available to match.
                 trace["content_type_label"] = "none_no_jsonld_sections"
             elif section_heading == item.get("title", ""):
-                # H4 — chunk heading is the page title; JSON-LD sections
-                # are keyed by section headings, so structurally no match
-                # is possible on this path.
+                # JSON-LD sections are keyed by section headings, so a chunk
+                # using only the page title cannot match this path.
                 trace["content_type_label"] = "none_no_sections_path"
             else:
-                # H1 — JSON-LD sections populated but the heading drifted
-                # (entity / whitespace / punctuation / case mismatch).
+                # Sections exist, but normalized headings did not match.
                 trace["content_type_label"] = "none_heading_mismatch"
         if trace["key_terms"] == "none":
             # key_terms failure mirrors the content_type outcome for the
-            # non-H3 cases, plus the H3-signature case handled above.
+            # other missing-metadata cases, including the empty-match case.
             if trace["content_type_label"].startswith("none_"):
                 trace["key_terms"] = trace["content_type_label"]
 
@@ -2930,14 +2845,9 @@ class CourseProcessor:
     NON_CONCEPT_TAGS = _concept_tagging.NON_CONCEPT_TAGS
 
     def _extract_concept_tags(self, text: str, item: Dict[str, Any]) -> List[str]:
-        # Delegates to the instance-free ``extract_concept_tags`` helper
-        # in ``lib/ontology/concept_tagging.py``. The helper was lifted
-        # out of this method so the canonical DART chunkset path
-        # (``MCP/tools/pipeline_tools.py::_run_dart_chunking``) can emit
-        # real ``concept_tags`` instead of ``[]`` — it has no
-        # ``CourseProcessor`` instance, so the per-course
-        # ``domain_concept_seeds`` is threaded as a parameter rather
-        # than read off ``self``.
+        # Delegate to the instance-free helper shared by processor and
+        # pipeline chunking paths. Runtime domain seeds are passed explicitly
+        # because the shared helper has no ``CourseProcessor`` instance.
         #
         # Pipeline shape:
         #   normalize_tag (HTML-decoded, slugified)
@@ -3025,9 +2935,8 @@ class CourseProcessor:
             if obj_id:
                 _extend(_normalize(obj_id))
 
-        # (2) Fallback: regex extraction from key_concepts when no
-        # structured IDs were available. Preserves prior behavior of
-        # returning-early when refs already populated from (1).
+        # (2) Use regex extraction from key concepts only when structured IDs
+        # supplied no references.
         if not refs:
             for concept in item.get("key_concepts", []):
                 tag = normalize_tag(concept)
@@ -3069,11 +2978,10 @@ class CourseProcessor:
         walks the page-level JSON-LD ``learningObjectives[]`` looking for
         a matching ``id`` (case-insensitive) and harvests the
         ``sourceReferences[].sourceId`` strings so downstream consumers
-        can resolve "which DART/Courseforge chunk(s) source TO-05?"
-        without reloading ``synthesized_objectives.json``.
+        can resolve which source chunks support an outcome without reloading
+        ``synthesized_objectives.json``.
 
-        Output key case follows the JSON-LD emit case (e.g. ``TO-05``,
-        not the chunk's lowercased ``to-05``); chunk lookup is
+        Output key case follows the JSON-LD emit case; chunk lookup is
         case-insensitive so a lowercased chunk ref can still match a
         canonical-cased LO id.
 
@@ -3188,11 +3096,7 @@ class CourseProcessor:
 
     @staticmethod
     def _extract_plain_text(html: str) -> str:
-        # canonical implementation lives in
-        # ``Trainforge.chunker.helpers.extract_plain_text``. The wrapper
-        # delegates so DART / Courseforge / Trainforge can converge on
-        # one HTML-text extraction surface without breaking
-        # any existing call site here.
+        # Delegate to the canonical shared HTML-text extraction surface.
         from Trainforge.chunker.helpers import extract_plain_text
 
         return extract_plain_text(html)
@@ -3300,12 +3204,9 @@ class CourseProcessor:
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(chunks, f, indent=2, ensure_ascii=False)
 
-        # parity assertion. chunks.json must round-trip to the
+        # ``chunks.json`` must round-trip to the
         # exact same chunk list (ordered + content-equal) as chunks.jsonl.
-        # Serialization parity protects against format-specific normalization
-        # normalization re-emitted only the streaming format; we now read
-        # both back from disk and fail loud on any divergence so future
-        # patches can never silently regress one format.
+        # Reading both files back fails loudly on format-specific divergence.
         _assert_chunk_files_parity(jsonl_path, json_path)
 
         self.capture.log_decision(
@@ -3530,13 +3431,9 @@ class CourseProcessor:
                     statement = (entry.get("misconception") or "").strip()
                     correction = (entry.get("correction") or "").strip()
                     explicit_cid = (entry.get("concept_id") or "").strip() or None
-                    # Bloom level (canonicalized lowercase in the
-                    # html_content_parser misconception normalizer) now
-                    # participates in the seed so Bloom-distinct
-                    # misconceptions emit distinct IDs. Breaking change: old
-                    # corpora re-chunked under this wave will see new
-                    # misconception IDs (documented below).
-                    # mirror the ``.strip().lower()`` normalization
+                    # Include the normalized Bloom level in the identity seed
+                    # so cognitively distinct misconceptions receive distinct
+                    # IDs. Mirror the ``.strip().lower()`` normalization
                     # from ``preference_factory._misconception_id`` so the
                     # two hash call sites stay lock-step even when a direct
                     # chunk-construction path bypasses the html_content_parser
@@ -3719,10 +3616,8 @@ class CourseProcessor:
 
         llm_callable = None
         if self.typed_edges_llm:
-            # Placeholder hook — a future Trainforge LLM provider plugs in
-            # here. Current behavior: log a non-decision and fall back to
-            # rule-only output, keeping the flag semantically valid without
-            # shipping a live LLM call path.
+            # Record that no LLM callable is provisioned and retain rule-only
+            # typed-edge output.
             try:
                 self.capture.log_non_decision(
                     decision_type="typed_edge_inference",
@@ -3802,21 +3697,15 @@ class CourseProcessor:
         itself dedups by (lo_id, concept_id) inside each LO, but a clean
         input list also avoids log spam.
 
-        Two-pass dedup keeps JSON-LD entries authoritative before reconstructed
-        per item, which meant an early item's dataclass fallback (typically
-        with empty ``targetedConcepts``) could shadow a later item's richer
-        JSON-LD payload for the same LO. The docstring claimed JSON-LD was
-        preferred but the per-item interleaving broke that guarantee for
-        mixed corpora (legacy pages + JSON-LD pages sharing LO IDs). Now
-        we do Path 1 across *all* items first, then Path 2 fills any LOs
-        still absent — the "JSON-LD preferred" promise actually holds.
+        Two-pass dedup processes every JSON-LD entry before reconstructing
+        entries from parsed objects, so direct source metadata remains
+        authoritative regardless of page order.
 
         Within Path 1, the first rich JSON-LD payload encountered for a
         given ``id`` wins; duplicate JSON-LD entries for the same id on
         later items are dropped (no deep-merge). Likewise within Path 2.
-        This keeps dedup deterministic and list-order-driven; if a future
-        wave needs cross-page concept-union it should be a new helper, not
-        a silent behavior change here.
+        This keeps dedup deterministic and list-order-driven without silently
+        unioning concept lists across duplicate entries.
         """
         by_id: Dict[str, Dict[str, Any]] = {}
 
@@ -3835,8 +3724,7 @@ class CourseProcessor:
                 # Shallow copy so we don't mutate the parsed item.
                 by_id[lo_id] = dict(raw_lo)
 
-        # Pass 2: reconstruct from parsed LearningObjective dataclass for
-        # LOs not covered by Pass 1 (legacy corpora / non-Courseforge IMSCC).
+        # Pass 2 reconstructs only objectives absent from direct JSON-LD.
         for item in parsed_items:
             for parsed_lo in item.get("learning_objectives") or []:
                 # Dataclass or dict — support both.
@@ -3911,21 +3799,11 @@ class CourseProcessor:
         method returns an empty graph shell so the rest of metadata
         emit proceeds. Mirrors the ``semantic_graph`` fail-soft pattern.
 
-        When ``self.concept_graph_path`` is set, the
-        upstream ``concept_extraction`` workflow phase ran and wrote
-        ``LibV2/courses/<slug>/concept_graph/concept_graph_semantic.json``),
-        load the pre-built pedagogy graph from disk instead of
-        re-invoking ``build_pedagogy_graph``. The upstream phase
-        runs the same builder, so the rebuild here is purely
-        redundant work — and re-running it inside the IMSCC-driven
-        path can produce a slightly different graph because the
-        chunk projection differs (DART staging sections vs. v4
-        IMSCC chunks). Reading the upstream artifact pins both
-        callers to the same graph. Falls through to the in-process
-        build path on (a) ``concept_graph_path is None`` (legacy
-        corpora), (b) the path doesn't exist, or (c) the file is
-        unreadable — so a stale phase-output handoff degrades
-        gracefully rather than crashing the run.
+        When ``self.concept_graph_path`` names a readable
+        ``LibV2/courses/<slug>/concept_graph/concept_graph_semantic.json``,
+        load that authoritative graph instead of rebuilding it from a
+        potentially different chunk projection. A missing, absent, or
+        unreadable path falls through to the in-process builder.
 
         The ``concept_extraction`` phase emits
         a genuine ``kind: "concept_semantic"`` graph at that path, NOT a
@@ -4029,20 +3907,14 @@ class CourseProcessor:
                     continue
                 if not isinstance(klass, str) or not klass:
                     continue
-                # Strip the ``course_id:`` prefix when SCOPE_CONCEPT_IDS
-                # is on so the builder sees the bare slug it was
-                # designed against (mirrors the helper in
-                # scripts/archive/wave75_classify_concept_graph.py). Also key
-                # by the full ID so the builder's lookups land
-                # regardless of scoping mode.
+                # Index both the bare slug and full scoped ID so builder
+                # lookups work in either scoping mode.
                 slug = raw_id.split(":", 1)[-1]
                 concept_classes[slug] = klass
                 concept_classes[raw_id] = klass
 
-        # ``self.objectives`` may be missing (legacy
-        # ``CourseProcessor.__new__`` callers in existing tests bypass
-        # the constructor) or None; treat both as empty so the builder
-        # still emits BloomLevel + DifficultyLevel typed nodes.
+        # Treat absent objectives as empty so the builder still emits the
+        # canonical BloomLevel and DifficultyLevel typed nodes.
         raw_objectives = getattr(self, "objectives", None)
         objectives = raw_objectives if isinstance(raw_objectives, dict) else {}
 
@@ -4085,16 +3957,14 @@ class CourseProcessor:
         This method delegates to
         ``lib.ontology.cooccurrence_graph.build_cooccurrence_graph`` — the
         instance-free helper that is the single source of truth for the
-        co-occurrence build. The IMSCC path (this method, via
-        ``_generate_concept_graph``) and the DART
+        co-occurrence build. The IMSCC path and the
         ``textbook_to_course::concept_extraction`` phase
         (``MCP/tools/pipeline_tools.py::_run_concept_extraction``) both call
         the same helper, so they emit byte-equivalent graphs (modulo the
         wall-clock ``generated_at``) from identical chunk inputs.
 
-        ``course_code`` may be unset when the graph builder is called on a
-        bare processor (e.g. unit tests using ``__new__``); fall back to an
-        empty string → the helper treats empty as "no course_id" and emits
+        ``course_code`` may be unset for a partially initialized processor;
+        an empty value tells the helper to emit
         flat slugs even under ``TRAINFORGE_SCOPE_CONCEPT_IDS``.
         """
         from lib.ontology.cooccurrence_graph import build_cooccurrence_graph
@@ -4364,11 +4234,9 @@ class CourseProcessor:
         misconceptions_present_rate = chunks_with_mis / mis_denom if eligible else 0.0
 
         # 5. interactive_components_rate
-        # Interactive components are NOT threaded onto chunks today (they live
-        # on parsed_items only — see FOLLOWUP-WORKER-B-1). We fall back to
-        # regex-detecting the same COMPONENT_PATTERNS the parser uses against
-        # each chunk's own HTML, so the metric still reports flow without
-        # requiring a chunk-schema change.
+        # Interactive-component metadata lives on parsed items rather than
+        # chunks. Detect the parser's canonical component patterns in each
+        # chunk's HTML so the flow metric remains observable.
         from Trainforge.parsers.html_content_parser import HTMLContentParser
         patterns = HTMLContentParser.COMPONENT_PATTERNS
         compiled = [re.compile(p, re.IGNORECASE) for p in patterns.values()]
@@ -4418,8 +4286,8 @@ class CourseProcessor:
                 "COMPONENT_PATTERNS (flip-card, accordion, tabs, callout, "
                 "knowledge-check, activity-card). Interactive components are "
                 "not yet threaded onto chunks as a first-class field — this "
-                "regex fallback is intentional (FOLLOWUP-WORKER-B-1) and will "
-                "be revisited when chunk-schema provenance exposes it directly."
+                "regex fallback remains the observable source until chunk "
+                "provenance exposes interactive components directly."
             ),
         }
 
@@ -4912,7 +4780,7 @@ class CourseProcessor:
         Always materialize course.json. When
         ``self.objectives`` is ``None`` (neither ``objectives_path``
         kwarg nor the synthesized-objectives sidecar was available),
-        we now emit a valid shell:
+        emit a valid shell:
 
             {"course_code": ..., "title": ...,
              "learning_outcomes": [], "note": "..."}
@@ -4938,10 +4806,8 @@ class CourseProcessor:
             # chapter_objectives can come in two shapes —
             #   (a) nested: [{"chapter": "Week 1", "objectives": [{...}, ...]}]
             #   (b) flat:   [{"id": "co-01", "parent_to": "to-01", ...}, ...]
-            # The planning agent emits the flat
-            # form; Trainforge fixtures may use the nested form. Supporting
-            # both ensures component objectives propagate into
-            # the LibV2 archive's course.json.
+            # Supporting both shapes preserves every component objective in
+            # the LibV2 archive's ``course.json``.
             for ch in self.objectives.get("chapter_objectives", []):
                 if isinstance(ch, dict) and "objectives" in ch:
                     inner = ch.get("objectives") or []
@@ -5175,14 +5041,8 @@ class CourseProcessor:
 
         _write(self.output_dir / "manifest.json", manifest)
 
-        # course.json — structured learning outcomes for LibV2 validator.
-        # Gap 4: always write course.json (including the
-        # empty-learning_outcomes shell with a ``note`` field) so LibV2
-        # archival always lands a file and downstream retrieval joins
-        # have something to look at. legacy this was gated on
-        # ``self.objectives`` being truthy, so pipeline runs that
-        # auto-synthesized objectives without threading the path in
-        # never emitted course.json.
+        # Always write structured learning outcomes, including an empty shell
+        # with a note, so archival and retrieval have a stable course contract.
         course_data = self._build_course_json(manifest)
         _write(self.output_dir / "course.json", course_data)
 
@@ -5206,9 +5066,8 @@ class CourseProcessor:
             _write(self.graph_dir / "pedagogy_graph.json", pedagogy_graph)
         if semantic_graph is not None:
             _write(self.graph_dir / "concept_graph_semantic.json", semantic_graph)
-            # additionally emit a TriG file with per-rule named
-            # graphs when TRAINFORGE_EMIT_TRIG is on. Default off → this
-            # branch never fires for legacy consumers.
+            # Emit per-rule named graphs only when ``TRAINFORGE_EMIT_TRIG``
+            # materialized a dataset.
             trig_dataset = getattr(self, "_semantic_graph_trig_dataset", None)
             if trig_dataset is not None:
                 try:
@@ -5524,10 +5383,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main():
     args = build_parser().parse_args()
 
-    # Require either a course_metadata.json stub or a
-    # --domain CLI flag. The processor can boot with defaults for legacy
-    # pipelines that set --division but not --domain, but an empty primary
-    # domain is a misconfiguration worth catching before Stage 1.
+    # Require a metadata stub or explicit domain so an empty primary domain is
+    # rejected before processing begins.
     if args.domain is None:
         imscc_path = Path(args.imscc)
         has_stub = (imscc_path.parent / "course_metadata.json").exists()

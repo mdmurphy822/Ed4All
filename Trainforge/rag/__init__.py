@@ -9,7 +9,7 @@ Usage:
     from Trainforge.rag import TrainforgeRAG, get_rag_for_course
 
     # Query-based retrieval for a specific course
-    rag = get_rag_for_course("int-101")
+    rag = get_rag_for_course("course-a")
     chunks, metrics = rag.retrieve("What is instructional design?", top_k=10)
 
     # Retrieve for a specific learning objective
