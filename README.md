@@ -33,7 +33,6 @@ Accessible HTML · Digital course + IMSCC · Grounded training data · Hybrid re
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/License-Apache--2.0-22C55E)](LICENSE)
-[![CI](https://github.com/mdmurphy822/Ed4All/actions/workflows/ci.yml/badge.svg)](https://github.com/mdmurphy822/Ed4All/actions/workflows/ci.yml)
 
 [Get started](#quick-start) · [See the pipeline](#from-source-to-course-grounded-ai) · [Explore the components](#components) · [Read the documentation](#documentation)
 
