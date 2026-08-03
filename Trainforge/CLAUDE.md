@@ -679,6 +679,18 @@ programmatic and pipeline callers set the env vars directly. Omitting the flag
 leaves the environment untouched; an ambient value that *disagrees* with the
 flag raises `SynthesisContractConflict` rather than being silently overridden.
 
+The versioned micro contract is `ed4all.staged-synthesis-micro.v1`. Its source
+support policy pins entailment `0.70` and contradiction `0.50`; selecting the
+contract does not change those gates. A CLI/environment disagreement is
+reported as `synthesis_contract_conflict`. Publication authority remains the
+journal state `committed_complete`; `terminal_hold` units are not published.
+Select it explicitly with `--synthesis-contract micro-v1` or the process-level
+`TRAINFORGE_STAGED_SYNTHESIS_MICRO_V1` flag.
+Long-running work continues to poll the stop sentinel and maintain its resume
+sidecar at unit boundaries. The post-synthesis gates remain unchanged, and
+with `TRAINFORGE_STAGED_SYNTHESIS_MICRO_V1` unset the provider follows the
+byte-identical legacy route.
+
 **Pipeline runs are `staged-v4`.** `MCP/core/workflow_runner.py` setdefaults
 `TRAINFORGE_STAGED_SYNTHESIS_V4=true` for every `textbook_to_course` /
 `course_generation` run and passes no CLI selector.
