@@ -1601,8 +1601,7 @@ workflows:
 
       # SEMANTIK_HEADING_JUDGE permanent wiring — post-conversion Super
       # heading-level judge over the GLM-OCR lane's {stem}.glmocr_layout.json
-      # sidecars (validated live 2026-07-18: 1525/1528 pendings judged,
-      # residual 1154->1, zero level skips). Validator-only phase routed by
+      # sidecars. Validator-only phase routed by
       # NAME via MCP/core/executor.py::_PHASE_TOOL_MAPPING['heading_judge']
       # -> run_heading_judge (agents: [] => the runner synthesizes one
       # virtual phase-handler task). SEMANTIK_HEADING_JUDGE is DEFAULT-ON
@@ -1627,14 +1626,14 @@ workflows:
         # judge's SEMANTIK_HEADING_JUDGE_SEAT_CONTEXT=auto reads that seat's
         # max_model_len and derives its window budgets, so no hand-set 250k/65k
         # split is needed. (LEGACY vLLM option: a SEPARATE big-context
-        # 250k/4-seq Super — historically the distinct `spark-super-hj` seat on
+        # 250k/4-seq Super — a distinct `spark-super-hj` seat on
         # its own port — can still be swapped in for this phase alone by
         # registering it and pointing SEMANTIK_HEADING_JUDGE_BASE_URL at it; see
         # docs/operations/behavior-flags.md. Not needed on one TRT seat.)
         seats: [spark-super]
         depends_on: [semantik_conversion]
         # Per-chapter subprocess timeout is SEMANTIK_HEADING_JUDGE_CHAPTER_TIMEOUT
-        # (default 5400 s); a 10-chapter book judged serially needs a generous
+        # (default 5400 s); multi-chapter books judged serially need a generous
         # phase ceiling. Per-window resume cache (heading_judge_cache, default
         # ON) makes a resumed/re-run phase nearly free.
         timeout_minutes: 600

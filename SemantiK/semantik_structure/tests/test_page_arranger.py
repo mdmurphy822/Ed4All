@@ -5,8 +5,8 @@ Covers: flag-off byte-identical route probe (ZERO extraction), the 3-rung ladder
 invariant, furniture -> metadata_drop listed-but-empty, the resume sidecar
 (hit skips POST, a failed page is not cached), stop mid-fan-out
 (persist + propagate), the deterministic hints + hints_provider stub, the
-schema_version-2 label factory, the DecisionCapture emit, and the FIGURE arm
-(task #49 — deterministic figure Regions + the mandatory page-raster guard).
+schema_version-2 label factory, the DecisionCapture emit, and deterministic
+figure Regions with the mandatory page-raster guard.
 """
 from __future__ import annotations
 
@@ -836,7 +836,7 @@ def test_resolve_md_heading_promote_defaults(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# (m) FIGURE arm (task #49) — deterministic figure Regions on the arranger lane,
+# (m) Deterministic figure Regions on the arranger lane,
 #     page-raster-guarded, spliced into reading order.
 # ---------------------------------------------------------------------------
 def _img_fb(*, page=1, bbox=(50.0, 100.0, 250.0, 300.0)):
@@ -1089,7 +1089,7 @@ def test_is_page_raster_candidate_predicate():
 
 
 def test_page_raster_guard_survives_ocr_lane_mixed_coordinate_spaces():
-    """REGRESSION (real-data bug, task #49): on the OCR/scan lane — the ONLY lane
+    """On the OCR/scan lane — the only lane
     this guard runs on — TEXT FeatureBlocks carry IMAGE-PIXEL-space bboxes and page
     dims (1224x1584 at OCR render scale 2.0) while an ImageCandidate bbox is
     PDF-POINT space (612x792). ``features._interleave_image_feature_blocks`` copies
@@ -1098,8 +1098,8 @@ def test_page_raster_guard_survives_ocr_lane_mixed_coordinate_spaces():
 
     An earlier guard read its dims off that FB and measured a FULL-PAGE raster as
     (612*792)/(1224*1584) = 25% coverage -> under threshold -> KEEP. On the real
-    198-page scanned chapter all 198/198 page rasters slipped through and would
-    have shipped as <img> (a photograph of every page: WCAG 1.4.5 images-of-text).
+    page rasters can slip through and ship as images of entire pages, violating
+    WCAG 1.4.5.
 
     The guard must therefore take its dims from the PDF extraction (POINT space,
     the candidate bbox's own space). This test pins that: the image FB carries the
@@ -1201,17 +1201,8 @@ def test_build_figure_region_from_candidate_shape():
 # ROOT CAUSE: extraction is clean — the running
 # header / folio and the section title arrive as SEPARATE units — but the ARRANGE
 # MODEL groups them into ONE block, after which every existing mechanism damages
-# the title. The four shapes below are the four REAL broken titles, pinned:
-#
-#   §1.3  "Chapter 1 Foundations 41" + "1.3 Add and Subtract Integers"
-#           -> shipped as ONE heading with the running header glued on (WRONG TEXT)
-#   §1.4  "64 Chapter 1 Foundations" + "1.4 Multiply and Divide Integers"
-#           -> `_is_wholly_furniture` PREFIX-matches the header on the JOINED text
-#              and demotes the WHOLE block to furniture: the title is DESTROYED
-#   §1.6  "95" + "1.6 Add and Subtract Fractions"
-#           -> shipped as the heading "95 1.6 Add and Subtract Fractions" (WRONG TEXT)
-#   §1.7  "111" + "1.7 Decimals" + <the whole page body>
-#           -> one over-merged block, demoted `too_long`: the title is BURIED
+# the title. Fixtures cover running-header fusion, folio fusion, and an
+# over-merged body without retaining source text.
 # ---------------------------------------------------------------------------
 def _units(*texts, page=1):
     return [
@@ -1251,13 +1242,13 @@ def _all_ids(arr):
 # --- the PEEL arm -----------------------------------------------------------
 def test_peel_rescues_running_header_fused_section_title_1_3():
     """§1.3: header + title fused into ONE heading -> furniture + CLEAN title."""
-    units = _units("Chapter 1 Foundations 41", "1.3 Add and Subtract Integers")
+    units = _units("Chapter 7 Reference 41", "7.3 Neutral Section Title")
     arr = {"blocks": [{"type": "heading", "level": 1, "ids": ["p1_b00", "p1_b01"]}]}
     recs = pa.apply_furniture_unit_peel(arr, _by_id(units), enabled=True)
     assert [r["op"] for r in recs] == ["furniture_unit_peel"]
     assert arr["blocks"][0]["type"] == "furniture"
     assert arr["blocks"][0]["ids"] == ["p1_b00"]
-    assert _heads(arr, _by_id(units)) == [(1, "1.3 Add and Subtract Integers")]
+    assert _heads(arr, _by_id(units)) == [(1, "7.3 Neutral Section Title")]
 
 
 def test_peel_saves_title_the_furniture_demote_would_have_destroyed_1_4():
@@ -1284,11 +1275,11 @@ def test_peel_saves_title_the_furniture_demote_would_have_destroyed_1_4():
 
 
 def test_peel_strips_bare_folio_from_heading_text_1_6():
-    """§1.6: the heading shipped as '95 1.6 Add and Subtract Fractions' (WRONG TEXT)."""
-    units = _units("95", "1.6 Add and Subtract Fractions")
+    """A bare folio must not remain in emitted heading text."""
+    units = _units("95", "7.6 Neutral Section Title")
     arr = {"blocks": [{"type": "heading", "level": 2, "ids": ["p1_b00", "p1_b01"]}]}
     pa.apply_furniture_unit_peel(arr, _by_id(units), enabled=True)
-    assert _heads(arr, _by_id(units)) == [(2, "1.6 Add and Subtract Fractions")]
+    assert _heads(arr, _by_id(units)) == [(2, "7.6 Neutral Section Title")]
 
 
 def test_peel_preserves_the_demote_verdict_never_rescues_prose():
@@ -1322,7 +1313,7 @@ def test_peel_only_touches_heading_blocks_and_conserves_units():
 
 
 def test_peel_flag_off_byte_identical():
-    units = _units("Chapter 1 Foundations 41", "1.3 Add and Subtract Integers")
+    units = _units("Chapter 7 Reference 41", "7.3 Neutral Section Title")
     arr = {"blocks": [{"type": "heading", "level": 1, "ids": ["p1_b00", "p1_b01"]}]}
     snap = json.dumps(arr, sort_keys=True)
     assert pa.apply_furniture_unit_peel(arr, _by_id(units), enabled=False) == []
@@ -1429,8 +1420,8 @@ def test_carve_flag_off_byte_identical():
 def test_section_title_levels_nav_for_first_h5_for_summary_repeat():
     """Vendor parity: each section title is <h3> at its section start and <h5> in the
     end-of-chapter summary. Arranger level N renders h(N+1), so 2 then 4."""
-    u_start = _units("1.3 Add and Subtract Integers", page=37)
-    u_sum = _units("1.3 Add and Subtract Integers", page=181)
+    u_start = _units("7.3 Neutral Section Title", page=37)
+    u_sum = _units("7.3 Neutral Section Title", page=181)
     results = {
         37: {"status": "ok", "arrangement": {"blocks": [
             {"type": "heading", "level": 1, "ids": ["p37_b00"]}]}},
@@ -1439,7 +1430,7 @@ def test_section_title_levels_nav_for_first_h5_for_summary_repeat():
     }
     recs = pa.apply_section_title_levels(
         [37, 181], results, {37: u_start, 181: u_sum},
-        {"add and subtract integers"}, enabled=True,
+        {"neutral section title"}, enabled=True,
     )
     assert [r["reason"] for r in recs] == ["section_start", "repeat_of_section_title"]
     assert results[37]["arrangement"]["blocks"][0]["level"] == 2   # -> <h3>, nav
@@ -1459,7 +1450,7 @@ def test_section_title_levels_leave_undeclared_section_shaped_headers_alone():
 
 
 def test_section_title_levels_flag_off_byte_identical():
-    units = _units("1.3 Add and Subtract Integers", page=37)
+    units = _units("7.3 Neutral Section Title", page=37)
     results = {37: {"status": "ok", "arrangement": {"blocks": [
         {"type": "heading", "level": 1, "ids": ["p37_b00"]}]}}}
     snap = json.dumps(results, sort_keys=True)
@@ -1483,7 +1474,7 @@ def test_resolve_title_rescue_defaults(monkeypatch):
 def test_title_rescue_flag_salts_the_page_sidecar_fingerprint(monkeypatch):
     """The peel is BAKED into the cached arrangement, so a flag flip MUST move the
     key — else a stale pre-peel sidecar is served and the fix silently no-ops."""
-    units = _units("Chapter 1 Foundations 41", "1.3 Add and Subtract Integers")
+    units = _units("Chapter 7 Reference 41", "7.3 Neutral Section Title")
     monkeypatch.setenv("SEMANTIK_ARRANGER_TITLE_RESCUE", "1")
     on = pa._unit_fingerprint(units, "", model="m", include_image=True)
     monkeypatch.setenv("SEMANTIK_ARRANGER_TITLE_RESCUE", "0")
@@ -1492,7 +1483,7 @@ def test_title_rescue_flag_salts_the_page_sidecar_fingerprint(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# (o) ARRANGER-OVERLAP figure VETO (SEMANTIK_ARRANGER_FIGURE_VETO) — task #58.
+# (o) ARRANGER-OVERLAP figure VETO (SEMANTIK_ARRANGER_FIGURE_VETO).
 #
 # The last blocker on flipping SEMANTIK_VLM_FIGURE_DETECT on. The detect lane's
 # residual defect is a badly-LOCALIZED proposal that slices text out of a ruled
@@ -1606,7 +1597,7 @@ def test_veto_uses_fraction_covered_NOT_iou():
 
 
 def test_veto_handles_the_mixed_pixel_vs_point_coordinate_spaces():
-    """The load-bearing coordinate contract -- a real bug lived in this exact spot.
+    """The load-bearing coordinate contract for mixed point and pixel spaces.
 
     Figure bboxes are POINT space; OCR text/table bboxes are PIXEL space. If the two
     were compared raw (no normalization), a figure at points (100,250)-(500,320)

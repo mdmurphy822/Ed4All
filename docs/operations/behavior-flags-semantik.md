@@ -280,7 +280,7 @@ posture.
 
 | Flag | Default | Consumer |
 |------|---------|----------|
-| `SEMANTIK_ARXIV_REPO` | a `papers` dir under the operator's home | Points the offline eval-corpus builders under `SemantiK/scripts/` (`build_eval_corpus_manifest.py`, `pair_from_arxiv.py`, `measure_stage5_heading_rate.py`) at a local arxiv paper repo. |
+| `SEMANTIK_ARXIV_REPO` | a `papers` dir under the operator's home | Points the offline eval-corpus builders under `SemantiK/scripts/` (`build_eval_corpus_manifest.py`, `pair_from_arxiv.py`) at a local arxiv paper repo. The heading-rate diagnostic takes an explicit input manifest instead of discovering operator files. |
 | `SEMANTIK_STRUCTURE_ALIGNER` | unset (CLI arg wins) | Aligner selector for the offline training-data builder `SemantiK/data/builders/build_structure_data.py` (`--aligner` overrides it). |
 | `SEMANTIK_RENDER_AUGMENT` | unset (off) | Render-augmentation gate for the offline label-render pipeline (`SemantiK/data/augmentation/render_augment.py`). |
 | `SEMANTIK_EXACT_RENDER_LABELS` | unset (off) | Exact-render-label mode for the offline label capture (`SemantiK/data/augmentation/render_capture.py`). |

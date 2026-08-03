@@ -80,17 +80,6 @@ WARNING_TEXT = (
 )
 
 
-# Side-by-side bench PDFs — present in the working tree but used during
-# development (NOT formally trained on). Treated as weakly-held-out;
-# noted in every report.
-_SIDE_BY_SIDE_DIRS = (
-    "eval/side_by_side/tables_heavy_ml_v7",
-    "eval/side_by_side/math_heavy_short_v7",
-    "eval/side_by_side/shades_of_accessibility_v7",
-    "eval/side_by_side/2209.03909v1_v7adapter",
-)
-
-
 def _read_pair_field_set(jsonl_path: Path) -> set[str]:
     """Collect the `pair` field of every record in a dataset jsonl.
 
@@ -563,10 +552,17 @@ def main(argv: list[str] | None = None) -> int:
         "--side-by-side",
         dest="side_by_side",
         action="store_true",
-        default=True,
-        help="Include eval/side_by_side/* PDFs (default on, weakly-held-out).",
+        default=False,
+        help="Include PDFs supplied by --side-by-side-dir (off by default).",
     )
     ap.add_argument("--no-side-by-side", dest="side_by_side", action="store_false")
+    ap.add_argument(
+        "--side-by-side-dir",
+        action="append",
+        type=Path,
+        default=[],
+        help="Explicit benchmark directory containing input.pdf; repeatable.",
+    )
     ap.add_argument(
         "--out",
         type=Path,
@@ -616,8 +612,8 @@ def main(argv: list[str] | None = None) -> int:
         "--isolate-per-pdf",
         action="store_true",
         help="Run each PDF's cascade in a fresh subprocess so the OS reclaims "
-        "all VRAM between PDFs. REQUIRED for multi-PDF --runtime real on "
-        "the 8GB card: a single process accumulates VRAM (cached BERTs + "
+        "all VRAM between PDFs. Use for multi-PDF --runtime real when a "
+        "single process accumulates VRAM (cached BERTs + "
         "theta + captioner + per-PDF Qwen GGUF) and OOMs on the 2nd PDF.",
     )
     ap.add_argument(
@@ -631,11 +627,17 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = ap.parse_args(argv)
+    if args.manifest is not None and (args.side_by_side or args.side_by_side_dir):
+        ap.error("--manifest cannot be combined with side-by-side inputs")
+    if args.side_by_side_dir:
+        args.side_by_side = True
+    if args.side_by_side and not args.side_by_side_dir:
+        ap.error("--side-by-side requires at least one --side-by-side-dir")
 
     def log(msg: str) -> None:
         print(msg, flush=True)
 
-    # ---------- manifest mode (Plan 12 C1) ----------
+    # ---------- pinned-manifest mode ----------
     # A manifest pins the exact PDF set (stratified, seed-built, trained-pair-
     # excluded at build time). Missing PDFs are a hard error — never silently
     # evaluate a smaller corpus than the manifest promises.
@@ -737,10 +739,11 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         if args.side_by_side:
-            for rel in _SIDE_BY_SIDE_DIRS:
-                p = repo_root / rel / "input.pdf"
-                if p.exists():
-                    side_by_side_paths.append(p)
+            for directory in args.side_by_side_dir:
+                p = directory.expanduser() / "input.pdf"
+                if not p.is_file():
+                    raise FileNotFoundError(f"benchmark input does not exist: {p}")
+                side_by_side_paths.append(p)
             log(f"[eval] side-by-side PDFs: {len(side_by_side_paths)} (weakly-held-out)")
 
     # ---------- HARD held-out assertion (gate 2) ----------

@@ -14,12 +14,17 @@ Saves the full measurement to ``data/eval_reports/stage5_heading_rate.json``
 and prints a thresholds × PDFs table.
 
 Usage:
-    .venv/bin/python scripts/analysis/measure_stage5_heading_rate.py
+    .venv/bin/python scripts/analysis/measure_stage5_heading_rate.py \
+        --input-manifest <INPUT_MANIFEST>
+
+The manifest is a JSON array of objects with ``label`` and ``pdf`` keys and
+optional ``description`` and ``reference_html`` keys. Inputs are deliberately
+operator-supplied; this tracked diagnostic contains no corpus paths.
 """
 from __future__ import annotations
 
 import json
-import os
+import argparse
 import re
 import sys
 import time
@@ -30,55 +35,26 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-# External arXiv paper repo (machine-specific) for the one out-of-tree probe
-# below; supplied via SEMANTIK_ARXIV_REPO, falling back to ``~/arxiv-repo/papers``.
-# No hardcoded absolute path in tracked code.
-_ARXIV_REPO = Path(
-    os.environ.get("SEMANTIK_ARXIV_REPO", str(Path.home() / "arxiv-repo" / "papers"))
-).expanduser()
-
-
-# Diverse 5-PDF sample. Four are eval/side_by_side fixtures (covering
-# tables-heavy ML, math-heavy physics, prose whitepaper, ML / quantum
-# theory), one is an arxiv local PDF outside the eval/ set so we don't
-# overfit to fixtures we're already optimizing for.
-_PDFS: list[tuple[str, str, Path, Path | None]] = [
-    (
-        "tables_heavy_ml",
-        "ML paper, tables-heavy (KOSS state spaces, 28pp)",
-        _REPO_ROOT / "eval/side_by_side/tables_heavy_ml_v7/input.pdf",
-        # Use v7 output.html as the only available HTML reference.
-        # NOT a perfect ground truth (v7 itself over-fires headings),
-        # but it's the closest reference we have for this fixture.
-        _REPO_ROOT / "eval/side_by_side/tables_heavy_ml_v7/output.html",
-    ),
-    (
-        "math_heavy_short",
-        "Math-heavy physics paper (firewall black holes)",
-        _REPO_ROOT / "eval/side_by_side/math_heavy_short_v7/input.pdf",
-        None,
-    ),
-    (
-        "shades_of_accessibility",
-        "Long-prose accessibility whitepaper (legal/policy)",
-        _REPO_ROOT / "eval/side_by_side/shades_of_accessibility_v7/input.pdf",
-        None,
-    ),
-    (
-        "2209.03909_quantum",
-        "ML+physics arxiv paper (structured negativity)",
-        _REPO_ROOT / "eval/side_by_side/2209.03909v1_v7adapter/input.pdf",
-        None,
-    ),
-    (
-        "0705.1680_bayesian_nn",
-        "cs.CE / Bayesian Neural Networks for option pricing",
-        _ARXIV_REPO / "other/cs_CE/0705.1680v1_Option Pricing Using Bayesian Neural Networks.pdf",
-        None,
-    ),
-]
-
 _THRESHOLDS: tuple[float, ...] = (0.5, 0.6, 0.7, 0.8, 0.9)
+
+
+def _load_inputs(path: Path) -> list[tuple[str, str, Path, Path | None]]:
+    """Load and validate explicit diagnostic inputs."""
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, list) or not payload:
+        raise ValueError("--input-manifest must contain a non-empty JSON array")
+    rows = []
+    for index, item in enumerate(payload):
+        if not isinstance(item, dict) or not item.get("label") or not item.get("pdf"):
+            raise ValueError(f"manifest row {index} requires label and pdf")
+        pdf = Path(item["pdf"]).expanduser()
+        if not pdf.is_file():
+            raise FileNotFoundError(f"manifest PDF does not exist: {pdf}")
+        ref = Path(item["reference_html"]).expanduser() if item.get("reference_html") else None
+        if ref is not None and not ref.is_file():
+            raise FileNotFoundError(f"manifest reference HTML does not exist: {ref}")
+        rows.append((str(item["label"]), str(item.get("description", "")), pdf, ref))
+    return rows
 
 
 def _count_html_headings(html_path: Path) -> int:
@@ -166,17 +142,18 @@ def _measure_one(pdf_path: Path) -> dict:
     }
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input-manifest", type=Path, required=True)
+    parser.add_argument("--out", type=Path, default=_REPO_ROOT / "data/eval_reports/stage5_heading_rate.json")
+    args = parser.parse_args(argv)
+    pdfs = _load_inputs(args.input_manifest)
     out: dict = {
         "thresholds": list(_THRESHOLDS),
         "pdfs": {},
     }
 
-    for label, desc, pdf_path, ref_html in _PDFS:
-        if not pdf_path.exists():
-            print(f"[skip] {label}: PDF not found at {pdf_path}",
-                  file=sys.stderr)
-            continue
+    for label, desc, pdf_path, ref_html in pdfs:
         print(f"\n=== {label} :: {pdf_path} ===")
         m = _measure_one(pdf_path)
         if ref_html is not None:
@@ -208,7 +185,7 @@ def main() -> None:
     )
     print(header)
     print("-" * len(header))
-    for label, _desc, _pdf, _ref in _PDFS:
+    for label, _desc, _pdf, _ref in pdfs:
         if label not in out["pdfs"]:
             continue
         m = out["pdfs"][label]
@@ -222,7 +199,7 @@ def main() -> None:
     print("-" * 78)
     print(header)
     print("-" * len(header))
-    for label, _desc, _pdf, _ref in _PDFS:
+    for label, _desc, _pdf, _ref in pdfs:
         if label not in out["pdfs"]:
             continue
         m = out["pdfs"][label]
@@ -232,7 +209,7 @@ def main() -> None:
         )
         print(f"{label:<26} {m['n_feature_blocks']:>5}  {cells}")
 
-    out_path = _REPO_ROOT / "data/eval_reports/stage5_heading_rate.json"
+    out_path = args.out
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(out, indent=2))
     print(f"\n[save] {out_path}")

@@ -5,7 +5,7 @@ Covers:
   (b) the deterministic accept gate — every rejection reason, esp. the two that
       matter: the PAGE-RASTER backstop and the TEXT-COLUMN (WCAG 1.4.5) guard
   (c) the coordinate-space contract for the text-column guard (the OCR-lane
-      pixel-vs-point trap that a real bug lived in)
+      pixel-vs-point coordinate contract)
   (d) the DETECT call shape + tolerant parse
   (e) DecisionCapture FIRES on the call path with a dynamic rationale (REQUIRED
       — this is a new LLM call site)
@@ -158,8 +158,8 @@ def test_text_column_guard_rejects_a_LARGE_body_text_crop():
 
     The box must be LARGE (>= _COVERAGE_MIN_AREA) for this arm to apply: on a
     scanned page the OCR line boxes blanket a SMALL figure, so coverage saturates
-    and gating small boxes on it rejects genuine figures (measured 0.94-1.00 on
-    real pizza/counters figures). Small boxes are guarded by the word-count arm.
+    and gating small boxes on it rejects genuine figures. Small boxes are
+    guarded by the word-count arm.
     """
     text = [(0.10, 0.10 + i * 0.03, 0.48, 0.12 + i * 0.03) for i in range(25)]
     box = (0.09, 0.09, 0.49, 0.85)
@@ -172,15 +172,13 @@ def test_text_column_guard_rejects_a_LARGE_body_text_crop():
 
 
 def test_coverage_arm_does_NOT_fire_on_a_SMALL_genuine_figure():
-    """THE REGRESSION THIS PINS (live production defect).
+    """Coverage must not reject small figures.
 
     OCR line boxes blanket a small figure sitting between two text lines, so its
-    measured coverage saturates (0.938 / 1.000 on REAL pizza-fraction and counters
-    figures). Gating small boxes on coverage rejected 5 of 6 GENUINE figures and
-    emitted ZERO <img>. The arm must not apply below _COVERAGE_MIN_AREA.
+    coverage saturates. The arm must not apply below _COVERAGE_MIN_AREA.
     """
     blanket = [(0.0, 0.60, 1.0, 0.80)]  # one wide OCR line box over the figure
-    box = (0.23, 0.65, 0.34, 0.72)      # a real pizza figure: area ~0.008
+    box = (0.23, 0.65, 0.34, 0.72)      # representative small figure
     area = (box[2] - box[0]) * (box[3] - box[1])
     assert area < vfd._COVERAGE_MIN_AREA
     assert vfd._text_coverage(box, blanket) == 1.0  # coverage SATURATES
@@ -772,9 +770,7 @@ def test_grid_rejector_NEVER_rejects_a_number_line():
 
 
 def test_grid_rejector_is_not_fooled_by_a_solid_fill():
-    """A photograph / shaded diagram is dark everywhere. Without the THINNESS
-    test, a naive dark-run count read the real bathroom-scale photo as 286
-    vertical 'rules' and the shaded nested-set diagram as 253."""
+    """A photograph or shaded diagram must not resemble isolated thin rules."""
     np = _np()
     assert vfd.crop_has_ruled_grid(_photo_raster(np), _box()) == (0, 0)
     assert vfd.is_grid_region(_box(), page_gray=_photo_raster(np)) is False

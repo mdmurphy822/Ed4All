@@ -74,8 +74,7 @@ _TRANSIENT_RETRIES = 2  # extra attempts after the first, linear backoff
 # that invariant. Env-tunable via SEMANTIK_HEADING_JUDGE_MAX_TOKENS (raise it
 # only alongside SEMANTIK_HEADING_JUDGE_CTX_BUDGET for a longer-window seat).
 _MAX_TOKENS_CEILING = 30000
-# Floor raised 4096 -> 16384 (trial-3, 2026-07-18) -> 20480 (2026-07-23): the
-# completion budget must hold the THINKING block too — a thinking-ON judgment
+# The completion budget must hold the THINKING block too — a thinking-ON judgment
 # over a ~96-pending window deliberates 5-15k tokens before the JSON, so the old
 # floor length-exhausted EVERY window (and its doubled retry), yielding zero
 # verdicts. reasoning_budget is dead on this seat (chat template ignores it);
@@ -85,9 +84,8 @@ _MAX_TOKENS_CEILING = 30000
 # thinking alone needed >16384. 20480 clears that with headroom.
 _MAX_TOKENS_FLOOR = 20480
 
-#: Concurrent window POSTs (trial-3: sequential windows made a 4-window chapter
-#: a 30-40 min pass; the windows are independent judgments, the seat batches
-#: them, and the reasoning-QC fan-out precedent applies). Bounded, floor 1.
+#: Concurrent window POSTs. Windows are independent judgments that the seat can
+#: batch. Bounded, floor 1.
 _WINDOW_CONCURRENCY = 4
 
 # OUTPUT-side window cap: the ladder above was input-token driven only, so a
@@ -100,8 +98,8 @@ _WINDOW_CONCURRENCY = 4
 _MAX_PENDING_PER_WINDOW = 96
 
 # Per-JUDGMENT completion-token estimate driving the pending-count window cap
-# (whole-book reference-corpus audit, 2026-07-22): a thinking-ON judgment costs far
-# more than its emitted JSON line (~24 tok) — the deliberation ALSO scales with
+# A thinking-ON judgment costs more than its emitted JSON line because the
+# deliberation also scales with
 # the pending count, so a 78-pending window granted floor + 24×78 = 18,256
 # tokens exhausted (finish=length) while its 39-pending half completed within
 # 17,320. Implied per-judgment cost ≈ 105-290 tokens depending on the base
@@ -125,13 +123,9 @@ _MAX_TOKENS_PER_PENDING = _EST_TOKENS_PER_JUDGMENT
 # THINKING block — a thinking-ON judgment deliberates 5-15k tokens before the
 # JSON. But heading-leveling is a CLASSIFICATION task and the judge now runs
 # REASONING-OFF by DEFAULT (`resolve_heading_judge_enable_thinking`, False), so a
-# judgment is ~24 tokens of pure JSON with NO `<think>` block. With thinking off
-# the 20480 floor therefore hands EVERY tiny window a 20k-token runaway license:
-# an OpenStax judge run (2026-07-23, TRT-LLM Super, thinking-off) produced ONE
-# `finish_reason=length` truncation — a ~1140-prompt / ~4-pending window budgeted
-# 20480 + 300×4 = 21680 free-ran to a degenerate-repetition 21680-token
-# completion over 12.6 min (every healthy window was 800-1400 tok / 30-56s). The
-# thinking-OFF budgets collapse to JSON-sized values so `clamp(512 + 64·n, 512,
+# judgment emits compact JSON with NO `<think>` block. The thinking-sized floor
+# would therefore give small windows unnecessary room for degenerate repetition.
+# The thinking-OFF budgets collapse to JSON-sized values so `clamp(512 + 64·n, 512,
 # 4096)` bounds the real output; the pending-window cap self-consistently becomes
 # `(4096-512)/64 = 56`. CONSUMED ONLY when thinking is OFF — a thinking-ON run
 # keeps the values above (or the seat-context-derived path) BYTE-IDENTICALLY.
@@ -332,9 +326,7 @@ class SkeletonPlan:
 class ApplyResult:
     #: verdicts RECORDED on a pending heading (a level was written + the
     #: pending flag cleared). NOT the number of headings whose level moved —
-    #: see ``changed`` / ``agreed``. (2026-07-22 misdiagnosis: an
-    #: ``applied=58`` summary was read as "58 headings re-levelled" when only
-    #: 28 of those verdicts differed from the level already on the region.)
+    #: see ``changed`` / ``agreed``.
     applied: int = 0
     clamped: int = 0
     dropped: int = 0
@@ -376,13 +368,11 @@ class _JudgeTransportError(Exception):
         self.aborted = aborted
 
 
-# ── Failure MECHANISM taxonomy (2026-07-22 seat-death incident). ────────────
+# ── Failure mechanism taxonomy. ─────────────────────────────────────────────
 # A chapter that ends 100% UNJUDGED is a REAL failure, and the operator must be
 # told WHY. Before this taxonomy every non-verdict collapsed into an anonymous
-# "truncation hole" warning, so a seat that was `docker stop`ped mid-flight (the
-# incident: a third concurrent run's seat schedule stopped ``spark-super`` while
-# two judge POSTs were generating → vLLM "Aborting 5 requests" → HTTP 200 with
-# ``finish_reason='abort'`` + a partial body that cannot parse) read exactly
+# "truncation hole" warning. A seat stopped mid-flight can return HTTP 200 with
+# ``finish_reason='abort'`` and a partial body, which must not be classified
 # like an over-deliberating model. These tokens ride the report meta so the
 # pipeline seam can name the mechanism in its warning.
 MECHANISM_SEAT_ABORTED = "seat_aborted"
@@ -447,10 +437,9 @@ def _add_mechanism(wmeta: Dict[str, Any], token: str) -> None:
 
 
 # ── Real-tokenizer token counting (SEMANTIK_HEADING_JUDGE_TOKENIZER). ────────
-# The char heuristics (chars//4 sizer, chars//3 guard) UNDERCOUNT real tokens
-# badly on dense/math content (a real OpenStax window: 68,675 real tokens vs a
-# 56,576 chars//4 estimate, 0.82x), so normalized-mode windows land ~20-40%
-# over the W target and crowd the seat limit. When enabled (the `auto` DEFAULT)
+# The char heuristics (chars//4 sizer, chars//3 guard) can undercount dense or
+# mathematical content, making normalized windows exceed their target and crowd
+# the seat limit. When enabled (the `auto` DEFAULT),
 # `_count_tokens` uses the JUDGE MODEL's OWN tokenizer (loaded ONCE, OFFLINE);
 # any load failure falls back to a CONSERVATIVE `ceil(len/3)` divisor (never the
 # chars//4 legacy — the fallback must OVER-count for safety). `off` reverts to
@@ -1179,12 +1168,8 @@ def _build_chapter_mode_plan(
 # interior-slice-wins fallback) reconciles the double-judgments (the REDUCE)
 # before the existing whole-doc final reviewer runs. Default OFF → byte-identical
 # (chapter_slices is None on every non-normalized path).
-# Default percentile 100 (was 75): an A/B (OpenStax 10-chapter) proved the
-# NORMALIZE architecture is STRUCTURALLY NEUTRAL on heading recall (identical
-# 104/107 sections + identical per-chapter recall to 4 decimals vs
-# non-normalized) — its only measured benefit was bounding a truncation runaway,
-# which the thinking-aware max_tokens cap now handles directly. So normalize is
-# scoped to its legitimate correctness job: SPLIT a chapter only when its
+# Percentile 100 scopes normalization to its correctness job: split a chapter
+# only when its
 # one-window size genuinely EXCEEDS the seat digest budget (P=100 → W =
 # min(digest_budget, max_chapter)). A lower P proactively BALANCES typical-outlier
 # chapters — a wall-clock cost with no measured recall gain — and stays reachable
@@ -1688,8 +1673,8 @@ def _post_judge_completion(
         ) from exc
     _emit_usage_row(data.get("usage"), model=model, duration_ms=_duration_ms,
                     finish_reason=finish)
-    # SEAT-DEATH guard (seat-death incident 2026-07-22): vLLM answers an
-    # aborted request with HTTP 200 + ``finish_reason='abort'`` and whatever
+    # A seat may answer an aborted request with HTTP 200,
+    # ``finish_reason='abort'``, and whatever
     # partial tokens it had emitted. That body can never parse as a verdict, so
     # letting it fall through to ``parse_judge_response`` mislabels a dead seat
     # as a model-quality parse failure AND skips the retry ladder entirely.
@@ -2965,10 +2950,8 @@ def judge_heading_levels(
         detail = (f" [{meta['failure_detail']}]"
                   if meta.get("failure_detail") else "")
         if total_pending and len(unjudged_final) >= total_pending:
-            # A 100%-unjudged chapter is a REAL FAILURE, never a judged keep —
-            # the fail-open keeps every pre-judge level, so it MUST be loud
-            # (2026-07-22 incident: this shipped as an INFO "2 judged / 0
-            # failed" summary while the seat had been killed mid-flight).
+            # A 100%-unjudged chapter is a real failure, never a judged keep.
+            # The fail-open keeps every pre-judge level, so it must be loud.
             logger.error(
                 "heading-judge: ALL %d pending heading(s) left UNJUDGED "
                 "across %d window(s) — the judge produced NO usable verdict "
@@ -3136,7 +3119,7 @@ def apply_judged_levels(
         result.applied += 1
         if clamped:
             result.clamped += 1
-        # VERDICT RECORDED vs LEVEL CHANGED (2026-07-22 misdiagnosis guard):
+        # Distinguish a recorded verdict from an effective level change:
         # a verdict that re-confirms the level already on the region is a
         # no-op for the render, so it must never be counted as a re-levelling.
         # This is exactly how an idempotent re-judge of an ALREADY-judged
@@ -4065,8 +4048,8 @@ def run_heading_judge(
         "kept": result.kept,
         "kept_judged": result.kept_judged,
         "unjudged": result.unjudged,
-        # MECHANISM surface (2026-07-22 incident): an unjudged chapter must
-        # carry WHY at the top level, not only buried in ``meta``.
+        # An unjudged chapter carries its mechanism at the top level, not only
+        # inside ``meta``.
         "failure_modes": list(meta.get("failure_modes") or []),
         "unjudged_reason": meta.get("unjudged_reason"),
         "windows": len(plan.windows),

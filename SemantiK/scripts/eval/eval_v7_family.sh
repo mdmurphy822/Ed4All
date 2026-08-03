@@ -4,10 +4,10 @@
 # math-heavy-short silent crash on 8GB VRAM after 3 sequential reasoner loads).
 #
 # Usage:
-#   scripts/eval/eval_v7_family.sh [pdf...]
+#   scripts/eval/eval_v7_family.sh PDF [PDF ...]
 #
-# With no args, defaults to the three input_pdfs/ samples that fed the
-# 2026-04-25 v7_family_eval. ADAPTER and CLASSIFIER are env-overridable.
+# At least one PDF argument is required. ADAPTER and CLASSIFIER are
+# env-overridable; tracked code carries no corpus defaults.
 #
 # Outputs:
 #   data/logs/v7_eval_<slug>.log         per-PDF stdout+stderr
@@ -22,18 +22,11 @@
 set -u  # NOT -e: continue on per-PDF failures
 cd "$(dirname "$0")/.."
 
-# The sample PDF family lives in-repo under eval/side_by_side/*.
-DEFAULT_PDFS=(
-  "eval/side_by_side/math_heavy_short_v7/input.pdf"
-  "eval/side_by_side/shades_of_accessibility_v7/input.pdf"
-  "eval/side_by_side/2209.03909v1_v7adapter/input.pdf"
-)
-
-if [[ $# -gt 0 ]]; then
-  PDFS=("$@")
-else
-  PDFS=("${DEFAULT_PDFS[@]}")
+if [[ $# -eq 0 ]]; then
+  echo "usage: $0 PDF [PDF ...]" >&2
+  exit 2
 fi
+PDFS=("$@")
 
 # ENGINE: 'council' (default) runs the production v2 cascade (BERT council +
 # Qwen GGUFs + theta v8) — this is the path that exercises the retrained

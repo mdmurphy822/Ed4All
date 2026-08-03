@@ -36,7 +36,7 @@ Design invariants (mirroring the reasoning-QC pass and the scan-lane de-BERT gat
   stop-sentinel probe before each submission, worst-case loss ≤ concurrency).
 * **Coverage invariant.** Every non-image FeatureBlock lands in exactly one
   emitted Region (asserted) — the anti-content-loss contract (the class of defect
-  the whole task targets). Since the FIGURE ARM (task #49) every synthetic image
+  the whole task targets). Since the FIGURE ARM every synthetic image
   FeatureBlock that SURVIVES the page-raster guard is likewise claimed by exactly
   one figure Region; a page-raster image FB (the image IS the scanned page) is
   DELIBERATELY excluded — neither expected nor claimed (see
@@ -50,7 +50,7 @@ Bypassed on the arranger route (documented in the cascade seam): council heads
 clean_structure / Stage-5d reviewer / Stage-5e resegment / Stage-5d-router
 passes. Retained unchanged: Stage 5b/5c/6/6b/7-13 (gates, assembler,
 reasoning-QC, theta, exit) + the whole ``region_provenance`` / adapter contract.
-Stage 5c/6b are now REACHABLE on this lane (task #49): the figure arm forms
+Stage 5c/6b are now REACHABLE on this lane: the figure arm forms
 figure Regions DETERMINISTICALLY from the synthetic image FeatureBlocks
 ``SEMANTIK_DETECT_FIGURES`` interleaves, so the downstream bbox→PNG render +
 captioner see them (they were previously a natural no-op — the lane emitted zero
@@ -113,9 +113,9 @@ _RENDER_SCALE = 2.3
 _RENDER_MAX_PX = 1500
 _CACHE_BASENAME = "page_arranger_cache"
 
-# --- ARRANGER-OVERLAP VETO (task #58) — see apply_figure_overlap_veto ---
+# --- ARRANGER-OVERLAP VETO (overlap veto) — see apply_figure_overlap_veto ---
 #
-# TODO(task #58, OPEN): the images-of-text class is NOT closed by this veto
+# TODO(overlap veto, OPEN): the images-of-text class is NOT closed by this veto
 # because the defect region is typed
 # `paragraph`, not `table`; see apply_figure_overlap_veto's docstring).
 #
@@ -172,7 +172,7 @@ _FIGURE_VETO_MIN_COVERED = 0.50
 # to recover (see the function docstring).
 _FIGURE_VETO_KINDS = frozenset({"table"})
 
-_RUNNING_HEADER_MIN_SHARE = 0.35  # TODO(calibration) — task #43 pending live re-validation
+_RUNNING_HEADER_MIN_SHARE = 0.35  # TODO(calibration) — arranger calibration pending live re-validation
 
 __all__ = [
     "resolve_page_arranger_mode",
@@ -481,7 +481,7 @@ def resolve_page_arranger_route(pdf_path: Any) -> "Optional[ArrangerRoute]":
     it). Fail-soft: any extraction/lane error logs a warning and returns ``None``
     (the cascade falls back to the council path — never a crash).
 
-    **VLM figure-DETECT seam (task #56).** When ``SEMANTIK_VLM_FIGURE_DETECT`` is
+    **VLM figure-DETECT seam (figure detection).** When ``SEMANTIK_VLM_FIGURE_DETECT`` is
     on, the detector runs HERE — after ``extract_shared_cached``, BEFORE
     ``featurize_with_regions`` — injecting its accepted sub-page figure bboxes
     into ``shared['pages'][i]['images']``. That is the ONLY correct seam: the
@@ -1089,21 +1089,19 @@ def apply_md_heading_promote(
 # ---------------------------------------------------------------------------
 # Part C4: SECTION-TITLE RESCUE (SEMANTIK_ARRANGER_TITLE_RESCUE).
 #
-# Root cause of the scan lane's section-heading recall gap: some apparent hits
-# were recovered only from an end-of-chapter summary, not the section start.
+# Prevent page furniture from being fused into a real section heading.
 #
 #   EXTRACTION is CLEAN — the running header / folio and the section title arrive
-#   as SEPARATE units ("Chapter 1 Foundations 41" then "1.3 Add and Subtract
-#   Integers"; "111" then "1.7 Decimals"). The ARRANGE MODEL then groups them
+#   as SEPARATE units. The ARRANGE MODEL can then group them
 #   into ONE block. From there every existing mechanism damages the title:
 #     * `_is_wholly_furniture` PREFIX-matches the running header on the JOINED
 #       text → the whole block (title included) is demoted to `furniture` and
-#       DROPPED (this killed §1.4 and §1.8);
+#       DROPPED;
 #     * or the block survives typed `heading` and ships the furniture glued on
-#       ("95 1.6 Add and Subtract Fractions" — a WRONG heading, worse than a
-#       missing one: it poisons downstream TO/CO synthesis);
+#       (a wrong heading, worse than a missing one because it poisons downstream
+#       objective synthesis);
 #     * or the model over-merges the folio + title + the whole page body into one
-#       block that heading-sanity demotes `too_long`, burying the title (§1.7).
+#       block that heading-sanity demotes `too_long`, burying the title.
 #   `_extract_tail_title` cannot recover any of these: it splits on a newline /
 #   sentence boundary INSIDE one unit's text, and here the title IS its own unit.
 #
@@ -1149,7 +1147,7 @@ def apply_furniture_unit_peel(
     This arm owns TEXT only — it never sets a level. Heading LEVEL for a section
     title is owned solely by :func:`apply_section_title_levels`, the one pass that
     can see the document's outline and so can tell a DECLARED section title
-    ("1.3 Add and Subtract Integers") from a merely section-SHAPED apparatus header
+    ("7.3 Neutral Section Title") from a merely section-SHAPED apparatus header
     ("1.3 EXERCISES Practice Makes Perfect") that must not be promoted into nav.
 
     Coverage-safe: units are RE-PARTITIONED, never added or dropped, so every
@@ -1469,7 +1467,7 @@ def apply_section_title_levels(
 
     This is the ONLY pass that may set a section title's level, because it is the
     only one that can see the document's chapter outline — and the outline is what
-    separates a real section title ("1.3 Add and Subtract Integers") from a merely
+    separates a real section title ("7.3 Neutral Section Title") from a merely
     section-SHAPED apparatus header ("1.3 EXERCISES Practice Makes Perfect", which
     the outline does NOT declare and which therefore must keep whatever level the
     arrange model gave it — promoting it into nav would invent a section).
@@ -2478,7 +2476,7 @@ def _split_list_items(texts: list[str]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Part F2: the FIGURE arm (task #49) — deterministic, model-free.
+# Part F2: deterministic figure-region construction.
 #
 # The council lane forms figure Regions in structure_graph Pass-3a, which this
 # lane BYPASSES, so before this arm every image was silently DROPPED here. The
@@ -2489,8 +2487,7 @@ def _split_list_items(texts: list[str]) -> list[str]:
 # THE PAGE-RASTER GUARD IS MANDATORY, not optional. The arranger lane fires on
 # the OCR/scan lane, i.e. a page-raster scan, where image page-objects can cover
 # nearly the whole page without representing genuine sub-page figures. A naive
-# "one figure Region per image FB" would emit
-# 198 <img>, each a photograph of an ENTIRE textbook page — a WCAG 1.4.5
+# "one figure Region per image FB" would emit one image of each entire page — a WCAG 1.4.5
 # images-of-text regression duplicating every body paragraph as pixels. The guard
 # (``structure_graph.is_page_raster_candidate``) excludes them; a genuine sub-page
 # figure on the same page is still emitted.
@@ -2579,7 +2576,7 @@ def build_figure_regions(
 def _page_norm_dims(shared: dict) -> "tuple[dict, dict]":
     """Return ``(point_dims, text_dims)`` — ``{page_num: (w, h)}`` for BOTH spaces.
 
-    **The coordinate-space contract, and a real bug lives here** (the SAME trap
+    **Coordinate-space contract** (the same mismatch
     :func:`~structure_graph.is_page_raster_candidate` and
     ``vlm_figure_detect._page_items_norm`` document). A figure Region's bbox comes
     from its synthetic image FeatureBlock, whose bbox is **PDF-POINT** space
@@ -2674,17 +2671,14 @@ def apply_figure_overlap_veto(
 
     Returns ``(kept, vetoed, stats)``.
 
-    THE SIGNAL (task #58). The VLM figure-DETECT lane's last residual defect is a
+    The VLM figure-DETECT lane can produce a
     badly-LOCALIZED proposal that clips text out of a ruled table WITHOUT enclosing
     any of its rules — for example, when the model boxes a decimal-point-move
     caret and draws sloppy strips that slice through the table's
     PROSE. They carry **no grid evidence inside the box**, so no crop-local signal
     can see them: the grid rejector finds no rules, the word guard must ignore
     digits (or it kills number lines), the coverage arm saturates on small figures.
-    Six candidate crop-local signals were measured against the real crops and
-    REFUTED (page-level grid containment, padded-crop rules, graphic-ink ratio,
-    text-straddle, proposal overlap, and model confidence — a constant 0.9 on every
-    proposal, entirely uninformative).
+    Crop-local signals cannot recover context that lies outside the proposed box.
 
     **The signal the crop cannot see is the ARRANGER's own typing.** If the
     arranger already decided that rectangle of the page IS a ``table``, then a
@@ -2698,7 +2692,7 @@ def apply_figure_overlap_veto(
     order. So the veto cannot be wired from ``vlm_figure_detect``; it must be a
     POST-ARRANGEMENT pass, here, once the arrangement exists and regions are typed.
 
-    **MEASURED OUTCOME — READ THIS BEFORE EXTENDING THE VETO (task #58).** In
+    **Scope constraint.** In
     regression evaluation this pass is a **no-op for accepted figures and does
     not close the localization defect it targets.** The table-region machinery
     remains active, so
@@ -2726,11 +2720,8 @@ def apply_figure_overlap_veto(
     space (:func:`_page_norm_dims`) — figures are POINT-space, OCR text regions are
     PIXEL-space, and comparing them raw is meaningless.
 
-    ``exercise_list`` IS DELIBERATELY NOT A VETO KIND. It was measured. Number
-    lines — the single most valuable figure class in this corpus — sit inside and
-    beside exercise lists constantly, so vetoing on ``exercise_list`` destroys
-    exactly what the lane exists to recover. A veto that improves precision by
-    killing number lines is a FAILURE, not a win. ``table`` alone.
+    ``exercise_list`` IS DELIBERATELY NOT A VETO KIND because legitimate figures
+    can sit inside or beside exercise lists. ``table`` alone.
 
     THE ARRANGER PROPOSES THE TYPING; THIS DETERMINISTIC CODE DECIDES THE VETO.
     No new decider and **no new LLM call** is introduced — the arrangement was
@@ -3017,7 +3008,7 @@ class ArrangerRoute:
             except Exception as exc:  # noqa: BLE001
                 _log(f"[cascade] page-arranger continues finalize failed: {exc}")
 
-        # FIGURE arm (task #49): deterministic figure Regions from the synthetic
+        # FIGURE arm: deterministic figure Regions from the synthetic
         # image FBs, page-raster-guarded, spliced into READING ORDER among the
         # arranged text regions. Natural no-op when SEMANTIK_DETECT_FIGURES is
         # off (no image candidates exist) → byte-identical region list.
@@ -3032,7 +3023,7 @@ class ArrangerRoute:
             page_dims_from_shared(self.shared),
         )
 
-        # ARRANGER-OVERLAP VETO (task #58): now that the page is ARRANGED and its
+        # ARRANGER-OVERLAP VETO (overlap veto): now that the page is ARRANGED and its
         # regions are TYPED, drop any figure lying substantially inside a region
         # the arranger typed `table` — a crop of a table is images-of-text (WCAG
         # 1.4.5), and this is the ONE signal the crop-local guards cannot see (the

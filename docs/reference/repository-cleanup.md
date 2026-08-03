@@ -16,6 +16,7 @@ Installation and dependency acquisition live in
 | Root operational scripts | Imports, command examples, tests, and history | Grouped under `scripts/ops/`, `scripts/harness/`, `scripts/integration/`, `scripts/codegen/`, or `scripts/archive/` by responsibility |
 | SemantiK scripts | Python imports, shell entry points, tests, and subprocess paths | Grouped by analysis, calibration, datasets, evaluation, smoke testing, and training; the cascade entry point remains flat |
 | SemantiK data utilities | Package imports, generated-artifact boundaries, and tests | Grouped into alignment, augmentation, builders, common helpers, and source adapters |
+| SemantiK evaluation inputs | Script defaults, comments, fixtures, workflow guidance, and operator paths | Removed tracked corpus identities and benchmark defaults; diagnostics now require explicit operator-supplied inputs and fail loudly when absent |
 | Courseforge scripts and docs | Import paths, packaging commands, tests, and user journeys | Grouped by packaging, rendering, validation, guides, and reference material |
 | Trainforge synthesis modules | MCP dispatch, imports, CLIs, and compatibility tests | Canonical implementation moved to `Trainforge/synthesis/`; legacy import paths remain warning-emitting compatibility surfaces |
 | Trainforge evaluation modules | Imports, entry points, configuration, and evaluation tests | Grouped by metrics, retrieval checks, and runners; compatibility is retained only for documented external entry points |

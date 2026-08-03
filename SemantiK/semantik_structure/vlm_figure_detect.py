@@ -74,7 +74,7 @@ THE GRID REJECTOR (arm 3) — AND THE TRAP IT AVOIDS
 Arm 2 (word count) **deliberately ignores DIGITS**, because a NUMBER LINE — the
 single most valuable figure class in a math corpus — is all digits and must not
 be penalised for its axis labels. The direct consequence is that a purely
-NUMERIC table (a "squares of 1..15" grid) reads as ~0 words and sails through.
+NUMERIC table can read as zero words and pass the word-count arm.
 
 **Digits must not be counted.** A digit-count threshold cannot
 separate "number line" from "numeric table" — both are dense in digits and
@@ -86,24 +86,9 @@ The separating signal is **GRID STRUCTURE**, which is orthogonal to word count:
 * a **table** is a lattice — it has ruled COLUMN separators;
 * a **number line** is a single horizontal axis — it has none.
 
-Representative crops establish the useful signal by counting *thin* ruling lines
-inside the proposed box (a solid fill / photograph is excluded by the thinness
-test, so a dark photo cannot masquerade as a grid):
-
-===================================  ==========  ==========
-crop                                 h-rules     v-rules
-===================================  ==========  ==========
-ruled "Step 3" worked-example table          1           2
-"Place Value" chart                          4          13
-"squares of 1..15" numeric table             3          16
------------------------------------  ----------  ----------
-number line (p039 / p041 / p135 …)           1       **0**
-fraction bars / counters / photo …         0-3       **<=1**
-===================================  ==========  ==========
-
-So ``v_rules >= 2 and h_rules >= 1`` rejects every ruled table with a wide margin
-while **every** genuine figure — most importantly every number line — is
-untouched. Two independent grid arms are used (either one rejects):
+Thin ruling lines provide the separating signal, while the isolation test keeps
+solid fills and photographs from masquerading as grids. Two independent grid
+arms are used (either one rejects):
 
 * :func:`crop_has_ruled_grid` — the RULED-LATTICE arm above (raster geometry).
 * :func:`crop_declares_markdown_grid` — the VLM's OWN markdown for the text
@@ -177,9 +162,7 @@ DETECT_PROMPT_VERSION = 2
 # --- Deterministic accept-gate constants (calibration, NOT corpus targets) ---
 # A box must cover at least this fraction of the page to be a figure worth
 # cropping (below it is a glyph, a bullet, a rule, or noise). 0.006 of a US-Letter
-# page is ~0.8in x 0.8in — a small but genuine inline figure. MEASURED: a real
-# pizza-fraction illustration came in at 0.0083, so the earlier 0.010 floor was
-# cutting genuine figures.
+# page admits small inline figures while still rejecting glyph-sized noise.
 # TODO(calibration) — domain-agnostic geometry, NOT a corpus target.
 _MIN_AREA_FRACTION = 0.006
 # Absurd aspect ratios are not figures (a hairline rule, a margin strip).
@@ -194,11 +177,8 @@ _MIN_SIDE_FRACTION = 0.03
 #
 # ONLY MEANINGFUL FOR LARGE BOXES — and that restriction is load-bearing. The OCR
 # text blocks are LINE-level, and a scanned page's OCR line boxes are wide and
-# tall enough to BLANKET a small figure sitting between two lines. Measured on the
-# live production geometry: a genuine counters figure scored coverage 0.938 and
-# three genuine pizza-fraction illustrations scored 0.938 / 1.000 / 1.000 — i.e.
-# coverage SATURATES on pure-figure regions once the box is small, and gating on
-# it rejected 5 of 6 GENUINE figures. So the arm is applied only when the box is
+# tall enough to blanket a small figure sitting between two lines. Coverage can
+# therefore saturate on small figure regions, so the arm is applied only when the box is
 # at least _COVERAGE_MIN_AREA of the page, where "blanketed by text" actually
 # discriminates. Below that, the WORD-COUNT arm (arm 2) is the guard — it counts
 # actual words and is immune to box coarseness (a figure yields zero).
@@ -206,20 +186,11 @@ _MIN_SIDE_FRACTION = 0.03
 _MAX_TEXT_COVERAGE = 0.35
 _COVERAGE_MIN_AREA = 0.05
 # TEXT-DENSITY GUARD (arm 2 — WORD COUNT). Load-bearing, and the coverage arm
-# provably CANNOT replace it. A procedure TABLE ("Step 1..4", all prose — an
-# unambiguous images-of-text crop) has thin word boxes separated by cell
+# cannot replace it. A prose-heavy procedure table has thin word boxes separated by cell
 # whitespace, so its AREA coverage measures BELOW a genuine figure's and no
 # coverage threshold can order the two. Word COUNT does.
 #
-# Measured guard signal — words whose
-# text-block centre falls inside the proposed box):
-#     GENUINE chart / counters figure ....  1,  3 words   (coverage 0.08 / 0.22)
-#     GENUINE chapter photo .............. 15 words       (coverage 0.02)
-#     MIXED step-table w/ factor trees ... 22 words       (coverage 0.07)
-#     PURE "Step 1..4" text table ........ 63 words       (coverage 0.07)  <-- the defect
-#     prose COLUMN ........................ 0 words       (coverage 0.70)  <-- arm 1 catches
-# 20 sits between the genuine photo (15) and the mixed table (22) and ERRS TOWARD
-# REJECTING: per the standing doctrine we would rather MISS a figure than ship a
+# The ceiling errs toward rejecting text-heavy crops: it is safer to miss a figure than ship a
 # crop of readable text (a WCAG 1.4.5 regression is strictly worse than the WCAG
 # 1.1.1 gap it pretends to close). The mixed table is therefore rejected too —
 # its factor trees are genuine, but they are inseparable from 22 words of
@@ -236,9 +207,7 @@ _DEDUP_IOU = 0.55
 # A crop is a TABLE when it encloses a ruled LATTICE: at least this many COLUMN
 # separators plus at least one row rule. The column count is the load-bearing
 # half — a number line has a horizontal axis (h=1) but NEVER a column rule (v=0),
-# ruled-table crops measured at least two vertical rules while genuine-figure
-# crops measured at most one. Two is therefore the smallest threshold
-# with a real margin on both sides.
+# two vertical rules are the minimum evidence of multiple table columns.
 # TODO(calibration) — domain-agnostic geometry ("a table has columns, an axis does
 # not"), NOT a corpus target.
 _MIN_GRID_V_RULES = 2
@@ -250,8 +219,7 @@ _RULE_SPAN_FRACTION = 0.60
 # ... and it must be THIN. This is what stops a SOLID FILL from being read as a
 # lattice: a photograph or a shaded diagram has dark scanlines adjacent to dark
 # scanlines, so it never presents an isolated thin rule. Without this test the
-# bathroom-scale photo measured 286 "vertical rules" and the shaded nested-set
-# diagram 253; with it, both measure 0.
+# photographs and shaded diagrams therefore do not present isolated rules.
 _RULE_MAX_THICKNESS_PX = 4
 # The quiet band that must sit either side of a thin rule (the isolation test).
 _RULE_QUIET_FRACTION = 0.25
@@ -664,7 +632,7 @@ def _count_thin_rules(frac: "list[float]", n: int) -> int:
     detector: a solid fill (a photograph, a shaded box) is dark for far more than
     ``_RULE_MAX_THICKNESS_PX`` consecutive scanlines and has no quiet margin, so
     it contributes ZERO rules. That is load-bearing — a naive dark-run count read
-    the bathroom-scale photo as 286 vertical "rules".
+    a photograph as many vertical "rules".
     """
     out = 0
     i = 0
@@ -1016,7 +984,7 @@ def _page_items_norm(
         return []
 
     # SOURCE OF TRUTH: the raw TESSERACT word/line boxes, NOT the ``merged``
-    # stream. Load-bearing, and a real bug lived here. ``merged`` is the
+    # stream. This is load-bearing: ``merged`` is the
     # VLM-FUSED block list, and a fused block's bbox is interpolated/coarse — on a
     # live scan the digit "5" (a page number) carried a 235x307px box. Feeding
     # those inflated boxes to a GEOMETRIC guard makes them swallow the figures
