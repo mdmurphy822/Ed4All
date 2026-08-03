@@ -1067,7 +1067,7 @@ def _build_assessment_artifacts_from_data(
 ) -> List[Dict[str, Any]]:
     """Map AssessmentData + discussion/assignment dicts → emit-ready artifacts.
 
-    PURE — imports the already-landed ``Courseforge.scripts.qti_emitter`` and
+    PURE — imports the already-landed ``Courseforge.scripts.packaging.qti_emitter`` and
     serializes each input to its canonical CC resource XML. ``assessments``
     are ``AssessmentData`` instances (or their ``to_dict()`` form) → one QTI
     document each; ``discussions`` → ``imsdt`` topic docs; ``assignments`` →
@@ -1078,7 +1078,7 @@ def _build_assessment_artifacts_from_data(
     No fabrication: the emitter only reshapes its input; an empty input list
     yields an empty artifact list (→ a clean empty ``06_assessments``).
     """
-    from Courseforge.scripts.qti_emitter import (
+    from Courseforge.scripts.packaging.qti_emitter import (
         assessment_to_qti,
         discussion_to_imsdt,
         assignment_to_resource,
@@ -1166,7 +1166,7 @@ def _build_assessment_artifacts_from_data(
 # ``06_assessments/`` was never chunked, so per-CO quiz items produced zero
 # per-CO coverage. These helpers close that gap: each QTI ``<item>`` (whose
 # ``title`` attribute carries the item's objective_id, set by
-# ``Courseforge/scripts/qti_emitter.py::question_to_qti_item``) becomes one
+# ``Courseforge/scripts/packaging/qti_emitter.py::question_to_qti_item``) becomes one
 # ``assessment_item`` chunk routed through the SAME ``_create_chunk`` callback
 # (→ ``Trainforge.chunker.extract_learning_outcome_refs`` arm 3 via
 # ``item["objective_refs"]``) so ref normalization / case policy
@@ -1183,7 +1183,7 @@ def _qti_local_name(tag: Any) -> str:
 def _qti_scoring_respcondition(item_el: Any) -> Any:
     """Return the ``<respcondition>`` that carries this item's ANSWER KEY.
 
-    Mirrors ``Courseforge/scripts/qti_emitter.py::_find_scoring_respcondition``
+    Mirrors ``Courseforge/scripts/packaging/qti_emitter.py::_find_scoring_respcondition``
     (the emitter-side single source of truth): the scoring condition is the one
     that awards SCORE, i.e. the one carrying a ``<setvar>``. This distinction is
     load-bearing, not cosmetic — with ``COURSEFORGE_QTI_ITEMFEEDBACK`` on, the
@@ -2152,7 +2152,7 @@ def _assessment_confidence_capture_html(block: Any) -> str:
         if not resolve_reflection_calibration():
             return ""
         import dataclasses as _dc_conf  # noqa: PLC0415
-        from Courseforge.scripts.generate_course import (  # noqa: PLC0415
+        from Courseforge.scripts.rendering.generate_course import (  # noqa: PLC0415
             _render_confidence_capture,
         )
 
@@ -2179,7 +2179,7 @@ def _render_block_fallback_html(
     LLM-free. Maps ``block.block_type`` to the SAME styled component classes
     the successful rewrite path emits (mirrors the P2 contracts in
     ``Courseforge/generators/_rewrite_provider.py::_BLOCK_TYPE_OUTPUT_CONTRACTS``
-    and the CSS in ``Courseforge/scripts/generate_course.py::COURSEFORGE_CSS``).
+    and the CSS in ``Courseforge/scripts/rendering/generate_course.py::COURSEFORGE_CSS``).
     Wraps everything in a ``<section>`` carrying the same ``data-cf-*``
     attributes (content-type via the rewrite content-type table, teaching-role
     via ``lib.ontology.teaching_roles``, bloom-level, source-ids) plus a
@@ -2412,7 +2412,7 @@ def _render_block_fallback_html(
         card_parts.append("</div>")
         body_parts.append("".join(card_parts))
         try:
-            from Courseforge.scripts.generate_course import (  # noqa: PLC0415
+            from Courseforge.scripts.rendering.generate_course import (  # noqa: PLC0415
                 _render_misconception_productive_failure,
             )
 
@@ -3664,7 +3664,7 @@ def _project_synthesized_objectives_to_course_json(
     auto-discovers ``content_dir / "course.json"`` and fails closed
     critical-severity when absent; ``package_multifile_imscc.package_imscc``
     has the same auto-discovery contract via ``load_canonical_objectives``
-    (``Courseforge/scripts/generate_course.py:615-646``), which reads
+    (``Courseforge/scripts/rendering/generate_course.py:615-646``), which reads
     ``terminal_objectives`` + ``chapter_objectives``.
 
     Projection is idempotent: when ``course_json_path`` already exists
@@ -3777,7 +3777,7 @@ def _project_synthesized_objectives_to_course_json(
         "title": course_title,
         # PageObjectivesValidator (lib/validators/page_objectives.py:192-249)
         # auto-discovers content_dir / "course.json" then routes to
-        # load_canonical_objectives (Courseforge/scripts/generate_course.py:615)
+        # load_canonical_objectives (Courseforge/scripts/rendering/generate_course.py:615)
         # which reads these two keys verbatim.
         "terminal_objectives": list(terminal)
         if isinstance(terminal, list) else [],
@@ -4076,7 +4076,7 @@ def _html_parse_worker_env() -> Any:
       C-extension in the worker import chain fanning a thread team per worker
       across the one shared L3.
     * ``MALLOC_ARENA_MAX=2``, mirroring the sibling batch-worker recipe at
-      ``SemantiK/data/build_structure_data.py``.
+      ``SemantiK/data/builders/build_structure_data.py``.
     * ``PYTHONHASHSEED`` — propagated verbatim when the parent has one, else
       pinned to ``"0"``. A parent whose own seed was randomized cannot report
       it (the value is not recoverable from the interpreter), so the honest
@@ -6008,7 +6008,7 @@ def _week_co_groups(
 
     # ceil-stride fallback (also the default flag-off path). Single-sourced via
     # the Courseforge slicer + a shared placed-ids set (M5 Fix B) — byte-stable.
-    from Courseforge.scripts.generate_course import (  # noqa: PLC0415
+    from Courseforge.scripts.rendering.generate_course import (  # noqa: PLC0415
         _slice_cos_for_week as _cf_slice_cos_for_week,
     )
 
@@ -22262,7 +22262,7 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
             page_id, _week_num, _page_type, _page_tos,
         )
         try:
-            from Courseforge.scripts.generate_course import (  # noqa: PLC0415
+            from Courseforge.scripts.rendering.generate_course import (  # noqa: PLC0415
                 _wrap_page as _wrap_page_fn,
             )
             page_html = _wrap_page_fn(
@@ -22274,7 +22274,7 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
         except Exception as _wrap_exc:  # noqa: BLE001 — never lose the page
             # Fallback: emit the same full <head> + <style> shell inline so the
             # page still inherits the stylesheet even if the import fails.
-            from Courseforge.scripts.generate_course import (  # noqa: PLC0415
+            from Courseforge.scripts.rendering.generate_course import (  # noqa: PLC0415
                 COURSEFORGE_CSS as _CF_CSS,
             )
             logger.warning(
@@ -25424,7 +25424,7 @@ def _build_tool_registry() -> dict:
             # WS5 §2.4(A) — build the per-WEEK chapter groups that the
             # validator's allowed-set builder reads. Each group's objectives
             # are the SAME ceil-stride slice the emitter places for that week
-            # (single-sourced via Courseforge/scripts/generate_course.py::
+            # (single-sourced via Courseforge/scripts/rendering/generate_course.py::
             # _slice_cos_for_week), labeled ``"Week N"`` so the validator's
             # 1:1 ``[Ww]eek N`` label-map branch resolves exactly the emitter's
             # week_chapter_cos. ``[dict(c)]`` clones each CO so the persisted
@@ -25925,13 +25925,13 @@ def _build_tool_registry() -> dict:
             ``schemas/knowledge/courseforge_jsonld_v1.schema.json``.
 
             Delegates the actual HTML rendering to
-            ``Courseforge.scripts.generate_course.generate_week`` (the
+            ``Courseforge.scripts.rendering.generate_course.generate_week`` (the
             mature multi-file emitter) — this wrapper only adapts the
             pipeline's kwargs into the ``week_data`` payload that the
             emitter consumes, plus forwards the Wave 9 source-routing
             map when one is present on disk.
             """
-            from Courseforge.scripts import generate_course as _gen
+            from Courseforge.scripts.rendering import generate_course as _gen
             from MCP.tools import _content_gen_helpers as _cgh
 
             project_id = kwargs.get("project_id", "")
@@ -26530,7 +26530,7 @@ def _build_tool_registry() -> dict:
             ⚠  **Sync-parity with**
             ``MCP/tools/courseforge_tools.py::package_imscc`` (the
             ``@mcp.tool()`` variant) is required. Both wrappers delegate to
-            ``Courseforge.scripts.package_multifile_imscc.package_imscc``
+            ``Courseforge.scripts.packaging.package_multifile_imscc.package_imscc``
             and share the same JSON envelope shape. This registry variant
             omits the `project_config.status`/`package_path` side-effects
             that the MCP-decorated variant performs — phase tracking
@@ -26538,7 +26538,7 @@ def _build_tool_registry() -> dict:
             lockstep until a shared helper is extracted in a later wave.
 
             Wave 27 HIGH-2: delegates to the mature multi-file packager
-            (``Courseforge.scripts.package_multifile_imscc.package_imscc``)
+            (``Courseforge.scripts.packaging.package_multifile_imscc.package_imscc``)
             rather than hand-rolling the ZIP. Consequences of the
             delegation:
 
@@ -26646,20 +26646,11 @@ def _build_tool_registry() -> dict:
             # (next to the .imscc archive) per plan §W3.H.
             packaging_report_path = final_dir / "packaging_report.json"
 
-            # Import the mature packager. The module lives under
-            # ``Courseforge/scripts/`` (no ``__init__.py``) so we prepend
-            # the directory to ``sys.path`` before importing. Resolve the
-            # directory relative to this module's real location (NOT
-            # ``_PROJECT_ROOT``, which tests may monkeypatch to a tmp
-            # workspace that doesn't ship the mature packager).
-            cf_scripts = (
-                _Path(__file__).resolve().parents[2]
-                / "Courseforge" / "scripts"
-            )
-            if str(cf_scripts) not in _sys.path:
-                _sys.path.insert(0, str(cf_scripts))
+            # Import the mature packager from its canonical package.
             try:
-                import package_multifile_imscc as _pkg_mod  # noqa: E402
+                from Courseforge.scripts.packaging import (
+                    package_multifile_imscc as _pkg_mod,
+                )
             except ImportError as exc:
                 return json.dumps({
                     "success": False,
@@ -28729,7 +28720,7 @@ def _build_tool_registry() -> dict:
              ``primary`` refs; blocks above a weaker threshold become
              ``contributing`` refs.
           4. Emit the map in the Wave 9 shape that
-             ``Courseforge.scripts.generate_course._page_refs_for``
+             ``Courseforge.scripts.rendering.generate_course._page_refs_for``
              consumes: ``{week_key: {page_id: {primary, contributing,
              confidence}}}`` using ``dart:{slug}#{block_id}`` source IDs.
 
@@ -32565,7 +32556,7 @@ def _build_tool_registry() -> dict:
     #   assessment generator (``AssessmentGeneratorProvider``, env
     #   ``TRAINFORGE_ASSESSMENT_PROVIDER``); each carries ``objective_id``
     #   so the grounding gate fires unchanged.
-    # - XML emit via the already-landed ``Courseforge/scripts/qti_emitter.py``.
+    # - XML emit via the already-landed ``Courseforge/scripts/packaging/qti_emitter.py``.
     #
     # PRODUCT content (learner-facing), NOT training pairs → no hard
     # licensing gate (mirrors ``COURSEFORGE_PROVIDER`` /
@@ -33446,7 +33437,7 @@ def _build_tool_registry() -> dict:
         # set while remaining available as a course artifact.
         if _item_bank_enabled():
             try:
-                from Courseforge.scripts.qti_emitter import (  # noqa: PLC0415
+                from Courseforge.scripts.packaging.qti_emitter import (  # noqa: PLC0415
                     assessment_to_objectbank,
                 )
                 _bank_questions: List[Any] = []
@@ -33503,7 +33494,7 @@ def _build_tool_registry() -> dict:
         _has_answer_key = False
         if built_assessments or discussions or assignments:
             try:
-                from Courseforge.scripts.answer_key_emitter import emit_answer_key
+                from Courseforge.scripts.packaging.answer_key_emitter import emit_answer_key
                 _ak_entry = emit_answer_key(
                     out_dir,
                     assessments=built_assessments,

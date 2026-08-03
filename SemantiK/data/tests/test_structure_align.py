@@ -1,6 +1,6 @@
 """Unit tests for the lossless split/merge-aware global aligner.
 
-Covers the Phase-0 contract of ``data/structure_align.py``:
+Covers the Phase-0 contract of ``data/alignment/structure_align.py``:
 
   * exact 1:1 MATCH
   * SPLIT (1 pdf -> 2 gold) recovers BOTH gold roles
@@ -16,7 +16,7 @@ Covers the Phase-0 contract of ``data/structure_align.py``:
 
 No GPU, no model, no IO — pure data structures + numpy. This file inlines the
 SemantiK-root sys.path bootstrap (mirroring ``semantik_structure/tests/conftest.py``)
-so ``from data.structure_align import ...`` resolves when pytest collects it
+so ``from data.alignment.structure_align import ...`` resolves when pytest collects it
 directly, without adding a conftest.py (Phase-0 ships exactly two new files).
 """
 
@@ -33,7 +33,7 @@ if str(_SEMANTIK_ROOT) not in sys.path:
 
 import pytest  # noqa: E402
 
-from data.structure_align import (  # noqa: E402
+from data.alignment.structure_align import (  # noqa: E402
     SCHEMA_VERSION,
     AlignLedger,
     FBView,

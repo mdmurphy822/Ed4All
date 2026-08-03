@@ -10,7 +10,7 @@ pedagogical block types selectable + renderable + gated:
 
 Default OFF — when unset (or falsey / garbage), the four tokens are never
 selected by the planner (``lib/generation/block_planner.py``), never rendered
-(``Courseforge/scripts/generate_course.py``), their type-specific Block fields
+(``Courseforge/scripts/rendering/generate_course.py``), their type-specific Block fields
 (``fade_state`` / ``long_description`` / ``media_a11y``) are never projected to
 HTML / JSON-LD, and the IB5 a11y arms in ``rewrite_html_shape`` are a no-op, so
 every existing snapshot / ``contentHash`` stays byte-identical (mirrors

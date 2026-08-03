@@ -28,7 +28,7 @@ import dataclasses as _dc
 import pytest
 
 from Courseforge.scripts.blocks import Block
-from Courseforge.scripts.generate_course import (
+from Courseforge.scripts.rendering.generate_course import (
     _render_activities,
     _render_content_sections,
 )

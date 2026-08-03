@@ -85,7 +85,7 @@ Each backfilled entry flips status `"degraded_placeholder"`
 → `"complete"` and silently improves the adapter's anchored-
 injection coverage.
 
-**FORM_DATA externalization.** The FORM_DATA dict is externalized to per-family YAML at `schemas/training/schema_translation_catalog.<family>.yaml`. The Python fallback dict is preserved as the last-resort base; YAML overlays are CURIE-level swaps (per-CURIE merge), so backfilling one CURIE never erases another. `validate_form_data_contract` enforces the numbered content-quality rules implemented in `Trainforge/generators/schema_translation_generator.py` — Rule 1 (per-entry pairwise `definitions` Jaccard diversity), Rule 2 (weighted entry-level style-consistency score, **warning-severity** — the soft holistic sentinel), Rule 3 (anchor-verb capacity, entry-level and scoped to `definitions` + `usage_examples`), and Rule 4 (provenance presence + non-`PENDING_REVIEW` `reviewed_by` on every `complete` entry) — alongside the base safety contract (every manifest CURIE has an entry with ≥1 definition + ≥1 usage_example, and every entry's `anchored_status` is in the canonical set). Read the function for the authoritative rule set rather than relying on a count quoted here. `python -m Trainforge.scripts.draft_form_data_entry` is a Qwen-driven drafting CLI with a structurally-minimal ToS-clean prompt template (no example sentences, no content seeding). `python -m Trainforge.scripts.backfill_form_data` is an interactive backfill loop with mandatory operator pause (`y`/`n`/`e`/`q`), driving the drafting CLI per-CURIE; Qwen-authored content lands ONLY after `y` confirmation.
+**FORM_DATA externalization.** The FORM_DATA dict is externalized to per-family YAML at `schemas/training/schema_translation_catalog.<family>.yaml`. The Python fallback dict is preserved as the last-resort base; YAML overlays are CURIE-level swaps (per-CURIE merge), so backfilling one CURIE never erases another. `validate_form_data_contract` enforces the numbered content-quality rules implemented in `Trainforge/generators/schema_translation_generator.py` — Rule 1 (per-entry pairwise `definitions` Jaccard diversity), Rule 2 (weighted entry-level style-consistency score, **warning-severity** — the soft holistic sentinel), Rule 3 (anchor-verb capacity, entry-level and scoped to `definitions` + `usage_examples`), and Rule 4 (provenance presence + non-`PENDING_REVIEW` `reviewed_by` on every `complete` entry) — alongside the base safety contract (every manifest CURIE has an entry with ≥1 definition + ≥1 usage_example, and every entry's `anchored_status` is in the canonical set). Read the function for the authoritative rule set rather than relying on a count quoted here. `python -m Trainforge.scripts.ops.draft_form_data_entry` is a Qwen-driven drafting CLI with a structurally-minimal ToS-clean prompt template (no example sentences, no content seeding). `python -m Trainforge.scripts.ops.backfill_form_data` is an interactive backfill loop with mandatory operator pause (`y`/`n`/`e`/`q`), driving the drafting CLI per-CURIE; Qwen-authored content lands ONLY after `y` confirmation.
 
 ---
 
@@ -215,7 +215,7 @@ The base "Operator backfill workflow" section is extended with four additions:
    kicking the retrain — the eval signal is too noisy at smaller
    deltas, and per-property attribution becomes meaningful only at
    family granularity. Inspect coverage progress with:
-   `python -m Trainforge.scripts.show_form_data_coverage --course-code <slug>`
+   `python -m Trainforge.scripts.ops.show_form_data_coverage --course-code <slug>`
 
 ---
 
@@ -236,11 +236,11 @@ operator reviews each entry before it lands.
 1. Identify the next CURIE to backfill. Operator priority defaults
    to corpus frequency (high-frequency CURIEs lift more pairs):
    ```
-   python -m Trainforge.scripts.backfill_form_data \
+   python -m Trainforge.scripts.ops.backfill_form_data \
        --course-code <course-slug> --family rdf_shacl \
        --limit 5 --by frequency
    ```
-2. The loop calls `Trainforge.scripts.draft_form_data_entry` per
+2. The loop calls `Trainforge.scripts.ops.draft_form_data_entry` per
    CURIE. Drafting prompt is structurally minimal — no
    example sentences, no content seeding (ToS hygiene).
 3. Operator reviews the rendered YAML block and chooses:
@@ -265,7 +265,7 @@ across runs.
 Across Waves 5 / 6 / 7 / 9 every new pair-validation gate landed at
 warning-severity day-1 with calibration debt deferred to the operator's
 next corpus rebuild. After a real rebuild,
-`python -m Trainforge.scripts.calibrate_pair_validation --course-code <slug>`
+`python -m Trainforge.scripts.harness.calibrate_pair_validation --course-code <slug>`
 reads post-rebuild signals and emits a markdown proposal at
 `LibV2/courses/<slug>/quality/pair_calibration_proposal.md`. The
 proposal carries one row per warning threshold (Wave 4 W4.A claim-support
@@ -278,7 +278,7 @@ threshold (defaults to the worst-5% catch — overridable via
 `NEEDS_MORE_DATA` / `KEEP_WARNING` / `MISSING_INPUT`).
 
 ```bash
-python -m Trainforge.scripts.calibrate_pair_validation \
+python -m Trainforge.scripts.harness.calibrate_pair_validation \
     --course-code <course-slug>
 # → LibV2/courses/<course-slug>/quality/pair_calibration_proposal.md
 ```
@@ -916,7 +916,7 @@ Pin source of truth is `pyproject.toml::[project.optional-dependencies].training
 
 Caveat: with the default `1`, only variant `0` is ever emitted, so `requires_source_citation` is always `False` and no citations are appended. Only `--instruction-variants-per-chunk=3` produces the citation-trained variant. The variant logic is mock-agnostic — surface forms still anchor on whatever `template_id` the mock factory selected.
 
-**Audit-anchored generators.** `--with-kg-metadata` (cap `--kg-metadata-max-pairs N`, default 2000) and `--with-violation-detection` (`--violation-detection-shapes-glob PATH` for course-supplied TTL fixtures, defaults to the built-in 6-shape catalog) append the `Trainforge/generators/kg_metadata_generator.py` and `Trainforge/generators/violation_generator.py` outputs to `instruction_pairs.jsonl`. Both are off by default; flip on to teach the adapter the literal KG-membership facts (mirroring `faithfulness._RELATION_TEMPLATES`) and pyshacl-oracle-verified `(graph, shape, valid?, reason)` tuples that the eval harness probes for. `--with-abstention` (cap `--abstention-max-pairs N`, default 1000, reads pedagogy_graph.json) and `--with-schema-translation` (cap `--schema-translation-max-pairs N`, default 50, reads the property manifest) append the `Trainforge/generators/abstention_generator.py` and `Trainforge/generators/schema_translation_generator.py` outputs. Abstention probes teach the model to say "the source does not establish X" by sampling concepts the chunk does NOT address; schema-translation pairs bridge formal CURIEs (`sh:datatype`, `rdfs:subClassOf`, `owl:sameAs`, ...) to plain-English definitions + usage from a hand-curated table indexed by the manifest's surface forms. Both are off by default and deterministic — no LLM in the loop. The audit script (`Trainforge/scripts/audit_pairs.py`) carries three matching coverage checks (`abstention_coverage`, `schema_translation_coverage`, `citation_coverage`).
+**Audit-anchored generators.** `--with-kg-metadata` (cap `--kg-metadata-max-pairs N`, default 2000) and `--with-violation-detection` (`--violation-detection-shapes-glob PATH` for course-supplied TTL fixtures, defaults to the built-in 6-shape catalog) append the `Trainforge/generators/kg_metadata_generator.py` and `Trainforge/generators/violation_generator.py` outputs to `instruction_pairs.jsonl`. Both are off by default; flip on to teach the adapter the literal KG-membership facts (mirroring `faithfulness._RELATION_TEMPLATES`) and pyshacl-oracle-verified `(graph, shape, valid?, reason)` tuples that the eval harness probes for. `--with-abstention` (cap `--abstention-max-pairs N`, default 1000, reads pedagogy_graph.json) and `--with-schema-translation` (cap `--schema-translation-max-pairs N`, default 50, reads the property manifest) append the `Trainforge/generators/abstention_generator.py` and `Trainforge/generators/schema_translation_generator.py` outputs. Abstention probes teach the model to say "the source does not establish X" by sampling concepts the chunk does NOT address; schema-translation pairs bridge formal CURIEs (`sh:datatype`, `rdfs:subClassOf`, `owl:sameAs`, ...) to plain-English definitions + usage from a hand-curated table indexed by the manifest's surface forms. Both are off by default and deterministic — no LLM in the loop. The audit script (`Trainforge/scripts/ops/audit_pairs.py`) carries three matching coverage checks (`abstention_coverage`, `schema_translation_coverage`, `citation_coverage`).
 
 **Cap CLI flags:** all six deterministic generators carry an `N` cap flag — `--kg-metadata-max-pairs` (default 2000), `--violation-detection-max-pairs` (default unset = unlimited; family-balanced round-robin trim when set), `--abstention-max-pairs` (default 1000), `--schema-translation-max-pairs` (default 50), plus the two SFT-program generators `--assessment-sft-max-pairs` (S1, default unset = unlimited) and `--graph-sft-max-pairs` (S5, default unset = unlimited). Production rebuilds use 350 / 200 / 1000 / 200 for the original four to balance the deterministic share against paraphrase pairs (~35%).
 
@@ -930,7 +930,7 @@ Caveat: with the default `1`, only variant `0` is ever emitted, so `requires_sou
 
 **FORM_DATA contract + `anchored_status` discriminator.** `Trainforge/generators/schema_translation_generator.py::SurfaceFormData` carries an `anchored_status: Literal["complete", "degraded_placeholder"]` field (defaults to `"complete"`). `_RDF_SHACL_FALLBACK_FORM_DATA` has 40 entries (one per rdf-shacl manifest CURIE) so the anchored force-injection path can dispatch on the status field for every CURIE. The 6 pre-existing entries keep their hand-curated content tagged `"complete"`; the 34 new entries are explicit `"degraded_placeholder"` stubs whose definition + usage_example strings start with the literal token `"[degraded:"` (grep this prefix to find them). `generate_schema_translation_pairs` skips entries with `anchored_status="degraded_placeholder"` BEFORE catalog walk so the literal stub strings never reach an emitted pair. End-of-run `logger.warning` names the skipped count + CURIEs. `validate_form_data_contract(form_data, manifest_curies)` enforces the safety contract — every manifest CURIE has an entry with >=1 def + >=1 usage_example AND every entry's status is in the canonical set. **Operator backfill task**: as anchored content is authored for the 34 stub entries, each backfilled entry flips `anchored_status="degraded_placeholder"` -> `"complete"`, silently improving anchored-injection coverage. `decision_type="form_data_degraded_placeholder_skipped"` enum value registered in `schemas/events/decision_event.schema.json`.
 
-**Generator smoke mode.** `python -m Trainforge.scripts.smoke_generators --course-code <slug>` exercises all four deterministic generators (kg_metadata, violation, abstention, schema_translation) against a real LibV2 course at small N (default cap 5 pairs/generator), schema-validates every emit against `instruction_pair.schema.json`, and exits 0 on success / 1 on any failure. No LLM calls — wall-time target <1s. Use before kicking off a multi-hour synthesis rebuild to confirm all four generator surfaces wire cleanly against the course's pedagogy graph + property manifest. `--json` emits a machine-parseable summary; the human-table default is operator-readable.
+**Generator smoke mode.** `python -m Trainforge.scripts.ops.smoke_generators --course-code <slug>` exercises all four deterministic generators (kg_metadata, violation, abstention, schema_translation) against a real LibV2 course at small N (default cap 5 pairs/generator), schema-validates every emit against `instruction_pair.schema.json`, and exits 0 on success / 1 on any failure. No LLM calls — wall-time target <1s. Use before kicking off a multi-hour synthesis rebuild to confirm all four generator surfaces wire cleanly against the course's pedagogy graph + property manifest. `--json` emits a machine-parseable summary; the human-table default is operator-readable.
 
 ### Eval — 5 generic layers × 3 corpus-aware tiers
 
@@ -997,7 +997,7 @@ Each gate fire writes a `eval_gating_decision` decision-capture event (rationale
 - `lib/validators/property_coverage.py::PropertyCoverageValidator` — synthesis-side gate. Wired as `property_coverage` on `textbook_to_course::training_synthesis`. Critical-fails when any declared property has fewer than `min_pairs` instruction-pair rows. No-ops on courses without a manifest (so the gate doesn't break legacy workflows).
 - `Trainforge/eval/property_eval.py::PerPropertyEvaluator` — eval-side companion. Filters holdout probes by surface-form match and reports per-property accuracy. Wired into `SLMEvalHarness.run_all` and surfaced as `eval_report.json::per_property_accuracy`.
 - `lib/validators/eval_gating.py::EvalGatingValidator` — adds the `min_per_property_accuracy` threshold (default 0.40, override via gate `inputs.thresholds`). Critical-fails when any scored property is below the floor; properties with no matching probes (None accuracy) are skipped.
-- `Trainforge/scripts/pilot_synthesis.py` — operator CLI for small-N pilot runs. Emits `pilot_report.md` with per-property coverage + template distribution; non-zero exit when any property is below its floor.
+- `Trainforge/scripts/ops/pilot_synthesis.py` — operator CLI for small-N pilot runs. Emits `pilot_report.md` with per-property coverage + template distribution; non-zero exit when any property is below its floor.
 
 Together: a corpus rebuild that drops a hard surface form (e.g. the LLM rewriter prefers natural English over `owl:sameAs`) is caught at synthesis time (coverage gate); a trained adapter that fails to learn one of the declared properties is caught at promotion time (per-property eval gate).
 

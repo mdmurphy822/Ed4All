@@ -30,7 +30,7 @@ __all__ = [
 #: Default cosine-similarity floor between answer text and cited chunk.
 #: Calibrated: real on-topic answers sit around p1=0.104, so an
 #: intuitive-looking 0.40 floor rejects the overwhelming majority of them.
-#: Re-measure via ``Trainforge/scripts/calibrate_pair_validation`` before
+#: Re-measure via ``Trainforge/scripts/harness/calibrate_pair_validation.py`` before
 #: tightening.
 DEFAULT_MIN_ANSWER_SUPPORT_SCORE: float = 0.10
 
@@ -39,7 +39,7 @@ DEFAULT_MIN_ANSWER_SUPPORT_SCORE: float = 0.10
 #: Calibrated low on purpose: good distractors are deliberately plausible
 #: and semantically CLOSE to the chosen answer, so real pairs measure
 #: p5≈0.051 / p1≈0.02 and a 0.40 floor rejects nearly all of them.
-#: Re-measure via ``Trainforge/scripts/calibrate_pair_validation`` before
+#: Re-measure via ``Trainforge/scripts/harness/calibrate_pair_validation.py`` before
 #: tightening.
 DEFAULT_DPO_MIN_DISTRACTOR_DISTINCTNESS: float = 0.05
 
@@ -59,7 +59,7 @@ _FALLBACK_MIN_PROMPT_CHUNK_JACCARD: float = -1.0
 #: score exactly 0. At 0.0 the strict ``<`` comparison in criterion 4 can
 #: never fire — the reject arm is retired while ``prompt_chunk_jaccard``
 #: is still stamped on every pair for audit. Re-measure via
-#: ``Trainforge/scripts/calibrate_pair_validation`` before tightening.
+#: ``Trainforge/scripts/harness/calibrate_pair_validation.py`` before tightening.
 DEFAULT_MIN_PROMPT_CHUNK_JACCARD: float = 0.0
 
 #: Confidence floor the Bloom classifier must EXCEED for criterion 6

@@ -1561,7 +1561,7 @@ class HTMLContentParser:
             # LO-anchoring fix: also harvest ``data-cf-objective-id`` — the
             # attribute the Courseforge content-generator stamps on every
             # ``<section>`` root (see e.g. generate_course.py + the page
-            # validator ``Courseforge/scripts/validate_page_objectives.py``,
+            # validator ``Courseforge/scripts/validation/validate_page_objectives.py``,
             # which reads ``TO-NN`` LO ids from this exact attribute). The
             # earlier code scanned only ``-ref`` (activity / self-check
             # cards), so content pages whose only LO signal is the section

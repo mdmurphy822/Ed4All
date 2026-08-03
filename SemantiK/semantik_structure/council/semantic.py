@@ -29,7 +29,7 @@ Positional vector (Semantic-only, 3-dim):
         page_index_norm     (page - first_page) / max(1, total_pages - 1)
         doc_position_norm   ((page - first_page) * page_h + y0) /
                             max(1, total_pages * page_h)
-    Mirrors :func:`data.build_semantic_data.compute_positional_features`.
+    Mirrors :func:`data.builders.build_semantic_data.compute_positional_features`.
     Positional is appended ONLY to Semantic's side-channel; Structure
     stays on its 20-dim layout contract.
 
@@ -63,7 +63,7 @@ from .types import BertOutput, TypedSignal
 DEFAULT_ADAPTER_DIR = _semantik_paths.resolve_model("council/semantic/final")
 
 # 7-class doc_role head — must match
-# data.build_semantic_data.DOC_ROLE_NAMES exactly (same order, same
+# data.builders.build_semantic_data.DOC_ROLE_NAMES exactly (same order, same
 # active-class subset). Duplicated here so the runtime stays self-
 # contained (same pattern as structure.py / merge_or_split.py).
 #
@@ -154,7 +154,7 @@ def compute_positional_features(
 ) -> list[list[float]]:
     """Build a 3-dim positional vector per span.
 
-    Mirrors :func:`data.build_semantic_data.compute_positional_features`
+    Mirrors :func:`data.builders.build_semantic_data.compute_positional_features`
     but operates on a span list rather than a single block + scalar
     document totals. Uses input order as ``block_idx`` (so the caller's
     span ordering is what defines positional coordinates — the same

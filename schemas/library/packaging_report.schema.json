@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://libv2.local/schema/packaging_report.schema.json",
   "title": "IMSCC Packaging Report",
-  "description": "W3.H sub-task H3: per-build sidecar emitted by `Courseforge/scripts/package_multifile_imscc.py::package_imscc` next to the IMSCC archive (default `<project_root>/05_final_package/packaging_report.json`). Records pages_authored vs pages_packaged plus the per-reason exclusion histogram so the W3.G master promotion-chain aggregator can attribute every dropped page. Optional artifact — absence is interpreted as a legacy build (pre-W3.H) by the master aggregator.",
+  "description": "W3.H sub-task H3: per-build sidecar emitted by `Courseforge/scripts/packaging/package_multifile_imscc.py::package_imscc` next to the IMSCC archive (default `<project_root>/05_final_package/packaging_report.json`). Records pages_authored vs pages_packaged plus the per-reason exclusion histogram so the W3.G master promotion-chain aggregator can attribute every dropped page. Optional artifact — absence is interpreted as a legacy build (pre-W3.H) by the master aggregator.",
   "type": "object",
   "required": ["schema_version", "course_code", "package_path", "source_coverage"],
   "additionalProperties": false,

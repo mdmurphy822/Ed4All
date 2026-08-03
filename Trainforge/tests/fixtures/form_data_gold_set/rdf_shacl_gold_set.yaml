@@ -3,7 +3,7 @@ description: 'Wave 137c — gold-set lock. The 6 pre-Wave-135a complete FORM_DAT
   sh:PropertyShape, rdfs:subClassOf, owl:sameAs) extracted from schemas/training/schema_translation_catalog.rdf_shacl.yaml
   on 2026-05-01. Operator-authored provenance blocks attached. This fixture is the calibration reference for Plan A''s diversity
   / style / anchor-verb thresholds; rdf_shacl_gold_set_hash.txt locks the SHA-256 over the YAML bytes. Drift recovery: python
-  -m Trainforge.scripts.recompute_gold_set_hash --yes (and document threshold recalibration in the same commit).'
+  -m Trainforge.scripts.maintenance.recompute_gold_set_hash --yes (and document threshold recalibration in the same commit).'
 forms:
   sh:datatype:
     short_name: datatype

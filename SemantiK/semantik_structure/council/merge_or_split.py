@@ -55,7 +55,7 @@ ADAPTER_SPEC = LoRAAdapterSpec(
 
 
 # ---------------------------------------------------------------------------
-# Deterministic per-span features (mirrors data/build_merge_or_split_data.py)
+# Deterministic per-span features (mirrors data/builders/build_merge_or_split_data.py)
 # ---------------------------------------------------------------------------
 
 
@@ -120,7 +120,7 @@ def _bucket_gap(g: float) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Layout side-channel — mirror of data/build_merge_or_split_data.py
+# Layout side-channel — mirror of data/builders/build_merge_or_split_data.py
 # ---------------------------------------------------------------------------
 #
 # Order MUST stay aligned with LAYOUT_FEATURE_NAMES in the data builder.
@@ -201,7 +201,7 @@ def _compute_pair_layout(
     art_a: bool, art_b: bool,
     median_h: float,
 ) -> list[float]:
-    """Per-pair layout vector. Mirrors data.build_merge_or_split_data
+    """Per-pair layout vector. Mirrors data.builders.build_merge_or_split_data
     .compute_pair_layout_features(). Order is fixed; output is clamped
     element-wise to +/-10 to defend against pathological PDF coords."""
     import math
@@ -449,7 +449,7 @@ def run_inputs(adapter: LoRAAdapter, inputs: Any) -> BertOutput:
             continue
         # Match training-time adjacency exactly: sort spans by (y0, x0)
         # within each page before pair-forming. The data builder applies
-        # the same sort (data/build_merge_or_split_data.py:579), so this
+        # the same sort (data/builders/build_merge_or_split_data.py:579), so this
         # makes the train/inference adjacency graph identical regardless
         # of the upstream FeatureBlock order.
         def _yx(i: int) -> tuple[float, float]:

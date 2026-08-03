@@ -205,7 +205,7 @@ class TestDynamicContentPagesEmitted:
     def test_three_modules_produces_three_content_html_files(self, tmp_path):
         """Feed 3 content_modules into generate_week — confirm 3 content
         HTML files land on disk."""
-        from Courseforge.scripts import generate_course as _gen
+        from Courseforge.scripts.rendering import generate_course as _gen
 
         week_topics = [
             _mk_topic("Alpha Topic"),
@@ -233,7 +233,7 @@ class TestDynamicContentPagesEmitted:
         assert len(content_files) == 3, [p.name for p in content_files]
 
     def test_single_module_produces_single_content_html_file(self, tmp_path):
-        from Courseforge.scripts import generate_course as _gen
+        from Courseforge.scripts.rendering import generate_course as _gen
 
         week_topics = [_mk_topic("Only Topic")]
         week_objectives = [_mk_obj("TO-01", "Only objective.")]

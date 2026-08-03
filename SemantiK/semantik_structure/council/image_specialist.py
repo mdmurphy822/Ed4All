@@ -13,7 +13,7 @@ flip ``_REGISTERED`` on / call :func:`register` at the bottom.
 Gating contract (the half that IS live today):
     * Structure's ``is_image_block`` binary head (``council/structure.py``)
       already DETECTS figure/image-block membership end-to-end — it is labeled
-      by ``data.build_structure_data`` (``labels.is_image_block``), trained by
+      by ``data.builders.build_structure_data`` (``labels.is_image_block``), trained by
       ``training.train_structure`` (``head_is_image_block``), and emitted by the
       council runtime whenever the loaded checkpoint carries trained weights
       (``has_is_image_block_weights``). On a v3-trained head the signal

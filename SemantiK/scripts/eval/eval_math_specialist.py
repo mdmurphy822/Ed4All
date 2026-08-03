@@ -43,7 +43,7 @@ def _eval_test_split(
     from transformers import AutoTokenizer
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from data.build_math_specialist_data import (
+    from data.builders.build_math_specialist_data import (
         EQ_NUM_ASSOC, EQ_NUM_TO_ID, MATH_TYPES, MATH_TYPE_TO_ID,
     )
     from training.train_math_specialist import MathSpecialistModel, _format_input

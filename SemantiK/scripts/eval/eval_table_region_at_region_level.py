@@ -13,7 +13,7 @@ weak — e.g., precision drops because Structure over-fires on
 multi-column text that pdfplumber also flagged — Phase 3d stays.
 
 Ground truth: ``html_meta["in_table_html"]`` from
-``data.build_structure_data.extract_html_blocks`` (HTML-only —
+``data.builders.build_structure_data.extract_html_blocks`` (HTML-only —
 "the aligned HTML element has a ``<table>`` ancestor"). This is
 NOT the Phase 3b training-time label, which conflates pdfplumber
 detection with HTML truth and would be circular here.
@@ -41,7 +41,7 @@ from semantik_structure.text_utils import jaccard_overlap
 from semantik_structure.validate import HtmlValidator
 
 # Phase 3b builder reuse — same html walker + alignment
-from data.build_structure_data import extract_html_blocks
+from data.builders.build_structure_data import extract_html_blocks
 
 
 # ---------------------------------------------------------------------------

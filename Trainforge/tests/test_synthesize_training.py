@@ -306,7 +306,7 @@ def test_run_synthesis_writes_pilot_report_periodically(
         lambda *_a, **_kw: manifest,
     )
 
-    from Trainforge.scripts import pilot_report_helpers
+    from Trainforge.scripts.maintenance import pilot_report_helpers
 
     write_calls: list[tuple[Path, str]] = []
     original_writer = pilot_report_helpers.write_pilot_report_atomic
@@ -359,7 +359,7 @@ def test_run_synthesis_writes_final_pilot_report_when_pilot_every_zero(
         lambda *_a, **_kw: manifest,
     )
 
-    from Trainforge.scripts import pilot_report_helpers
+    from Trainforge.scripts.maintenance import pilot_report_helpers
 
     write_calls: list[Path] = []
     original_writer = pilot_report_helpers.write_pilot_report_atomic
@@ -480,7 +480,7 @@ def test_run_synthesis_no_pilot_report_when_no_manifest(
         "lib.ontology.property_manifest.load_property_manifest", _raise,
     )
 
-    from Trainforge.scripts import pilot_report_helpers
+    from Trainforge.scripts.maintenance import pilot_report_helpers
 
     write_calls: list[Path] = []
     original_writer = pilot_report_helpers.write_pilot_report_atomic

@@ -2,7 +2,7 @@
 Page Objectives Validator (Worker L — REC-CTR-03)
 
 Wraps the per-week learningObjectives gate that lives in
-``Courseforge/scripts/validate_page_objectives.py`` so the orchestrator's
+``Courseforge/scripts/validation/validate_page_objectives.py`` so the orchestrator's
 validation-gate framework can invoke it as a first-class workflow gate
 configured in ``config/workflows.yaml``.
 
@@ -74,7 +74,7 @@ def _emit_decision(
 
 
 def _load_page_objectives_helpers():
-    """Lazily load ``validate_page_objectives`` from ``Courseforge/scripts/``.
+    """Lazily load Courseforge's page-objectives validation script.
 
     The helpers live in a script directory that is not a normal python
     package. Load the module via ``importlib`` so the validator doesn't
@@ -85,7 +85,7 @@ def _load_page_objectives_helpers():
             error is wrapped into a ``GateResult`` by the caller.
     """
     scripts_dir = Path(__file__).resolve().parents[2] / "Courseforge" / "scripts"
-    module_path = scripts_dir / "validate_page_objectives.py"
+    module_path = scripts_dir / "validation" / "validate_page_objectives.py"
     if not module_path.exists():
         raise FileNotFoundError(
             f"Expected validate_page_objectives.py at {module_path}; "
@@ -93,9 +93,10 @@ def _load_page_objectives_helpers():
         )
     # validate_page_objectives imports load_canonical_objectives +
     # resolve_week_objectives from generate_course at module-load time, so
-    # the scripts dir must be importable before the module executes.
-    if str(scripts_dir) not in sys.path:
-        sys.path.insert(0, str(scripts_dir))
+    # the repository root must be importable before the module executes.
+    repo_root = scripts_dir.parents[1]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
     spec = importlib.util.spec_from_file_location(
         "cf_validate_page_objectives", module_path
     )

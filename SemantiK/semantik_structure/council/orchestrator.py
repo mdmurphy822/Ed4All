@@ -66,7 +66,7 @@ from .types import (
 # ``definition_term`` / ``definition_def`` / ``caption``) and a 9-class
 # structure adapter is deployed. But the Semantic head's cascade contract is
 # still the LEGACY 8-dim = [P(role)x6, P(is_heading=1), P(table_region=1)]
-# (``data.build_semantic_data.CASCADE_DIM = 6 + 1 + 1``; validated at
+# (``data.builders.build_semantic_data.CASCADE_DIM = 6 + 1 + 1``; validated at
 # ``council.semantic.CASCADE_DIM``). The Semantic adapter was trained on the
 # 6-role cascade, so the vector fed to it MUST stay 6-role until Semantic is
 # retrained on the 11-dim shape. We therefore project the 9-role structural
@@ -169,7 +169,7 @@ def _derive_cascades(
 
         [P(role)x6, P(is_heading=1), P(table_region=1)]
 
-    Mirrors ``data.build_semantic_data`` / ``train_semantic`` cascade
+    Mirrors ``data.builders.build_semantic_data`` / ``train_semantic`` cascade
     contract. Requires Structure to have been invoked with
     ``top_k_per_head={"structural_role": None, ...}`` so the per-class
     confidences are the full softmax (not a truncated top-k). If
@@ -404,7 +404,7 @@ def run_council(
             # count, but the builder intentionally pairs spans within-page
             # only (merge_or_split.py "Build adjacent pairs WITHIN each
             # page only", matching training adjacency in
-            # data/build_merge_or_split_data.py). Aggregate "missing" is
+            # data/builders/build_merge_or_split_data.py). Aggregate "missing" is
             # therefore ~(non-empty pages - 1) per PDF — page boundaries,
             # not dropped signals (R10: 42 missing == 42 page boundaries).
             expected = max(0, len(spans) - 1) if len(spans) > 1 else len(spans)
@@ -425,7 +425,7 @@ def run_council(
             # Request full per-class distributions for the cascade-bound
             # heads (structural_role, is_heading, table_region) so the
             # Semantic BERT receives the same shape it was trained on
-            # (see data.build_semantic_data). Other heads keep the
+            # (see data.builders.build_semantic_data). Other heads keep the
             # default top-3 to minimize signal-payload size.
             expected = len(spans)
             out = _safe_run(

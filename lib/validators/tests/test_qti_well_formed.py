@@ -1,8 +1,8 @@
 """Unit tests for ``lib/validators/qti_well_formed.py::QtiWellFormedValidator``.
 
 All QTI fixtures are HAND-AUTHORED in-test rather than emitted by
-``Courseforge/scripts/qti_emitter.py``, so a bug in the emitter cannot make
-these tests pass. Shapes follow ``Courseforge/docs/troubleshooting.md``. No
+``Courseforge/scripts/packaging/qti_emitter.py``, so a bug in the emitter cannot make
+these tests pass. Shapes follow ``Courseforge/docs/guides/troubleshooting.md``. No
 course slugs or device paths — every fixture is an in-test string.
 """
 
@@ -19,7 +19,7 @@ QTI_NS = "http://www.imsglobal.org/xsd/ims_qtiasiv1p2"
 
 
 # --------------------------------------------------------------------------
-# Fixture builders (shapes per Courseforge/docs/troubleshooting.md).
+# Fixture builders (shapes per Courseforge/docs/guides/troubleshooting.md).
 # --------------------------------------------------------------------------
 
 def _wrap(assessment_inner: str, assessment_attrs: str = 'ident="quiz_w1" title="Week 1 Quiz"') -> str:

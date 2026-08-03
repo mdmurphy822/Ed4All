@@ -100,7 +100,7 @@ _SEMANTIK_ROOT = str(Path(__file__).resolve().parents[2])
 if _SEMANTIK_ROOT not in sys.path:
     sys.path.insert(0, _SEMANTIK_ROOT)
 
-from data.build_structure_data import (  # noqa: E402
+from data.builders.build_structure_data import (  # noqa: E402
     LIST_NESTING_BUCKETS,
     NUM_PEDAGOGICAL_ROLES,
     NUM_ROLES,

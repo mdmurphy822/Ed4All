@@ -40,6 +40,7 @@ _RENDER_PATH = (
     Path(__file__).resolve().parents[3]
     / "Courseforge"
     / "scripts"
+    / "rendering"
     / "render_learning_objectives_page.py"
 )
 _spec = importlib.util.spec_from_file_location(

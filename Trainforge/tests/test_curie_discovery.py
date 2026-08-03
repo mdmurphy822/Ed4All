@@ -4,10 +4,10 @@ Coverage spans three layers:
 
 1. ``lib/ontology/curie_discovery.py`` primitive — frequency tally,
    min_frequency filter, sort order, malformed-line tolerance.
-2. ``Trainforge/scripts/discover_curies.py`` CLI — argparse wiring,
+2. ``Trainforge/scripts/ops/discover_curies.py`` CLI — argparse wiring,
    output formats (table / json / manifest), --exclude-known-manifest
    diff, exit codes.
-3. ``Trainforge/scripts/backfill_form_data.py`` --discover-from-corpus
+3. ``Trainforge/scripts/ops/backfill_form_data.py`` --discover-from-corpus
    integration — target-list union semantics, --allow-non-manifest
    plumbing through the drafting subprocess.
 """
@@ -181,7 +181,7 @@ def test_discover_cli_table_format(tmp_path, monkeypatch, capsys):
         {"chunk_id": "c1", "text": "rdf:type and sh:datatype"},
         {"chunk_id": "c2", "text": "rdf:type and rdfs:Class"},
     ])
-    from Trainforge.scripts import discover_curies as cli
+    from Trainforge.scripts.ops import discover_curies as cli
 
     monkeypatch.setattr(cli, "PROJECT_ROOT", fake_root)
     rc = cli.main([
@@ -201,7 +201,7 @@ def test_discover_cli_json_format(tmp_path, monkeypatch, capsys):
         {"chunk_id": "c1", "text": "rdf:type and sh:datatype"},
         {"chunk_id": "c2", "text": "rdf:type"},
     ])
-    from Trainforge.scripts import discover_curies as cli
+    from Trainforge.scripts.ops import discover_curies as cli
 
     monkeypatch.setattr(cli, "PROJECT_ROOT", fake_root)
     rc = cli.main([
@@ -221,7 +221,7 @@ def test_discover_cli_manifest_format(tmp_path, monkeypatch, capsys):
         {"chunk_id": "c1", "text": "rdf:type"},
         {"chunk_id": "c2", "text": "rdf:type and sh:datatype"},
     ])
-    from Trainforge.scripts import discover_curies as cli
+    from Trainforge.scripts.ops import discover_curies as cli
 
     monkeypatch.setattr(cli, "PROJECT_ROOT", fake_root)
     rc = cli.main([
@@ -239,7 +239,7 @@ def test_discover_cli_manifest_format(tmp_path, monkeypatch, capsys):
 def test_discover_cli_missing_chunks_returns_exit_1(
     tmp_path, monkeypatch, capsys,
 ):
-    from Trainforge.scripts import discover_curies as cli
+    from Trainforge.scripts.ops import discover_curies as cli
 
     monkeypatch.setattr(cli, "PROJECT_ROOT", tmp_path)
     rc = cli.main([

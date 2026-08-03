@@ -51,7 +51,7 @@ _SEMANTIK_ROOT = str(Path(__file__).resolve().parent.parent)
 if _SEMANTIK_ROOT not in sys.path:
     sys.path.insert(0, _SEMANTIK_ROOT)
 
-from data.build_math_specialist_data import (  # noqa: E402  (after sys.path bootstrap)
+from data.builders.build_math_specialist_data import (  # noqa: E402  (after sys.path bootstrap)
     EQ_NUM_ASSOC,
     EQ_NUM_TO_ID,
     MATH_TYPE_TO_ID,

@@ -255,7 +255,7 @@ def test_validate_form_data_contract_skips_profile_on_degraded_entry():
 
 
 def test_drafting_prompt_prepends_profile_directive():
-    from Trainforge.scripts.draft_form_data_entry import _build_drafting_prompt
+    from Trainforge.scripts.ops.draft_form_data_entry import _build_drafting_prompt
 
     profile = load_semantic_profile("rdf_type_instanceof")
 

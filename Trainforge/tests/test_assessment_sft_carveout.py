@@ -25,7 +25,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.validators.synthesis_leakage import SynthesisLeakageValidator  # noqa: E402
-from Trainforge.scripts.audit_pairs import run_audit  # noqa: E402
+from Trainforge.scripts.ops.audit_pairs import run_audit  # noqa: E402
 
 # The canonical scaffolding fragment the gate flags (Wave 122 pattern).
 _SCAFFOLD = "Question 1 (CO-07, Bloom: Understand). Question 2 (CO-07, Bloom: Apply)."

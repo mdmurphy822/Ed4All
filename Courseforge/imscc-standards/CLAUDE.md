@@ -346,7 +346,7 @@ When manifest declares one IMSCC version but content XMLs use different version 
 
 **Resource types are set in code, not by hand.** The three assessment resource
 types above are the literal values in
-`Courseforge/scripts/package_multifile_imscc.py::_ASSESSMENT_RES_TYPE`, and
+`Courseforge/scripts/packaging/package_multifile_imscc.py::_ASSESSMENT_RES_TYPE`, and
 `lib/validators/cartridge_conformance.py` accepts them via
 `_CC_RESOURCE_TYPES_LITERAL` + `_CC_RESOURCE_TYPE_PATTERNS`. Changing a type
 string in a hand-edited manifest without changing both of those will fail the
@@ -380,11 +380,11 @@ grep -r "imsccv1p3" *.xml  # Should find all IMSCC references
 
 ### Generation
 
-- `Courseforge/scripts/package_multifile_imscc.py` — writes `imsmanifest.xml`
+- `Courseforge/scripts/packaging/package_multifile_imscc.py` — writes `imsmanifest.xml`
   (CC 1.3: namespace `http://www.imsglobal.org/xsd/imsccv1p3/imscp_v1p1`,
   `<schemaversion>1.3.0</schemaversion>`) and assigns resource types from
   `_ASSESSMENT_RES_TYPE`.
-- `Courseforge/scripts/qti_emitter.py` — writes the QTI 1.2 assessment,
+- `Courseforge/scripts/packaging/qti_emitter.py` — writes the QTI 1.2 assessment,
   discussion-topic, and assignment learning-application-resource XML.
 
 ### Testing
@@ -423,7 +423,7 @@ grep -r "imsccv1p3" *.xml  # Should find all IMSCC references
 - `../schemas/imscc/`: IMSCC XSD definitions — the CC 1.3 manifest profile plus
   its five imports, and the assignment / discussion-topic / QTI 1.2 schemas
 - `brightspace-specific/`: Brightspace D2L extensions and protocols
-- `../docs/troubleshooting.md`: Error pattern prevention guidance
+- `../docs/guides/troubleshooting.md`: Error pattern prevention guidance
 - `../CLAUDE.md`: Course generation guidelines
 
 ---

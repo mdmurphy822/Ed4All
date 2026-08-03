@@ -441,7 +441,7 @@ _JSON_LD_RE = re.compile(
 
 
 def _extract_jsonld_blocks(html: str) -> List[Dict[str, Any]]:
-    """Mirror of Courseforge/scripts/validate_page_objectives.py extractor.
+    """Mirror of Courseforge/scripts/validation/validate_page_objectives.py extractor.
 
     Re-implemented in this module rather than imported to avoid the
     Courseforge-scripts ``sys.path`` surgery the existing wrapper does;

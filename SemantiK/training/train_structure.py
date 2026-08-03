@@ -10,7 +10,7 @@ Heads:
                                       (paragraph, heading, list_item,
                                       figure_caption, form_label,
                                       blockquote, code_block) — see
-                                      data.build_structure_data for
+                                      data.builders.build_structure_data for
                                       rationale. Non-authoritative
                                       recommendation; downstream
                                       specialists override per their
@@ -42,7 +42,7 @@ Heads:
 Layout side-channel: 20-dim numeric vector → LayerNorm → 64-dim MLP →
 concatenated with BERT pooled before all 4 heads. Same pattern as
 Phase 3a v4 MergeOrSplit. Order in
-``data.build_structure_data.LAYOUT_FEATURE_NAMES``.
+``data.builders.build_structure_data.LAYOUT_FEATURE_NAMES``.
 
 Hyperparameter recipe (matches Phase 2/3a):
     * ModernBERT-base, bf16 encoder, fp32 heads
@@ -93,7 +93,7 @@ _SEMANTIK_ROOT = str(Path(__file__).resolve().parent.parent)
 if _SEMANTIK_ROOT not in sys.path:
     sys.path.insert(0, _SEMANTIK_ROOT)
 
-from data.build_structure_data import (  # noqa: E402  (after sys.path bootstrap)
+from data.builders.build_structure_data import (  # noqa: E402  (after sys.path bootstrap)
     LAYOUT_FEATURE_DIM,
     LIST_NESTING_BUCKETS,
     NUM_PEDAGOGICAL_ROLES,
@@ -202,7 +202,7 @@ class StructureModel(nn.Module):
     an explicit numeric layout side-channel.
 
     The layout vector (20-dim, see
-    ``data.build_structure_data.LAYOUT_FEATURE_NAMES``) carries the raw
+    ``data.builders.build_structure_data.LAYOUT_FEATURE_NAMES``) carries the raw
     font_size_relative_to_page_median, bold/italic flags, position, and
     text-shape features that the encoder otherwise has to read out of
     the text alone. Same pattern as Phase 3a v4 MergeOrSplit; same

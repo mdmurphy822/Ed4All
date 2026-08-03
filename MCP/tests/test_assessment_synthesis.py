@@ -177,7 +177,7 @@ def test_emit_writes_xml_and_manifest(tmp_path: Path):
 
 def test_emit_roundtrips_packager_discovery(tmp_path: Path):
     """The packager's own discovery classifies every emitted artifact."""
-    from Courseforge.scripts.package_multifile_imscc import _discover_assessments
+    from Courseforge.scripts.packaging.package_multifile_imscc import _discover_assessments
 
     # The packager joins ``content_dir / "06_assessments"``, so pass the
     # PARENT of our output dir as the content_dir.

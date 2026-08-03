@@ -102,7 +102,7 @@ def _scenario_block(debrief: str | None) -> Block:
 
 def test_render_scenario_has_debrief_under_flag(monkeypatch):
     monkeypatch.setenv(ENV_NEW_BLOCK_TYPES, "1")
-    from Courseforge.scripts.generate_course import _render_scenario
+    from Courseforge.scripts.rendering.generate_course import _render_scenario
 
     html = _render_scenario(_scenario_block("The key tradeoff was strength vs cost."))
     assert 'class="scenario-card"' in html
@@ -114,7 +114,7 @@ def test_render_scenario_has_debrief_under_flag(monkeypatch):
 
 def test_render_scenario_byte_stable_when_flag_off(monkeypatch):
     monkeypatch.delenv(ENV_NEW_BLOCK_TYPES, raising=False)
-    from Courseforge.scripts.generate_course import _render_scenario
+    from Courseforge.scripts.rendering.generate_course import _render_scenario
 
     assert _render_scenario(_scenario_block("x")) == ""
 

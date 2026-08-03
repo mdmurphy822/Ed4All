@@ -3,7 +3,7 @@
 
 Three surfaces cite a source page now: the grounded-answer provenance disclosure
 (``gui/services/answer_render.py``), the Learning-Objectives-Map deep links
-(``Courseforge/scripts/render_learning_objectives_page.py``), and the "View in
+(``Courseforge/scripts/rendering/render_learning_objectives_page.py``), and the "View in
 textbook" block links (``gui/services/imscc_service.py``). They live in three
 packages (a GUI service, a GUI service, and a Courseforge script), so the label
 formatter is hoisted HERE — a dependency-free ``lib/`` module all three can

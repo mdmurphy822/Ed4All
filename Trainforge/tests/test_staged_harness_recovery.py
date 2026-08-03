@@ -15,7 +15,7 @@ from Trainforge.generators.staged_synthesis_micro import (
     MicroResumeStore,
     micro_contract_fingerprint,
 )
-from Trainforge.scripts.staged_window_abcd_pilot import (
+from Trainforge.scripts.harness.staged_window_abcd_pilot import (
     MICRO_SYNTHESIS_CONTRACT,
     _digest,
     synthesis_contract_identity,

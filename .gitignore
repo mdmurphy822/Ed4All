@@ -287,21 +287,22 @@ SemantiK/.ruff_cache/
 # pin their label vocabularies to (training-pipeline code, not data). Use data/*
 # (not data/) so git descends to honor the !-allow re-includes below.
 SemantiK/data/*
-!SemantiK/data/build_*.py
-!SemantiK/data/ingest_*.py
-!SemantiK/data/_splits.py
-!SemantiK/data/balance.py
-!SemantiK/data/jats_tables.py
-!SemantiK/data/gpotable_tables.py
+!SemantiK/data/builders/
+!SemantiK/data/builders/*.py
+!SemantiK/data/augmentation/
+!SemantiK/data/augmentation/*.py
+!SemantiK/data/alignment/
+!SemantiK/data/alignment/*.py
+!SemantiK/data/sources/
+!SemantiK/data/sources/*.py
+!SemantiK/data/common/
+!SemantiK/data/common/*.py
 # Phase-0 global aligner module + its unit tests are training-pipeline CODE
 # (not data) — track them. The data/tests/ dir is re-included so git descends
 # (dataset OUTPUT dirs stay ignored; __pycache__ stays ignored via global rules).
-!SemantiK/data/structure_align.py
 # Realistic-rendering presentation augmenter — training-pipeline CODE (the
 # build pins its render profiles), not data. Track it + its unit tests.
-!SemantiK/data/render_augment.py
 # Exact render-time element->bbox role labeler — training-pipeline CODE.
-!SemantiK/data/render_capture.py
 !SemantiK/data/tests/
 !SemantiK/data/tests/test_structure_align.py
 !SemantiK/data/tests/test_render_augment.py

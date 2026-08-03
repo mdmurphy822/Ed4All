@@ -1,4 +1,4 @@
-"""Tests for the realistic-rendering presentation augmenter (data/render_augment.py).
+"""Tests for the realistic-rendering presentation augmenter (data/augmentation/render_augment.py).
 
 Locks in the load-bearing contract: default OFF is the identity (byte-identical
 render), augmentation is PRESENTATION ONLY (the HTML tag structure is never
@@ -7,11 +7,17 @@ parse-with-fallback (mirroring resolve_column_order_mode)."""
 from __future__ import annotations
 
 import re
+import sys
 from collections import Counter
+from pathlib import Path
 
-import pytest
+_SEMANTIK_ROOT = Path(__file__).resolve().parents[2]
+if str(_SEMANTIK_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SEMANTIK_ROOT))
 
-from data.render_augment import (
+import pytest  # noqa: E402
+
+from data.augmentation.render_augment import (  # noqa: E402
     RENDER_PROFILES,
     augment_html,
     resolve_render_augment_mode,

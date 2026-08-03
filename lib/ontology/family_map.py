@@ -6,7 +6,7 @@ plus ``sh:maxCount`` degraded -> adapter learns one side of cardinality).
 The :class:`FamilyMap` exposes per-family CURIE lists + a reverse-index
 ``family_of`` mapping; downstream consumers (the
 ``FamilyCompletenessValidator`` post-training gate, the family-clustered
-backfill ordering in ``Trainforge/scripts/backfill_form_data.py``, and
+backfill ordering in ``Trainforge/scripts/ops/backfill_form_data.py``, and
 Plan D's checkpoint emitter via :func:`compute_family_coverage`) all read
 the same loader output.
 

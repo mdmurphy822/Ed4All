@@ -6380,7 +6380,7 @@ def run_synthesis(
                 and pilot_report_every > 0
                 and chunks_processed_counter % pilot_report_every == 0
             ):
-                from Trainforge.scripts.pilot_report_helpers import (
+                from Trainforge.scripts.maintenance.pilot_report_helpers import (
                     count_property_coverage_from_records,
                     format_pilot_report,
                     template_distribution_from_records,
@@ -6605,7 +6605,7 @@ def run_synthesis(
         # is the source of truth; this is the human-readable companion
         # artifact.
         if pilot_manifest is not None:
-            from Trainforge.scripts.pilot_report_helpers import (
+            from Trainforge.scripts.maintenance.pilot_report_helpers import (
                 count_property_coverage_from_records,
                 format_pilot_report,
                 template_distribution_from_records,

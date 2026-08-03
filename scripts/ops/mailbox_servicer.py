@@ -52,7 +52,7 @@ DETERMINISTIC_TOOLS = {
     "archive_to_libv2",
     "analyze_imscc_content",
     # Courseforge content emission is deterministic templating
-    # (Courseforge.scripts.generate_course.generate_week) — no live LLM,
+    # (Courseforge.scripts.rendering.generate_course.generate_week) — no live LLM,
     # one weekly module per task (1 agent = 1 file).
     "generate_course_content",
     "run_content_generation_outline",

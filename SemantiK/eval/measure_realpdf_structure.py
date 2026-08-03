@@ -4,7 +4,7 @@ Phase 1 headline. Loads the shipped council structure head
 (``models/council/structure/final``) — the SAME (text + 20-dim layout) ->
 structural_role model whose in-distribution test_role_macro_f1 is 0.894
 (``summary.json``) — and scores it over the real-PDF eval rows produced by
-``data/build_structure_data.py --realpdf-only``.
+``data/builders/build_structure_data.py --realpdf-only``.
 
 It reports, PER DOMAIN (math / scientific / regulatory_legal / forms):
     * real-PDF structural_role macro-F1
@@ -162,7 +162,7 @@ def main() -> None:
     total = sum(len(v) for v in sets.values())
     if total == 0:
         raise SystemExit(
-            "no real-PDF rows found — run data/build_structure_data.py --realpdf-only first"
+            "no real-PDF rows found — run data/builders/build_structure_data.py --realpdf-only first"
         )
 
     print(f"[measure] loading head from {args.adapter_dir} on {args.device}", file=sys.stderr)

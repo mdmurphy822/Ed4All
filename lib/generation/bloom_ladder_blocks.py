@@ -8,7 +8,7 @@ validated:
 
 * planner SELECTION (``lib/generation/block_planner.py``) — draws candidate
   block types from the ladder instead of only the objective's own rung.
-* renderer DISPATCH (``Courseforge/scripts/generate_course.py``) — renders a
+* renderer DISPATCH (``Courseforge/scripts/rendering/generate_course.py``) — renders a
   block at the rung it was planned for.
 * field EMIT (``Courseforge/scripts/blocks.py::Block.to_html_attrs`` /
   ``to_jsonld_entry``) — projects the rung onto the block (``ladder_rung`` /

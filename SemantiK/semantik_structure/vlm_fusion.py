@@ -10,15 +10,15 @@ engine: **it is deterministic code, not a model.**
 Contract (settled 2026-07-03, owner design discussion):
 
 * The Tesseract line blocks are the PDF side; the VLM markdown lines are the
-  gold side. We reuse the ``data.structure_align`` DP aligner's PUBLIC API
+  gold side. We reuse the ``data.alignment.structure_align`` DP aligner's PUBLIC API
   (:func:`align_blocks` + :func:`sim`) — the same 5-move (MATCH / SPLIT /
   MERGE / GOLD_GAP / PDF_GAP) lossless global alignment that the structure
   training-data builder uses — rather than a lighter greedy line matcher,
   because a VLM logical line routinely MERGEs *k* wrapped OCR print-lines into
   one markdown line, which a monotonic greedy matcher cannot express. The
   aligner is deliberately input-agnostic: a Tesseract line maps to
-  :class:`~data.structure_align.FBView` (it carries a real bbox), a VLM line to
-  :class:`~data.structure_align.GoldView` with empty ``tag``/``role``.
+  :class:`~data.alignment.structure_align.FBView` (it carries a real bbox), a VLM line to
+  :class:`~data.alignment.structure_align.GoldView` with empty ``tag``/``role``.
 * **Aligned (MATCH / SPLIT / MERGE)** → the VLM text lands on the Tesseract
   bbox union of the consumed Tesseract lines (bbox, font, confidence, and the
   20-dim-layout-feeding geometry all survive for the council), stamped
@@ -41,7 +41,7 @@ similarity and would otherwise land as adjacent gap pairs:
    strip LaTeX control sequences / braces / ``$`` from the VLM line and apply
    the known OCR confusable folds (``V``→√-strip, ``l``/``1``, ``O``/``0``) to
    both sides before the aligner scores them. This is fusion-local by design
-   and MUST NOT migrate into ``data.structure_align`` (that would silently
+   and MUST NOT migrate into ``data.alignment.structure_align`` (that would silently
    change the training-data aligner). The fused block's OUTPUT text is a
    separate transform (:func:`_strip_markdown_structure`) that keeps LaTeX.
 2. A gap-pairing RESCUE post-pass — an adjacent (PDF_GAP-run, GOLD_GAP-run)
@@ -1071,7 +1071,7 @@ def fuse_page(
         )
 
     # Lazy import — keeps numpy / the aligner out of the flag-off / cache path.
-    from data import structure_align as _sa
+    from data.alignment import structure_align as _sa
 
     try:
         fb_views = [
@@ -1500,7 +1500,7 @@ def _rescue_sim(
     tess: list[dict], vlm: list[str], region_tess: list[int], region_vlm: list[int]
 ) -> float:
     """Scoring-normalized sim between the rescued runs (low by construction)."""
-    from data import structure_align as _sa
+    from data.alignment import structure_align as _sa
 
     t = _score_norm(" ".join(tess[i].get("text", "") for i in sorted(region_tess)))
     v = _score_norm(" ".join(vlm[i] for i in sorted(region_vlm)))

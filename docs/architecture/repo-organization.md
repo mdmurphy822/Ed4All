@@ -269,6 +269,9 @@ risk. Completed items are marked below.
    The runtime entry points `run_cascade_json.py`, `infer_pdf.py`, and
    `pdf_to_html.py` stay flat intentionally. The tracked-reference sweep and
    root-derivation updates landed with the move; the flat cap is now 3.
+   **`Trainforge/scripts/` is also DONE:** durable commands live in `ops/`,
+   repeatable experiments in `harness/`, contract helpers in `maintenance/`,
+   and retained one-use tooling in `archive/`; its loose-file cap is now zero.
 2. **`Trainforge/` root — 19 loose modules** with one obvious cluster: nine
    `synthesis_*.py` plus `synthesize_training.py` want to be
    `Trainforge/synthesis/`. Costs a compatibility shim per moved module

@@ -49,7 +49,7 @@ assembled ``.imscc`` ZIP and audits the whole thing:
 
 (E) **answer_key webcontent presence.** When an instructor-facing
     ``answer_key`` HTML sidecar is present in the ZIP (the rendered page
-    ``Courseforge/scripts/answer_key_emitter.py`` emits), the manifest MUST
+    ``Courseforge/scripts/packaging/answer_key_emitter.py`` emits), the manifest MUST
     carry a resource that references it (so it survives import as a real
     content page). An orphaned answer_key file emits
     ``CARTRIDGE_ANSWER_KEY_UNREFERENCED`` (critical). No answer_key in the
@@ -82,7 +82,7 @@ Cross-references:
 * ``lib/validators/qti_well_formed.py`` — the loose-QTI validator this one
   complements (that runs pre-packaging on ``06_assessments/``; this runs
   post-packaging on the assembled ZIP). Shares the graceful-degrade shape.
-* ``Courseforge/scripts/package_multifile_imscc.py`` — the packager whose
+* ``Courseforge/scripts/packaging/package_multifile_imscc.py`` — the packager whose
   manifest shape / resource-type strings this validator asserts
   (``_ASSESSMENT_RES_TYPE`` + ``webcontent``).
 * ``Courseforge/schemas/imscc/`` — the vendored XSD dir scanned for the
@@ -215,7 +215,8 @@ class CartridgeConformanceValidator:
     version = "0.1.0"  # Track L (L2)
 
     # Answer-key sidecar detection: a rendered HTML page whose basename carries
-    # the ``answer_key`` marker (matches Courseforge/scripts/answer_key_emitter).
+    # the ``answer_key`` marker (matches
+    # Courseforge/scripts/packaging/answer_key_emitter).
     _ANSWER_KEY_RE = re.compile(r"answer[_-]?key", re.IGNORECASE)
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:

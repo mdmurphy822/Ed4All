@@ -570,7 +570,7 @@ def resolve_dart_refs_for_chunk(
 #
 # Courseforge content pages carry learning-outcome (LO) references in two
 # forms the page-objective validator reads (see
-# ``Courseforge/scripts/validate_page_objectives.py``):
+# ``Courseforge/scripts/validation/validate_page_objectives.py``):
 #
 #   1. JSON-LD ``learningObjectives[].id`` — surfaced by the parser onto
 #      ``ParsedHTMLModule.learning_objectives`` (each

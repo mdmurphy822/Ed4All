@@ -11,7 +11,7 @@ JSONL — the Phase 3c trainer never invokes the Structure adapter.
 Heads:
     * doc_role            7-class     (title, author, body, citation,
                                       footer, legal, metadata) — see
-                                      data.build_semantic_data for
+                                      data.builders.build_semantic_data for
                                       vocab rationale (``abstract``
                                       removed at 0.16% prevalence).
     * boilerplate         binary      Independent of doc_role:
@@ -75,7 +75,7 @@ _SEMANTIK_ROOT = str(Path(__file__).resolve().parent.parent)
 if _SEMANTIK_ROOT not in sys.path:
     sys.path.insert(0, _SEMANTIK_ROOT)
 
-from data.build_semantic_data import (  # noqa: E402  (after sys.path bootstrap)
+from data.builders.build_semantic_data import (  # noqa: E402  (after sys.path bootstrap)
     CASCADE_DIM,
     DOC_ROLE_NAMES,
     LAYOUT_FEATURE_DIM,

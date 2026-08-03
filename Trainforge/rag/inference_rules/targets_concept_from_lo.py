@@ -14,7 +14,7 @@ added — consumers resolve endpoints by ID-namespace prefix.
 
 Input contract: ``objectives_metadata`` kwarg — a list of dicts shaped
 like the JSON-LD ``learningObjectives[]`` emitted by
-``Courseforge/scripts/generate_course.py::_build_objectives_metadata``.
+``Courseforge/scripts/rendering/generate_course.py::_build_objectives_metadata``.
 Each entry may have:
 
     {

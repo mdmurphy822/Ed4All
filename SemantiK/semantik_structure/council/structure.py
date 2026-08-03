@@ -42,7 +42,7 @@ Precedence of ``structural_role`` (Phase 5, gated by
 
 The 20-dim numeric layout side-channel and the 64-dim layout MLP
 mirror Phase 3a v4 MergeOrSplit. Order of layout dims MUST match
-:data:`data.build_structure_data.LAYOUT_FEATURE_NAMES`.
+:data:`data.builders.build_structure_data.LAYOUT_FEATURE_NAMES`.
 """
 
 from __future__ import annotations
@@ -69,7 +69,7 @@ DEFAULT_ADAPTER_DIR = (
 )
 
 # 7-class structural_role head — must match
-# data.build_structure_data.ROLE_NAMES exactly (same order, same
+# data.builders.build_structure_data.ROLE_NAMES exactly (same order, same
 # active-class subset). Duplicated here so the runtime stays
 # self-contained (same pattern as merge_or_split.py).
 #
@@ -87,7 +87,7 @@ ROLE_NAMES = (
     "form_label",
     "blockquote",
     "code_block",
-    # AXIS-1 expansion (must match data.build_structure_data.ROLE_NAMES).
+    # AXIS-1 expansion (must match data.builders.build_structure_data.ROLE_NAMES).
     "definition_term",
     "definition_def",
     "caption",
@@ -97,7 +97,7 @@ TABLE_REGION_LABELS = ("not_table_region", "table_region")
 IS_IMAGE_BLOCK_LABELS = ("not_image_block", "image_block")
 LIST_NESTING_LABELS = ("depth_0", "depth_1", "depth_2", "depth_3plus")
 # AXIS-2: NEW span-level pedagogical-function head (orthogonal to
-# structural_role). Must match data.build_structure_data.PEDAGOGICAL_ROLE_NAMES
+# structural_role). Must match data.builders.build_structure_data.PEDAGOGICAL_ROLE_NAMES
 # exactly (same order — class 0 == "none").
 PEDAGOGICAL_ROLE_LABELS = (
     "none",
@@ -128,7 +128,7 @@ ADAPTER_SPEC = LoRAAdapterSpec(
 
 
 # ---------------------------------------------------------------------------
-# Layout side-channel — mirror of data/build_structure_data.py
+# Layout side-channel — mirror of data/builders/build_structure_data.py
 # ---------------------------------------------------------------------------
 
 LAYOUT_FEATURE_DIM = 20
@@ -316,7 +316,7 @@ def _compute_span_layout(
     in_table: bool,
 ) -> list[float]:
     """Per-span layout vector. Mirrors
-    data.build_structure_data.compute_span_layout_features. Order is
+    data.builders.build_structure_data.compute_span_layout_features. Order is
     fixed; output clamped to ±10."""
     raw = getattr(fb, "raw", fb)
     bbox = list(raw.bbox)
@@ -486,7 +486,7 @@ def _softmax_signal(
           Used by the cascade-bound heads (``structural_role``,
           ``is_heading``, ``table_region``) so the downstream Semantic
           BERT receives the full distribution it was trained against
-          (see ``data.build_semantic_data``).
+          (see ``data.builders.build_semantic_data``).
     """
     import torch  # noqa: WPS433
 

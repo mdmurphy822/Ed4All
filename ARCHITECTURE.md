@@ -72,7 +72,7 @@ and training stages a common instructional vocabulary.
 an IMSCC package.
 
 **Deep dive:** [Courseforge overview](Courseforge/README.md) and
-[getting started](Courseforge/docs/getting-started.md).
+[getting started](Courseforge/docs/guides/getting-started.md).
 
 ### Trainforge: a course package to retrieval and training data
 

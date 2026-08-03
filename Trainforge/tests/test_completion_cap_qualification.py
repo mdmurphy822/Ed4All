@@ -8,8 +8,8 @@ import pytest
 from Trainforge.generators.objective_execution_contract import (
     CANDIDATE_COMPLETION_CAPS,
 )
-from Trainforge.scripts import completion_cap_qualification as capq
-from Trainforge.scripts import staged_window_abcd_pilot as pilot
+from Trainforge.scripts.harness import completion_cap_qualification as capq
+from Trainforge.scripts.harness import staged_window_abcd_pilot as pilot
 
 
 def _row(key, ordinal):

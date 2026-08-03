@@ -51,7 +51,7 @@ outline tier could reasonably re-roll past on a second draft.
 Shape-discrimination: dict entries are validated as-is; HTML strings
 (rewrite-tier ``Block.content``) carry the JSON-LD ``blocks[]``
 projection inside an embedded ``<script type="application/ld+json">``
-block (Phase 2 emit at ``Courseforge/scripts/generate_course.py:2090``
+block (Phase 2 emit at ``Courseforge/scripts/rendering/generate_course.py:2090``
 when ``COURSEFORGE_EMIT_BLOCKS=true``); the validator scrapes those
 blocks via the existing ``shacl_runner._extract_jsonld_blocks`` helper.
 

@@ -74,7 +74,7 @@ Per-class subsections follow a fixed template (definition path, production site,
 
 **Definition:** `schemas/academic/course_metadata.schema.json`
 **Instance production:** Authored by course-outliner agent / Courseforge planning phase.
-**Instance consumption:** `Courseforge/scripts/generate_course.py` (page emit), brightspace-packager agent (IMSCC), LibV2 importer (manifest derivation).
+**Instance consumption:** `Courseforge/scripts/rendering/generate_course.py` (page emit), brightspace-packager agent (IMSCC), LibV2 importer (manifest derivation).
 
 **Required fields (top-level):** `courseIdentification`, `courseDescription`, `instructionalTeam`, `courseStructure`, `assessmentFramework`, `accessibility`, `metadata`.
 
@@ -96,7 +96,7 @@ Per-class subsections follow a fixed template (definition path, production site,
 
 **Definition:** `schemas/academic/course_metadata.schema.json` (items of `courseStructure.modules`).
 **Instance production:** course-outliner / requirements-collector agents.
-**Instance consumption:** `Courseforge/scripts/generate_course.py::generate_week()` (lines 598-738).
+**Instance consumption:** `Courseforge/scripts/rendering/generate_course.py::generate_week()` (lines 598-738).
 
 **Required fields:** `moduleNumber` (int ≥ 1), `title`, `learningObjectives[]` (strings).
 
@@ -106,8 +106,8 @@ Per-class subsections follow a fixed template (definition path, production site,
 
 ### Page
 
-**Definition:** Courseforge HTML output; structure encoded in JSON-LD emitted at `Courseforge/scripts/generate_course.py:571-595` (`_build_page_metadata`). No standalone schema file.
-**Instance production:** `Courseforge/scripts/generate_course.py::generate_week()` emits five pages per week: overview, content_XX, application, self_check, summary.
+**Definition:** Courseforge HTML output; structure encoded in JSON-LD emitted at `Courseforge/scripts/rendering/generate_course.py:571-595` (`_build_page_metadata`). No standalone schema file.
+**Instance production:** `Courseforge/scripts/rendering/generate_course.py::generate_week()` emits five pages per week: overview, content_XX, application, self_check, summary.
 **Instance consumption:** `Trainforge/process_course.py::_chunk_content()` (line 787) parses these pages during IMSCC ingestion.
 
 **Required fields** (JSON-LD emit):
@@ -135,7 +135,7 @@ Per-class subsections follow a fixed template (definition path, production site,
 ### Section (textbook / page)
 
 **Definition:** `schemas/academic/textbook_structure.schema.json#/definitions/section` (also Page JSON-LD `sections[]`).
-**Instance production:** textbook-ingestor agent (textbook_structure); `Courseforge/scripts/generate_course.py:549-568` (`_build_sections_metadata`) for page emit.
+**Instance production:** textbook-ingestor agent (textbook_structure); `Courseforge/scripts/rendering/generate_course.py:549-568` (`_build_sections_metadata`) for page emit.
 **Instance consumption:** `Trainforge/parsers/html_content_parser.py` for chunk alignment.
 
 **Required fields (textbook_structure):** `id`, `headingText`, `contentBlocks[]`.
@@ -181,7 +181,7 @@ Each describes an inline HTML component produced by Courseforge (accordions for 
 
 ### FlipCard · SelfCheck · ActivityCard (code-only)
 
-**Definition:** No schema; emitted inline as HTML with `data-cf-component=*` by `Courseforge/scripts/generate_course.py`.
+**Definition:** No schema; emitted inline as HTML with `data-cf-component=*` by `Courseforge/scripts/rendering/generate_course.py`.
 
 - FlipCard: `_render_flip_cards()` (lines 336-352), `data-cf-component="flip-card"`, `data-cf-purpose="term-definition"`, `data-cf-term=<slug>`.
 - SelfCheck: `_render_self_check()` (lines 355-385), `data-cf-component="self-check"`, `data-cf-purpose="formative-assessment"`, carries `data-cf-bloom-level` and optional `data-cf-objective-ref`.
@@ -193,7 +193,7 @@ Each describes an inline HTML component produced by Courseforge (accordions for 
 
 **Definition:** `schemas/academic/learning_objectives.schema.json#/definitions/learningObjective`.
 **Instance production:** textbook-ingestor + objective-synthesizer agents (extracted from textbooks); course-outliner agent (new courses).
-**Instance consumption:** `Courseforge/scripts/generate_course.py:512-546` (`_build_objectives_metadata` → JSON-LD); Trainforge chunk alignment (`learning_outcome_refs` on chunk).
+**Instance consumption:** `Courseforge/scripts/rendering/generate_course.py:512-546` (`_build_objectives_metadata` → JSON-LD); Trainforge chunk alignment (`learning_outcome_refs` on chunk).
 
 **Required fields:**
 | field | type | notes |
@@ -207,7 +207,7 @@ Each describes an inline HTML component produced by Courseforge (accordions for 
 **Discriminators / subtype signaling:** ID prefix:
 - `TO-NN` — Terminal Objective (course-level).
 - `CO-NN` — Chapter Objective.
-- `WNN-CO-NN` — Week-scoped Chapter Objective (legacy; week-prefix normalization described at `Courseforge/scripts/generate_course.py:605-613`).
+- `WNN-CO-NN` — Week-scoped Chapter Objective (legacy; week-prefix normalization described at `Courseforge/scripts/rendering/generate_course.py:605-613`).
 
 ### Chunk
 
@@ -519,7 +519,7 @@ Single table of directed/undirected relations that cross class boundaries. Cardi
 | Relation | Domain → Range | Cardinality | Directed | Surface | Defined in |
 |---|---|---|---|---|---|
 | `hasModule` | Course → Module | 1..* | yes | `courseStructure.modules[]` | `schemas/academic/course_metadata.schema.json` |
-| `hasPage` | Module → Page | 1..* | yes | file tree / weekly emit | `Courseforge/scripts/generate_course.py:598` |
+| `hasPage` | Module → Page | 1..* | yes | file tree / weekly emit | `Courseforge/scripts/rendering/generate_course.py:598` |
 | `hasSection` | Page → Section | 0..* | yes | JSON-LD `sections[]` | `generate_course.py:549-568` |
 | `hasContentBlock` | Section → ContentBlock | 1..* | yes | `sections[].contentBlocks[]` | `schemas/academic/textbook_structure.schema.json#/definitions/section` |
 | `hasSubsection` | Section → Section | 0..* | yes | recursive `subsections[]` | same |
@@ -568,7 +568,7 @@ remember, understand, apply, analyze, evaluate, create
 
 ### BLOOM_VERBS
 
-Source: `Courseforge/scripts/generate_course.py:136-143`.
+Source: `Courseforge/scripts/rendering/generate_course.py:136-143`.
 
 ```python
 BLOOM_VERBS = {
@@ -583,7 +583,7 @@ BLOOM_VERBS = {
 
 ### BLOOM_TO_DOMAIN
 
-Source: `Courseforge/scripts/generate_course.py:146-153`.
+Source: `Courseforge/scripts/rendering/generate_course.py:146-153`.
 
 ```python
 BLOOM_TO_DOMAIN = {
@@ -627,7 +627,7 @@ multiple_choice, true_false, short_answer, essay, matching, fill_in_blank, order
 
 ### Content types
 
-**Page JSON-LD `sections[].contentType`** (inferred in `Courseforge/scripts/generate_course.py:388-405`):
+**Page JSON-LD `sections[].contentType`** (inferred in `Courseforge/scripts/rendering/generate_course.py:388-405`):
 ```
 definition, example, procedure, comparison, exercise, overview, summary, explanation
 ```
@@ -641,7 +641,7 @@ callout_info, callout_warning, callout_note, code_block, blockquote, example, su
 
 ### Module types (Page `moduleType`)
 
-Source: emit sites in `Courseforge/scripts/generate_course.py::generate_week()` (lines 647, 667, 686, 704, 728):
+Source: emit sites in `Courseforge/scripts/rendering/generate_course.py::generate_week()` (lines 647, 667, 686, 704, 728):
 ```
 overview, content, application, assessment, summary
 ```
@@ -649,7 +649,7 @@ overview, content, application, assessment, summary
 
 ### `data-cf-*` attribute vocabulary
 
-Source: `Courseforge/scripts/generate_course.py` (multiple render sites).
+Source: `Courseforge/scripts/rendering/generate_course.py` (multiple render sites).
 
 | Attribute | Element | Allowed values |
 | --- | --- | --- |
@@ -914,7 +914,7 @@ Five distinct serializations carry this ontology into bytes on disk. They are no
 
 ### 6.1 JSON-LD emit (Courseforge Page metadata)
 
-Emit site: `Courseforge/scripts/generate_course.py:263-279` (injects `<script type="application/ld+json">` into `<head>`); dict builder at `:571-595`.
+Emit site: `Courseforge/scripts/rendering/generate_course.py:263-279` (injects `<script type="application/ld+json">` into `<head>`); dict builder at `:571-595`.
 
 Shape (trimmed):
 ```json
@@ -948,7 +948,7 @@ See § JSON-LD round-trip for the four `@context` files that wrap this and the o
 
 ### 6.2 `data-cf-*` attribute vocabulary
 
-See the full table in § 4. Emit sites: `Courseforge/scripts/generate_course.py` (`_render_objectives`, `_render_flip_cards`, `_render_self_check`, `_render_activities`, `_render_content_sections`). Consumer: `Trainforge/parsers/html_content_parser.py` extracts these attributes during chunk alignment; `_CHROME_TAGS` skip filter (`html_content_parser.py:140`) drops `data-cf-role="template-chrome"` subtrees so navigation headers/footers don't pollute chunks.
+See the full table in § 4. Emit sites: `Courseforge/scripts/rendering/generate_course.py` (`_render_objectives`, `_render_flip_cards`, `_render_self_check`, `_render_activities`, `_render_content_sections`). Consumer: `Trainforge/parsers/html_content_parser.py` extracts these attributes during chunk alignment; `_CHROME_TAGS` skip filter (`html_content_parser.py:140`) drops `data-cf-role="template-chrome"` subtrees so navigation headers/footers don't pollute chunks.
 
 ### 6.3 JSON Schema (draft-07) files
 
@@ -1217,10 +1217,10 @@ Exact file:line anchors to key emit/consume sites. Grep-verified against the tre
 
 ### Emit — Courseforge
 
-- **Page JSON-LD injection:** `Courseforge/scripts/generate_course.py:273-279` (wraps dict from `_build_page_metadata`).
-- **`_build_page_metadata`:** `Courseforge/scripts/generate_course.py:571-595`.
-- **`_build_objectives_metadata`:** `Courseforge/scripts/generate_course.py:512-546`.
-- **`_build_sections_metadata`:** `Courseforge/scripts/generate_course.py:549-568`.
+- **Page JSON-LD injection:** `Courseforge/scripts/rendering/generate_course.py:273-279` (wraps dict from `_build_page_metadata`).
+- **`_build_page_metadata`:** `Courseforge/scripts/rendering/generate_course.py:571-595`.
+- **`_build_objectives_metadata`:** `Courseforge/scripts/rendering/generate_course.py:512-546`.
+- **`_build_sections_metadata`:** `Courseforge/scripts/rendering/generate_course.py:549-568`.
 - **`_render_objectives`** (data-cf-objective-id + data-cf-bloom-level/verb/cognitive-domain): `generate_course.py:305-333`.
 - **`_render_flip_cards`** (data-cf-component=flip-card): `generate_course.py:336-352`.
 - **`_render_self_check`** (data-cf-component=self-check + objective-ref): `generate_course.py:355-385`.

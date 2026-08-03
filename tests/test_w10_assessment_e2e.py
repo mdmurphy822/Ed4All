@@ -35,7 +35,7 @@ if str(PROJECT_ROOT) not in sys.path:
 # The packager adds its own scripts dir to sys.path at import time (for its
 # sibling render_learning_objectives_page / validate_page_objectives imports).
 from Courseforge.scripts import qti_emitter
-from Courseforge.scripts.package_multifile_imscc import package_imscc
+from Courseforge.scripts.packaging.package_multifile_imscc import package_imscc
 from gui.services import quiz_service
 
 

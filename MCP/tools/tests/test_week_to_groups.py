@@ -33,7 +33,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from MCP.tools import pipeline_tools as _pt  # noqa: E402
 
 # Shared single-sourced slicer (what the ceil-stride fallback delegates to).
-_CF_SCRIPTS = PROJECT_ROOT / "Courseforge" / "scripts"
+_CF_SCRIPTS = PROJECT_ROOT / "Courseforge" / "scripts" / "rendering"
 if str(_CF_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_CF_SCRIPTS))
 from generate_course import (  # noqa: E402

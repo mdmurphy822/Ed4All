@@ -1,4 +1,4 @@
-"""Tests for ``Trainforge.scripts.calibrate_pair_validation``.
+"""Tests for ``Trainforge.scripts.harness.calibrate_pair_validation``.
 
 The script is operator-facing tooling that proposes warning → critical
 threshold flips post corpus rebuild. It is **read-only** — these tests
@@ -18,7 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.scripts.calibrate_pair_validation import (  # noqa: E402
+from Trainforge.scripts.harness.calibrate_pair_validation import (  # noqa: E402
     VERDICT_KEEP,
     VERDICT_MISSING,
     VERDICT_NEEDS_DATA,

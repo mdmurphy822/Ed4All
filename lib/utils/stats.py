@@ -5,7 +5,7 @@ Replaces 2 inline implementations:
 - :mod:`Trainforge.eval.baseline_compare._bootstrap_ci` -- paired-bootstrap
   over (base, trained) outcome tuples for the procurement-claim
   ``baseline_delta`` headline.
-- :mod:`Trainforge.scripts.calibrate_pair_validation._bootstrap_percentile_ci` --
+- :mod:`Trainforge.scripts.harness.calibrate_pair_validation._bootstrap_percentile_ci` --
   univariate-percentile bootstrap for the pair-validation calibration
   proposal.
 
@@ -32,7 +32,7 @@ def percentile(values: Sequence[float], pct: float) -> Optional[float]:
     """Linear-interpolated percentile (0-100). Returns ``None`` on empty input.
 
     Lifted verbatim from
-    :func:`Trainforge.scripts.calibrate_pair_validation._percentile`.
+    :func:`Trainforge.scripts.harness.calibrate_pair_validation._percentile`.
     """
     if not values:
         return None

@@ -102,7 +102,7 @@ def _gp_block(fade: str = "completion") -> Block:
 
 def test_render_guided_practice_under_flag(monkeypatch):
     monkeypatch.setenv(ENV_NEW_BLOCK_TYPES, "1")
-    from Courseforge.scripts.generate_course import _render_guided_practice
+    from Courseforge.scripts.rendering.generate_course import _render_guided_practice
 
     html = _render_guided_practice(_gp_block("completion"))
     assert 'class="guided-practice"' in html
@@ -114,7 +114,7 @@ def test_render_guided_practice_under_flag(monkeypatch):
 
 def test_render_guided_practice_byte_stable_when_flag_off(monkeypatch):
     monkeypatch.delenv(ENV_NEW_BLOCK_TYPES, raising=False)
-    from Courseforge.scripts.generate_course import _render_guided_practice
+    from Courseforge.scripts.rendering.generate_course import _render_guided_practice
 
     assert _render_guided_practice(_gp_block()) == ""
 

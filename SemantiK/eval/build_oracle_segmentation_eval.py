@@ -31,10 +31,10 @@ realistic_exact set BY CONSTRUCTION.
 
 Reuse (no reimplementation)
 ---------------------------
-* rendering           — ``data.render_capture.render_with_boxes`` / ``RenderCaptureSession``
-* gold-record recovery — ``data.render_capture._gold_records_with_rcid``
+* rendering           — ``data.augmentation.render_capture.render_with_boxes`` / ``RenderCaptureSession``
+* gold-record recovery — ``data.augmentation.render_capture._gold_records_with_rcid``
                          (TAG_TO_ROLE / list-nesting / table+image ancestry, reused verbatim)
-* layout features     — ``data.build_structure_data.compute_span_layout_features``
+* layout features     — ``data.builders.build_structure_data.compute_span_layout_features``
                          (the SINGLE source of truth, 20-dim)
 * label space         — ``ROLE_TO_ID`` filter + ``pedagogical_role_for`` /
                          ``PEDAGOGICAL_ROLE_TO_ID`` (identical to the labeler's matched branch)
@@ -79,14 +79,14 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 # Reuse the rendering + gold-record machinery (no reimplementation).
-from data.render_capture import (
+from data.augmentation.render_capture import (
     PAGE_W_PX,
     RenderCaptureSession,
     _gold_records_with_rcid,
 )
 
 # Reuse the SINGLE-source-of-truth feature + label logic.
-from data.build_structure_data import (
+from data.builders.build_structure_data import (
     PEDAGOGICAL_ROLE_TO_ID,
     ROLE_TO_ID,
     STRUCTURE_ALIGN_SCHEMA_VERSION,
@@ -99,7 +99,7 @@ from data.build_structure_data import (
 # viewport to PAGE_W_PX (816px == 8.5in @ 96dpi == 612pt), so the scale is exactly
 # 72/96 = 0.75 (the labeler reads it back from the extracted PDF page width; here
 # there is no extracted PDF, so we use the documented constant). See
-# data/render_capture.py module docstring.
+# data/augmentation/render_capture.py module docstring.
 _PX_TO_PT = 72.0 / 96.0
 
 _DEFAULT_REALISTIC_EXACT_DIR = Path("data/structure_dataset_realistic_exact")
@@ -163,7 +163,7 @@ def _locate_pair_json(source: str, pair: str) -> Path | None:
 def oracle_rows_for_doc(meta: dict, capture) -> list[dict]:
     """Emit one oracle row per role-bearing gold element with an in-vocab role.
 
-    Mirrors :func:`data.render_capture.label_blocks_by_overlap`'s MATCHED branch,
+    Mirrors :func:`data.augmentation.render_capture.label_blocks_by_overlap`'s MATCHED branch,
     but the "block" IS the gold element (perfect segmentation): the element's own
     pt-mapped box + gold text drive ``compute_span_layout_features`` and its own
     gold role drives the labels."""

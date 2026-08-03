@@ -427,7 +427,7 @@ def cap_page_chunks(
 #
 #     minutes = ceil(visible_words / WPM + interactions * per_interaction)
 #
-# Gated entirely at the emit call site (``Courseforge/scripts/generate_course.py``
+# Gated entirely at the emit call site (``Courseforge/scripts/rendering/generate_course.py``
 # ``_wrap_page``) by ``ED4ALL_PAGE_EST_MINUTES`` (default OFF → byte-identical).
 # All resolvers are parse-with-fallback so a misconfigured knob never disables
 # the estimate (it falls back to the calibrated default). No model, no env

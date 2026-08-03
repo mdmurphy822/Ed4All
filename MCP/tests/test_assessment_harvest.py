@@ -21,7 +21,7 @@ import zipfile
 
 import pytest
 
-from Courseforge.scripts.qti_emitter import assessment_to_qti
+from Courseforge.scripts.packaging.qti_emitter import assessment_to_qti
 from MCP.tools.pipeline_tools import (
     _harvest_questions_from_imscc,
     _resolve_assessment_harvest,

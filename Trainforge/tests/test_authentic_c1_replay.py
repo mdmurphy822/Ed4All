@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from Trainforge.scripts.authentic_c1_replay import (
+from Trainforge.scripts.harness.authentic_c1_replay import (
     build_authentic_inventory,
     replay_once,
     run_replay_twice,

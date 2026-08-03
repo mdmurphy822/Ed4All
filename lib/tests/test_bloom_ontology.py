@@ -119,9 +119,15 @@ def test_migrated_sites_match_canonical_apply_level():
         "html_content_parser.apply drift"
     )
 
-    # 3. Courseforge.scripts.generate_course — List[str] shape, module attr.
+    # 3. Courseforge.scripts.rendering.generate_course — List[str] shape, module attr.
     # Path-loaded because the script isn't a package.
-    gc_path = _REPO_ROOT / "Courseforge" / "scripts" / "generate_course.py"
+    gc_path = (
+        _REPO_ROOT
+        / "Courseforge"
+        / "scripts"
+        / "rendering"
+        / "generate_course.py"
+    )
     gc = _load_by_path("generate_course_wh_test", gc_path)
     assert set(gc.BLOOM_VERBS["apply"]) == canonical_apply, (
         "generate_course.apply drift"
@@ -190,7 +196,7 @@ def test_detect_bloom_level(text, expected_level, expected_verb):
 # ---------------------------------------------------------------------------
 #
 # Covers the promotion of the BLOOM_TO_DOMAIN dict from two hardcoded
-# duplicates (Courseforge/scripts/generate_course.py + MCP/tools/
+# duplicates (Courseforge/scripts/rendering/generate_course.py + MCP/tools/
 # _content_gen_helpers.py) into schemas/taxonomies/cognitive_domain.json
 # with a canonical lib.ontology.bloom helper.
 
@@ -244,7 +250,13 @@ def test_unknown_bloom_level_falls_back_to_conceptual():
 
 def test_courseforge_uses_canonical_helper():
     """generate_course.py no longer holds a local BLOOM_TO_DOMAIN dict."""
-    gc_path = _REPO_ROOT / "Courseforge" / "scripts" / "generate_course.py"
+    gc_path = (
+        _REPO_ROOT
+        / "Courseforge"
+        / "scripts"
+        / "rendering"
+        / "generate_course.py"
+    )
     src = gc_path.read_text(encoding="utf-8")
 
     # The literal dict-opening token must be gone entirely (the replacement

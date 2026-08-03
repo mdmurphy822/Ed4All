@@ -2,7 +2,7 @@
 
 Waves 48 and 50 were developed in parallel; Wave 50's PR branch
 (``wave50/content-type-enum-validation``) picked up Wave 48's edits to
-``Courseforge/scripts/generate_course.py`` (the new
+``Courseforge/scripts/rendering/generate_course.py`` (the new
 ``from lib.ontology.bloom import bloom_to_cognitive_domain as
 _bloom_to_cognitive_domain`` import) WITHOUT the matching
 ``lib/ontology/bloom.py`` helper definition that Wave 48 added. At
@@ -36,7 +36,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 def test_generate_course_imports_cleanly():
     """Module-level import must not raise."""
-    import Courseforge.scripts.generate_course  # noqa: F401
+    import Courseforge.scripts.rendering.generate_course  # noqa: F401
 
 
 def test_bloom_to_cognitive_domain_wiring_present():
@@ -64,7 +64,11 @@ def test_all_lib_ontology_bloom_imports_resolve():
     import lib.ontology.bloom as bloom_mod
 
     candidate_files = [
-        PROJECT_ROOT / "Courseforge" / "scripts" / "generate_course.py",
+        PROJECT_ROOT
+        / "Courseforge"
+        / "scripts"
+        / "rendering"
+        / "generate_course.py",
         PROJECT_ROOT / "MCP" / "tools" / "_content_gen_helpers.py",
     ]
 
@@ -96,7 +100,7 @@ def test_all_lib_ontology_bloom_imports_resolve():
 def test_section_content_type_enum_wiring_present():
     """Wave 50 locked the content_type enum wiring; verify it's still
     in place (companion guard to the Wave 48 helper check above)."""
-    from Courseforge.scripts import generate_course
+    from Courseforge.scripts.rendering import generate_course
 
     assert hasattr(generate_course, "SECTION_CONTENT_TYPE_ENUM")
     assert "explanation" in generate_course.SECTION_CONTENT_TYPE_ENUM

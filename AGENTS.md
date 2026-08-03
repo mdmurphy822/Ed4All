@@ -203,7 +203,7 @@ Synthesized pairs land under
 `LibV2/courses/<course-slug>/training_specs/*.jsonl` and are consumed by the
 post-import training stage (`ed4all run trainforge_train`).
 
-**Pilot before a full rebuild.** `Trainforge/scripts/pilot_synthesis.py` runs a
+**Pilot before a full rebuild.** `Trainforge/scripts/ops/pilot_synthesis.py` runs a
 bounded pass (`--max-pairs`, default 50) so gate failures surface on a handful
 of pairs instead of a full corpus. Read
 the pilot report and the gate output before going wide. If a gate fails, the

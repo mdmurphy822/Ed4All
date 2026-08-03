@@ -18,7 +18,7 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from Courseforge.scripts.qti_emitter import (
+from Courseforge.scripts.packaging.qti_emitter import (
     QTI_NS,
     assessment_to_objectbank,
     assessment_to_qti,

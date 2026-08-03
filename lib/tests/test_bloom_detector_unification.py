@@ -2,7 +2,7 @@
 
 Pre-Wave-55 there were four divergent detectors across the repo:
 
-  1. ``Courseforge/scripts/generate_course.py::detect_bloom_level``
+  1. ``Courseforge/scripts/rendering/generate_course.py::detect_bloom_level``
   2. ``Trainforge/parsers/html_content_parser.py::HTMLContentParser._detect_bloom_level``
   3. ``lib/validators/bloom.py::detect_bloom_level`` (re-implemented higher-level
      tie-breaking locally)
@@ -96,8 +96,8 @@ def test_lib_validators_bloom_delegates_to_canonical():
 
 
 def test_courseforge_generate_course_delegates_to_canonical():
-    """``Courseforge/scripts/generate_course.py`` re-exports the canonical."""
-    from Courseforge.scripts.generate_course import detect_bloom_level as site_detect
+    """``Courseforge/scripts/rendering/generate_course.py`` re-exports the canonical."""
+    from Courseforge.scripts.rendering.generate_course import detect_bloom_level as site_detect
 
     for text, expected_level in REGRESSION_INPUTS:
         level, _verb = site_detect(text)

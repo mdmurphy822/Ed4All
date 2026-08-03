@@ -14,7 +14,7 @@ Wave 27 closes the loop:
    ``data-semantik-block-id`` from every SemantiK section wrapper.
 2. ``_topic_to_section`` emits ``source_references[]`` on the
    generated section dict when a SemantiK block ID is present.
-3. ``Courseforge.scripts.generate_course._render_content_sections``
+3. ``Courseforge.scripts.rendering.generate_course._render_content_sections``
    stamps ``data-cf-source-ids`` on the rendered ``<h2>`` and
    ``_build_sections_metadata`` propagates the same refs into the
    page's JSON-LD ``sections[].sourceReferences``.

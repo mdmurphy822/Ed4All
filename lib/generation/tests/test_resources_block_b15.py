@@ -101,7 +101,7 @@ def _resources_block() -> Block:
 
 def test_render_resources_section_accessible_under_flag(monkeypatch):
     monkeypatch.setenv(ENV_NEW_BLOCK_TYPES, "1")
-    from Courseforge.scripts.generate_course import _render_resources_section
+    from Courseforge.scripts.rendering.generate_course import _render_resources_section
 
     html = _render_resources_section(_resources_block())
     assert 'class="resources"' in html
@@ -116,7 +116,7 @@ def test_render_resources_section_accessible_under_flag(monkeypatch):
 
 def test_render_resources_section_byte_stable_when_flag_off(monkeypatch):
     monkeypatch.delenv(ENV_NEW_BLOCK_TYPES, raising=False)
-    from Courseforge.scripts.generate_course import _render_resources_section
+    from Courseforge.scripts.rendering.generate_course import _render_resources_section
 
     assert _render_resources_section(_resources_block()) == ""
 
@@ -125,7 +125,7 @@ def test_render_resources_titleless_link_not_a_bare_url_anchor(monkeypatch):
     """A link with a URL but no title is shown as plain text, never an anchor
     whose text is the raw URL (the renderer never violates 2.4.4 itself)."""
     monkeypatch.setenv(ENV_NEW_BLOCK_TYPES, "1")
-    from Courseforge.scripts.generate_course import _render_resources_section
+    from Courseforge.scripts.rendering.generate_course import _render_resources_section
 
     blk = Block(
         block_id="p#resources_x_0", block_type="resources", page_id="p",

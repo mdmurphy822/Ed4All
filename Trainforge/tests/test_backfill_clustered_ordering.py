@@ -32,7 +32,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.ontology.family_map import FamilyMap  # noqa: E402
-from Trainforge.scripts import backfill_form_data as cli  # noqa: E402
+from Trainforge.scripts.ops import backfill_form_data as cli  # noqa: E402
 
 
 # ----------------------------------------------------------------------

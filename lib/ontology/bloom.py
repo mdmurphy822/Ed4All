@@ -162,7 +162,7 @@ def get_verbs_list() -> Dict[str, List[str]]:
     """Return `Dict[str, List[str]]` — ordered list of verb strings per level.
 
     Shape used by `Trainforge/parsers/html_content_parser.py`,
-    `Courseforge/scripts/generate_course.py`, and several others.
+    `Courseforge/scripts/rendering/generate_course.py`, and several others.
     """
     built = _build_verb_objects()
     return {level: [v.verb for v in built[level]] for level in BLOOM_LEVELS}
@@ -302,7 +302,7 @@ def detect_bloom_verbs(text: str) -> List[Tuple[str, str]]:
 # ---------------------------------------------------------------------------
 #
 # The Bloom-level → cognitive-domain mapping used to be duplicated as a
-# hardcoded dict at two callsites (``Courseforge/scripts/generate_course.py``
+# hardcoded dict at two callsites (``Courseforge/scripts/rendering/generate_course.py``
 # ``BLOOM_TO_DOMAIN`` and ``MCP/tools/_content_gen_helpers.py``
 # ``_render_objectives_section``'s ``domain_map`` local). Wave 48 promotes
 # the mapping to ``schemas/taxonomies/cognitive_domain.json`` and routes both

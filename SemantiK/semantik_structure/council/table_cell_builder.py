@@ -13,7 +13,7 @@ output to the cell-level input contract that
                     frozen in ``models/council/table_specialist/final_v5/``.
 
 Why the layout compute is inlined here rather than imported from
-``data.build_table_specialist_data``:
+``data.builders.build_table_specialist_data``:
 
     The data builder evolves with each retrain. This module must mirror
     whatever layout contract the runtime adapter loaded by
@@ -29,7 +29,7 @@ Why the layout compute is inlined here rather than imported from
 
 The runtime cell is rectangular: ragged rows are right-padded with
 ``""`` so every ``(row_idx, col_idx)`` position has a valid cell. This
-diverges from training (``data.build_table_specialist_data`` skips
+diverges from training (``data.builders.build_table_specialist_data`` skips
 ``j >= len(row_h)`` in its inner loop) but is necessary at inference
 time because we still need to emit a well-defined prediction for every
 row/col position the assembler will reference.
@@ -63,7 +63,7 @@ LAYOUT_FEATURE_NAMES_V3 = LAYOUT_FEATURE_NAMES_V5
 LAYOUT_FEATURE_DIM_V3 = LAYOUT_FEATURE_DIM_V5
 
 
-# v5 contract — frozen. Mirrors data/build_table_specialist_data.py
+# v5 contract — frozen. Mirrors data/builders/build_table_specialist_data.py
 # compute_cell_layout regexes; do NOT edit unless the trained adapter is rebuilt.
 _UNIT_RE = re.compile(
     r"\b("
@@ -89,7 +89,7 @@ def _compute_cell_layout_v5(
 ) -> list[float]:
     """v5 contract — frozen. 17-dim layout vector for a cell.
 
-    Body mirrors ``data/build_table_specialist_data.py:compute_cell_layout``
+    Body mirrors ``data/builders/build_table_specialist_data.py:compute_cell_layout``
     verbatim (LAYOUT_FEATURE_DIM == 17), including the v4/v5 additions
     ``is_top_2_rows`` / ``is_left_2_cols`` (positions 9-10).
     """
@@ -123,14 +123,14 @@ def _compute_cell_layout_v5(
 
 
 # ---------------------------------------------------------------------------
-# Neighbor helpers — mirror data/build_table_specialist_data.py:506-512
+# Neighbor helpers — mirror data/builders/build_table_specialist_data.py:506-512
 # ---------------------------------------------------------------------------
 
 
 def _neighbor(rows: list[list[str]], i: int, j: int) -> str:
     """Out-of-bounds → ``""``; otherwise stripped, truncated to 60 chars.
 
-    Mirrors ``data/build_table_specialist_data.py:_neighbor``.
+    Mirrors ``data/builders/build_table_specialist_data.py:_neighbor``.
     """
     if 0 <= i < len(rows) and 0 <= j < len(rows[i]):
         cell = rows[i][j] or ""
@@ -185,7 +185,7 @@ def build_cells(
 
     Returns ``[]`` for tables smaller than ``min_rows`` × ``min_cols``
     (matches the training-time size filter at
-    ``data/build_table_specialist_data.py:574``).
+    ``data/builders/build_table_specialist_data.py:574``).
 
     Ragged rows are right-padded with ``""`` so the cell index space is
     rectangular — see module docstring for why this differs from the

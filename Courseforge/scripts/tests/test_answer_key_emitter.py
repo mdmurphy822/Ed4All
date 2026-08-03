@@ -1,6 +1,6 @@
 """Instructor answer-key emitter + packaging-inclusion tests (Phase 2 / C.2).
 
-Exercises ``Courseforge/scripts/answer_key_emitter.py`` (the deterministic,
+Exercises ``Courseforge/scripts/packaging/answer_key_emitter.py`` (the deterministic,
 LLM-free renderer) and the ``package_multifile_imscc.py`` change that ships the
 rendered ``answer_key.html`` as a CC ``webcontent`` resource.
 

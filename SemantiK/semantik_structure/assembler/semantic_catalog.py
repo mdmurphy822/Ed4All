@@ -59,7 +59,7 @@ __all__ = [
 
 
 # AXIS-4: map the NEW span-level ``pedagogical_role`` head tokens
-# (data.build_structure_data.PEDAGOGICAL_ROLE_NAMES) onto EXISTING gold
+# (data.builders.build_structure_data.PEDAGOGICAL_ROLE_NAMES) onto EXISTING gold
 # semantic components — NO new components are invented. example/try-it/how-to/
 # solution/step are all parts of a worked instance (-> worked_example);
 # objectives -> objectives; exercise/practice/be-prepared are practice-item

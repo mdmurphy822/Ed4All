@@ -49,8 +49,8 @@ for the full file → namespace → purpose table.
 
 Reserved directory, currently empty (`.gitkeep` only). Assessment emission is
 driven by code, not by a schema in this directory:
-`Courseforge/scripts/qti_emitter.py` writes the QTI 1.2 / discussion-topic /
-assignment XML and `Courseforge/scripts/package_multifile_imscc.py` assigns the
+`Courseforge/scripts/packaging/qti_emitter.py` writes the QTI 1.2 / discussion-topic /
+assignment XML and `Courseforge/scripts/packaging/package_multifile_imscc.py` assigns the
 manifest resource types.
 
 ## Accessibility (migrated)

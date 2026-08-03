@@ -13,7 +13,7 @@ by occurrence frequency.
 Use cases:
 
   1. Authoring a manifest for a new course family — operator runs
-     ``Trainforge/scripts/discover_curies.py --format manifest`` to
+     ``Trainforge/scripts/ops/discover_curies.py --format manifest`` to
      emit a starter ``property_manifest.<family>.yaml``.
   2. Catching manifest drift — operator runs
      ``--exclude-known-manifest`` against an existing course to

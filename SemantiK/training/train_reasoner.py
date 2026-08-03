@@ -1,7 +1,7 @@
 """Fine-tune a Qwen 3 4B LoRA adapter for stage 3b structural reasoning.
 
 Input dataset: JSONL where each row is {"messages": [system, user, assistant]}
-              as produced by data/build_qwen_data.py.
+              as produced by data/builders/build_qwen_data.py.
 
 Output: a LoRA adapter under <output-dir>/final that can be loaded via
 reason.load_reasoner(path) once adapter-loading support is wired in.

@@ -1,4 +1,4 @@
-"""Trainforge/scripts/model_dpo_yield.py — Bloom-ladder addendum AD-02.
+"""Trainforge/scripts/ops/model_dpo_yield.py — Bloom-ladder addendum AD-02.
 
 Covers the CLI wrapper: course-dir chunk/objectives resolution (LibV2
 layout via ``resolve_imscc_chunks_path`` + the same objectives search chain
@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from Trainforge.scripts import model_dpo_yield
+from Trainforge.scripts.ops import model_dpo_yield
 
 
 _OBJ_STATEMENT = (

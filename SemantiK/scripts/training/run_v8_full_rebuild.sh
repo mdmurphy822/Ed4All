@@ -6,7 +6,7 @@
 # entries with trailing page numbers, page running headers). Two fixes
 # land together for v8:
 #
-#   data/build_qwen_data.py::align_to_ground_truth
+#   data/builders/build_qwen_data.py::align_to_ground_truth
 #     - role-aware min_overlap: heading 0.6, default 0.3
 #     - hyphenation-tail handling (block ending in "-" + next block
 #       starting lowercase => inherit prev label)
@@ -47,7 +47,7 @@ rm -rf data/qwen_dataset_v8ds
 echo "[v8] 02 build qwen_dataset_v8 (4 shards, sequential)" >&2
 for s in 0 1 2 3; do
     echo "[v8] 02.$s shard $s" >&2
-    TOKENIZERS_PARALLELISM=false "$PY" data/build_qwen_data.py \
+    TOKENIZERS_PARALLELISM=false "$PY" data/builders/build_qwen_data.py \
         --out-dir data/qwen_dataset_v8 \
         --classifier models/classifier_v5/final \
         --pages-per-chunk 4 --overlap 1 --max-blocks-per-chunk 60 \
@@ -58,7 +58,7 @@ done
 
 # ----- Step 3: assemble -----
 echo "[v8] 03 assemble" >&2
-TOKENIZERS_PARALLELISM=false "$PY" data/build_qwen_data.py \
+TOKENIZERS_PARALLELISM=false "$PY" data/builders/build_qwen_data.py \
     --out-dir data/qwen_dataset_v8 --assemble-only \
     > "$LOG_DIR/v8_03_assemble.log" 2>&1
 

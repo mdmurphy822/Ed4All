@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from Trainforge.scripts.staged_window_abcd_pilot import (
+from Trainforge.scripts.harness.staged_window_abcd_pilot import (
     CELL_PUBLICATION_SCHEMA,
     _digest,
     _row_invariant_errors,

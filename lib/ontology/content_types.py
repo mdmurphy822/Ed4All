@@ -14,7 +14,7 @@ Before this module two parallel partial maps existed and drifted:
   could NOT fill a content-type for the rest of the palette (``scenario`` /
   ``problem`` / ``concept`` / ``example`` / …) when the LLM omitted it →
   ``BlockContentTypeValidator`` fired ``OUTLINE_BLOCK_MISSING_CONTENT_TYPE``.
-* ``Courseforge/scripts/generate_course.py::_IB5_DEFAULT_CONTENT_TYPE`` — the
+* ``Courseforge/scripts/rendering/generate_course.py::_IB5_DEFAULT_CONTENT_TYPE`` — the
   IB5 renderer-root default. It carried only the four IB5 types.
 
 Both now delegate here. The map is the authoritative one; the call sites keep a

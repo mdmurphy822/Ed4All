@@ -1,4 +1,4 @@
-"""Wave 122: regression tests for ``Trainforge.scripts.audit_pairs``."""
+"""Wave 122: regression tests for ``Trainforge.scripts.ops.audit_pairs``."""
 from __future__ import annotations
 
 import json
@@ -12,7 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.scripts.audit_pairs import (  # noqa: E402
+from Trainforge.scripts.ops.audit_pairs import (  # noqa: E402
     run_audit,
     format_report_text,
     format_report_json,

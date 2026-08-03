@@ -183,7 +183,7 @@ def test_jsonld_fields_gated(monkeypatch):
 # IB5.5 — deterministic renderers
 # --------------------------------------------------------------------------- #
 def test_render_worked_example_section():
-    from Courseforge.scripts.generate_course import _render_worked_example_section
+    from Courseforge.scripts.rendering.generate_course import _render_worked_example_section
     blk = Block(
         block_id="p#worked_example_x_0", block_type="worked_example",
         page_id="p", sequence=0, fade_state="worked",
@@ -203,7 +203,7 @@ def test_render_worked_example_section():
 
 
 def test_render_multimedia_section_no_url_still_has_a11y_skeleton():
-    from Courseforge.scripts.generate_course import _render_multimedia_section
+    from Courseforge.scripts.rendering.generate_course import _render_multimedia_section
     blk = Block(
         block_id="p#multimedia_x_0", block_type="multimedia",
         page_id="p", sequence=0, content={},
@@ -216,7 +216,7 @@ def test_render_multimedia_section_no_url_still_has_a11y_skeleton():
 
 
 def test_render_diagram_section_has_longdesc_and_table():
-    from Courseforge.scripts.generate_course import _render_diagram_section
+    from Courseforge.scripts.rendering.generate_course import _render_diagram_section
     blk = Block(
         block_id="p#diagram_x_0", block_type="diagram",
         page_id="p", sequence=0, long_description="the flow goes A->B->C",
@@ -244,7 +244,7 @@ def _diagram_block_with_equation():
 
 def test_diagram_plot_svg_flag_off_is_placeholder(monkeypatch):
     monkeypatch.delenv("ED4ALL_RICHER_VISUAL_SYSTEM", raising=False)
-    from Courseforge.scripts.generate_course import _render_diagram_section
+    from Courseforge.scripts.rendering.generate_course import _render_diagram_section
     html = _render_diagram_section(_diagram_block_with_equation())
     assert "diagram-pending" in html
     assert "<svg" not in html
@@ -252,7 +252,7 @@ def test_diagram_plot_svg_flag_off_is_placeholder(monkeypatch):
 
 def test_diagram_plot_svg_flag_on_injects_accessible_svg(monkeypatch):
     monkeypatch.setenv("ED4ALL_RICHER_VISUAL_SYSTEM", "1")
-    from Courseforge.scripts.generate_course import _render_diagram_section
+    from Courseforge.scripts.rendering.generate_course import _render_diagram_section
     pytest.importorskip("sympy")
     html = _render_diagram_section(_diagram_block_with_equation())
     assert "diagram-pending" not in html
@@ -266,14 +266,14 @@ def test_diagram_plot_svg_flag_on_injects_accessible_svg(monkeypatch):
 def test_diagram_plot_svg_flag_on_is_deterministic(monkeypatch):
     monkeypatch.setenv("ED4ALL_RICHER_VISUAL_SYSTEM", "1")
     pytest.importorskip("sympy")
-    from Courseforge.scripts.generate_course import _render_diagram_section
+    from Courseforge.scripts.rendering.generate_course import _render_diagram_section
     blk = _diagram_block_with_equation()
     assert _render_diagram_section(blk) == _render_diagram_section(blk)
 
 
 def test_diagram_plot_svg_fails_closed_without_equation(monkeypatch):
     monkeypatch.setenv("ED4ALL_RICHER_VISUAL_SYSTEM", "1")
-    from Courseforge.scripts.generate_course import _render_diagram_section
+    from Courseforge.scripts.rendering.generate_course import _render_diagram_section
     blk = Block(
         block_id="p#diagram_x_0", block_type="diagram", page_id="p", sequence=0,
         content={"caption": "A concept map of the water cycle"},
@@ -284,7 +284,7 @@ def test_diagram_plot_svg_fails_closed_without_equation(monkeypatch):
 
 
 def test_render_hook_section():
-    from Courseforge.scripts.generate_course import _render_hook_section
+    from Courseforge.scripts.rendering.generate_course import _render_hook_section
     blk = Block(
         block_id="p#hook_x_0", block_type="hook", page_id="p", sequence=0,
         content={"prompt": "What do you already know about fractions?",
@@ -437,7 +437,7 @@ def test_ib5_render_stamps_valid_content_type(block_type, monkeypatch):
     from Courseforge.router.inter_tier_gates import BlockContentTypeValidator
     from lib.validators.rewrite_html_shape import RewriteHtmlShapeValidator
 
-    gc = importlib.import_module("Courseforge.scripts.generate_course")
+    gc = importlib.import_module("Courseforge.scripts.rendering.generate_course")
     dict_content, expected_ct, renderer_name = _IB5_RENDER_CASES[block_type]
     renderer = getattr(gc, renderer_name)
 
@@ -474,7 +474,7 @@ def test_ib5_render_honors_resolved_content_type_label():
     """A block with an explicit content_type_label uses it over the default."""
     import importlib
 
-    gc = importlib.import_module("Courseforge.scripts.generate_course")
+    gc = importlib.import_module("Courseforge.scripts.rendering.generate_course")
     blk = _dataclasses.replace(
         _ib5_block("worked_example", {"problem": "p", "steps": []}),
         content_type_label="procedure",
@@ -496,7 +496,7 @@ def test_ib5_render_repairs_invalid_content_type_label():
 
     from lib.validators.content_type import get_valid_chunk_types
 
-    gc = importlib.import_module("Courseforge.scripts.generate_course")
+    gc = importlib.import_module("Courseforge.scripts.rendering.generate_course")
     blk = _dataclasses.replace(
         _ib5_block("worked_example", {"problem": "p", "steps": []}),
         content_type_label="expression",  # not a ChunkType member
@@ -523,7 +523,7 @@ def test_scenario_and_guided_practice_roots_stamp_content_type(monkeypatch):
     from Courseforge.router.inter_tier_gates import BlockContentTypeValidator
     from lib.validators.content_type import get_valid_chunk_types
 
-    gc = importlib.import_module("Courseforge.scripts.generate_course")
+    gc = importlib.import_module("Courseforge.scripts.rendering.generate_course")
 
     scenario_blk = _ib5_block(
         "scenario",

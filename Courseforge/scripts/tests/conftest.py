@@ -8,9 +8,15 @@ from pathlib import Path
 
 import pytest
 
-# Add scripts directory to path for imports
+# Add the script taxonomy directories for legacy direct-module test imports.
 SCRIPTS_DIR = Path(__file__).parent.parent
-sys.path.insert(0, str(SCRIPTS_DIR))
+for script_dir in (
+    SCRIPTS_DIR,
+    SCRIPTS_DIR / "rendering",
+    SCRIPTS_DIR / "packaging",
+    SCRIPTS_DIR / "validation",
+):
+    sys.path.insert(0, str(script_dir))
 
 # Fixture directories
 FIXTURES_DIR = Path(__file__).parent / 'fixtures'

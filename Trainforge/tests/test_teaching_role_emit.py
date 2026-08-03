@@ -31,8 +31,14 @@ if str(_REPO_ROOT) not in sys.path:
 # ---------------------------------------------------------------------------
 
 def _load_generate_course():
-    """Load ``Courseforge/scripts/generate_course.py`` as a module."""
-    path = _REPO_ROOT / "Courseforge" / "scripts" / "generate_course.py"
+    """Load ``Courseforge/scripts/rendering/generate_course.py`` as a module."""
+    path = (
+        _REPO_ROOT
+        / "Courseforge"
+        / "scripts"
+        / "rendering"
+        / "generate_course.py"
+    )
     spec = importlib.util.spec_from_file_location("generate_course_worker_k", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

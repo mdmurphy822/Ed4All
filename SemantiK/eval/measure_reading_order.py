@@ -1,6 +1,6 @@
 """Quantify the SEMANTIK_COLUMN_ORDER fix's reading-order credit.
 
-Reuses ``data/build_structure_data.py``'s render + extract + align pipeline
+Reuses ``data/builders/build_structure_data.py``'s render + extract + align pipeline
 per realistic-eval doc, then sorts the SAME extracted blocks TWO ways
 (``raster`` = the legacy ``y0, x0`` key the flag-off build uses; ``column`` =
 the committed column-major ``column_index, y0, x0`` key the flag-on cascade
@@ -48,10 +48,10 @@ if str(_REPO_ROOT) not in sys.path:
 from semantik_structure.extract_shared import extract_shared  # noqa: E402
 from semantik_structure.reading_order import column_ids_for_bboxes  # noqa: E402
 from semantik_structure.validate import HtmlValidator  # noqa: E402
-from data import structure_align  # noqa: E402
-from data.build_structure_data import extract_html_blocks  # noqa: E402
-from data.render_augment import augment_html  # noqa: E402
-from data.structure_align import (  # noqa: E402
+from data.alignment import structure_align  # noqa: E402
+from data.builders.build_structure_data import extract_html_blocks  # noqa: E402
+from data.augmentation.render_augment import augment_html  # noqa: E402
+from data.alignment.structure_align import (  # noqa: E402
     FBView,
     GoldView,
     LedgerIncompleteError,

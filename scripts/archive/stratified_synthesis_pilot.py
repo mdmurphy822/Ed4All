@@ -7,7 +7,7 @@ executes the normal synthesis implementation against that workspace while
 recording request-level telemetry. ``compare`` reports metric deltas between
 two runs made from the same sample manifest.
 
-This is intentionally separate from ``Trainforge/scripts/pilot_synthesis.py``:
+This is intentionally separate from ``Trainforge/scripts/ops/pilot_synthesis.py``:
 that operator-facing smoke test samples for property coverage, whereas this
 regression pilot targets the late-corpus assessment/explanation and upper-Bloom
 content that previously exposed excessive retries and rejection.

@@ -7,7 +7,7 @@ import pytest
 from Trainforge.decision_audit_verifier import verify_decision_audit
 from Trainforge.generators.http_attempt_ledger import request_sha256
 from Trainforge.generators.synthesis_window_contract import objective_card
-from Trainforge.scripts.staged_window_abcd_pilot import (
+from Trainforge.scripts.harness.staged_window_abcd_pilot import (
     COHORT_SIZE,
     VARIANTS,
     _CRITICAL_CELL_ERROR_CODES,
@@ -1381,7 +1381,7 @@ def test_micro_terminal_stage_coverage_is_exact_and_kind_specific():
 
 
 def test_micro_draft_identity_is_canonical_and_manifest_bound():
-    from Trainforge.scripts.staged_window_abcd_pilot import (
+    from Trainforge.scripts.harness.staged_window_abcd_pilot import (
         _canonical_micro_draft_identity,
     )
 
@@ -2193,7 +2193,7 @@ def test_atomic_finalization_refuses_work_after_absolute_deadline(
     tmp_path, monkeypatch,
 ):
     monkeypatch.setattr(
-        "Trainforge.scripts.staged_window_abcd_pilot.time.monotonic",
+        "Trainforge.scripts.harness.staged_window_abcd_pilot.time.monotonic",
         lambda: 721.0,
     )
     target = tmp_path / "results.jsonl"
@@ -2273,7 +2273,7 @@ def _audit_publication_kwargs(tmp_path):
 
 def test_success_publication_commits_manifest_last(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "Trainforge.scripts.staged_window_abcd_pilot.reconcile_http_audit",
+        "Trainforge.scripts.harness.staged_window_abcd_pilot.reconcile_http_audit",
         _fake_reconcile,
     )
     commit = publish_cell_success(
@@ -2297,15 +2297,15 @@ def test_micro_publication_hashes_same_checkpoint_and_journal_authority(
     cell_dir = tmp_path / "qualification-c1"
     cell_dir.mkdir()
     monkeypatch.setattr(
-        "Trainforge.scripts.staged_window_abcd_pilot.reconcile_http_audit",
+        "Trainforge.scripts.harness.staged_window_abcd_pilot.reconcile_http_audit",
         _fake_reconcile,
     )
     monkeypatch.setattr(
-        "Trainforge.scripts.staged_window_abcd_pilot.verify_cell_publication",
+        "Trainforge.scripts.harness.staged_window_abcd_pilot.verify_cell_publication",
         lambda *args, **kwargs: {"status": "verified"},
     )
     monkeypatch.setattr(
-        "Trainforge.scripts.staged_window_abcd_pilot.verify_micro_journals",
+        "Trainforge.scripts.harness.staged_window_abcd_pilot.verify_micro_journals",
         lambda *args, **kwargs: {
             "schema_version": "ed4all.staged-synthesis-micro-verification.v1",
             "journals": [{
@@ -2365,11 +2365,11 @@ def test_micro_publication_refuses_checkpoint_result_divergence(
     cell_dir = tmp_path / "qualification-c1"
     cell_dir.mkdir()
     monkeypatch.setattr(
-        "Trainforge.scripts.staged_window_abcd_pilot.reconcile_http_audit",
+        "Trainforge.scripts.harness.staged_window_abcd_pilot.reconcile_http_audit",
         _fake_reconcile,
     )
     monkeypatch.setattr(
-        "Trainforge.scripts.staged_window_abcd_pilot.verify_micro_journals",
+        "Trainforge.scripts.harness.staged_window_abcd_pilot.verify_micro_journals",
         lambda *args, **kwargs: {"journals": [{"path": "unit"}]},
     )
     identity = {
@@ -2408,7 +2408,7 @@ def test_replace_deadline_crossing_leaves_durable_in_progress_marker(
     tmp_path, monkeypatch,
 ):
     module = __import__(
-        "Trainforge.scripts.staged_window_abcd_pilot", fromlist=["unused"],
+        "Trainforge.scripts.harness.staged_window_abcd_pilot", fromlist=["unused"],
     )
     monkeypatch.setattr(module, "reconcile_http_audit", _fake_reconcile)
     clock = [0.0]
@@ -2442,7 +2442,7 @@ def test_directory_fsync_deadline_crossing_never_looks_committed(
     tmp_path, monkeypatch,
 ):
     module = __import__(
-        "Trainforge.scripts.staged_window_abcd_pilot", fromlist=["unused"],
+        "Trainforge.scripts.harness.staged_window_abcd_pilot", fromlist=["unused"],
     )
     monkeypatch.setattr(module, "reconcile_http_audit", _fake_reconcile)
     clock = [0.0]
@@ -2489,7 +2489,7 @@ def _assert_single_authority(tmp_path):
 
 def test_commit_payload_fsync_failure_leaves_marker_only(tmp_path, monkeypatch):
     module = __import__(
-        "Trainforge.scripts.staged_window_abcd_pilot", fromlist=["unused"],
+        "Trainforge.scripts.harness.staged_window_abcd_pilot", fromlist=["unused"],
     )
     monkeypatch.setattr(module, "reconcile_http_audit", _fake_reconcile)
     real_fsync = module.os.fsync
@@ -2513,7 +2513,7 @@ def test_commit_payload_fsync_failure_leaves_marker_only(tmp_path, monkeypatch):
 
 def test_marker_content_replace_failure_leaves_marker_only(tmp_path, monkeypatch):
     module = __import__(
-        "Trainforge.scripts.staged_window_abcd_pilot", fromlist=["unused"],
+        "Trainforge.scripts.harness.staged_window_abcd_pilot", fromlist=["unused"],
     )
     monkeypatch.setattr(module, "reconcile_http_audit", _fake_reconcile)
     real_replace = module.os.replace
@@ -2537,7 +2537,7 @@ def test_final_rename_failure_leaves_recoverable_commit_payload_at_marker(
     tmp_path, monkeypatch,
 ):
     module = __import__(
-        "Trainforge.scripts.staged_window_abcd_pilot", fromlist=["unused"],
+        "Trainforge.scripts.harness.staged_window_abcd_pilot", fromlist=["unused"],
     )
     monkeypatch.setattr(module, "reconcile_http_audit", _fake_reconcile)
     real_replace = module.os.replace
@@ -2564,7 +2564,7 @@ def test_marker_content_directory_fsync_failure_leaves_marker_only(
     tmp_path, monkeypatch,
 ):
     module = __import__(
-        "Trainforge.scripts.staged_window_abcd_pilot", fromlist=["unused"],
+        "Trainforge.scripts.harness.staged_window_abcd_pilot", fromlist=["unused"],
     )
     monkeypatch.setattr(module, "reconcile_http_audit", _fake_reconcile)
     real_replace = module.os.replace
@@ -2598,7 +2598,7 @@ def test_final_directory_fsync_fault_returns_commit_authoritative(
     tmp_path, monkeypatch,
 ):
     module = __import__(
-        "Trainforge.scripts.staged_window_abcd_pilot", fromlist=["unused"],
+        "Trainforge.scripts.harness.staged_window_abcd_pilot", fromlist=["unused"],
     )
     monkeypatch.setattr(module, "reconcile_http_audit", _fake_reconcile)
     real_fsync = module.os.fsync
@@ -2626,7 +2626,7 @@ def test_final_directory_fsync_fault_returns_commit_authoritative(
 
 def test_success_publication_never_unlinks_marker(tmp_path, monkeypatch):
     module = __import__(
-        "Trainforge.scripts.staged_window_abcd_pilot", fromlist=["unused"],
+        "Trainforge.scripts.harness.staged_window_abcd_pilot", fromlist=["unused"],
     )
     monkeypatch.setattr(module, "reconcile_http_audit", _fake_reconcile)
     monkeypatch.setattr(
@@ -2665,7 +2665,7 @@ def test_preexisting_commit_is_rejected_before_new_finalization(
     tmp_path, monkeypatch,
 ):
     monkeypatch.setattr(
-        "Trainforge.scripts.staged_window_abcd_pilot.reconcile_http_audit",
+        "Trainforge.scripts.harness.staged_window_abcd_pilot.reconcile_http_audit",
         _fake_reconcile,
     )
     (tmp_path / "success-commit.json").write_text(
@@ -2684,7 +2684,7 @@ def test_precommit_rejection_writes_durable_failure_without_success_authority(
     tmp_path, monkeypatch,
 ):
     module = __import__(
-        "Trainforge.scripts.staged_window_abcd_pilot", fromlist=["unused"],
+        "Trainforge.scripts.harness.staged_window_abcd_pilot", fromlist=["unused"],
     )
     monkeypatch.setattr(module, "reconcile_http_audit", _fake_reconcile)
     monkeypatch.setattr(
@@ -2724,7 +2724,7 @@ def test_verified_candidate_uses_single_typed_terminal_authority(
     tmp_path, monkeypatch,
 ):
     module = __import__(
-        "Trainforge.scripts.staged_window_abcd_pilot", fromlist=["unused"],
+        "Trainforge.scripts.harness.staged_window_abcd_pilot", fromlist=["unused"],
     )
     monkeypatch.setattr(module, "reconcile_http_audit", _fake_reconcile)
     monkeypatch.setattr(
@@ -2752,7 +2752,7 @@ def test_typed_terminal_authority_rename_crash_leaves_only_marker(
     tmp_path, monkeypatch,
 ):
     module = __import__(
-        "Trainforge.scripts.staged_window_abcd_pilot", fromlist=["unused"],
+        "Trainforge.scripts.harness.staged_window_abcd_pilot", fromlist=["unused"],
     )
     monkeypatch.setattr(module, "reconcile_http_audit", _fake_reconcile)
     monkeypatch.setattr(

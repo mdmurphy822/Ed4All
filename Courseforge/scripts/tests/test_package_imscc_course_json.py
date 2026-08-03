@@ -13,7 +13,7 @@ Test surface:
        course.json gets course.json emitted with the required
        ``terminal_objectives`` + ``chapter_objectives`` keys that
        ``PageObjectivesValidator`` -> ``load_canonical_objectives``
-       consumes (Courseforge/scripts/generate_course.py:615-646), plus
+       consumes (Courseforge/scripts/rendering/generate_course.py:615-646), plus
        the LibV2-shaped ``learning_outcomes[]`` for downstream
        Trainforge parity.
     2. Idempotent skip: a pre-existing course.json at the target path
@@ -308,7 +308,7 @@ class TestCourseJsonEmissionFromSynthesizedObjectives:
         Verifies the PageObjectivesValidator contract: the auto-discovery
         at lib/validators/page_objectives.py:192-195 finds the file and
         load_canonical_objectives reads terminal_objectives +
-        chapter_objectives at Courseforge/scripts/generate_course.py:629-639.
+        chapter_objectives at Courseforge/scripts/rendering/generate_course.py:629-639.
         """
         _, synth_path, course_json_path = _build_project(
             tmp_path,
@@ -331,7 +331,7 @@ class TestCourseJsonEmissionFromSynthesizedObjectives:
         assert on_disk == result
 
         # PageObjectivesValidator / load_canonical_objectives contract
-        # (Courseforge/scripts/generate_course.py:629 reads
+        # (Courseforge/scripts/rendering/generate_course.py:629 reads
         # terminal_objectives, :632 reads chapter_objectives.get("chapter")
         # + :639 reads chapter.get("objectives")).
         assert "terminal_objectives" in on_disk

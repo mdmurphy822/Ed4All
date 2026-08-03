@@ -85,7 +85,7 @@ from .types import AdapterID, SpecialistRequest
 # Legal/copyright sub-flag heuristics — SHARED contract surface.
 #
 # Both the runtime detector (assembler.pass_9a) and the dataset builder
-# (data/build_gap_fill_qwen_data.py) import these so the copyright-vs-
+# (data/builders/build_gap_fill_qwen_data.py) import these so the copyright-vs-
 # disclaimer split and the ``legal_subkind`` discriminator can never
 # drift between training rows and inference GapSlots. They live here
 # (not in the assembler package) because the dataset-build environment

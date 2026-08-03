@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from semantik_structure.extract_shared import extract_shared_cached
 from semantik_structure.features import featurize_from_shared
 from semantik_structure.text_utils import jaccard_overlap
-from data.build_qwen_data import (
+from data.builders.build_qwen_data import (
     align_to_ground_truth as align_new,
     extract_html_blocks,
 )

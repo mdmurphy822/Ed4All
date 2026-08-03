@@ -213,7 +213,7 @@ For a conversion-only slice with no course scaffolding, `ed4all convert`
 ## Quality Standards
 
 ### Pattern Prevention
-See `docs/troubleshooting.md` for complete pattern list. Critical patterns:
+See `docs/guides/troubleshooting.md` for complete pattern list. Critical patterns:
 - Schema/namespace consistency (IMS CC 1.1)
 - Assessment XML format (QTI 1.2)
 - Content completeness (all weeks substantive)
@@ -236,10 +236,10 @@ shipped behavior; do not document them as enforced until the gate config says so
 
 | Document | Location | Purpose |
 |----------|----------|---------|
-| Troubleshooting | `docs/troubleshooting.md` | Error patterns and solutions |
-| Workflow Reference | `docs/workflow-reference.md` | Detailed execution protocols |
-| Getting Started | `docs/getting-started.md` | Quick start guide |
-| Pattern Prevention | `docs/troubleshooting.md` | Error patterns and prevention |
+| Troubleshooting | `docs/guides/troubleshooting.md` | Error patterns and solutions |
+| Workflow Reference | `docs/reference/workflow-reference.md` | Detailed execution protocols |
+| Getting Started | `docs/guides/getting-started.md` | Quick start guide |
+| Pattern Prevention | `docs/guides/troubleshooting.md` | Error patterns and prevention |
 | Agent Specs | `agents/*.md` | Individual agent protocols |
 
 ---
@@ -274,7 +274,7 @@ Courseforge is exposed via the Ed4All MCP server with these tools:
 |------|-------------|
 | `create_course_project` **[DEPRECATED]** | Initialize a standalone (non-pipeline) course project. Still functional for external MCP clients, but new integrations should route through the pipeline-internal `extract_textbook_structure` + `plan_course_structure`. |
 | `generate_course_content` | Generate content for weeks |
-| `package_imscc` | Package course as IMSCC. Runtime delegates to `Courseforge/scripts/package_multifile_imscc.py` (IMS CC v1.3 namespaces, per-week LO validation, `course_metadata.json` bundling). |
+| `package_imscc` | Package course as IMSCC. Runtime delegates to `Courseforge/scripts/packaging/package_multifile_imscc.py` (IMS CC v1.3 namespaces, per-week LO validation, `course_metadata.json` bundling). |
 | `intake_imscc_package` | Import existing IMSCC |
 | `remediate_course_content` | Fix content issues |
 | `get_courseforge_status` | Get project status |
@@ -334,7 +334,7 @@ Attributes stop at the **section / component wrapper level** — never on every 
 
 `ContentGroundingValidator` walks each non-trivial `<p>` / `<li>` / `<figcaption>` / `<blockquote>`'s ancestor chain to find the first `data-cf-source-ids` attribute. Three emit-side contracts keep that walk passing:
 
-1. **Content sections are wrapped in `<section data-cf-source-ids="…">`.** `Courseforge/scripts/generate_course.py::_render_content_sections` wraps each h2/h3 + paragraph group in a `<section>` carrying the section's resolved source-ids.
+1. **Content sections are wrapped in `<section data-cf-source-ids="…">`.** `Courseforge/scripts/rendering/generate_course.py::_render_content_sections` wraps each h2/h3 + paragraph group in a `<section>` carrying the section's resolved source-ids.
 2. **`content_NN` pages inherit `content_01` grounding.** `_page_refs_for` falls back from `content_NN` → `content_01` in the `source_module_map`. The source-router emits a single per-week `content_01` entry; every generated content page in that week shares the same SemantiK source region.
 3. **Objectives `<section>` mirrors page-level source-ids.** `_render_objectives(..., source_ids=…)` stamps the page's resolved source-ids onto the `.objectives` wrapper so the injected objectives section carries the same grounding.
 
@@ -409,7 +409,7 @@ The 30 Ed4All `BLOCK_TYPES` are finer-grained instances of the instruction-block
 
 IB5 landed the four dedicated framework-aligned first-class types — `hook` (B02), `multimedia` (B04, the mandatory time-based-media a11y stack), `worked_example` (B05, distinct from the single-instance `example`), and `diagram` (B06) — so B04 gained an Ed4All primary. The B15 wave then added `resources` (B15 Resources / Further Reading — an accessible list of curated external links each with descriptive 2.4.4 link text), which closed the **last catalog gap**: EVERY canonical B-code now has an Ed4All primary. The five framework-aligned types (`hook`/`multimedia`/`worked_example`/`diagram`/`resources`) are emitted ONLY via the dynamic planner path under `ED4ALL_NEW_BLOCK_TYPES` (default OFF) so legacy snapshots stay byte-stable; `resources` additionally carries the `resource_link_purpose` WCAG-2.4.4 gate (warning-day-1, no-op when the flag is off).
 
-When `COURSEFORGE_EMIT_BLOCKS=true`, `Courseforge/scripts/generate_course.py::_build_page_metadata` emits three additional top-level JSON-LD fields per page:
+When `COURSEFORGE_EMIT_BLOCKS=true`, `Courseforge/scripts/rendering/generate_course.py::_build_page_metadata` emits three additional top-level JSON-LD fields per page:
 
 - `blocks[]` — ordered array of per-block JSON-LD entries built by `Block.to_jsonld_entry()`. Trainforge's `process_course._extract_section_metadata` prefers this projection over the `data-cf-*` HTML-attribute fallback when present.
 - `provenance` — `{runId, pipelineVersion: "phase2", tiers[]}`. `runId` reads `COURSEFORGE_RUN_ID` from the environment.
@@ -717,8 +717,8 @@ Courseforge can import and remediate IMSCC packages from:
 ### Scripts for Course Generation
 | Script | Location | Purpose |
 |--------|----------|---------|
-| `generate_course.py` | `scripts/` | Multi-file weekly course generation. Emits page-level JSON-LD, `course_metadata.json`, prerequisite-page refs, `data-cf-teaching-role`, and `data-cf-source-ids` / page-level `sourceReferences` when SemantiK source material is staged. Accepts `--emit-mode {full,outline}` (default `full`); outline mode strips content/example/assessment HTML bodies but preserves their JSON-LD `blocks[]` projections, and stamps `course_metadata.blocks_summary.outline_only=true` so downstream consumers can detect the tier. |
-| `package_multifile_imscc.py` | `scripts/` | Packages multi-file output into IMSCC. Structural validation is on by default (per-week `learningObjectives` must resolve to the week's LO manifest). Auto-discovers `course.json` and bundles `course_metadata.json` at the zip root. Manifest uses IMS Common Cartridge v1.3 namespaces; resources are nested under per-week `<item>` wrappers in the organization tree. **This is the runtime target of the MCP `package_imscc` tool** — `MCP/tools/pipeline_tools.py::_package_imscc` imports and delegates here instead of hand-rolling a ZIP. Accepts `--outline-only` to package an outline-tier deliverable; reads `course_metadata.blocks_summary.outline_only` written by `generate_course.py --emit-mode outline`. |
+| `generate_course.py` | `scripts/rendering/` | Multi-file weekly course generation. Emits page-level JSON-LD, `course_metadata.json`, prerequisite-page refs, `data-cf-teaching-role`, and `data-cf-source-ids` / page-level `sourceReferences` when SemantiK source material is staged. Accepts `--emit-mode {full,outline}` (default `full`); outline mode strips content/example/assessment HTML bodies but preserves their JSON-LD `blocks[]` projections, and stamps `course_metadata.blocks_summary.outline_only=true` so downstream consumers can detect the tier. |
+| `package_multifile_imscc.py` | `scripts/packaging/` | Packages multi-file output into IMSCC. Structural validation is on by default (per-week `learningObjectives` must resolve to the week's LO manifest). Auto-discovers `course.json` and bundles `course_metadata.json` at the zip root. Manifest uses IMS Common Cartridge v1.3 namespaces; resources are nested under per-week `<item>` wrappers in the organization tree. **This is the runtime target of the MCP `package_imscc` tool** — `MCP/tools/pipeline_tools.py::_package_imscc` imports and delegates here instead of hand-rolling a ZIP. Accepts `--outline-only` to package an outline-tier deliverable; reads `course_metadata.blocks_summary.outline_only` written by `generate_course.py --emit-mode outline`. |
 
 `--emit-mode outline` (`generate_course.py`) and `--outline-only` (`package_multifile_imscc.py`) produce a stripped-down deliverable carrying only objectives + summaries; content/example/assessment HTML bodies are dropped while their JSON-LD `blocks[]` entries persist for downstream consumers (Trainforge `process_course.py` skips `instruction_pair` extraction when `course_metadata.blocks_summary.outline_only=true`). Outline mode is the input shape the two-pass pipeline expects from the outline tier.
 

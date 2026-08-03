@@ -115,7 +115,6 @@ flatcap:Courseforge/generators=8
 flatcap:Courseforge/schemas/imscc=9
 flatcap:LibV2/tools/libv2=28
 flatcap:MCP/tools=11
-flatcap:SemantiK/data=25
 flatcap:SemantiK/scripts=3
 flatcap:SemantiK/semantik_structure=52
 flatcap:SemantiK/semantik_structure/assembler=15
@@ -128,7 +127,6 @@ flatcap:Trainforge/eval=39
 flatcap:Trainforge/generators=32
 flatcap:Trainforge/rag=8
 flatcap:Trainforge/rag/inference_rules=12
-flatcap:Trainforge/scripts=17
 flatcap:Trainforge/training=11
 # ci/ gained foreign_repo_guard.py (committed 2026-08-01) — the cap was
 # seeded while that file was still untracked. Raised 8 -> 9: ci/ is a

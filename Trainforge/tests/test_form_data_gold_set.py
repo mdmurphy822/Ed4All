@@ -6,7 +6,7 @@ their content invalidate every Wave 137 threshold; this test catches
 accidental drift.
 
 Drift recovery:
-  1. python -m Trainforge.scripts.recompute_gold_set_hash --yes
+  1. python -m Trainforge.scripts.maintenance.recompute_gold_set_hash --yes
   2. Document threshold recalibration in the same commit.
   3. Link recalibration commit in this commit's message.
 """
@@ -22,6 +22,6 @@ def test_gold_set_hash_is_locked() -> None:
     actual = hashlib.sha256(yaml_bytes).hexdigest()
     assert actual == expected, (
         f"Gold set drifted. Expected {expected[:12]}..., got {actual[:12]}.... "
-        "If intentional, run `python -m Trainforge.scripts.recompute_gold_set_hash --yes` "
+        "If intentional, run `python -m Trainforge.scripts.maintenance.recompute_gold_set_hash --yes` "
         "and document threshold recalibration in the same commit."
     )

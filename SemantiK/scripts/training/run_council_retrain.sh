@@ -86,7 +86,7 @@ for stage in "${ORDER[@]}"; do
     structure)
       echo "[council] === STRUCTURE (OpenStax + legal, combined) ==="
       # CPU build: combined dataset; legal appended AFTER source-cap (Plan 14 §4)
-      PYTHONPATH=. .venv/bin/python -m data.build_structure_data \
+      PYTHONPATH=. .venv/bin/python -m data.builders.build_structure_data \
         --max-examples-per-source 20000 --source-cap gutenberg=5000 \
         --include-legal-pseudo --workers 8 \
         --out-dir data/structure_dataset_v2
@@ -108,7 +108,7 @@ for stage in "${ORDER[@]}"; do
     semantic)
       echo "[council] === SEMANTIC (cascade vs NEW Structure) ==="
       # GPU build — NO --skip-cascade; uses the just-trained Structure (Plan 13 §2)
-      PYTHONPATH=. CUDA_VISIBLE_DEVICES=0 .venv/bin/python -m data.build_semantic_data \
+      PYTHONPATH=. CUDA_VISIBLE_DEVICES=0 .venv/bin/python -m data.builders.build_semantic_data \
         --max-examples-per-source 20000 --source-cap gutenberg=5000 --workers 8
       CUDA_VISIBLE_DEVICES=0 .venv/bin/python training/train_semantic.py \
         --dataset-dir data/semantic_dataset --output-dir models/council/semantic
@@ -117,7 +117,7 @@ for stage in "${ORDER[@]}"; do
     table_specialist)
       echo "[council] === TABLE SPECIALIST (independent) ==="
       # CPU build — uniform cap, NO --cap-protect-frac (Plan 13 §3)
-      PYTHONPATH=. .venv/bin/python -m data.build_table_specialist_data \
+      PYTHONPATH=. .venv/bin/python -m data.builders.build_table_specialist_data \
         --max-examples-per-source 20000 --source-cap gutenberg=5000 --workers 8
       CUDA_VISIBLE_DEVICES=0 .venv/bin/python training/train_table_specialist.py \
         --dataset-dir data/table_specialist_dataset \

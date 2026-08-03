@@ -6,7 +6,7 @@ Hardens BERT-Structure's ``table_region`` binary head (see
 ``head_table_region``) by turning the project's new HTML table corpus
 (PMC JATS / OpenStax HTML5 / NCES / CFR+FedReg GPOTABLE) into labeled
 rows in the **exact** Structure dataset format that
-``data/build_structure_data.py`` emits and ``train_structure.py``
+``data/builders/build_structure_data.py`` emits and ``train_structure.py``
 consumes.
 
 Why this exists
@@ -36,9 +36,9 @@ For each HTML ``<table>`` in the corpus:
      uses (``extract_shared``) — merged text blocks + pdfplumber table
      bboxes.
   4. For every merged block, compute ``in_table`` via the **same**
-     ``data.build_structure_data._block_in_any_table`` and the 20-dim
+     ``data.builders.build_structure_data._block_in_any_table`` and the 20-dim
      layout vector via the **same**
-     ``data.build_structure_data.compute_span_layout_features``. No
+     ``data.builders.build_structure_data.compute_span_layout_features``. No
      divergent reimplementation — the runtime
      (``semantik_structure/council/structure.py``) mirrors these and MUST see
      the same distribution at train and inference time.
@@ -48,7 +48,7 @@ For each HTML ``<table>`` in the corpus:
      ``table_region=0``. ``structural_role`` follows the builder's
      convention (table cell text → ``paragraph``; context heading →
      ``heading``; context paragraphs → ``paragraph``).
-  6. Emit rows byte-compatible with ``data/build_structure_data.py``:
+  6. Emit rows byte-compatible with ``data/builders/build_structure_data.py``:
      ``{text, layout, labels:{structural_role, is_heading, table_region,
      is_image_block, list_nesting}, html_tag, source, pair}``.
 
@@ -82,7 +82,7 @@ from collections import Counter
 from html import escape
 from pathlib import Path
 
-from data.build_structure_data import (
+from data.builders.build_structure_data import (
     LAYOUT_FEATURE_DIM,
     LAYOUT_FEATURE_NAMES,
     ROLE_NAMES,
@@ -90,7 +90,7 @@ from data.build_structure_data import (
     _block_in_any_table,
     compute_span_layout_features,
 )
-from data.build_table_specialist_data import parse_html_tables
+from data.builders.build_table_specialist_data import parse_html_tables
 from semantik_structure.classify import Role
 from semantik_structure.extract_shared import extract_shared
 from semantik_structure.text_utils import jaccard_overlap
@@ -104,7 +104,7 @@ from semantik_structure.validate import HtmlValidator
 
 class StructureSchemaMismatch(Exception):
     """Raised when an emitted row is not byte-compatible with the
-    canonical ``data/build_structure_data.py`` Structure row. Refuse to
+    canonical ``data/builders/build_structure_data.py`` Structure row. Refuse to
     write a divergent dataset rather than silently coercing it."""
 
 
@@ -115,11 +115,11 @@ class TableExtractionError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Canonical row contract — must match data/build_structure_data.py exactly
+# Canonical row contract — must match data/builders/build_structure_data.py exactly
 # ---------------------------------------------------------------------------
 
 # Top-level keys + the value type each must hold. Mirrors the dict built
-# in ``data.build_structure_data.process_pair``.
+# in ``data.builders.build_structure_data.process_pair``.
 _REQUIRED_TOP_KEYS: dict[str, type] = {
     "text": str,
     "layout": list,
@@ -214,7 +214,7 @@ def tables_from_pair(pair: dict) -> list[str]:
     html = pair.get("output_html") or pair.get("raw_source_html") or ""
     raw_xml = pair.get("raw_source_xml") or ""
     if raw_xml:
-        from data.jats_tables import jats_to_html5_tables
+        from data.sources.jats_tables import jats_to_html5_tables
 
         try:
             jats = "\n".join(t for t, _cap in jats_to_html5_tables(raw_xml))
@@ -223,7 +223,7 @@ def tables_from_pair(pair: dict) -> list[str]:
         if jats:
             html = f"{html}\n{jats}" if html else jats
     if raw_xml and "gpotable" in raw_xml.lower():
-        from data.gpotable_tables import gpotable_to_html5_tables
+        from data.sources.gpotable_tables import gpotable_to_html5_tables
 
         try:
             gpo = "\n".join(t for t, _cap in gpotable_to_html5_tables(raw_xml))

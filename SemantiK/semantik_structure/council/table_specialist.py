@@ -2,7 +2,7 @@
 
 Phase 4 contract:
     * Inputs:  list of cell-like objects, each exposing ``text`` and
-               ``layout`` (15-dim per data.build_table_specialist_data
+               ``layout`` (15-dim per data.builders.build_table_specialist_data
                LAYOUT_FEATURE_NAMES). Accepts both dataclass-style
                objects (``cell.text`` / ``cell.layout``) and dict-style
                (``cell["text"]`` / ``cell["layout"]``).
@@ -17,7 +17,7 @@ Layout side-channel (15-dim — same shape as the data builder):
 This BERT does NOT consume Structure cascade vectors in v1. The
 architecture allows a soft-hint slot for ``Structure top-k``, but v1
 relies on positional/text-shape signals only — see
-data.build_table_specialist_data module docstring.
+data.builders.build_table_specialist_data module docstring.
 
 Mirrors the shape declared in :mod:`training.train_table_specialist`.
 """
@@ -74,7 +74,7 @@ def _cell_layout(cell: Any) -> list[float]:
         raise ValueError(
             "BERT-TableSpecialist cell is missing its layout vector. "
             "The cell-grid builder must compute the 15-dim layout per "
-            "data.build_table_specialist_data.compute_cell_layout "
+            "data.builders.build_table_specialist_data.compute_cell_layout "
             "before invoking the runtime."
         )
     vec = [float(x) for x in layout]

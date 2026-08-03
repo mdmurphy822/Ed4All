@@ -2,7 +2,7 @@
 
 Pins the canonical W3.H ``source_coverage`` block on the new
 ``packaging_report.json`` sidecar emitted by
-``Courseforge/scripts/package_multifile_imscc.py::package_imscc``.
+``Courseforge/scripts/packaging/package_multifile_imscc.py::package_imscc``.
 Four tests:
 
 * canonical shape (5 fields present, coverage_pct calc, dropped_count

@@ -137,7 +137,7 @@ def _cg_sidecar(project_path: Path) -> Path:
 
 
 def _patch_generate_week(monkeypatch, fake) -> None:
-    from Courseforge.scripts import generate_course as _gen
+    from Courseforge.scripts.rendering import generate_course as _gen
 
     monkeypatch.setattr(_gen, "generate_week", fake)
 

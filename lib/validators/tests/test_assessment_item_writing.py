@@ -52,7 +52,7 @@ def _mc(qid="q1", stem="What is the capital of France?", choices=None,
 
 def _qti_doc(questions):
     """Wrap emitter-built items into a namespace-naked questestinterop doc."""
-    from Courseforge.scripts.qti_emitter import question_to_qti_item
+    from Courseforge.scripts.packaging.qti_emitter import question_to_qti_item
 
     root = ET.Element("questestinterop")
     assessment = ET.SubElement(root, "assessment")

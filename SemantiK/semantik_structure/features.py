@@ -429,7 +429,7 @@ def feature_block_to_classifier_input(fb: FeatureBlock) -> str:
     """Serialize one FeatureBlock into the classifier's input string.
 
     SINGLE SOURCE OF TRUTH for the format used at both training time
-    (data/build_classifier_data_v2.py) and inference time
+    (data/builders/build_classifier_data_v2.py) and inference time
     (semantik_structure/classify.py). Keep these in lockstep — silent format
     drift between them would be a silent accuracy hit.
     """

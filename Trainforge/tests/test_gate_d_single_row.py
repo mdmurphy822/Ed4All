@@ -7,7 +7,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from lib.ontology.misconception_id import canonical_mc_id
-from Trainforge.scripts.gate_d_single_row import (
+from Trainforge.scripts.archive.gate_d_single_row import (
     CAPABILITY_SCHEMA, CONTROL_EVIDENCE_SCHEMA, GATE_A_TRUST_SCHEMA,
     PINNED_AUTHORITY_SHA256, PINNED_CONTRACT_SHA256,
     PINNED_GO_CANONICAL_SHA256, PINNED_RELEASE_ROOT_SHA256, PINNED_ROW,
@@ -1160,7 +1160,7 @@ def test_functional_terminal_positional_tuple_mutations_fail_closed(
 def test_execute_pilot_real_seam_projects_complete_dpo_and_verifies(
     tmp_path, monkeypatch,
 ):
-    from Trainforge.scripts.staged_window_abcd_pilot import execute_pilot
+    from Trainforge.scripts.harness.staged_window_abcd_pilot import execute_pilot
     from Trainforge.generators.staged_synthesis_micro import (
       MicroStagedSynthesisProvider, micro_contract_fingerprint,
     )

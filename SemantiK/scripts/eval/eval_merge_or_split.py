@@ -46,7 +46,7 @@ def _eval_test_split(adapter_dir: Path, test_path: Path,
     import torch.nn as nn
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from data.build_merge_or_split_data import JOIN_TYPES, JOIN_TYPE_IGNORE
+    from data.builders.build_merge_or_split_data import JOIN_TYPES, JOIN_TYPE_IGNORE
     from training.train_merge_or_split import (
         _format_input, HEADING_LABELS, HYPHEN_LABELS, SAME_LOGICAL_LABELS,
     )

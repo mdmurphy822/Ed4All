@@ -22,7 +22,7 @@ is concerned with classification-block validation at Courseforge emit time
 and Trainforge consume time.
 
 Downstream consumers:
-    Courseforge/scripts/generate_course.py ``generate_course`` — validates
+    Courseforge/scripts/rendering/generate_course.py ``generate_course`` — validates
         the course-level classification dict before writing
         ``course_metadata.json`` or any per-page JSON-LD. Fail-closed.
     Trainforge/process_course.py — loads the stub and merges it with CLI

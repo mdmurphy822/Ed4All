@@ -52,19 +52,19 @@ validation gates, and writes the finished project beneath
 `Courseforge/exports/`.
 
 For an existing cartridge, use the intake and remediation workflow described
-in the [workflow reference](docs/workflow-reference.md).
+in the [workflow reference](docs/reference/workflow-reference.md).
 
 ## Explore the system
 
-- [Getting started](docs/getting-started.md) — prerequisites and first-run
+- [Getting started](docs/guides/getting-started.md) — prerequisites and first-run
   guidance.
-- [Workflow reference](docs/workflow-reference.md) — creation, intake, and
+- [Workflow reference](docs/reference/workflow-reference.md) — creation, intake, and
   remediation phases.
-- [Troubleshooting](docs/troubleshooting.md) — common packaging and validation
+- [Troubleshooting](docs/guides/troubleshooting.md) — common packaging and validation
   failures.
-- [Learning-objective contract](docs/per-week-learning-objectives.md) — how
+- [Learning-objective contract](docs/reference/per-week-learning-objectives.md) — how
   page objectives stay aligned with course outcomes.
-- [Template-chrome contract](docs/template-chrome-roles.md) — how repeated page
+- [Template-chrome contract](docs/reference/template-chrome-roles.md) — how repeated page
   furniture stays out of retrieval and training text.
 - [Local schema index](schemas/README.md) — Courseforge-specific rendering and
   IMSCC contracts.

@@ -6,7 +6,7 @@ Supports ``MCP.tools.pipeline_tools._generate_course_content`` by:
 - synthesizing canonical learning-objective dicts (``CO-NN`` / ``TO-NN``)
   when no objectives JSON was supplied at pipeline entry,
 - building per-week ``week_data`` payloads in the shape
-  :func:`Courseforge.scripts.generate_course.generate_week` consumes.
+  :func:`Courseforge.scripts.rendering.generate_course.generate_week` consumes.
 
 The actual HTML rendering (full ``data-cf-*`` + JSON-LD surface) is delegated
 to ``generate_week``; this module is a thin orchestration wrapper feeding
@@ -2048,7 +2048,7 @@ def build_week_data(
     authorship_stats: Optional[Dict[str, int]] = None,
 ) -> Dict[str, Any]:
     """Assemble the ``week_data`` dict that
-    :func:`Courseforge.scripts.generate_course.generate_week` consumes.
+    :func:`Courseforge.scripts.rendering.generate_course.generate_week` consumes.
 
     ``authorship_stats`` (optional): when supplied, the per-page LLM-vs-
     template authorship tally is accumulated into it under the
@@ -2578,7 +2578,7 @@ def _topic_to_section(
     When the source carries ``data-dart-block-id`` on the section
     wrapper, emit ``source_references[]`` on the
     generated section so
-    :func:`Courseforge.scripts.generate_course._render_content_sections`
+    :func:`Courseforge.scripts.rendering.generate_course._render_content_sections`
     stamps ``data-cf-source-ids="dart:{slug}#{block_id}"`` on the
     rendered ``<h2>`` wrapper. Also propagates into the page's JSON-LD
     ``sections[].sourceReferences`` via ``_build_section_metadata``.

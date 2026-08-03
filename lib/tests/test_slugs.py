@@ -3,7 +3,7 @@
 Covers REC-ID-03 (Wave 4, Worker Q):
 
   * Canonical `canonical_slug` behavior — pins byte-for-byte parity with
-    the historical ``Courseforge.scripts.generate_course._slugify``.
+    the historical ``Courseforge.scripts.rendering.generate_course._slugify``.
   * Courseforge `_slugify` alias resolves to `canonical_slug`.
   * Trainforge `normalize_tag` delegates canonicalization to
     `canonical_slug` while preserving its display-layer rules
@@ -40,7 +40,7 @@ if str(_REPO_ROOT) not in sys.path:
 def _load_by_path(module_name: str, path: Path):
     """Load a Python module from an absolute path.
 
-    Used for ``Courseforge/scripts/generate_course.py`` which is normally
+    Used for ``Courseforge/scripts/rendering/generate_course.py`` which is normally
     invoked as a script, not imported as a package.
     """
     spec = importlib.util.spec_from_file_location(module_name, path)
@@ -55,7 +55,13 @@ def _load_by_path(module_name: str, path: Path):
 @pytest.fixture(scope="module")
 def courseforge_slugify():
     """Load the migrated ``_slugify`` alias from generate_course.py."""
-    path = _REPO_ROOT / "Courseforge" / "scripts" / "generate_course.py"
+    path = (
+        _REPO_ROOT
+        / "Courseforge"
+        / "scripts"
+        / "rendering"
+        / "generate_course.py"
+    )
     module = _load_by_path("courseforge_generate_course_for_slug_tests", path)
     return module._slugify
 
@@ -634,7 +640,13 @@ def test_canonical_slug_is_single_source_of_truth():
     from lib.ontology.slugs import canonical_slug as _canon
 
     # The Courseforge alias must be canonical_slug itself (same object).
-    path = _REPO_ROOT / "Courseforge" / "scripts" / "generate_course.py"
+    path = (
+        _REPO_ROOT
+        / "Courseforge"
+        / "scripts"
+        / "rendering"
+        / "generate_course.py"
+    )
     module = _load_by_path("courseforge_generate_course_identity_check", path)
     assert module._slugify is _canon, (
         "Courseforge _slugify must be the same object as canonical_slug"

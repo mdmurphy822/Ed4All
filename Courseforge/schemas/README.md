@@ -175,7 +175,7 @@ When implementing these schemas, validate:
 
 For implementation support:
 - See `/templates/` directory for working examples
-- Check `docs/troubleshooting.md` for error patterns and prevention
+- Check `docs/guides/troubleshooting.md` for error patterns and prevention
 - Reference `imscc-standards/brightspace-specific/` for LMS specifications
 - Reference `/schemas/README.md` (project root) for the unified schema index
 

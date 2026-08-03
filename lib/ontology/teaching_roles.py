@@ -18,7 +18,7 @@ import time and cached.
 
 See `plans/kg-quality-review-2026-04/worker-k-subplan.md` (Wave 2,
 REC-VOC-02) for the rollout design and the three emit sites in
-`Courseforge/scripts/generate_course.py` that depend on this module.
+`Courseforge/scripts/rendering/generate_course.py` that depend on this module.
 """
 
 from __future__ import annotations

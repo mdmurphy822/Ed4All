@@ -1,6 +1,6 @@
 """Populate data/glm_ocr_cache/ for every pair's PDF before the build.
 
-Self-contained: does not import from `data/build_qwen_data.py` (which
+Self-contained: does not import from `data/builders/build_qwen_data.py` (which
 isn't a package). Mirrors the same two-phase logic: scan for misses,
 only load the model if any uncached region exists.
 """

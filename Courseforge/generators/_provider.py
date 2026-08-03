@@ -49,7 +49,7 @@ from typing import Any, Dict, List, Optional
 # ``Courseforge/scripts/blocks.py``; ensure the sibling-of-this-package
 # directory is importable so ``from blocks import Block`` resolves the
 # same regardless of how this provider module is loaded (CLI, MCP tool,
-# pytest). Mirrors the pattern in ``Courseforge/scripts/generate_course.py``.
+# pytest). Mirrors the pattern in ``Courseforge/scripts/rendering/generate_course.py``.
 _SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))

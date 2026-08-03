@@ -6,14 +6,14 @@ deferred to v2 (needs caption-bbox proximity, not per-cell signal).
 Heads:
     * cell_role_scope    4-class    `data`, `header_col`, `header_row`,
                                     `span` — see
-                                    data.build_table_specialist_data
+                                    data.builders.build_table_specialist_data
                                     for the labeling rules.
 
 Inputs:
     * text     — cell HTML text (truncated to 300 chars at build time).
     * layout   — 15-dim numeric vector (row/col index norms,
                  boundary flags, text-shape signals; see
-                 data.build_table_specialist_data.LAYOUT_FEATURE_NAMES).
+                 data.builders.build_table_specialist_data.LAYOUT_FEATURE_NAMES).
 
 Side-channel:
     layout(15) → LayerNorm → MLP(15→64→64) → concat with ModernBERT
@@ -67,7 +67,7 @@ _SEMANTIK_ROOT = str(Path(__file__).resolve().parent.parent)
 if _SEMANTIK_ROOT not in sys.path:
     sys.path.insert(0, _SEMANTIK_ROOT)
 
-from data.build_table_specialist_data import (  # noqa: E402  (after sys.path bootstrap)
+from data.builders.build_table_specialist_data import (  # noqa: E402  (after sys.path bootstrap)
     CELL_ROLE_SCOPE_NAMES,
     LAYOUT_FEATURE_DIM,
 )

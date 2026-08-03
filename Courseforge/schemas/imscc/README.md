@@ -50,7 +50,7 @@ These schemas are based on official IMS Global specifications:
 - Discussion: http://www.imsglobal.org/profile/cc/ccv1p3/ccv1p3_imsdt_v1p3.xsd
 - QTI: http://www.imsglobal.org/profile/cc/ccv1p3/ccv1p3_qtiasiv1p2p1_v1p0.xsd
 
-The manifest (`imscp`) XSD is not bundled here; manifest structure is validated programmatically by `scripts/package_multifile_imscc.py` (IMS CC v1.3 `imscp_v1p1` namespace).
+The manifest (`imscp`) XSD is not bundled here; manifest structure is validated programmatically by `scripts/packaging/package_multifile_imscc.py` (IMS CC v1.3 `imscp_v1p1` namespace).
 
 ## Resource Types in Manifest
 

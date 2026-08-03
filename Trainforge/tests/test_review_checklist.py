@@ -40,7 +40,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from Trainforge.generators.schema_translation_generator import (  # noqa: E402
     SurfaceFormData,
 )
-from Trainforge.scripts._review_checklist import (  # noqa: E402
+from Trainforge.scripts.maintenance._review_checklist import (  # noqa: E402
     _pick_sample,
     _seed_for,
     _truncate,
@@ -245,7 +245,7 @@ def test_checklist_appended_to_drafting_stdout():
     blocking emit), the drafting CLI must include REVIEW CHECKLIST
     in stdout. We stub the validator to bypass Rule 4 so we can
     measure the actual checklist-emit path."""
-    from Trainforge.scripts import draft_form_data_entry as cli
+    from Trainforge.scripts.ops import draft_form_data_entry as cli
 
     target_curie = "sh:datatype"
     payload = {
@@ -324,7 +324,7 @@ def test_backfill_yaml_slicer_skips_checklist():
     sits between the YAML and the NEXT STEPS comment, the YAML still
     parses cleanly — the slicer cuts at the FIRST of either header so
     yaml.safe_load only sees the well-formed YAML head."""
-    from Trainforge.scripts.backfill_form_data import (
+    from Trainforge.scripts.ops.backfill_form_data import (
         _extract_yaml_payload_from_drafting_stdout,
     )
 

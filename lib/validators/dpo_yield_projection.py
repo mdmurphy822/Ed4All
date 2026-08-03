@@ -39,7 +39,7 @@ provider dispatch:
    predicate, not a re-derived assumption.
 
 Every predicate above is imported, never re-implemented — this module (and
-``Trainforge/scripts/model_dpo_yield.py``, which imports :func:`project_dpo_yield`
+``Trainforge/scripts/ops/model_dpo_yield.py``, which imports :func:`project_dpo_yield`
 from here rather than duplicating it) is a pure orchestration/reporting layer
 over the real admission chain.
 
@@ -400,7 +400,7 @@ class DpoYieldProjectionValidator:
                     ),
                     location=str(chunks_path),
                     suggestion=(
-                        "Run `python -m Trainforge.scripts.model_dpo_yield "
+                        "Run `python -m Trainforge.scripts.ops.model_dpo_yield "
                         "--course-dir <dir>` for the full per-rung table, or "
                         "author more misconception cards at the "
                         "under-represented rungs."

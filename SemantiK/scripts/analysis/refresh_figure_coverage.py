@@ -10,7 +10,7 @@ source HTML/XML. It only:
      except for the two image-availability fields plus a recount provenance
      block).
 
-Why a separate script: ``data/build_figure_catalog.py`` always re-parses the
+Why a separate script: ``data/builders/build_figure_catalog.py`` always re-parses the
 sources and hard-codes ``image_local: False`` (image bytes were not present
 when it ran). It has no no-fetch recount mode, so the on-disk fetch results
 have to be folded back in here.
