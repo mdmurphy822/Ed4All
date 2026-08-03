@@ -319,9 +319,11 @@ risk. Completed items are marked below.
    the canonical package path. Staged generation, its provider, and the
    evidence/objective contracts now live under `staged/`; four root-level
    module aliases preserve their documented import paths through the
-   deprecation window. The exact loose-module cap remains 19 while those
-   aliases are supported. Assessment, pair-generation, and deterministic-
-   program families remain candidates for later bounded moves.
+   deprecation window. Instruction and preference authoring now live under
+   `pairs/`, with two equivalent aliases preserving those documented import
+   paths. The exact loose-module cap remains 19 while these six aliases are
+   supported. Assessment, postprocessing, and deterministic-program families
+   remain candidates for later bounded moves.
 8. **`LibV2/tools/libv2/` — IN PROGRESS.** Evaluation implementations now
    live under `evaluation/`. Three documented compatibility modules remain at
    the package root through their deprecation window, so the exact flat cap

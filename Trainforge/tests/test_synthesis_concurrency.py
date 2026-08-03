@@ -27,8 +27,8 @@ from Trainforge.synthesis_journal import (
     load_generation_journal,
     summarize_generation_journal,
 )
-from Trainforge.generators.instruction_factory import InstructionSynthesisResult
-from Trainforge.generators.preference_factory import PreferenceSynthesisResult
+from Trainforge.generators.pairs.instruction import InstructionSynthesisResult
+from Trainforge.generators.pairs.preference import PreferenceSynthesisResult
 from Trainforge.generators.providers._synthesis_common import SynthesisProviderError
 
 

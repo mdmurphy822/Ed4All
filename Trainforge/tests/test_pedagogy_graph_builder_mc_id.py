@@ -33,7 +33,7 @@ from Trainforge.pedagogy_graph_builder import (  # noqa: E402
     _mc_id,
     build_pedagogy_graph,
 )
-from Trainforge.generators.preference_factory import (  # noqa: E402
+from Trainforge.generators.pairs.preference import (  # noqa: E402
     _misconception_id,
 )
 from lib.ontology.misconception_id import canonical_mc_id  # noqa: E402

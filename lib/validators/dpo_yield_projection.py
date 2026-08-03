@@ -34,7 +34,7 @@ provider dispatch:
 4. :func:`Trainforge.training.compute_backend.is_dpo_editorial_record` is
    called on the synthetic record a Arm-A-admitted candidate would produce
    (``source="misconception"``, the same stamp
-   ``Trainforge/generators/preference_factory.py`` mints), so the final
+   ``Trainforge/generators/pairs/preference.py`` mints), so the final
    "would the trainer actually admit this" count is the REAL trainer
    predicate, not a re-derived assumption.
 

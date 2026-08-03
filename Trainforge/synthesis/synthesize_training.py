@@ -74,10 +74,10 @@ from lib.validators.content_type import (  # noqa: E402
     assert_chunk_type,
     validate_chunk_type,
 )
-from Trainforge.generators.instruction_factory import (  # noqa: E402
+from Trainforge.generators.pairs.instruction import (  # noqa: E402
     synthesize_instruction_pair,
 )
-from Trainforge.generators.preference_factory import (  # noqa: E402
+from Trainforge.generators.pairs.preference import (  # noqa: E402
     synthesize_preference_pair,
 )
 from Trainforge.generators.providers._synthesis_provider import (  # noqa: E402
@@ -1004,7 +1004,7 @@ def _build_misconception_dpo_pair(
     can exercise this helper in isolation — every production call site (the
     augmentation loop in ``run_synthesis``) passes one in.
     """
-    from Trainforge.generators.preference_factory import _misconception_id
+    from Trainforge.generators.pairs.preference import _misconception_id
 
     chunk_id_for_log = str(chunk.get("id") or chunk.get("chunk_id") or "")
     mc_text_for_id = str(misconception.get("misconception", "")).strip()
@@ -1811,8 +1811,8 @@ _GENERATION_CONTRACT_FILES = (
     # entry a resumed run appended post-edit rows to a pre-edit corpus.
     "Trainforge/generators/staged/micro.py",
     "Trainforge/generators/providers/_local_provider.py",
-    "Trainforge/generators/instruction_factory.py",
-    "Trainforge/generators/preference_factory.py",
+    "Trainforge/generators/pairs/instruction.py",
+    "Trainforge/generators/pairs/preference.py",
     "Trainforge/generators/staged/window_contract.py",
     "Trainforge/generators/staged/objective_contract.py",
     "Trainforge/synthesis/synthesis_contract_guard.py",
@@ -2654,11 +2654,11 @@ def _is_transient_generation_error(exc: BaseException) -> bool:
 
 def _deserialize_generation_result(kind: str, payload: Mapping[str, Any]) -> Any:
     if kind == "instruction":
-        from Trainforge.generators.instruction_factory import (
+        from Trainforge.generators.pairs.instruction import (
             InstructionSynthesisResult,
         )
         return InstructionSynthesisResult(**dict(payload))
-    from Trainforge.generators.preference_factory import PreferenceSynthesisResult
+    from Trainforge.generators.pairs.preference import PreferenceSynthesisResult
     return PreferenceSynthesisResult(**dict(payload))
 
 

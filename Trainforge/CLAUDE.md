@@ -381,22 +381,26 @@ Trainforge/
 │   ├── assessment_generator.py  # Main assessment generation orchestrator
 │   ├── content_extractor.py     # Extract key terms, statements, relationships
 │   ├── question_factory.py      # Question type factory
-│   ├── _anthropic_provider.py   # Slim anthropic-identity constants (SDK
+│   ├── providers/               # Provider identities, transports, and dispatch
+│   │   ├── _anthropic_provider.py   # Slim anthropic-identity constants (SDK
 │   │                            #   training-synthesis provider REMOVED Phase 4)
-│   ├── _base_synthesis_provider.py  # Shared synthesis-provider base
-│   ├── _synthesis_provider.py   # Registry-driven SynthesisProvider
+│   │   ├── _base_synthesis_provider.py  # Shared synthesis-provider base
+│   │   ├── _synthesis_provider.py   # Registry-driven SynthesisProvider
 │   │                            #   (TRAINFORGE_AGNOSTIC_SYNTHESIS, default ON)
-│   ├── _synthesis_common.py     # PROMPT_MIN/MAX + COMPLETION_MIN/MAX sentinels
-│   ├── _together_provider.py    # Per-vendor synthesis leaves (legacy rollback
-│   ├── _local_provider.py       #   path); see § Provider configuration
-│   ├── _claude_session_provider.py  # Claude Code subagent route (ack-gated)
-│   ├── _openai_compatible_client.py # Shared client + OP2 usage tap
-│   ├── _nvidia_provider.py      # NVIDIA identity constants (content generation)
-│   ├── _assessment_provider.py  # TRAINFORGE_ASSESSMENT_PROVIDER surface
-│   ├── _curriculum_provider.py  # CURRICULUM_ALIGNMENT_PROVIDER surface
-│   ├── _session_budget.py       # _BudgetTracker + _CircuitBreaker
-│   ├── instruction_factory.py   # Instruction-pair synthesis
-│   ├── preference_factory.py    # Preference-pair synthesis
+│   │   ├── _synthesis_common.py     # Prompt/completion sentinels
+│   │   ├── _together_provider.py    # Hosted synthesis leaf
+│   │   ├── _local_provider.py       # Local synthesis leaf
+│   │   ├── _claude_session_provider.py  # Session route (ack-gated)
+│   │   ├── _openai_compatible_client.py # Shared client + usage tap
+│   │   ├── _nvidia_provider.py      # NVIDIA identity constants
+│   │   ├── _assessment_provider.py  # Assessment provider surface
+│   │   ├── _curriculum_provider.py  # Curriculum provider surface
+│   │   └── _session_budget.py       # Budget tracker + circuit breaker
+│   ├── pairs/
+│   │   ├── instruction.py       # Canonical instruction-pair authoring
+│   │   └── preference.py        # Canonical preference-pair authoring
+│   ├── instruction_factory.py   # Deprecated compatibility alias
+│   ├── preference_factory.py    # Deprecated compatibility alias
 │   ├── summary_factory.py
 │   ├── pair_decontamination.py  # Gold-set decontamination (mandatory)
 │   ├── kg_metadata_generator.py # Deterministic KG-metadata pairs
@@ -943,7 +947,7 @@ Caveat: with the default `1`, only variant `0` is ever emitted, so `requires_sou
 
 **Schema-translation catalog.** The hand-curated catalog totals **250 deterministic pairs** spread across **6 template families × 6 surface forms × ~7 entries each** in `Trainforge/generators/schema_translation_generator.py`. Families: `schema_translation.definition` (bloom: remember — formal-spec / pedagogical / context-anchored renderings), `schema_translation.usage` (bloom: understand — concrete TTL fragments), `schema_translation.comparison` (bloom: analyze — pairwise contrasts with adjacent SHACL/RDF/OWL constructs), `schema_translation.reasoning` (bloom: apply — scenario-→-CURIE probes), `schema_translation.pitfall` (bloom: analyze — error-mode scenarios + corrections), and `schema_translation.combination` (bloom: apply — multi-construct composition). Each surface form (`sh:datatype`, `sh:class`, `sh:NodeShape`, `sh:PropertyShape`, `rdfs:subClassOf`, `owl:sameAs`) emits 41-42 pairs total, ~7 per family. Every completion contains the primary CURIE literally so the `preserve_tokens` plumbing recognises it; comparison + combination pairs additionally carry the secondary CURIE in `concept_tags`. Cap-with-balance behavior: round-robin emit order means a `--schema-translation-max-pairs 120` cap visits every family before exhausting any one, so a low cap doesn't drop a family to zero. Schema bounds enforced: 40 ≤ prompt ≤ 400, 50 ≤ completion ≤ 600. **Default cap remains 50 for backward compatibility; production rebuild uses `--schema-translation-max-pairs 200` to land at the target ~6% corpus balance** (vs paraphrase ~35%, KG metadata ~30%, violation detection ~20-25%). Deterministic, no LLM in the loop.
 
-**Paraphrase-exhaustion fallback + definition-chunk directive.** When the local synthesis seat exhausts `MAX_PARSE_RETRIES` on a single chunk (e.g. a 7B-Q4 model that drifts on a particularly compressed source), the provider raises `SynthesisProviderError(code="paraphrase_invalid_after_retry")`. `Trainforge/generators/instruction_factory.py` catches exactly that code (and `surface_form_preservation_failed`), falls back to the **deterministic draft** for that chunk, and stamps `paraphrase_fallback_reason=<code>` on the emitted pair so the substitution is visible in the corpus rather than silent; any other error code re-raises. Definition-class chunks additionally get a `definition_directive` fragment injected into the user prompt (`Trainforge/generators/providers/_synthesis_provider.py`, local-seat-only) so the paraphrase doesn't break key-term extraction. Together these preserve property coverage on long-tail chunks without burning operator time; audit the `paraphrase_fallback_reason` field to see how many pairs took the fallback.
+**Paraphrase-exhaustion fallback + definition-chunk directive.** When the local synthesis seat exhausts `MAX_PARSE_RETRIES` on a single chunk (e.g. a 7B-Q4 model that drifts on a particularly compressed source), the provider raises `SynthesisProviderError(code="paraphrase_invalid_after_retry")`. `Trainforge/generators/pairs/instruction.py` catches exactly that code (and `surface_form_preservation_failed`), falls back to the **deterministic draft** for that chunk, and stamps `paraphrase_fallback_reason=<code>` on the emitted pair so the substitution is visible in the corpus rather than silent; any other error code re-raises. Definition-class chunks additionally get a `definition_directive` fragment injected into the user prompt (`Trainforge/generators/providers/_synthesis_provider.py`, local-seat-only) so the paraphrase doesn't break key-term extraction. Together these preserve property coverage on long-tail chunks without burning operator time; audit the `paraphrase_fallback_reason` field to see how many pairs took the fallback.
 
 **FORM_DATA contract + `anchored_status` discriminator.** `Trainforge/generators/schema_translation_generator.py::SurfaceFormData` carries an `anchored_status: Literal["complete", "degraded_placeholder"]` field (defaults to `"complete"`). `_RDF_SHACL_FALLBACK_FORM_DATA` has 40 entries (one per rdf-shacl manifest CURIE) so the anchored force-injection path can dispatch on the status field for every CURIE. The 6 pre-existing entries keep their hand-curated content tagged `"complete"`; the 34 new entries are explicit `"degraded_placeholder"` stubs whose definition + usage_example strings start with the literal token `"[degraded:"` (grep this prefix to find them). `generate_schema_translation_pairs` skips entries with `anchored_status="degraded_placeholder"` BEFORE catalog walk so the literal stub strings never reach an emitted pair. End-of-run `logger.warning` names the skipped count + CURIEs. `validate_form_data_contract(form_data, manifest_curies)` enforces the safety contract — every manifest CURIE has an entry with >=1 def + >=1 usage_example AND every entry's status is in the canonical set. **Operator backfill task**: as anchored content is authored for the 34 stub entries, each backfilled entry flips `anchored_status="degraded_placeholder"` -> `"complete"`, silently improving anchored-injection coverage. `decision_type="form_data_degraded_placeholder_skipped"` enum value registered in `schemas/events/decision_event.schema.json`.
 

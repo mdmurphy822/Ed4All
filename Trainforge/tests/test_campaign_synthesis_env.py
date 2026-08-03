@@ -110,7 +110,7 @@ def test_campaign_stamped_pairs_pass_export_filter(campaign_env):
 def test_raw_seat_name_is_rejected_by_pair_factories():
     """Why campaign-env exports the literal ``local``: the factories
     whitelist provider NAMES, so the raw registry seat name crashes."""
-    from Trainforge.generators.instruction_factory import (
+    from Trainforge.generators.pairs.instruction import (
         synthesize_instruction_pair,
     )
 

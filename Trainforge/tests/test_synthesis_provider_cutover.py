@@ -32,10 +32,10 @@ from Trainforge.generators.providers._synthesis_provider import (  # noqa: E402
     ENV_AGNOSTIC_SYNTHESIS,
     agnostic_synthesis_enabled,
 )
-from Trainforge.generators.instruction_factory import (  # noqa: E402
+from Trainforge.generators.pairs.instruction import (  # noqa: E402
     synthesize_instruction_pair,
 )
-from Trainforge.generators.preference_factory import (  # noqa: E402
+from Trainforge.generators.pairs.preference import (  # noqa: E402
     synthesize_preference_pair,
 )
 

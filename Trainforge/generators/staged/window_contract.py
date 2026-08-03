@@ -338,7 +338,7 @@ def resolve_chunk_misconceptions(
     ``chunk["misconceptions"]`` is the field EVERY downstream consumer reads:
     :func:`Trainforge.generators.staged.micro.micro_preference_eligibility`
     Arm A (admission to synthesis), and — decisively —
-    :func:`Trainforge.generators.preference_factory.synthesize_preference_pair`,
+    :func:`Trainforge.generators.pairs.preference.synthesize_preference_pair`,
     which stamps ``source="misconception"`` + a real ``misconception_id`` ONLY
     from a non-empty value here.  Those two stamps are the whole of DPO
     admission: ``Trainforge.training.compute_backend.is_dpo_editorial_record``

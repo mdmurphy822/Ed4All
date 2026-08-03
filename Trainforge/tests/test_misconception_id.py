@@ -1,6 +1,6 @@
 """Worker R -- REC-LNK-02 misconception content-hash ID helper.
 
-Regression tests for ``Trainforge.generators.preference_factory._misconception_id``.
+Regression tests for ``Trainforge.generators.pairs.preference._misconception_id``.
 The helper replaces the earlier unstable format
 ``{chunk_id}_mc_{index:02d}_{hash}`` with content-addressed
 ``mc_<sha256(misconception|correction)[:16]>``. IDs must be:
@@ -26,7 +26,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.generators.preference_factory import _misconception_id  # noqa: E402
+from Trainforge.generators.pairs.preference import _misconception_id  # noqa: E402
 
 SCHEMA_PATH = (
     PROJECT_ROOT / "schemas" / "knowledge" / "misconception.schema.json"

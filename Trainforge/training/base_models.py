@@ -230,7 +230,7 @@ def format_instruction(spec: BaseModelSpec, pair: Dict[str, str]) -> str:
         spec: The :class:`BaseModelSpec` whose ``chat_template`` selects
             the formatter.
         pair: A dict with at minimum ``prompt`` and ``completion`` keys
-            (the shape ``Trainforge.generators.instruction_factory``
+            (the shape ``Trainforge.generators.pairs.instruction``
             emits). Extra keys (chunk_id, lo_refs, etc.) are ignored.
 
     Raises:

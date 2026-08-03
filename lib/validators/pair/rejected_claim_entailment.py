@@ -9,7 +9,7 @@ text, and neither ever looks at a preference pair's ``rejected`` side.
 For a ``source="misconception"`` preference pair, ``rejected`` is
 supposed to be a WRONG claim — the authored misconception statement —
 so a DPO run can teach the model to prefer ``chosen`` over it. But the
-authoring path (:func:`Trainforge.generators.preference_factory.
+authoring path (:func:`Trainforge.generators.pairs.preference.
 synthesize_preference_pair`) never re-checks the misconception
 statement against the source chunk it was drawn from. When the
 "wrong" framing turns out to be entailed by the source window anyway

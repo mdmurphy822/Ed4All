@@ -294,7 +294,7 @@ See § JSON-LD round-trip for the RDF projection of this shape (edges reify as `
 
 **Definition:** No standalone schema; emitted in Courseforge JSON-LD (`page_metadata.misconceptions[]`) and stored on Chunk (enrichment).
 **Instance production:** content-generator authors them per week; merged into content-page JSON-LD at `generate_course.py:671`.
-**Instance consumption:** `Trainforge/generators/preference_factory.py` — explicit misconceptions back DPO `rejected` answers with stable IDs (`_misconception_id`, lines 140-143: `{chunk_id}_mc_{index:02d}_{hash}`).
+**Instance consumption:** `Trainforge/generators/pairs/preference.py` — explicit misconceptions back DPO `rejected` answers with stable IDs (`_misconception_id`, lines 140-143: `{chunk_id}_mc_{index:02d}_{hash}`).
 
 **Structural shape (as emitted):** a free-form dict — most commonly `{misconception: string, correction: string}`; passed through without enum constraint.
 
@@ -346,7 +346,7 @@ Two closely-related representations exist:
 ### InstructionPair
 
 **Definition:** `schemas/knowledge/instruction_pair.schema.json`.
-**Instance production:** `Trainforge/synthesize_training.py` → `Trainforge/generators/instruction_factory.py`.
+**Instance production:** `Trainforge/synthesize_training.py` → `Trainforge/generators/pairs/instruction.py`.
 **Instance consumption:** Downstream SFT trainers (Alpaca / OpenAI format).
 
 **Required fields:**
@@ -368,7 +368,7 @@ Two closely-related representations exist:
 ### PreferencePair
 
 **Definition:** `schemas/knowledge/preference_pair.schema.json`.
-**Instance production:** `Trainforge/generators/preference_factory.py`.
+**Instance production:** `Trainforge/generators/pairs/preference.py`.
 **Instance consumption:** DPO training pipelines.
 
 **Required fields:** `prompt` (40–400 chars), `chosen` (50–600), `rejected` (50–600; must differ from chosen with token-Jaccard δ ≥ 0.3), `chunk_id`, `lo_refs[]` (≥1), `seed`, `decision_capture_id`.
@@ -1007,19 +1007,19 @@ Every identifier scheme currently in use.
 
 | ID type | Regex / pattern | Example | Generator |
 |---|---|---|---|
-| LibV2 course slug | `^[a-z0-9][a-z0-9-]*[a-z0-9]$`, 3–100 chars | `wcag-22-aa-compliance` | `LibV2/tools/libv2/importer.py:28` (`slugify`) |
-| Slug-uniqueness | suffix `-<N>` where N ≥ 2 | `wcag-22-aa-compliance-2` | `importer.py:49` (`ensure_unique_slug`) |
-| Course code | `^[A-Z]{2,8}_[0-9]{3}$` (decision event), `^[A-Z]{2,3}_[0-9]{3}$` (session annotation — narrower) | `ACCESS_201`, `TST_908` | Hand-assigned |
+| LibV2 course slug | `^[a-z0-9][a-z0-9-]*[a-z0-9]$`, 3–100 chars | `<course-slug>` | `LibV2/tools/libv2/importer.py:28` (`slugify`) |
+| Slug-uniqueness | suffix `-<N>` where N ≥ 2 | `<course-slug>-2` | `importer.py:49` (`ensure_unique_slug`) |
+| Course code | `^[A-Z]{2,8}_[0-9]{3}$` (decision event), `^[A-Z]{2,3}_[0-9]{3}$` (session annotation — narrower) | `<COURSE_CODE>` | Hand-assigned |
 | LO ID — terminal | `TO-NN` | `TO-05` | Course-outliner agent |
 | LO ID — chapter | `CO-NN` | `CO-03` | Objective-synthesizer |
 | LO ID — week-scoped (legacy) | `WNN-CO-NN` | `W03-CO-01` | Deprecated in favor of canonical CO-NN; week-prefix normalization at `generate_course.py:605-613` |
-| Module ID | `^[A-Z]{2,8}_[0-9]{3}_W[0-9]{2}_M[0-9]{2}$` | `ACCESS_201_W01_M02` | Course-outliner |
-| Chunk ID | `^<course>_chunk_\d{5}$` | `access_201_chunk_00042` | `Trainforge/process_course.py:790` (`prefix = f"{self.course_code.lower()}_chunk_"`; `f"{prefix}{i:05d}"` at 1003, 1027) |
+| Module ID | `^[A-Z]{2,8}_[0-9]{3}_W[0-9]{2}_M[0-9]{2}$` | `<COURSE_CODE>_W01_M02` | Course-outliner |
+| Chunk ID | `^<course>_chunk_\d{5}$` | `<course>_chunk_00001` | `Trainforge/process_course.py` |
 | Concept tag | kebab-case normalized slug | `cognitive-load-theory` | `process_course.py::normalize_tag` |
-| Misconception ID | `<chunk_id>_mc_<NN>_<hash>` | `access_201_chunk_00042_mc_01_a3f8` | `preference_factory.py:140-143` |
+| Misconception ID | `<chunk_id>_mc_<NN>_<hash>` | `<chunk_id>_mc_01_<hash>` | `Trainforge/generators/pairs/preference.py` |
 | Event ID | `^EVT_[a-f0-9]{16}$` | `EVT_a3f8c1d2e4b5f6a7` | `lib/decision_capture.py:46-59` (fallback); `lib/sequence_manager.py` (primary) |
 | Task ID | `^T-[a-f0-9]{8}$` | `T-a3f8c1d2` | Orchestrator executor |
-| Run ID (tool-scoped) | `{TOOL}_{COURSE}_{YYYYMMDD_HHMMSS}` (free text; `^[A-Za-z0-9_]+$` on audit event) | `trainforge_access_201_20260419_101530` | *no live minter* (was `lib/run_manager.py`, deleted in `ff012ee4`) |
+| Run ID (tool-scoped) | `{TOOL}_{COURSE}_{YYYYMMDD_HHMMSS}` (free text; `^[A-Za-z0-9_]+$` on audit event) | `<tool>_<course>_<timestamp>` | *no live minter* |
 | Run ID (hardened) | `^RUN_[0-9]{8}_[0-9]{6}_[a-f0-9]{8}$` | `RUN_20260419_101530_a3f8c1d2` | *no live minter* (was `lib/run_manager.py`, deleted in `ff012ee4`); consumers resolve via `lib/paths.py::resolve_run_path` |
 | Content hash | 64-hex for SHA-256; also `sha256:<hex>` prefix form in run manifest | `sha256:a3f8…` | `lib/provenance.py::hash_file` |
 | Git commit | 40-hex | (40 hex chars) | run-manifest capture |
@@ -1090,7 +1090,7 @@ Severity behavior (`critical | warning`), block/warn on fail, fail-closed vs war
 
 - `Trainforge/tests/test_generator_defects.py:272` — asserts `metrics_semantic_version == METRICS_SEMANTIC_VERSION` (current value 5).
 - Preference-pair token-Jaccard δ ≥ 0.3 between `chosen` and `rejected` (not schema-enforced; asserted in generator + tests).
-- Instruction-pair verbatim-span check: prompt/completion must not contain ≥50-char substring of source chunk (schema description at `schemas/knowledge/instruction_pair.schema.json:23`; enforced in `Trainforge/generators/instruction_factory.py`).
+- Instruction-pair verbatim-span check: prompt/completion must not contain ≥50-char substring of source chunk (schema description at `schemas/knowledge/instruction_pair.schema.json:23`; enforced in `Trainforge/generators/pairs/instruction.py`).
 
 ### 8.5 LibV2 fsck checks
 
@@ -1251,7 +1251,7 @@ Exact file:line anchors to key emit/consume sites. Grep-verified against the tre
 - **`VALID_TYPES` (factory subset, 7 of the canonical 9-value enum):** `question_factory.py:81-89`. Canonical 9-value enum lives at `schemas/taxonomies/question_type.json`; factory excludes `ordering` + `hotspot` (those types ship via the trainforge_decision schema and the courseforge JSON-LD path).
 - **`QuestionChoice` / `Question` dataclasses:** `question_factory.py:28, 36`.
 - **`QuestionData` / `AssessmentData` dataclasses:** `Trainforge/generators/assessment_generator.py:81, 112`.
-- **Misconception ID generator:** `Trainforge/generators/preference_factory.py:140-143`.
+- **Misconception ID generator:** `Trainforge/generators/pairs/preference.py:140-143`.
 
 ### Provenance + ledger
 

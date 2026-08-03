@@ -33,7 +33,7 @@ from Trainforge.generators.providers._synthesis_common import (  # noqa: E402
     SynthesisProviderError,
 )
 
-from Trainforge.generators.instruction_factory import (
+from Trainforge.generators.pairs.instruction import (
     COMPLETION_MAX,
     COMPLETION_MIN,
     MAX_VERBATIM_SPAN,
@@ -41,7 +41,7 @@ from Trainforge.generators.instruction_factory import (
     PROMPT_MIN,
     synthesize_instruction_pair,
 )
-from Trainforge.generators.preference_factory import (
+from Trainforge.generators.pairs.preference import (
     JACCARD_DELTA_MIN,
     synthesize_preference_pair,
 )
@@ -915,14 +915,14 @@ def test_derive_topic_strips_lo_ref_suffix_from_concept_tag():
     pre-Layer-1 concept tag like ``property-paths-co-15`` renders as
     ``property paths`` instead of ``property paths co 15``.
     """
-    from Trainforge.generators.instruction_factory import _derive_topic
+    from Trainforge.generators.pairs.instruction import _derive_topic
 
     chunk = {"concept_tags": ["property-paths-co-15"]}
     assert _derive_topic(chunk) == "property paths"
 
 
 def test_derive_topic_strips_to_lo_ref_suffix():
-    from Trainforge.generators.instruction_factory import _derive_topic
+    from Trainforge.generators.pairs.instruction import _derive_topic
 
     chunk = {"concept_tags": ["subqueries-to-03"]}
     assert _derive_topic(chunk) == "subqueries"
@@ -931,7 +931,7 @@ def test_derive_topic_strips_to_lo_ref_suffix():
 def test_derive_topic_preserves_legitimate_to_substring():
     """A concept tag that contains ``-to-`` but not as a numeric
     LO ref deslugs identically to the legacy chain (no LO strip)."""
-    from Trainforge.generators.instruction_factory import _derive_topic
+    from Trainforge.generators.pairs.instruction import _derive_topic
 
     chunk = {"concept_tags": ["pattern-to-remember"]}
     assert _derive_topic(chunk) == "pattern to remember"
@@ -939,14 +939,14 @@ def test_derive_topic_preserves_legitimate_to_substring():
 
 def test_preference_factory_derive_topic_strips_lo_ref():
     """Preference-factory mirror of the instruction-factory test."""
-    from Trainforge.generators.preference_factory import _derive_topic
+    from Trainforge.generators.pairs.preference import _derive_topic
 
     chunk = {"concept_tags": ["property-paths-co-15"]}
     assert _derive_topic(chunk) == "property paths"
 
 
 def test_preference_factory_derive_topic_preserves_legitimate_to():
-    from Trainforge.generators.preference_factory import _derive_topic
+    from Trainforge.generators.pairs.preference import _derive_topic
 
     chunk = {"concept_tags": ["pattern-to-remember"]}
     assert _derive_topic(chunk) == "pattern to remember"

@@ -27,8 +27,8 @@ from Trainforge.generators.staged.window_contract import (
     WINDOW_CONTRACT_VERSION,
     build_evidence_window,
 )
-from Trainforge.generators.instruction_factory import synthesize_instruction_pair
-from Trainforge.generators.preference_factory import synthesize_preference_pair
+from Trainforge.generators.pairs.instruction import synthesize_instruction_pair
+from Trainforge.generators.pairs.preference import synthesize_preference_pair
 
 
 class _Client:

@@ -7,14 +7,13 @@ The Wave 95 audit revealed cross-artifact-join failure for `mc_*` IDs:
 * ``Trainforge/process_course.py::_build_misconceptions_for_graph``
   hashes ``statement|correction|bloom_level`` (canonical Wave 69 / 72 /
   95 algorithm — matches ``concept_graph_semantic.json`` and
-  ``Trainforge/generators/preference_factory._misconception_id``).
+  ``Trainforge/generators/pairs/preference._misconception_id``).
 
 Result: ``pedagogy_graph.json`` Misconception node IDs and
 ``concept_graph_semantic.json`` Misconception IDs (and the
 ``misconception_id`` field stamped on synthesized DPO pairs) lived in
 different namespaces. Joins across artifacts on ``mc_*`` failed
-silently — the audit caught it on one shipped corpus (34 ped mc nodes,
-34 concept mc nodes, ZERO overlap).
+silently when the two algorithms diverged.
 
 The right long-term fix is to update ``pedagogy_graph_builder._mc_id``
 to call the canonical algorithm directly. This script is the
@@ -69,7 +68,7 @@ def canonical_mc_id(statement: str, correction: str, bloom_level: str) -> str:
     """Wave 69 / 72 / 95 canonical misconception ID.
 
     Mirrors ``Trainforge/process_course.py::_build_misconceptions_for_graph``
-    and ``Trainforge/generators/preference_factory._misconception_id``.
+    and ``Trainforge/generators/pairs/preference._misconception_id``.
     """
 
     statement = (statement or "").strip()

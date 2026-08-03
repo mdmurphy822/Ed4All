@@ -104,7 +104,7 @@ def test_engine_recovery_retries_same_semantic_attempt(tmp_path: Path) -> None:
                 SynthesisProviderError,
             )
             raise SynthesisProviderError(_TIMEOUT, code="max_retries_exceeded")
-        from Trainforge.generators.preference_factory import (
+        from Trainforge.generators.pairs.preference import (
             PreferenceSynthesisResult,
         )
         return PreferenceSynthesisResult(

@@ -2,8 +2,8 @@
 """Together AI synthesis provider — composes :class:`OpenAICompatibleClient`.
 
 Wraps the deterministic mock-provider drafts produced by
-:mod:`Trainforge.generators.instruction_factory` and
-:mod:`Trainforge.generators.preference_factory` in an OSS-teacher
+:mod:`Trainforge.generators.pairs.instruction` and
+:mod:`Trainforge.generators.pairs.preference` in an OSS-teacher
 paraphrase + verify pass. Routes through Together AI's OpenAI-compatible
 chat-completions endpoint, which (unlike Anthropic's ToS) explicitly
 permits using the model output as training data for another model. This

@@ -287,7 +287,7 @@ def _mc_id(statement: str, correction: str = "", bloom_level: str = "") -> str:
     so the builder's hash matches byte-for-byte the IDs minted by:
 
     * ``Trainforge/process_course.py::_build_misconceptions_for_graph``
-    * ``Trainforge/generators/preference_factory.py::_misconception_id``
+    * ``Trainforge/generators/pairs/preference.py::_misconception_id``
 
     Pre-Wave-99 the builder hashed text-only (statement, lowercased, with no
     correction or bloom_level seed). That made pedagogy-graph ``mc_*`` nodes

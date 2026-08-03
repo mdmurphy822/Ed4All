@@ -18,12 +18,12 @@ from __future__ import annotations
 
 import pytest
 
-from Trainforge.generators.instruction_factory import (
+from Trainforge.generators.pairs.instruction import (
     _build_completion,
     _derive_topic,
     synthesize_instruction_pair,
 )
-from Trainforge.generators import preference_factory
+from Trainforge.generators.pairs import preference as preference_factory
 from Trainforge.synthesis_eligibility import (
     CONTENT_GATE_ENV,
     MIN_PROSE_WORDS_ENV,

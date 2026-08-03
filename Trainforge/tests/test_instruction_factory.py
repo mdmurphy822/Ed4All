@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for Trainforge.generators.instruction_factory.TEMPLATE_CATALOG.
+"""Tests for Trainforge.generators.pairs.instruction.TEMPLATE_CATALOG.
 
 Wave 133e (Plan-2 P1#10) added 5 high-frequency content_type axes ×
 6 Bloom levels = 30 tailored cells (definition / summary / overview /
@@ -18,7 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.generators.instruction_factory import (
+from Trainforge.generators.pairs.instruction import (
     TEMPLATE_CATALOG,
     synthesize_instruction_pair,
 )

@@ -972,7 +972,7 @@ def test_force_inject_canonical_terms_when_deterministic_path_drops_curie() -> N
     ``test_force_injection_falls_back_for_degraded_entry`` /
     ``test_force_injection_anchors_non_manifest_curies`` in
     ``test_instruction_factory.py``."""
-    from Trainforge.generators.instruction_factory import (
+    from Trainforge.generators.pairs.instruction import (
         synthesize_instruction_pair,
     )
 
@@ -1023,7 +1023,7 @@ def test_force_inject_skips_per_side_when_already_contains_token() -> None:
     injection routes through the anchored-definition path; the audit
     fields are ``preserve_tokens_anchored*`` rather than the legacy
     ``preserve_tokens_injected*``."""
-    from Trainforge.generators.instruction_factory import (
+    from Trainforge.generators.pairs.instruction import (
         _enforce_preserve_tokens_in_instruction,
     )
 
@@ -1091,7 +1091,7 @@ def test_force_inject_phrasing_rotates_across_chunks() -> None:
     handles "degraded_placeholder" entries AND non-manifest CURIEs.
     Test using a non-manifest CURIE (``ex:WorkedExample``) so the
     legacy path fires for every chunk."""
-    from Trainforge.generators.instruction_factory import (
+    from Trainforge.generators.pairs.instruction import (
         _enforce_preserve_tokens_in_instruction,
         _PROMPT_REFERENCE_PHRASINGS,
         _COMPLETION_REFERENCE_PHRASINGS,
@@ -1135,7 +1135,7 @@ def test_assessment_scaffolding_chunk_drops_pair() -> None:
     factory must reject the pair after the disallow_summary retry,
     not emit it. Otherwise the model learns to vomit quiz outlines
     in normal explanations."""
-    from Trainforge.generators.instruction_factory import (
+    from Trainforge.generators.pairs.instruction import (
         synthesize_instruction_pair,
     )
 
@@ -1169,7 +1169,7 @@ def test_assessment_scaffolding_unrecoverable_chunk_drops_pair() -> None:
     """When BOTH summary AND key_terms.definition carry the scaffolding
     pattern, no retry can produce a clean completion — the pair must
     be rejected with quality.passed=False."""
-    from Trainforge.generators.instruction_factory import (
+    from Trainforge.generators.pairs.instruction import (
         synthesize_instruction_pair,
     )
 
@@ -1198,7 +1198,7 @@ def test_assessment_scaffolding_unrecoverable_chunk_drops_pair() -> None:
 
 def test_force_inject_phrasing_idempotent_for_same_chunk() -> None:
     """Same chunk_id -> same phrasing across runs (audit reproducibility)."""
-    from Trainforge.generators.instruction_factory import (
+    from Trainforge.generators.pairs.instruction import (
         _enforce_preserve_tokens_in_instruction,
     )
     pair_a = {
@@ -1227,7 +1227,7 @@ def test_force_inject_clamps_both_sides_to_max_length() -> None:
     CURIE (legacy ~30-char suffix) for the second token so both can
     fit even when the first uses an anchored definition.
     """
-    from Trainforge.generators.instruction_factory import (
+    from Trainforge.generators.pairs.instruction import (
         COMPLETION_MAX,
         PROMPT_MAX,
         _enforce_preserve_tokens_in_instruction,

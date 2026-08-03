@@ -795,7 +795,7 @@ class PEFTTrainer:
 
         Args:
             instruction_pairs: List of pair dicts as emitted by
-                :func:`Trainforge.generators.instruction_factory.synthesize_instruction_pair`.
+                :func:`Trainforge.generators.pairs.instruction.synthesize_instruction_pair`.
                 Must carry ``prompt`` and ``completion`` keys at
                 minimum.
             output_dir: The run dir that hosts both the adapter file
@@ -1182,7 +1182,7 @@ class PEFTTrainer:
 
         Args:
             preference_pairs: List of pair dicts from
-                :func:`Trainforge.generators.preference_factory.synthesize_preference_pair`
+                :func:`Trainforge.generators.pairs.preference.synthesize_preference_pair`
                 / misconception-DPO emit. Must carry ``prompt``,
                 ``chosen``, ``rejected`` keys.
             sft_adapter_path: Path returned by :meth:`fit_sft`. Wave 100
