@@ -99,7 +99,7 @@ def register_courseforge_tools(mcp):
         in addition to the project scaffold.
 
         Args:
-            course_name: Unique course identifier (e.g., "MTH_301")
+            course_name: Unique course identifier (e.g., "FXMATH_301")
             objectives_path: Path to exam objectives file
             duration_weeks: Course duration (default: 12)
             credit_hours: Credit hours (default: 3)

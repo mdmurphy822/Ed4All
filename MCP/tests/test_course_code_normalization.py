@@ -34,7 +34,7 @@ _CANON = re.compile(r"^[A-Z]{2,8}_[0-9]{3}$")
         "long_slug_style_textbook_name",
         "arxiv-0000.00000",
         "ontology_engineering_textbook",
-        "MINI_TRAINING_101_PYTEST",
+        "FIXTURE_MINI_TRAINING_PYTEST",
         "textbook",
         "  leading-space-name  ",
         "123numeric-leading",
@@ -54,7 +54,7 @@ def test_normalize_produces_canonical_course_code(raw):
 @pytest.mark.unit
 def test_already_canonical_codes_are_preserved():
     """Inputs that already match should round-trip unchanged."""
-    for canon in ("MTH_101", "BIO_201", "CHEM_001", "PHYS_999"):
+    for canon in ("FXBASE_101", "FXBIO_201", "FXDOMAIN_001", "FXDOMAIN_999"):
         assert normalize_course_code(canon) == canon, (
             f"Canonical code {canon} should round-trip, got "
             f"{normalize_course_code(canon)}"

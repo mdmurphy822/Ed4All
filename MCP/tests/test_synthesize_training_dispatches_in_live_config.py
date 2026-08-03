@@ -59,7 +59,7 @@ def test_validate_tool_params_accepts_live_dispatch_shape(tmp_path: Path):
     # outputs.
     dispatcher_kwargs = {
         "id": "T_training_synthesis_001",
-        "course_code": "DEMO_101",
+        "course_code": "FXDEMO_101",
         "assessments_path": str(tmp_path / "trainforge" / "assessments.json"),
         "chunks_path": str(tmp_path / "trainforge" / "corpus" / "chunks.jsonl"),
         "provider": "mock",
@@ -84,7 +84,7 @@ def test_validate_tool_params_accepts_live_dispatch_shape(tmp_path: Path):
     )
     # course_code survives; optional passthrough kwargs survive; the
     # mapper never fabricates a corpus_dir.
-    assert mapped["course_code"] == "DEMO_101"
+    assert mapped["course_code"] == "FXDEMO_101"
     assert "assessments_path" in mapped
     assert "chunks_path" in mapped
     assert mapped["provider"] == "mock"
@@ -129,7 +129,7 @@ def test_dispatch_emits_pair_files_via_chunks_path(tmp_path: Path):
     (corpus_dir / "training_specs").mkdir(parents=True)
     chunk = {
         "id": "chunk_dispatch_test_01",
-        "course_id": "DEMO_101",
+        "course_id": "FXDEMO_101",
         "section_id": "sec_01",
         "content": (
             "Evidence-based practice integrates research findings with "
@@ -161,7 +161,7 @@ def test_dispatch_emits_pair_files_via_chunks_path(tmp_path: Path):
     assert "synthesize_training" in registry
 
     result_json = asyncio.run(registry["synthesize_training"](
-        course_code="DEMO_101",
+        course_code="FXDEMO_101",
         assessments_path=str(assessments_path),
         chunks_path=str(chunks_path),
         provider="mock",

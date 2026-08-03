@@ -45,7 +45,7 @@ def test_resolve_libv2_root_honors_ed4all_home(tmp_path, monkeypatch):
 @pytest.mark.unit
 def test_archive_slug_helper_byte_compatible_with_old_inline():
     # The old inline transform: name.lower().replace("_","-").replace(" ","-").
-    for name in ["PHYS_101", "My Course", "BIO-201", "Intro_To_AI"]:
+    for name in ["FXALPHA_101", "Fixture Course", "FXBIO-201", "Fixture_Topic"]:
         old = name.lower().replace("_", "-").replace(" ", "-")
         assert libv2_course_slug(name) == old, name
 
@@ -54,18 +54,18 @@ def test_archive_slug_helper_byte_compatible_with_old_inline():
 
 @pytest.mark.unit
 def test_normalize_chunk_course_code_strips_whitespace():
-    assert pt._normalize_chunk_course_code("My Course") == "MY_COURSE"
-    assert pt._normalize_chunk_course_code("My  Course") == "MY_COURSE"
-    assert pt._normalize_chunk_course_code("My - Course") == "MY_COURSE"
-    assert pt._normalize_chunk_course_code("My-Course") == "MY_COURSE"
+    assert pt._normalize_chunk_course_code("Fixture Course") == "FIXTURE_COURSE"
+    assert pt._normalize_chunk_course_code("Fixture  Course") == "FIXTURE_COURSE"
+    assert pt._normalize_chunk_course_code("Fixture - Course") == "FIXTURE_COURSE"
+    assert pt._normalize_chunk_course_code("Fixture-Course") == "FIXTURE_COURSE"
     assert pt._normalize_chunk_course_code("  ") == "UNKNOWN"
-    assert pt._normalize_chunk_course_code("PHYS_101") == "PHYS_101"
+    assert pt._normalize_chunk_course_code("FXALPHA_101") == "FXALPHA_101"
 
 
 @pytest.mark.unit
 def test_space_bearing_name_yields_no_whitespace_chunk_ids():
     # Simulate the chunk-id prefix the chunker builds from course_code.
-    code = pt._normalize_chunk_course_code("My Course")
+    code = pt._normalize_chunk_course_code("Fixture Course")
     prefix = f"{code.lower()}_chunk_"
     chunk_ids = [f"{prefix}{i:05d}" for i in range(3)]
     import re

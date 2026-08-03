@@ -152,7 +152,7 @@ def _drive(
         json.dumps({
             "workflow_id": _WORKFLOW_ID,
             "type": "test_wf",
-            "params": {"course_name": "PHYS_101"},
+            "params": {"course_name": "FXALPHA_101"},
             "phase_outputs": {},
             "tasks": [],
         })

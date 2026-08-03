@@ -50,7 +50,7 @@ from MCP.tools.pipeline_tools import _build_tool_registry  # noqa: E402
 # LO ordering for the prerequisite rule: terminal-first (TO-01, TO-02),
 # then chapter objectives in chapter order (CO-01, CO-02).
 _SYNTHESIZED_OBJECTIVES: Dict[str, Any] = {
-    "course_name": "LOGRAPH_101",
+    "course_name": "FXGRAPH_101",
     "mint_method": "fixture",
     "duration_weeks": 8,
     "terminal_objectives": [
@@ -96,7 +96,7 @@ _SYNTHESIZED_OBJECTIVES: Dict[str, Any] = {
 # LibV2-archive alias form (terminal_outcomes / component_objectives) —
 # the resolver must tolerate it (root CLAUDE.md --reuse-objectives doc).
 _ARCHIVE_FORM_OBJECTIVES: Dict[str, Any] = {
-    "course_name": "LOGRAPH_101",
+    "course_name": "FXGRAPH_101",
     "terminal_outcomes": _SYNTHESIZED_OBJECTIVES["terminal_objectives"],
     "component_objectives": _SYNTHESIZED_OBJECTIVES["chapter_objectives"],
 }
@@ -114,11 +114,11 @@ def _lo_tagged_chunkset() -> List[Dict[str, Any]]:
     base_source = {
         "module_id": "week_01",
         "item_path": "week_01/page_001.html",
-        "course_id": "LOGRAPH_101",
+        "course_id": "FXGRAPH_101",
     }
     chunks: List[Dict[str, Any]] = [
         {
-            "id": "lograph_chunk_00001",
+            "id": "fxgraph_chunk_00001",
             "text": "A vector space is a set closed under addition and "
                     "scalar multiplication, defined by its axiom set.",
             "chunk_type": "explanation",
@@ -128,7 +128,7 @@ def _lo_tagged_chunkset() -> List[Dict[str, Any]]:
             "source": dict(base_source),
         },
         {
-            "id": "lograph_chunk_00002",
+            "id": "fxgraph_chunk_00002",
             "text": "An eigenvalue scales an eigenvector under a linear "
                     "map acting on a vector space.",
             "chunk_type": "explanation",
@@ -140,7 +140,7 @@ def _lo_tagged_chunkset() -> List[Dict[str, Any]]:
                        "item_path": "week_02/page_002.html"},
         },
         {
-            "id": "lograph_chunk_00003",
+            "id": "fxgraph_chunk_00003",
             "text": "The determinant decides invertibility; rank arguments "
                     "build on eigenvalue structure.",
             "chunk_type": "explanation",
@@ -177,7 +177,7 @@ def _run(
     if libv2_course_json is not None:
         # Slug transform mirrors _run_concept_extraction:
         # lower + underscores→dashes.
-        course_dir = custom_libv2 / "courses" / "lograph-101"
+        course_dir = custom_libv2 / "courses" / "fxgraph-101"
         course_dir.mkdir(parents=True, exist_ok=True)
         (course_dir / "course.json").write_text(
             json.dumps(libv2_course_json), encoding="utf-8"
@@ -188,7 +188,7 @@ def _run(
     result = asyncio.run(
         tool(
             project_id="",
-            course_name="LOGRAPH_101",
+            course_name="FXGRAPH_101",
             staging_dir="",
             dart_chunks_path=str(chunks_path),
             libv2_root=str(custom_libv2),
@@ -342,7 +342,7 @@ def test_archive_form_objectives_are_normalized(tmp_path: Path) -> None:
 
 def test_libv2_course_json_fallback(tmp_path: Path) -> None:
     course_json = {
-        "course_code": "LOGRAPH_101",
+        "course_code": "FXGRAPH_101",
         "title": "Linear Algebra via Graphs",
         "learning_outcomes": [
             {"id": "TO-01", "statement": "Explain vector spaces."},
@@ -403,7 +403,7 @@ def test_malformed_objectives_degrades_gracefully(tmp_path: Path) -> None:
 # Objectives whose key_concepts are NOT pre-present in any chunk's
 # concept_tags but DO appear (multi-word, spaced) in the chunk text.
 _FIX2_OBJECTIVES: Dict[str, Any] = {
-    "course_name": "FIX2_101",
+    "course_name": "FXSECOND_101",
     "mint_method": "fixture",
     "duration_weeks": 8,
     "terminal_objectives": [
@@ -443,7 +443,7 @@ def _fix2_chunkset() -> List[Dict[str, Any]]:
     base = {
         "module_id": "week_01",
         "item_path": "week_01/page.html",
-        "course_id": "FIX2_101",
+        "course_id": "FXSECOND_101",
     }
     return [
         {
@@ -561,7 +561,7 @@ def test_prose_absent_key_concept_falls_through_to_lo_orphan(
     chunk's prose still materializes as the legacy frequency=0
     ``node_provenance=lo_key_concept`` endpoint."""
     objectives = {
-        "course_name": "FIX2_101",
+        "course_name": "FXSECOND_101",
         "terminal_objectives": [
             {
                 "id": "TO-01",
@@ -586,7 +586,7 @@ def test_prose_absent_key_concept_falls_through_to_lo_orphan(
             "learning_outcome_refs": ["TO-01"],
             "bloom_level": "understand",
             "source": {"module_id": "w1", "item_path": "w1/p.html",
-                       "course_id": "FIX2_101"},
+                       "course_id": "FXSECOND_101"},
         },
         {
             "id": "fix2_chunk_00002",
@@ -596,7 +596,7 @@ def test_prose_absent_key_concept_falls_through_to_lo_orphan(
             "learning_outcome_refs": ["TO-01"],
             "bloom_level": "understand",
             "source": {"module_id": "w1", "item_path": "w1/p2.html",
-                       "course_id": "FIX2_101"},
+                       "course_id": "FXSECOND_101"},
         },
     ]
 

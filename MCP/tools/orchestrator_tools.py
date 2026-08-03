@@ -334,7 +334,7 @@ def register_orchestrator_tools(mcp):
         Update GENERATION_PROGRESS.md shared state.
 
         Args:
-            component: Component identifier (e.g., "SEMANTIK_BATCH_1", "COURSE_MTH_301")
+            component: Component identifier (e.g., "SEMANTIK_BATCH_1", "COURSE_FXMATH_301")
             status: Status value ("PENDING", "IN_PROGRESS", "COMPLETE", "ERROR")
             details: Optional JSON string with additional status details
 

@@ -1169,7 +1169,7 @@ def _make_textbook_export(tmp_path: Path, *, n_pages: int = 3) -> Path:
     a ``data-cf-source-ids`` attr so the pages mimic the real emit.
     Returns the export root.
     """
-    export = tmp_path / "PROJ-PHYS_101-abc12345"
+    export = tmp_path / "PROJ-FXALPHA_101-abc12345"
     for i in range(1, n_pages + 1):
         wk = export / "03_content_development" / f"week_{i:02d}"
         wk.mkdir(parents=True)
@@ -1251,7 +1251,7 @@ def test_disk_glob_fallback_resolves_legacy_content_layout(tmp_path: Path):
         _find_content_dir,
     )
 
-    export = tmp_path / "PROJ-BIO_201-legacy"
+    export = tmp_path / "PROJ-FXBIO_201-legacy"
     content = export / "content"
     content.mkdir(parents=True)
     (content / "module_1.html").write_text("<html></html>", encoding="utf-8")
@@ -1446,23 +1446,23 @@ def test_kg_quality_builder_routes_concept_extraction_semantic_graph(
     phase_outputs = _make_phase_outputs(
         concept_extraction={
             "concept_graph_path": str(semantic),
-            "course_slug": "phys-101",
+            "course_slug": "fxalpha-101",
             "concept_graph_sha256": "deadbeef",
         },
         libv2_archival={
-            "course_slug": "phys-101",
+            "course_slug": "fxalpha-101",
             "course_dir": str(course_dir),
         },
     )
     r = default_router()
     inputs, missing = r.build(
-        _KG_VALIDATOR, phase_outputs, {"course_name": "phys-101", "run_id": "R"}
+        _KG_VALIDATOR, phase_outputs, {"course_name": "fxalpha-101", "run_id": "R"}
     )
     # No router-skip: the builder NEVER short-circuits to a structured
     # missing-list, so the validator's own fail-closed arm governs.
     assert missing == []
     assert inputs["semantic_graph_path"] == str(semantic)
-    assert inputs["course_slug"] == "phys-101"
+    assert inputs["course_slug"] == "fxalpha-101"
     assert inputs["run_id"] == "R"
     # output_dir is the canonical LibV2 quality/ home of the report.
     assert inputs["output_dir"] == str(course_dir / "quality")
@@ -1485,13 +1485,13 @@ def test_kg_quality_gate_runs_and_passes_on_real_graph(tmp_path: Path):
     phase_outputs = _make_phase_outputs(
         concept_extraction={"concept_graph_path": str(semantic)},
         libv2_archival={
-            "course_slug": "phys-101",
+            "course_slug": "fxalpha-101",
             "course_dir": str(course_dir),
         },
     )
     r = default_router()
     inputs, missing = r.build(
-        _KG_VALIDATOR, phase_outputs, {"course_name": "phys-101", "run_id": "R"}
+        _KG_VALIDATOR, phase_outputs, {"course_name": "fxalpha-101", "run_id": "R"}
     )
     assert missing == []
 
@@ -1515,13 +1515,13 @@ def test_kg_quality_gate_fails_closed_when_graph_missing(tmp_path: Path):
 
     phase_outputs = _make_phase_outputs(
         libv2_archival={
-            "course_slug": "phys-101",
+            "course_slug": "fxalpha-101",
             "course_dir": str(course_dir),
         },
     )
     r = default_router()
     inputs, missing = r.build(
-        _KG_VALIDATOR, phase_outputs, {"course_name": "phys-101", "run_id": "R"}
+        _KG_VALIDATOR, phase_outputs, {"course_name": "fxalpha-101", "run_id": "R"}
     )
     # Builder NEVER routes a fabricated path for a truly-absent graph, so
     # semantic_graph_path is absent. It returns an EMPTY missing-list so
@@ -1548,7 +1548,7 @@ def test_kg_quality_builder_skips_when_no_course_dir():
 
     r = default_router()
     inputs, missing = r.build(
-        _KG_VALIDATOR, {}, {"course_name": "phys-101", "run_id": "R"}
+        _KG_VALIDATOR, {}, {"course_name": "fxalpha-101", "run_id": "R"}
     )
     assert missing == []
     assert "semantic_graph_path" not in inputs
@@ -1584,13 +1584,13 @@ def test_kg_quality_does_not_overwrite_canonical_consensus_sibling(
     phase_outputs = _make_phase_outputs(
         concept_extraction={"concept_graph_path": str(semantic)},
         libv2_archival={
-            "course_slug": "phys-101",
+            "course_slug": "fxalpha-101",
             "course_dir": str(course_dir),
         },
     )
     r = default_router()
     inputs, _ = r.build(
-        _KG_VALIDATOR, phase_outputs, {"course_name": "phys-101", "run_id": "R"}
+        _KG_VALIDATOR, phase_outputs, {"course_name": "fxalpha-101", "run_id": "R"}
     )
     KGQualityValidator().validate(dict(inputs, gate_id="kg_quality_report"))
 

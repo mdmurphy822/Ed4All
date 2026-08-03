@@ -77,7 +77,7 @@ three and still reaches `finalization`, because a skipped phase stamps
 ## 2. Per-stage reference
 
 Paths are relative to the Courseforge **export root**
-`Courseforge/exports/PROJ-<course-name>-<YYYYMMDDHHMMSS>/` unless marked **LibV2**
+`Courseforge/exports/<project-export>/` unless marked **LibV2**
 (`LibV2/courses/<slug>/`, outside the export root) or **inputs/**.
 
 | # | Phase | Writes (inspect this) | LLM seat | Stop-after / re-run / reuse |
@@ -135,7 +135,7 @@ already-archived course without rebuilding stays
 **Full run:**
 
 ```bash
-ed4all run textbook-to-course --corpus book.pdf --course-name PHYS_101
+ed4all run textbook-to-course --corpus book.pdf --course-name <course-name>
 ```
 
 **Auto-named run (`--auto-name`)** — opt-in H1-derived, run-timestamped course
@@ -175,12 +175,12 @@ table (validated against the workflow; unknown → error):
 
 ```bash
 # Build a retrieval-ready course but no training synthesis:
-ed4all run textbook-to-course --corpus book.pdf --course-name PHYS_101 \
+ed4all run textbook-to-course --corpus book.pdf --course-name <course-name> \
   --skip-training --stop-after imscc_chunking
 
 # Plan-only: inspect the block plan / pedagogy structure, no prose authored:
 COURSEFORGE_TWO_PASS=true ed4all run textbook-to-course --corpus book.pdf \
-  --course-name PHYS_101 --stop-after content_generation_outline
+  --course-name <course-name> --stop-after content_generation_outline
 ```
 
 **Re-run a single stage** without redoing everything upstream:
@@ -218,11 +218,11 @@ COURSEFORGE_TWO_PASS=true ed4all run textbook-to-course --corpus book.pdf \
 
 ```bash
 export COURSEFORGE_TWO_PASS=true
-ed4all run courseforge-validate --course-name PHYS_101          # fire gates, no LLM
-ed4all run courseforge-rewrite  --course-name PHYS_101 --blocks assessment_item
-ed4all run courseforge-rewrite  --course-name PHYS_101 \
+ed4all run courseforge-validate --course-name <course-name>          # fire gates, no LLM
+ed4all run courseforge-rewrite  --course-name <course-name> --blocks assessment_item
+ed4all run courseforge-rewrite  --course-name <course-name> \
   --block-ids 'week_03_content_01#objective_intro_0'            # one block instance
-ed4all run courseforge-rewrite  --course-name PHYS_101 --pages week_03   # one module
+ed4all run courseforge-rewrite  --course-name <course-name> --pages week_03   # one module
 ```
 
 **Resume** a crashed/stopped run past completed phases:
@@ -255,7 +255,7 @@ preflight (resolve + assert, no dispatch):
 
 ```bash
 export COURSEFORGE_TWO_PASS=true
-ed4all run textbook-to-course --provider nvidia --course-name PHYS_101 \
+ed4all run textbook-to-course --provider nvidia --course-name <course-name> \
   --corpus slice.pdf --skip-conversion --skip-training \
   --stop-after imscc_chunking --dry-run   # preflight: resolve+assert, NO dispatch
 ```

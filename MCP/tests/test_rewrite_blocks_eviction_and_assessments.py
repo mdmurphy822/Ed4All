@@ -220,7 +220,7 @@ class TestArchiveToLibv2AssessmentsWiring:
         result = json.loads(
             asyncio.run(
                 archive(
-                    course_name="QUIZWIRE_101",
+                    course_name="FXQUIZ_101",
                     project_id=project_id,
                     domain="general",
                 )
@@ -228,7 +228,7 @@ class TestArchiveToLibv2AssessmentsWiring:
         )
         assert result.get("success") is True, result
 
-        slug = libv2_course_slug("QUIZWIRE_101")
+        slug = libv2_course_slug("FXQUIZ_101")
         dest = tmp_path / "LibV2" / "courses" / slug / "06_assessments"
         assert dest.is_dir()
         assert (dest / "quiz.xml").exists()
@@ -255,7 +255,7 @@ class TestArchiveToLibv2AssessmentsWiring:
         result = json.loads(
             asyncio.run(
                 archive(
-                    course_name="NOQUIZ_101",
+                    course_name="FXNOQUIZ_101",
                     project_id=project_id,
                     domain="general",
                 )
@@ -263,7 +263,7 @@ class TestArchiveToLibv2AssessmentsWiring:
         )
         assert result.get("success") is True, result
 
-        slug = libv2_course_slug("NOQUIZ_101")
+        slug = libv2_course_slug("FXNOQUIZ_101")
         dest = tmp_path / "LibV2" / "courses" / slug / "06_assessments"
         assert not dest.exists()
 

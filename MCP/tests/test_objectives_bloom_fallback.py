@@ -49,7 +49,7 @@ def test_bloom_fallback_keeps_targeted_concepts(caplog) -> None:
     """An LO with key_concepts but no resolvable Bloom level still contributes
     a targetedConcepts entry at the fallback level."""
     payload = {
-        "course_name": "BLOOM_FB_101",
+        "course_name": "FXBLOOM_101",
         "terminal_objectives": [
             {
                 # "Integrate" is not in the Bloom verb table, so neither the
@@ -63,7 +63,7 @@ def test_bloom_fallback_keeps_targeted_concepts(caplog) -> None:
     }
     with caplog.at_level(logging.WARNING):
         course, objectives_metadata = _normalize_objectives_payload_to_course(
-            payload, "BLOOM_FB_101"
+            payload, "FXBLOOM_101"
         )
 
     assert course is not None
@@ -87,7 +87,7 @@ def test_bloom_fallback_keeps_targeted_concepts(caplog) -> None:
 
 def test_canonical_bloom_level_unchanged(caplog) -> None:
     payload = {
-        "course_name": "BLOOM_FB_101",
+        "course_name": "FXBLOOM_101",
         "terminal_objectives": [
             {
                 "id": "TO-01",
@@ -100,7 +100,7 @@ def test_canonical_bloom_level_unchanged(caplog) -> None:
     }
     with caplog.at_level(logging.WARNING):
         _course, objectives_metadata = _normalize_objectives_payload_to_course(
-            payload, "BLOOM_FB_101"
+            payload, "FXBLOOM_101"
         )
 
     entry = next(e for e in objectives_metadata if e["id"] == "TO-01")
@@ -121,7 +121,7 @@ def test_canonical_bloom_level_unchanged(caplog) -> None:
 # is a phantom targets-concept target that must be materialized rather than
 # dropped by the merge pass.
 _SYNTHESIZED_OBJECTIVES: Dict[str, Any] = {
-    "course_name": "LOGRAPH_101",
+    "course_name": "FXGRAPH_101",
     "mint_method": "fixture",
     "duration_weeks": 8,
     "terminal_objectives": [
@@ -159,11 +159,11 @@ def _lo_tagged_chunkset() -> List[Dict[str, Any]]:
     base_source = {
         "module_id": "week_01",
         "item_path": "week_01/page_001.html",
-        "course_id": "LOGRAPH_101",
+        "course_id": "FXGRAPH_101",
     }
     return [
         {
-            "id": "lograph_chunk_00001",
+            "id": "fxgraph_chunk_00001",
             "text": "A vector space is a set closed under addition and "
                     "scalar multiplication, defined by its axiom set.",
             "chunk_type": "explanation",
@@ -173,7 +173,7 @@ def _lo_tagged_chunkset() -> List[Dict[str, Any]]:
             "source": dict(base_source),
         },
         {
-            "id": "lograph_chunk_00002",
+            "id": "fxgraph_chunk_00002",
             "text": "An eigenvalue scales an eigenvector under a linear "
                     "map acting on a vector space.",
             "chunk_type": "explanation",
@@ -185,7 +185,7 @@ def _lo_tagged_chunkset() -> List[Dict[str, Any]]:
                        "item_path": "week_02/page_002.html"},
         },
         {
-            "id": "lograph_chunk_00003",
+            "id": "fxgraph_chunk_00003",
             "text": "The determinant decides invertibility; rank arguments "
                     "build on eigenvalue structure.",
             "chunk_type": "explanation",
@@ -225,7 +225,7 @@ def test_flagged_run_preserves_targets_concept_edges_and_materializes(
     result = asyncio.run(
         tool(
             project_id="",
-            course_name="LOGRAPH_101",
+            course_name="FXGRAPH_101",
             staging_dir="",
             dart_chunks_path=str(chunks_path),
             libv2_root=str(custom_libv2),

@@ -82,7 +82,7 @@ def test_analyze_teaching_role_alignment_emits_summary(trainforge_tools_module):
     tool = trainforge_tools_module["tools"]["analyze_teaching_role_alignment"]
     libv2 = trainforge_tools_module["libv2_courses"]
 
-    chunks = libv2 / "demo-101" / "corpus" / "chunks.jsonl"
+    chunks = libv2 / "fxdemo-101" / "corpus" / "chunks.jsonl"
     rows = []
     # 6 definition chunks, all dominantly "introduce" → aligned
     for i in range(6):
@@ -143,11 +143,11 @@ def test_get_trainforge_status_surfaces_in_flight_checkpoints(
     tool = trainforge_tools_module["tools"]["get_trainforge_status"]
     libv2 = trainforge_tools_module["libv2_courses"]
 
-    course = libv2 / "demo-101"
+    course = libv2 / "fxdemo-101"
     (course / "training_specs").mkdir(parents=True)
     (course / "corpus").mkdir(parents=True)
     (course / "eval").mkdir(parents=True)
-    (course / "models" / "demo-101-qwen2-5-1-5b-abcdef12" / "eval").mkdir(parents=True)
+    (course / "models" / "fxdemo-101-qwen2-5-1-5b-abcdef12" / "eval").mkdir(parents=True)
 
     # All four sidecar shapes the extension surveys.
     (course / "training_specs" / ".synthesis_pairs_checkpoint.jsonl").write_text(
@@ -160,7 +160,7 @@ def test_get_trainforge_status_surfaces_in_flight_checkpoints(
         '{"stage":"faithfulness","accuracy":0.5}\n', encoding="utf-8",
     )
     (
-        course / "models" / "demo-101-qwen2-5-1-5b-abcdef12"
+        course / "models" / "fxdemo-101-qwen2-5-1-5b-abcdef12"
         / "eval" / ".eval_results_checkpoint.jsonl"
     ).write_text(
         '{"stage":"source_match","accuracy":0.4}\n', encoding="utf-8",
@@ -182,8 +182,8 @@ def test_get_trainforge_status_surfaces_in_flight_checkpoints(
     adapter_entry = next(
         e for e in sidecars if e["kind"] == "eval_stage_adapter"
     )
-    assert adapter_entry["model_id"] == "demo-101-qwen2-5-1-5b-abcdef12"
-    assert adapter_entry["course_slug"] == "demo-101"
+    assert adapter_entry["model_id"] == "fxdemo-101-qwen2-5-1-5b-abcdef12"
+    assert adapter_entry["course_slug"] == "fxdemo-101"
     assert adapter_entry["size_bytes"] > 0
 
 
@@ -193,12 +193,12 @@ def test_get_trainforge_status_surfaces_alignment_rate(
     tool = trainforge_tools_module["tools"]["get_trainforge_status"]
     libv2 = trainforge_tools_module["libv2_courses"]
 
-    course = libv2 / "demo-101"
-    adapter = course / "models" / "demo-101-qwen2-5-1-5b-deadbeef"
+    course = libv2 / "fxdemo-101"
+    adapter = course / "models" / "fxdemo-101-qwen2-5-1-5b-deadbeef"
     adapter.mkdir(parents=True)
 
     eval_report = {
-        "model_id": "demo-101-qwen2-5-1-5b-deadbeef",
+        "model_id": "fxdemo-101-qwen2-5-1-5b-deadbeef",
         "content_type_role_alignment_summary": {
             "alignment_rate": 0.83,
             "mismatched_content_types": ["real_world_scenario"],
@@ -214,8 +214,8 @@ def test_get_trainforge_status_surfaces_alignment_rate(
 
     assert payload["role_alignment"], "expected role_alignment entries"
     entry = payload["role_alignment"][0]
-    assert entry["course_slug"] == "demo-101"
-    assert entry["model_id"] == "demo-101-qwen2-5-1-5b-deadbeef"
+    assert entry["course_slug"] == "fxdemo-101"
+    assert entry["model_id"] == "fxdemo-101-qwen2-5-1-5b-deadbeef"
     assert entry["alignment_rate"] == pytest.approx(0.83)
     assert "real_world_scenario" in entry["mismatched_content_types"]
 
@@ -228,7 +228,7 @@ def test_get_trainforge_status_skips_smoke_eval_reports(
     tool = trainforge_tools_module["tools"]["get_trainforge_status"]
     libv2 = trainforge_tools_module["libv2_courses"]
 
-    adapter = libv2 / "demo-101" / "models" / "demo-101-smoke"
+    adapter = libv2 / "fxdemo-101" / "models" / "fxdemo-101-smoke"
     adapter.mkdir(parents=True)
     smoke_report = {
         "smoke_mode": True,

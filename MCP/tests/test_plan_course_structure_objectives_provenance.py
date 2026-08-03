@@ -46,7 +46,7 @@ def planner_fixture(tmp_path, monkeypatch):
         fake_root / "Courseforge" / "inputs" / "textbooks",
     )
 
-    project_id = "PROJ-DEMO_101-20260701000000"
+    project_id = "PROJ-FXDEMO_101-20260701000000"
     project_dir = exports / project_id
     project_dir.mkdir()
     for subdir in ("01_learning_objectives", "03_content_development"):
@@ -55,7 +55,7 @@ def planner_fixture(tmp_path, monkeypatch):
         json.dumps(
             {
                 "project_id": project_id,
-                "course_name": "DEMO_101",
+                "course_name": "FXDEMO_101",
                 "duration_weeks": 4,
             },
             indent=2,

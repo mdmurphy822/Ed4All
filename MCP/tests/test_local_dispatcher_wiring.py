@@ -44,7 +44,7 @@ def _phase_input(phase_name: str = "content_generation") -> PhaseInput:
         workflow_type="textbook_to_course",
         phase_name=phase_name,
         phase_config={"agents": ["content-generator"], "max_concurrent": 4},
-        params={"course_name": "SYNTH_101"},
+        params={"course_name": "FXSYNTH_101"},
         mode="local",
     )
 

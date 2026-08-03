@@ -178,7 +178,7 @@ def _run(provider, *, checkpoint_path: Path, monkeypatch, chapters=None):
             chunks_by_id={},
             all_chunks=[],
             grounding_mode="chapter_fallback",
-            course_name="MATH_101",
+            course_name="FXMATH_101",
             provider_env="local",
             chapter_synthesis_failures=[],
             mint_lo_id=_mint,
@@ -303,7 +303,7 @@ def test_family_flag_opt_out_disables(tmp_path, monkeypatch, _armed_env):
 def test_fingerprint_is_deterministic_and_sensitive():
     base = dict(
         chapter_text="Some bounded chapter prose.",
-        course_name="MATH_101",
+        course_name="FXMATH_101",
         draft_block="  - Draft TO.",
         model="m1",
         num_ctx=4096,
@@ -313,7 +313,7 @@ def test_fingerprint_is_deterministic_and_sensitive():
     assert fp == pt._stage2_chapter_fallback_fingerprint(**base)  # deterministic
     for key, val in [
         ("chapter_text", "Different prose."),
-        ("course_name", "PHYS_101"),
+        ("course_name", "FXALPHA_101"),
         ("draft_block", "  - Other."),
         ("model", "m2"),
         ("num_ctx", 8192),

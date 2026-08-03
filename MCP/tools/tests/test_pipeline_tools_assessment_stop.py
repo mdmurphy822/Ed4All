@@ -138,7 +138,7 @@ def _seed_project(
     proj = exports_root / project_id
     (proj / "01_learning_objectives").mkdir(parents=True, exist_ok=True)
     (proj / "project_config.json").write_text(
-        json.dumps({"course_name": "DEMO_101"}), encoding="utf-8"
+        json.dumps({"course_name": "FXDEMO_101"}), encoding="utf-8"
     )
     (proj / "01_learning_objectives" / "synthesized_objectives.json").write_text(
         json.dumps(objectives if objectives is not None else _OBJECTIVES_DOC),

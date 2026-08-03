@@ -206,7 +206,7 @@ def _run_window(monkeypatch, mode="window"):
             all_chunks=all_chunks,
             grounding_mode=("chunk_window" if mode == "window"
                             else "chapter_fallback"),
-            course_name="MATH_101",
+            course_name="FXMATH_101",
             provider_env="local",
             chapter_synthesis_failures=failures,
             mint_lo_id=_mint,
@@ -270,13 +270,13 @@ def test_new_decision_types_fire_under_strict(monkeypatch, tmp_path):
     monkeypatch.setenv("ED4ALL_TRAINING_CAPTURES_DIR", str(tmp_path))
     from lib.decision_capture import DecisionCapture
 
-    cap = DecisionCapture(course_code="MATH_101", phase="course-outliner",
+    cap = DecisionCapture(course_code="FXMATH_101", phase="course-outliner",
                           tool="courseforge", streaming=False)
     # Must NOT raise under strict validation.
     cap.log_decision(
         decision_type="objective_grounding_filter",
-        decision="objective_grounding_filter:MATH_101:3/5 grounded",
-        rationale=("course=MATH_101; grounding_mode=chunk_window; "
+        decision="objective_grounding_filter:FXMATH_101:3/5 grounded",
+        rationale=("course=FXMATH_101; grounding_mode=chunk_window; "
                    "candidate_count=5; grounded_count=3; ungrounded_dropped=1"),
     )
     cap.log_decision(

@@ -48,12 +48,12 @@ from MCP.hardening.gate_input_routing import (  # noqa: E402
 def _vocab_file(tmp_path: Path) -> Path:
     """Write a minimal domain_concept_vocabulary.json under a fake LibV2
     course tree and return its path."""
-    course_dir = tmp_path / "courses" / "demo-101" / "concept_graph"
+    course_dir = tmp_path / "courses" / "fxdemo-101" / "concept_graph"
     course_dir.mkdir(parents=True, exist_ok=True)
     vocab = {
         "schema_version": "v1",
-        "course_id": "DEMO_101",
-        "course_slug": "demo-101",
+        "course_id": "FXDEMO_101",
+        "course_slug": "fxdemo-101",
         "concept_count": 2,
         "concepts": [
             {"canonical": "slope", "aliases": ["gradient"]},
@@ -95,14 +95,14 @@ def test_minting_stamps_curies_when_vocabulary_present(tmp_path):
     blocks = [block]
     _mint_outline_curies(
         outline_blocks=blocks,
-        course_code="DEMO_101",
+        course_code="FXDEMO_101",
         kwargs={"libv2_root": str(tmp_path)},
         capture=None,
     )
     # The block was replaced with a minted-CURIE-carrying copy.
     minted = blocks[0].content["curies"]
     assert minted, "expected minted CURIEs to be stamped"
-    assert "demo101:slope" in minted
+    assert "fxdemo101:slope" in minted
 
 
 def test_minting_matches_via_alias_surface_form(tmp_path):
@@ -117,11 +117,11 @@ def test_minting_matches_via_alias_surface_form(tmp_path):
     blocks = [block]
     _mint_outline_curies(
         outline_blocks=blocks,
-        course_code="DEMO_101",
+        course_code="FXDEMO_101",
         kwargs={"libv2_root": str(tmp_path)},
         capture=None,
     )
-    assert "demo101:slope" in blocks[0].content["curies"]
+    assert "fxdemo101:slope" in blocks[0].content["curies"]
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +140,7 @@ def test_no_vocabulary_leaves_blocks_untouched(tmp_path):
     before = blocks[0]
     _mint_outline_curies(
         outline_blocks=blocks,
-        course_code="DEMO_101",
+        course_code="FXDEMO_101",
         kwargs={"libv2_root": str(tmp_path)},
         capture=None,
     )
@@ -158,20 +158,20 @@ def test_existing_curies_not_overwritten(tmp_path):
     _vocab_file(tmp_path)
     block = _outline_block(
         block_id="week_01_content_01#objective_a_0",
-        curies=["demo101:slope"],  # already a real per-course domain CURIE
+        curies=["fxdemo101:slope"],  # already a real per-course domain CURIE
         key_claims=["The slope of a line measures its steepness."],
     )
     blocks = [block]
     before = blocks[0]
     _mint_outline_curies(
         outline_blocks=blocks,
-        course_code="DEMO_101",
+        course_code="FXDEMO_101",
         kwargs={"libv2_root": str(tmp_path)},
         capture=None,
     )
     # Untouched — a real minted domain CURIE wins.
     assert blocks[0] is before
-    assert blocks[0].content["curies"] == ["demo101:slope"]
+    assert blocks[0].content["curies"] == ["fxdemo101:slope"]
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +193,7 @@ def test_minting_via_source_chunk_text_when_claims_lack_term(tmp_path):
     blocks = [block]
     _mint_outline_curies(
         outline_blocks=blocks,
-        course_code="DEMO_101",
+        course_code="FXDEMO_101",
         kwargs={"libv2_root": str(tmp_path)},
         capture=None,
         chunks_lookup={
@@ -202,7 +202,7 @@ def test_minting_via_source_chunk_text_when_claims_lack_term(tmp_path):
             ],
         },
     )
-    assert "demo101:slope" in blocks[0].content["curies"]
+    assert "fxdemo101:slope" in blocks[0].content["curies"]
 
 
 def test_no_source_chunk_text_no_mint(tmp_path):
@@ -218,7 +218,7 @@ def test_no_source_chunk_text_no_mint(tmp_path):
     blocks = [block]
     _mint_outline_curies(
         outline_blocks=blocks,
-        course_code="DEMO_101",
+        course_code="FXDEMO_101",
         kwargs={"libv2_root": str(tmp_path)},
         capture=None,
         chunks_lookup={
@@ -249,7 +249,7 @@ def test_generic_placeholder_curie_augmented_with_domain_curie(tmp_path):
     blocks = [block]
     _mint_outline_curies(
         outline_blocks=blocks,
-        course_code="DEMO_101",
+        course_code="FXDEMO_101",
         kwargs={"libv2_root": str(tmp_path)},
         capture=None,
     )
@@ -258,7 +258,7 @@ def test_generic_placeholder_curie_augmented_with_domain_curie(tmp_path):
     assert "outline:sample" in result
     assert "cf:CO-36" in result
     # ...and the minted domain CURIE appended.
-    assert "demo101:slope" in result
+    assert "fxdemo101:slope" in result
 
 
 # ---------------------------------------------------------------------------
@@ -275,23 +275,23 @@ def test_resolver_parity_disk_only_vocabulary(tmp_path):
     """Vocabulary present only on disk, no phase_outputs thread: the
     gate-input router and the validation handler resolve an identical,
     non-empty minted-CURIE map."""
-    _vocab_file(tmp_path)  # writes courses/demo-101/concept_graph/...
+    _vocab_file(tmp_path)  # writes courses/fxdemo-101/concept_graph/...
 
     # The gate-input router: workflow_params carries the LibV2 root and
     # the course name; phase_outputs is EMPTY (the resumed-run shape).
     gate_map = _resolve_minted_curie_map(
         phase_outputs={},
         workflow_params={
-            "course_name": "DEMO_101",
+            "course_name": "FXDEMO_101",
             "libv2_root": str(tmp_path),
         },
     )
 
     # The validation handler: project_id with no project_config.json on
     # disk falls back to project_id-as-course-code. Using the slug form
-    # directly yields the same course slug ("demo-101").
+    # directly yields the same course slug ("fxdemo-101").
     handler_map = _resolve_minted_curie_map_for_validation(
-        project_id="demo-101",
+        project_id="fxdemo-101",
         kwargs={"libv2_root": str(tmp_path), "phase_outputs": {}},
     )
 
@@ -300,7 +300,7 @@ def test_resolver_parity_disk_only_vocabulary(tmp_path):
     # Same verdict — identical maps. (Both mint the same prefix from the
     # vocabulary's own course_id field, so the maps are byte-equal.)
     assert gate_map == handler_map
-    assert "demo101:slope" in gate_map
+    assert "fxdemo101:slope" in gate_map
 
 
 def test_resolver_parity_no_vocabulary_both_none(tmp_path):
@@ -309,12 +309,12 @@ def test_resolver_parity_no_vocabulary_both_none(tmp_path):
     gate_map = _resolve_minted_curie_map(
         phase_outputs={},
         workflow_params={
-            "course_name": "DEMO_101",
+            "course_name": "FXDEMO_101",
             "libv2_root": str(tmp_path),
         },
     )
     handler_map = _resolve_minted_curie_map_for_validation(
-        project_id="demo-101",
+        project_id="fxdemo-101",
         kwargs={"libv2_root": str(tmp_path), "phase_outputs": {}},
     )
     assert gate_map is None

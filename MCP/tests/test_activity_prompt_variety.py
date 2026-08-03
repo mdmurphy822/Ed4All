@@ -50,7 +50,7 @@ def _activity_for(week_num: int, topic: dict, obj: dict) -> dict:
         week_topics=[topic],
         week_objectives=[obj],
         all_objectives=[obj],
-        course_code="SYNTH_101",
+        course_code="FXSYNTH_101",
     )
     return wd["activities"][0]
 

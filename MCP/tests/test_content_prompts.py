@@ -185,11 +185,11 @@ class TestNoCorpusSpecificLeak:
         # Sentinel corpus tokens we've used historically in tests/docs —
         # none of these should appear unless the caller passed them.
         for forbidden in (
-            "PHYS_101",
-            "BIO_201",
-            "CHEM_101",
-            "INT_101",
-            "SYNTH_101",
+            "FXALPHA_101",
+            "FXBIO_201",
+            "FXBETA_101",
+            "FXINTRO_101",
+            "FXSYNTH_101",
         ):
             assert forbidden not in prompt, (
                 f"builder leaked {forbidden!r} into the prompt"

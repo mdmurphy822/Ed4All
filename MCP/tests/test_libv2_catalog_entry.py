@@ -75,13 +75,13 @@ class TestRegistryVariantCatalogEntry:
         tool = registry["archive_to_libv2"]
 
         result = json.loads(asyncio.run(
-            tool(course_name="PHYS_101", domain="physics", division="STEM")
+            tool(course_name="FXALPHA_101", domain="physics", division="STEM")
         ))
         assert result.get("success"), result
 
         cat = _catalog(tmp_path)
         slugs = [c["slug"] for c in cat["courses"]]
-        assert "phys-101" in slugs, f"Expected phys-101 in {slugs}"
+        assert "fxalpha-101" in slugs, f"Expected fxalpha-101 in {slugs}"
         assert cat["total_courses"] == 1
 
     def test_catalog_entry_carries_classification(self, monkeypatch, tmp_path):
@@ -90,11 +90,11 @@ class TestRegistryVariantCatalogEntry:
         tool = registry["archive_to_libv2"]
 
         asyncio.run(
-            tool(course_name="CHEM_201", domain="chemistry", division="STEM",
+            tool(course_name="FXCHEM_201", domain="chemistry", division="STEM",
                  subdomains="organic,inorganic")
         )
         cat = _catalog(tmp_path)
-        entry = next(c for c in cat["courses"] if c["slug"] == "chem-201")
+        entry = next(c for c in cat["courses"] if c["slug"] == "fxchem-201")
         assert entry["division"] == "STEM"
         assert entry["primary_domain"] == "chemistry"
 
@@ -103,11 +103,11 @@ class TestRegistryVariantCatalogEntry:
         registry = _build_tool_registry()
         tool = registry["archive_to_libv2"]
 
-        asyncio.run(tool(course_name="PHYS_101", domain="physics", division="STEM"))
-        asyncio.run(tool(course_name="PHYS_101", domain="physics", division="STEM"))
+        asyncio.run(tool(course_name="FXALPHA_101", domain="physics", division="STEM"))
+        asyncio.run(tool(course_name="FXALPHA_101", domain="physics", division="STEM"))
 
         cat = _catalog(tmp_path)
-        matching = [c for c in cat["courses"] if c["slug"] == "phys-101"]
+        matching = [c for c in cat["courses"] if c["slug"] == "fxalpha-101"]
         assert len(matching) == 1, f"Expected 1 entry, got {len(matching)}"
         assert cat["total_courses"] == 1
 
@@ -116,13 +116,13 @@ class TestRegistryVariantCatalogEntry:
         registry = _build_tool_registry()
         tool = registry["archive_to_libv2"]
 
-        asyncio.run(tool(course_name="PHYS_101", domain="physics"))
-        asyncio.run(tool(course_name="CHEM_201", domain="chemistry"))
+        asyncio.run(tool(course_name="FXALPHA_101", domain="physics"))
+        asyncio.run(tool(course_name="FXCHEM_201", domain="chemistry"))
 
         cat = _catalog(tmp_path)
         slugs = {c["slug"] for c in cat["courses"]}
-        assert "phys-101" in slugs
-        assert "chem-201" in slugs
+        assert "fxalpha-101" in slugs
+        assert "fxchem-201" in slugs
         assert cat["total_courses"] == 2
 
     def test_course_index_updated(self, monkeypatch, tmp_path):
@@ -130,11 +130,11 @@ class TestRegistryVariantCatalogEntry:
         registry = _build_tool_registry()
         tool = registry["archive_to_libv2"]
 
-        asyncio.run(tool(course_name="BIO_301", domain="biology"))
+        asyncio.run(tool(course_name="FXBIO_301", domain="biology"))
 
         idx = _index(tmp_path)
-        assert "bio-301" in idx
-        assert idx["bio-301"]["path"] == "courses/bio-301"
+        assert "fxbio-301" in idx
+        assert idx["fxbio-301"]["path"] == "courses/fxbio-301"
 
 
 # ---------------------------------------------------------------------------
@@ -155,13 +155,13 @@ class TestMcpToolVariantCatalogEntry:
         tool = mcp.tools["archive_to_libv2"]
 
         result = json.loads(asyncio.run(
-            tool(course_name="ART_101", domain="art-history", division="ARTS")
+            tool(course_name="FXART_101", domain="art-history", division="ARTS")
         ))
         assert result.get("success"), result
 
         cat = _catalog(tmp_path)
         slugs = [c["slug"] for c in cat["courses"]]
-        assert "art-101" in slugs
+        assert "fxart-101" in slugs
 
     def test_idempotent_rearchival_single_entry(self, monkeypatch, tmp_path):
         monkeypatch.setattr(pipeline_tools, "PROJECT_ROOT", tmp_path)
@@ -172,9 +172,9 @@ class TestMcpToolVariantCatalogEntry:
         register_pipeline_tools(mcp)
         tool = mcp.tools["archive_to_libv2"]
 
-        asyncio.run(tool(course_name="ART_101", domain="art-history", division="ARTS"))
-        asyncio.run(tool(course_name="ART_101", domain="art-history", division="ARTS"))
+        asyncio.run(tool(course_name="FXART_101", domain="art-history", division="ARTS"))
+        asyncio.run(tool(course_name="FXART_101", domain="art-history", division="ARTS"))
 
         cat = _catalog(tmp_path)
-        matching = [c for c in cat["courses"] if c["slug"] == "art-101"]
+        matching = [c for c in cat["courses"] if c["slug"] == "fxart-101"]
         assert len(matching) == 1, f"Expected 1 entry, got {len(matching)}"

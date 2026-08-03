@@ -323,14 +323,14 @@ def test_flag_unset_deterministic_path_byte_stable(tmp_path, monkeypatch):
     fake_root = tmp_path / "root"
     (fake_root / "Courseforge" / "exports").mkdir(parents=True)
     project = _make_project(
-        fake_root, course_name="PHYS_101", chapters=_chapters(3),
+        fake_root, course_name="FXALPHA_101", chapters=_chapters(3),
         draft_terminal_objectives=_draft_tos(),
     )
     monkeypatch.setattr(
         _tsp_mod, "TextbookSynthesisProvider", _Tripwire,
     )
     payload = _run_plan(
-        fake_root, project, course_name="PHYS_101",
+        fake_root, project, course_name="FXALPHA_101",
         provider_factory=None, provider_env=None, monkeypatch=monkeypatch,
     )
     assert payload["success"] is True
@@ -353,10 +353,10 @@ def test_flag_unset_byte_stable_across_runs(tmp_path, monkeypatch):
         _one_run.counter += 1
         (fake_root / "Courseforge" / "exports").mkdir(parents=True)
         project = _make_project(
-            fake_root, course_name="BIO_201", chapters=_chapters(4),
+            fake_root, course_name="FXBIO_201", chapters=_chapters(4),
         )
         payload = _run_plan(
-            fake_root, project, course_name="BIO_201",
+            fake_root, project, course_name="FXBIO_201",
             provider_factory=None, provider_env=None,
             monkeypatch=monkeypatch,
         )
@@ -390,11 +390,11 @@ def test_flag_set_per_chapter_cos_minted_globally_sequential(
     fake_root = tmp_path / "root"
     (fake_root / "Courseforge" / "exports").mkdir(parents=True)
     project = _make_project(
-        fake_root, course_name="PHYS_101", chapters=_chapters(3),
+        fake_root, course_name="FXALPHA_101", chapters=_chapters(3),
         draft_terminal_objectives=_draft_tos(),
     )
     payload = _run_plan(
-        fake_root, project, course_name="PHYS_101",
+        fake_root, project, course_name="FXALPHA_101",
         provider_factory=_StubProvider, provider_env="anthropic",
         monkeypatch=monkeypatch,
     )
@@ -418,11 +418,11 @@ def test_flag_set_reconciled_terminal_objectives(tmp_path, monkeypatch):
     fake_root = tmp_path / "root"
     (fake_root / "Courseforge" / "exports").mkdir(parents=True)
     project = _make_project(
-        fake_root, course_name="PHYS_101", chapters=_chapters(2),
+        fake_root, course_name="FXALPHA_101", chapters=_chapters(2),
         draft_terminal_objectives=_draft_tos(),
     )
     payload = _run_plan(
-        fake_root, project, course_name="PHYS_101",
+        fake_root, project, course_name="FXALPHA_101",
         provider_factory=_StubProvider, provider_env="anthropic",
         monkeypatch=monkeypatch,
     )
@@ -444,11 +444,11 @@ def test_flag_set_cos_carry_sub_objectives(tmp_path, monkeypatch):
     fake_root = tmp_path / "root"
     (fake_root / "Courseforge" / "exports").mkdir(parents=True)
     project = _make_project(
-        fake_root, course_name="PHYS_101", chapters=_chapters(2),
+        fake_root, course_name="FXALPHA_101", chapters=_chapters(2),
         draft_terminal_objectives=_draft_tos(),
     )
     payload = _run_plan(
-        fake_root, project, course_name="PHYS_101",
+        fake_root, project, course_name="FXALPHA_101",
         provider_factory=_StubProvider, provider_env="anthropic",
         monkeypatch=monkeypatch,
     )
@@ -481,7 +481,7 @@ def test_per_chapter_failure_isolation_phase_succeeds(
     fake_root = tmp_path / "root"
     (fake_root / "Courseforge" / "exports").mkdir(parents=True)
     project = _make_project(
-        fake_root, course_name="PHYS_101", chapters=_chapters(3),
+        fake_root, course_name="FXALPHA_101", chapters=_chapters(3),
         draft_terminal_objectives=_draft_tos(),
     )
 
@@ -489,7 +489,7 @@ def test_per_chapter_failure_isolation_phase_succeeds(
         return _StubProvider(fail_chapter_ids=["ch2"], **kwargs)
 
     payload = _run_plan(
-        fake_root, project, course_name="PHYS_101",
+        fake_root, project, course_name="FXALPHA_101",
         provider_factory=_factory, provider_env="anthropic",
         monkeypatch=monkeypatch,
     )
@@ -515,7 +515,7 @@ def test_per_chapter_failure_persisted_to_synthesized_objectives(
     fake_root = tmp_path / "root"
     (fake_root / "Courseforge" / "exports").mkdir(parents=True)
     project = _make_project(
-        fake_root, course_name="PHYS_101", chapters=_chapters(3),
+        fake_root, course_name="FXALPHA_101", chapters=_chapters(3),
         draft_terminal_objectives=_draft_tos(),
     )
 
@@ -523,7 +523,7 @@ def test_per_chapter_failure_persisted_to_synthesized_objectives(
         return _StubProvider(fail_chapter_ids=["ch2"], **kwargs)
 
     payload = _run_plan(
-        fake_root, project, course_name="PHYS_101",
+        fake_root, project, course_name="FXALPHA_101",
         provider_factory=_factory, provider_env="anthropic",
         monkeypatch=monkeypatch,
     )
@@ -564,10 +564,10 @@ def test_deterministic_path_persists_empty_failures_list(
     fake_root = tmp_path / "root"
     (fake_root / "Courseforge" / "exports").mkdir(parents=True)
     project = _make_project(
-        fake_root, course_name="BIO_201", chapters=_chapters(3),
+        fake_root, course_name="FXBIO_201", chapters=_chapters(3),
     )
     payload = _run_plan(
-        fake_root, project, course_name="BIO_201",
+        fake_root, project, course_name="FXBIO_201",
         provider_factory=None, provider_env=None, monkeypatch=monkeypatch,
     )
     assert payload["success"] is True
@@ -591,13 +591,13 @@ def test_all_chapters_fail_falls_back_to_deterministic(
     fake_root = tmp_path / "root"
     (fake_root / "Courseforge" / "exports").mkdir(parents=True)
     project = _make_project(
-        fake_root, course_name="PHYS_101", chapters=_chapters(3),
+        fake_root, course_name="FXALPHA_101", chapters=_chapters(3),
         draft_terminal_objectives=_draft_tos(),
     )
     # _AllFailProvider.reconcile_terminal_objectives asserts-fails if
     # reconciliation is reached — so a clean run proves it was skipped.
     payload = _run_plan(
-        fake_root, project, course_name="PHYS_101",
+        fake_root, project, course_name="FXALPHA_101",
         provider_factory=_AllFailProvider, provider_env="anthropic",
         monkeypatch=monkeypatch,
     )
@@ -612,10 +612,10 @@ def test_no_chapters_falls_back_to_deterministic(tmp_path, monkeypatch):
     fake_root = tmp_path / "root"
     (fake_root / "Courseforge" / "exports").mkdir(parents=True)
     project = _make_project(
-        fake_root, course_name="PHYS_101", chapters=[],
+        fake_root, course_name="FXALPHA_101", chapters=[],
     )
     payload = _run_plan(
-        fake_root, project, course_name="PHYS_101",
+        fake_root, project, course_name="FXALPHA_101",
         provider_factory=_StubProvider, provider_env="anthropic",
         monkeypatch=monkeypatch,
     )

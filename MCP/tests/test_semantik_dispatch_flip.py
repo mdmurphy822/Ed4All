@@ -65,9 +65,9 @@ async def test_semantik_conversion_phase_calls_semantik_seam(monkeypatch, tmp_pa
     tool = _registry_tool()
     out = await tool(
         pdf_path="sample_text.pdf",
-        course_code="ALG_9",
+        course_code="FXALG_009",
         phase="semantik_conversion",
-        canonical_course_code="ALG_9",
+        canonical_course_code="FXALG_009",
         figures_dir=str(tmp_path / "figs"),
         reuse_conversion=True,
         output_dir=str(tmp_path),
@@ -82,7 +82,7 @@ async def test_semantik_conversion_phase_calls_semantik_seam(monkeypatch, tmp_pa
     # Seam params threaded through.
     _pdf, _outpath, kw = seam_calls[0]
     assert _pdf == "sample_text.pdf"
-    assert kw["canonical_course_code"] == "ALG_9"
+    assert kw["canonical_course_code"] == "FXALG_009"
     assert kw["figures_dir"] == str(tmp_path / "figs")
     assert kw["reuse_conversion"] is True
 

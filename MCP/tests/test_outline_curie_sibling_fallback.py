@@ -232,12 +232,12 @@ class _RecordingCapture:
 def _libv2_vocab_tree(tmp_path):
     """Write the vocab under a fake LibV2 course tree so _mint_outline_curies
     can auto-locate it via libv2_root."""
-    course_dir = tmp_path / "courses" / "demo-101" / "concept_graph"
+    course_dir = tmp_path / "courses" / "fxdemo-101" / "concept_graph"
     course_dir.mkdir(parents=True, exist_ok=True)
     vocab = {
         "schema_version": "v1",
-        "course_id": "DEMO_101",
-        "course_slug": "demo-101",
+        "course_id": "FXDEMO_101",
+        "course_slug": "fxdemo-101",
         "concept_count": 2,
         "concepts": [
             {"canonical": "slope", "aliases": ["gradient"]},
@@ -267,7 +267,7 @@ def test_capture_fires_with_sibling_fallback_marker(tmp_path):
     capture = _RecordingCapture()
     _mint_outline_curies(
         outline_blocks=blocks,
-        course_code="DEMO_101",
+        course_code="FXDEMO_101",
         kwargs=kwargs,
         capture=capture,
     )

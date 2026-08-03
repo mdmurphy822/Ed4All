@@ -113,7 +113,7 @@ class TestBaseModelResolution:
         )
 
         out = json.loads(_run(registry["run_training"](
-            course_name="TST_101",
+            course_name="FXTERTIARY_101",
             base_model="definitely-not-a-real-base",
         )))
         assert out["success"] is False
@@ -129,7 +129,7 @@ class TestBaseModelResolution:
     ):
         """The eval arm re-runs the harness when no report exists, so it needs
         a base too — and must fail the same loud way, not substitute."""
-        (tmp_path / "courses" / "tst-101" / "models" / "m1").mkdir(parents=True)
+        (tmp_path / "courses" / "fxtertiary-101" / "models" / "m1").mkdir(parents=True)
 
         import MCP.tools.pipeline_tools as pt
 
@@ -137,7 +137,7 @@ class TestBaseModelResolution:
             pt, "_resolve_libv2_root", lambda explicit=None: tmp_path
         )
         out = json.loads(_run(registry["run_evaluation"](
-            course_name="TST_101", base_model="nope-not-a-base",
+            course_name="FXTERTIARY_101", base_model="nope-not-a-base",
         )))
         assert out["success"] is False
         assert out["error_type"] == "unknown_base_model"
@@ -145,7 +145,7 @@ class TestBaseModelResolution:
 
     def test_env_default_is_used_when_no_kwarg(self, registry, monkeypatch):
         monkeypatch.setenv("ED4ALL_CAMPAIGN_BASE_MODEL", "also-not-real")
-        out = json.loads(_run(registry["run_training"](course_name="TST_101")))
+        out = json.loads(_run(registry["run_training"](course_name="FXTERTIARY_101")))
         assert out["base_model"] == "also-not-real"
         assert out["error_type"] == "unknown_base_model"
 
@@ -175,14 +175,14 @@ class TestGracefulStopPropagates:
 
         with pytest.raises(GracefulStopRequested):
             _run(registry["run_training"](
-                course_name="TST_101",
+                course_name="FXTERTIARY_101",
                 base_model="qwen2.5-1.5b",
             ))
 
     def test_run_evaluation_propagates_graceful_stop(
         self, registry, monkeypatch, tmp_path
     ):
-        course_dir = tmp_path / "courses" / "tst-101"
+        course_dir = tmp_path / "courses" / "fxtertiary-101"
         (course_dir / "models" / "m1").mkdir(parents=True)
 
         import MCP.tools.pipeline_tools as pt
@@ -218,7 +218,7 @@ class TestGracefulStopPropagates:
 
         with pytest.raises(GracefulStopRequested):
             _run(registry["run_evaluation"](
-                course_name="TST_101",
+                course_name="FXTERTIARY_101",
                 base_model="qwen2.5-1.5b",
             ))
 
@@ -241,26 +241,26 @@ class TestEvaluationEnvelope:
         monkeypatch.setattr(
             pt, "_resolve_libv2_root", lambda explicit=None: tmp_path
         )
-        out = json.loads(_run(registry["run_evaluation"](course_name="TST_101")))
+        out = json.loads(_run(registry["run_evaluation"](course_name="FXTERTIARY_101")))
         assert out["success"] is False
         assert out["error_type"] == "course_missing"
 
     def test_missing_adapter_fails_closed(self, registry, monkeypatch, tmp_path):
-        (tmp_path / "courses" / "tst-101").mkdir(parents=True)
+        (tmp_path / "courses" / "fxtertiary-101").mkdir(parents=True)
 
         import MCP.tools.pipeline_tools as pt
 
         monkeypatch.setattr(
             pt, "_resolve_libv2_root", lambda explicit=None: tmp_path
         )
-        out = json.loads(_run(registry["run_evaluation"](course_name="TST_101")))
+        out = json.loads(_run(registry["run_evaluation"](course_name="FXTERTIARY_101")))
         assert out["success"] is False
         assert out["error_type"] == "model_dir_missing"
 
     def test_dry_run_holds_and_writes_nothing(
         self, registry, monkeypatch, tmp_path
     ):
-        course_dir = tmp_path / "courses" / "tst-101"
+        course_dir = tmp_path / "courses" / "fxtertiary-101"
         model_dir = course_dir / "models" / "m1"
         model_dir.mkdir(parents=True)
 
@@ -270,7 +270,7 @@ class TestEvaluationEnvelope:
             pt, "_resolve_libv2_root", lambda explicit=None: tmp_path
         )
         out = json.loads(_run(registry["run_evaluation"](
-            course_name="TST_101", dry_run=True,
+            course_name="FXTERTIARY_101", dry_run=True,
         )))
         assert out["verdict"] == "hold"
         assert not (model_dir / "eval" / "eval_report.json").exists(), (
@@ -283,7 +283,7 @@ class TestEvaluationEnvelope:
     ):
         """Both arms unavailable ⇒ HOLD, a distinct warning per arm, and no
         fabricated metric anywhere in the merged report."""
-        course_dir = tmp_path / "courses" / "tst-101"
+        course_dir = tmp_path / "courses" / "fxtertiary-101"
         model_dir = course_dir / "models" / "m1"
         (model_dir / "eval").mkdir(parents=True)
         # A real harness report so the held-out arm is "reused" and the gate
@@ -305,7 +305,7 @@ class TestEvaluationEnvelope:
 
         monkeypatch.setattr(ge, "run_grounded_eval", _unavailable, raising=True)
 
-        out = json.loads(_run(registry["run_evaluation"](course_name="TST_101")))
+        out = json.loads(_run(registry["run_evaluation"](course_name="FXTERTIARY_101")))
         assert out["success"] is True
         assert out["verdict"] == "hold", (
             "a missing arm can never promote — the owner's contract is ONE "
@@ -326,7 +326,7 @@ class TestEvaluationEnvelope:
         )
 
     def test_both_arms_clean_promotes(self, registry, monkeypatch, tmp_path):
-        course_dir = tmp_path / "courses" / "tst-101"
+        course_dir = tmp_path / "courses" / "fxtertiary-101"
         model_dir = course_dir / "models" / "m1"
         (model_dir / "eval").mkdir(parents=True)
         (model_dir / "eval" / "eval_report.json").write_text(
@@ -367,7 +367,7 @@ class TestEvaluationEnvelope:
             raising=True,
         )
 
-        out = json.loads(_run(registry["run_evaluation"](course_name="TST_101")))
+        out = json.loads(_run(registry["run_evaluation"](course_name="FXTERTIARY_101")))
         assert out["verdict"] == "promote", out["verdict_reasons"]
         merged = json.loads(
             (model_dir / "eval" / "eval_report.json").read_text(encoding="utf-8")
@@ -378,7 +378,7 @@ class TestEvaluationEnvelope:
     def test_heldout_threshold_breach_rejects(
         self, registry, monkeypatch, tmp_path
     ):
-        course_dir = tmp_path / "courses" / "tst-101"
+        course_dir = tmp_path / "courses" / "fxtertiary-101"
         model_dir = course_dir / "models" / "m1"
         (model_dir / "eval").mkdir(parents=True)
         # yes_rate above the gate's 0.85 ceiling: a CONCLUSIVE held-out failure.
@@ -402,7 +402,7 @@ class TestEvaluationEnvelope:
             raising=True,
         )
 
-        out = json.loads(_run(registry["run_evaluation"](course_name="TST_101")))
+        out = json.loads(_run(registry["run_evaluation"](course_name="FXTERTIARY_101")))
         assert out["verdict"] == "reject"
         assert "EVAL_YES_BIAS_DETECTED" in out["verdict_reasons"]
 
@@ -410,7 +410,7 @@ class TestEvaluationEnvelope:
         self, registry, monkeypatch, tmp_path
     ):
         """A smoke report is "could not judge", not "the adapter is bad"."""
-        course_dir = tmp_path / "courses" / "tst-101"
+        course_dir = tmp_path / "courses" / "fxtertiary-101"
         model_dir = course_dir / "models" / "m1"
         (model_dir / "eval").mkdir(parents=True)
         (model_dir / "eval" / "eval_report.json").write_text(
@@ -433,6 +433,6 @@ class TestEvaluationEnvelope:
             raising=True,
         )
 
-        out = json.loads(_run(registry["run_evaluation"](course_name="TST_101")))
+        out = json.loads(_run(registry["run_evaluation"](course_name="FXTERTIARY_101")))
         assert out["verdict"] == "hold"
         assert "EVAL_REPORT_IS_SMOKE" in out["verdict_reasons"]

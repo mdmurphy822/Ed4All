@@ -44,7 +44,7 @@ def runner_stub() -> WorkflowRunner:
 @pytest.fixture
 def project_dir(tmp_path: Path) -> Path:
     """Scaffold a minimal Courseforge project directory."""
-    project = tmp_path / "PROJ-TEST_101-20260424"
+    project = tmp_path / "PROJ-FXTEST_101-20260424"
     (project / "01_learning_objectives").mkdir(parents=True)
     return project
 
@@ -55,7 +55,7 @@ def courseforge_reuse_file(tmp_path: Path) -> Path:
     p = tmp_path / "reuse_objectives.json"
     p.write_text(
         json.dumps({
-            "course_name": "TEST_101",
+            "course_name": "FXTEST_101",
             "duration_weeks": 8,
             "terminal_objectives": [
                 {"id": "TO-01", "statement": "Foundations of X.",
@@ -107,7 +107,7 @@ class TestSynthesizeReuseOutput:
     ):
         params = {
             "reuse_objectives_path": str(courseforge_reuse_file),
-            "course_name": "TEST_101",
+            "course_name": "FXTEST_101",
         }
         out = runner_stub._synthesize_course_planning_reuse_output(
             params, _build_phase_outputs(project_dir),
@@ -148,7 +148,7 @@ class TestSynthesizeReuseOutput:
     ):
         params = {
             "reuse_objectives_path": str(courseforge_reuse_file),
-            "course_name": "TEST_101",
+            "course_name": "FXTEST_101",
         }
         out = runner_stub._synthesize_course_planning_reuse_output(
             params, _build_phase_outputs(project_dir),
@@ -163,7 +163,7 @@ class TestSynthesizeReuseOutput:
             out["synthesized_objectives_path"]
         )
         assert config["status"] == "planned"
-        assert config["course_name"] == "TEST_101"
+        assert config["course_name"] == "FXTEST_101"
 
     def test_backfills_semantik_chunk_lo_refs(
         self, runner_stub, project_dir, courseforge_reuse_file, tmp_path
@@ -176,10 +176,10 @@ class TestSynthesizeReuseOutput:
         and the downstream concept graph degrades.
         """
         # The reuse synthesizer derives the slug as
-        # course_name.lower().replace("_","-") -> "test-101".
+        # course_name.lower().replace("_","-") -> "fxtest-101".
         libv2_root = tmp_path / "libv2"
         chunks_path = (
-            libv2_root / "courses" / "test-101" / "semantik_chunks" / "chunks.jsonl"
+            libv2_root / "courses" / "fxtest-101" / "semantik_chunks" / "chunks.jsonl"
         )
         chunks_path.parent.mkdir(parents=True, exist_ok=True)
         chunks_path.write_text(
@@ -193,7 +193,7 @@ class TestSynthesizeReuseOutput:
 
         params = {
             "reuse_objectives_path": str(courseforge_reuse_file),
-            "course_name": "TEST_101",
+            "course_name": "FXTEST_101",
             "libv2_root": str(libv2_root),
         }
         out = runner_stub._synthesize_course_planning_reuse_output(
@@ -220,7 +220,7 @@ class TestSynthesizeReuseOutput:
         reuse synthesizer must still return a valid phase output."""
         params = {
             "reuse_objectives_path": str(courseforge_reuse_file),
-            "course_name": "TEST_101",
+            "course_name": "FXTEST_101",
         }
         out = runner_stub._synthesize_course_planning_reuse_output(
             params, _build_phase_outputs(project_dir),
@@ -361,7 +361,7 @@ class TestPhaseLoopIntegration:
         """
         params = {
             "reuse_objectives_path": str(courseforge_reuse_file),
-            "course_name": "TEST_101",
+            "course_name": "FXTEST_101",
         }
         out = runner_stub._synthesize_course_planning_reuse_output(
             params, _build_phase_outputs(project_dir),
@@ -433,7 +433,7 @@ class TestRestructureReuseRoundTrip:
         all_chunks = [_chunk("c1", "mod-a", "Chapter A"), _chunk("c2", "mod-b", "Chapter B")]
         cbi = {c["id"]: c for c in all_chunks}
         doc = {
-            "course_name": "TEST_101",
+            "course_name": "FXTEST_101",
             "chapter_objectives": [{"chapter": "Week 1", "objectives": [
                 {"id": "CO-01", "statement": "Derive the tangent slope at a point",
                  "bloom_level": "apply", "bloom_verb": "derive", "source_chunk_ids": ["c1"]},
@@ -444,7 +444,7 @@ class TestRestructureReuseRoundTrip:
         new_doc, _ = restructure_objectives_doc(
             doc, cbi, all_chunks,
             options=RestructureOptions(
-                course_name="TEST_101", generated_from="in.json", embed=_Embed()),
+                course_name="FXTEST_101", generated_from="in.json", embed=_Embed()),
         )
         p = tmp_path / "objectives.restructured.json"
         p.write_text(json.dumps(new_doc), encoding="utf-8")
@@ -472,7 +472,7 @@ class TestRestructureReuseRoundTrip:
         p = self._restructured(tmp_path)
         params = {
             "reuse_objectives_path": str(p),
-            "course_name": "TEST_101",
+            "course_name": "FXTEST_101",
         }
         out = runner_stub._synthesize_course_planning_reuse_output(
             params, _build_phase_outputs(project_dir),

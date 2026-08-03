@@ -60,7 +60,7 @@ class TestCreateCourseProjectDeprecation:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             result = asyncio.run(fn(
-                course_name="TEST_101",
+                course_name="FXTEST_101",
                 objectives_path="/tmp/fake_objectives.json",
             ))
 

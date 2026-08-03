@@ -42,7 +42,7 @@ def test_no_libv2_course_dir_returns_none(tmp_path, monkeypatch):
 
     out = _runner()._maybe_write_procurement_evidence(
         workflow_id="WF-TEST",
-        workflow_params={"course_name": "UNIT_TEST_101"},
+        workflow_params={"course_name": "UNIT_FXTEST_101"},
         phase_outputs={},  # no libv2_archival
         promotion_chain_path=None,
     )
@@ -54,7 +54,7 @@ def test_wires_course_dir_and_promotion_chain(tmp_path, monkeypatch):
     """With a resolvable course_dir the helper forwards course_dir / course_slug /
     run_id / promotion_chain_path into write_evidence_bundle and returns its
     path."""
-    course_dir = tmp_path / "phys-101"
+    course_dir = tmp_path / "fxalpha-101"
     course_dir.mkdir()
     chain_path = tmp_path / "courseforge_promotion_chain_report.json"
     bundle_path = course_dir / "retrieval_eval" / "procurement_evidence_bundle.json"
@@ -77,15 +77,15 @@ def test_wires_course_dir_and_promotion_chain(tmp_path, monkeypatch):
 
     out = _runner()._maybe_write_procurement_evidence(
         workflow_id="WF-XYZ",
-        workflow_params={"course_name": "PHYS_101"},
+        workflow_params={"course_name": "FXALPHA_101"},
         phase_outputs={"libv2_archival": {"course_dir": str(course_dir)}},
         promotion_chain_path=chain_path,
     )
 
     assert out == bundle_path
     assert seen["course"] == course_dir
-    assert seen["course_code"] == "PHYS_101"
-    assert seen["course_slug"] == "phys-101"
+    assert seen["course_code"] == "FXALPHA_101"
+    assert seen["course_slug"] == "fxalpha-101"
     assert seen["run_id"] == "WF-XYZ"
     assert seen["promotion_chain_path"] == chain_path
 
@@ -93,7 +93,7 @@ def test_wires_course_dir_and_promotion_chain(tmp_path, monkeypatch):
 def test_exporter_failure_is_swallowed(tmp_path, monkeypatch):
     """A write_evidence_bundle exception is best-effort — the helper returns None
     (never propagates, never alters final_status)."""
-    course_dir = tmp_path / "chem-201"
+    course_dir = tmp_path / "fxchem-201"
     course_dir.mkdir()
 
     def _boom(*_args, **_kwargs):

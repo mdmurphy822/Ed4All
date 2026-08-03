@@ -122,7 +122,7 @@ def test_cli_exit_zero_when_all_gates_pass():
                 "--corpus",
                 "inputs/pdfs/fake.pdf",
                 "--course-name",
-                "TEST_101",
+                "FXTEST_101",
             ],
         )
     assert result.exit_code == 0, result.output
@@ -153,7 +153,7 @@ def test_cli_exit_two_when_any_gate_failed():
                 "--corpus",
                 "inputs/pdfs/fake.pdf",
                 "--course-name",
-                "TEST_101",
+                "FXTEST_101",
             ],
         )
     assert result.exit_code == 2, result.output
@@ -181,7 +181,7 @@ def test_cli_exit_two_when_workflow_failed():
                 "--corpus",
                 "inputs/pdfs/fake.pdf",
                 "--course-name",
-                "TEST_101",
+                "FXTEST_101",
             ],
         )
     assert result.exit_code == 2, result.output
@@ -198,7 +198,7 @@ def test_cli_dry_run_always_exit_zero():
             "--corpus",
             "inputs/pdfs/fake.pdf",
             "--course-name",
-            "TEST_101",
+            "FXTEST_101",
             "--dry-run",
         ],
     )

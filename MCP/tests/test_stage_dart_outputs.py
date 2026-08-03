@@ -82,7 +82,7 @@ class TestStagingBasics:
         result = asyncio.run(tool(
             run_id="WF-TEST-001",
             dart_html_paths=str(html_file),
-            course_name="TEST_101",
+            course_name="FXTEST_101",
         ))
         payload = json.loads(result)
         assert payload["success"] is True
@@ -94,7 +94,7 @@ class TestStagingBasics:
         result = asyncio.run(tool(
             run_id="WF-MISS-001",
             dart_html_paths=str(tmp_path / "does_not_exist.html"),
-            course_name="TEST_101",
+            course_name="FXTEST_101",
         ))
         payload = json.loads(result)
         assert payload.get("success") is False
@@ -119,7 +119,7 @@ class TestQualitySidecarStaging:
         result = asyncio.run(tool(
             run_id="WF-Q-001",
             dart_html_paths=str(html_file),
-            course_name="TEST_101",
+            course_name="FXTEST_101",
         ))
         payload = json.loads(result)
         assert payload["success"] is True
@@ -143,7 +143,7 @@ class TestQualitySidecarStaging:
         result = asyncio.run(tool(
             run_id="WF-NOQ-001",
             dart_html_paths=str(html_file),
-            course_name="TEST_101",
+            course_name="FXTEST_101",
         ))
         payload = json.loads(result)
         assert payload["success"] is True
@@ -169,7 +169,7 @@ class TestManifestRoleTags:
         asyncio.run(tool(
             run_id=run_id,
             dart_html_paths=str(html_file),
-            course_name="TEST_101",
+            course_name="FXTEST_101",
         ))
 
         manifest_path = staging_root / run_id / "staging_manifest.json"
@@ -201,7 +201,7 @@ class TestManifestRoleTags:
         asyncio.run(tool(
             run_id=run_id,
             dart_html_paths=str(html_file),
-            course_name="TEST_101",
+            course_name="FXTEST_101",
         ))
         manifest = json.loads(
             (staging_root / run_id / "staging_manifest.json").read_text()
@@ -229,7 +229,7 @@ class TestManifestRoleTags:
         asyncio.run(tool(
             run_id=run_id,
             dart_html_paths=str(html_file),
-            course_name="TEST_101",
+            course_name="FXTEST_101",
         ))
         manifest = json.loads(
             (staging_root / run_id / "staging_manifest.json").read_text()
@@ -254,7 +254,7 @@ class TestMultipleHtmlInputs:
         asyncio.run(tool(
             run_id=run_id,
             dart_html_paths=f"{html_a},{html_b}",
-            course_name="TEST_101",
+            course_name="FXTEST_101",
         ))
         manifest = json.loads(
             (staging_root / run_id / "staging_manifest.json").read_text()
@@ -301,7 +301,7 @@ class TestRegistryVariantParity:
         result = asyncio.run(tool(
             run_id=run_id,
             dart_html_paths=str(html_file),
-            course_name="TEST_101",
+            course_name="FXTEST_101",
         ))
         payload = json.loads(result)
         assert payload["success"] is True
@@ -338,7 +338,7 @@ class TestRegistryVariantParity:
         asyncio.run(tool(
             run_id=run_id,
             dart_html_paths=str(html_file),
-            course_name="TEST_101",
+            course_name="FXTEST_101",
         ))
 
         manifest = json.loads(
@@ -362,7 +362,7 @@ class TestRegistryVariantParity:
         result = asyncio.run(tool(
             run_id="WF-REG-MISS-001",
             dart_html_paths=str(tmp_path / "missing.html"),
-            course_name="TEST_101",
+            course_name="FXTEST_101",
         ))
         payload = json.loads(result)
         assert payload.get("success") is False
@@ -401,7 +401,7 @@ class TestStageMode:
         result = asyncio.run(tool(
             run_id=run_id,
             dart_html_paths=str(html_file),
-            course_name="TEST_101",
+            course_name="FXTEST_101",
             stage_mode="copy",
         ))
         payload = json.loads(result)
@@ -431,7 +431,7 @@ class TestStageMode:
         result = asyncio.run(tool(
             run_id=run_id,
             dart_html_paths=str(html_file),
-            course_name="TEST_101",
+            course_name="FXTEST_101",
             stage_mode="symlink",
         ))
         payload = json.loads(result)
@@ -465,7 +465,7 @@ class TestStageMode:
         asyncio.run(tool(
             run_id=run_id,
             dart_html_paths=str(html_file),
-            course_name="TEST_101",
+            course_name="FXTEST_101",
             stage_mode="symlink",
         ))
 
@@ -492,7 +492,7 @@ class TestStageMode:
         result = asyncio.run(tool(
             run_id=run_id,
             dart_html_paths=str(html_file),
-            course_name="TEST_101",
+            course_name="FXTEST_101",
         ))
         payload = json.loads(result)
         assert payload["success"] is True
@@ -513,7 +513,7 @@ class TestStageMode:
         result = asyncio.run(tool(
             run_id=run_id,
             dart_html_paths=str(html_file),
-            course_name="TEST_101",
+            course_name="FXTEST_101",
         ))
         payload = json.loads(result)
         assert payload["success"] is True
@@ -538,7 +538,7 @@ class TestStageMode:
             asyncio.run(tool(
                 run_id=run_id,
                 dart_html_paths=str(html_file),
-                course_name="TEST_101",
+                course_name="FXTEST_101",
                 stage_mode=mode,
             ))
             manifest = json.loads(
@@ -581,7 +581,7 @@ class TestStageMode:
         result = asyncio.run(tool(
             run_id=run_id,
             dart_html_paths=str(html_file),
-            course_name="TEST_101",
+            course_name="FXTEST_101",
             stage_mode="hardlink",
         ))
         payload = json.loads(result)
@@ -610,7 +610,7 @@ class TestStageMode:
         result = asyncio.run(tool(
             run_id="WF-UNKNOWN-001",
             dart_html_paths=str(html_file),
-            course_name="TEST_101",
+            course_name="FXTEST_101",
             stage_mode="nonsense",
         ))
         payload = json.loads(result)

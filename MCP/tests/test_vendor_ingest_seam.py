@@ -194,7 +194,7 @@ async def test_semantik_conversion_pdf_routes_to_cascade(monkeypatch, tmp_path):
     tool = _registry_tool()
     out = await tool(
         pdf_path="sample_text.pdf",  # bare path; classified pdf by suffix
-        course_code="ALG_9",
+        course_code="FXALG_009",
         phase="semantik_conversion",
         output_dir=str(tmp_path),
     )

@@ -137,7 +137,7 @@ class TestContentGenerationWeekProse:
             week_topics=by_week[0],
             week_objectives=[],
             all_objectives=[],
-            course_code="SYNTH_101",
+            course_code="FXSYNTH_101",
         )
         # build_week_data's content_modules must carry the topic heading as
         # its title (not "Week 1 Concepts" or a template skeleton).
@@ -159,7 +159,7 @@ class TestContentGenerationWeekProse:
             week_topics=by_week[0],
             week_objectives=[],
             all_objectives=[],
-            course_code="SYNTH_101",
+            course_code="FXSYNTH_101",
         )
         # At least one content section must include paragraph text from
         # the synthetic DART source, not a template placeholder.
@@ -190,7 +190,7 @@ class TestContentBodyNotSkeletonOnly:
             week_topics=by_week[0],
             week_objectives=[],
             all_objectives=[],
-            course_code="SYNTH_101",
+            course_code="FXSYNTH_101",
         )
         non_empty_paragraph_count = sum(
             1
@@ -263,7 +263,7 @@ class TestDropEmptyTopicsBeforeEmission:
             week_topics=[good_topic, short_topic],
             week_objectives=[],
             all_objectives=[],
-            course_code="SYNTH_101",
+            course_code="FXSYNTH_101",
         )
 
         titles = [m["title"] for m in wd["content_modules"]]

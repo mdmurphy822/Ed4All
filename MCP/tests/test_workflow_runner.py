@@ -323,7 +323,7 @@ def test_skip_phase_preserves_synthesizer_data(
 # from on-disk artifacts before the loop runs.
 
 
-def _build_project_export(tmp_path, course_name: str = "PHYS_101"):
+def _build_project_export(tmp_path, course_name: str = "FXALPHA_101"):
     """Materialize a minimal Courseforge project export on disk.
 
     Returns ``(project_path, expected_package_path)``.

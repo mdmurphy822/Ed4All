@@ -45,7 +45,7 @@ def _write_project_config(project_dir: Path) -> None:
     project_dir.mkdir(parents=True, exist_ok=True)
     cfg = {
         "project_id": project_dir.name,
-        "course_name": "FALLBACK_TEST_101",
+        "course_name": "FALLBACK_FXTEST_101",
         "duration_weeks": 2,
         "objectives_path": None,
     }

@@ -180,7 +180,7 @@ async def test_gate_router_receives_current_phase_outputs(state_runs_isolated):
             gate_configs=gate_configs,
             max_concurrent=1,
             phase_outputs={},  # No prior phases — only current phase's extraction matters
-            workflow_params={"course_name": "TEST_101"},
+            workflow_params={"course_name": "FXTEST_101"},
             extract_phase_outputs_fn=_synthetic_extract_fn,
         )
 

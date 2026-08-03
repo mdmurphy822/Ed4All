@@ -126,7 +126,7 @@ def test_single_chapter_extraction(extractor_fixture):
         },
     ])
     result = asyncio.run(_call(
-        course_name="BIO_101",
+        course_name="FXBIO_101",
         staging_dir=str(fx["staging"]),
     ))
     assert result["success"]
@@ -159,7 +159,7 @@ def test_multi_chapter_extraction(extractor_fixture):
         },
     ])
     result = asyncio.run(_call(
-        course_name="PHYS_101",
+        course_name="FXALPHA_101",
         staging_dir=str(fx["staging"]),
     ))
     assert result["success"]
@@ -173,7 +173,7 @@ def test_persists_project_config(extractor_fixture):
         {"title": "Chapter 1", "sections": [{"title": "S1", "paragraphs": ["Paragraph with enough words to pass the minimum word count filter for topic extraction."]}]},
     ])
     result = asyncio.run(_call(
-        course_name="CHEM_201",
+        course_name="FXCHEM_201",
         staging_dir=str(fx["staging"]),
         duration_weeks=16,
     ))
@@ -181,7 +181,7 @@ def test_persists_project_config(extractor_fixture):
     cfg_path = Path(result["project_path"]) / "project_config.json"
     assert cfg_path.exists()
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-    assert cfg["course_name"] == "CHEM_201"
+    assert cfg["course_name"] == "FXCHEM_201"
     assert cfg["duration_weeks"] == 16
 
 
@@ -192,7 +192,7 @@ def test_structure_path_location(extractor_fixture):
         {"title": "Chapter 1", "sections": [{"title": "S1", "paragraphs": ["A minimal paragraph with enough content to be recognized as a topic by the extractor heuristics."]}]},
     ])
     result = asyncio.run(_call(
-        course_name="TEST_101",
+        course_name="FXTEST_101",
         staging_dir=str(fx["staging"]),
     ))
     structure_path = Path(result["textbook_structure_path"])

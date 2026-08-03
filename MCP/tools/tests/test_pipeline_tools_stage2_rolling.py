@@ -179,7 +179,7 @@ def _run(provider, *, checkpoint_path: Optional[Path], monkeypatch):
             chunks_by_id=chunks_by_id,
             all_chunks=all_chunks,
             grounding_mode="chunk_window",
-            course_name="MATH_101",
+            course_name="FXMATH_101",
             provider_env="local",
             chapter_synthesis_failures=[],
             mint_lo_id=_mint,

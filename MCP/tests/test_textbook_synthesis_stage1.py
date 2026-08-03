@@ -237,7 +237,7 @@ def test_flag_unset_textbook_structure_byte_stable(extractor_fixture):
     """Default-off: textbook_structure.json carries no enrichment keys."""
     fx = extractor_fixture
     result = asyncio.run(_call(
-        course_name="PHYS_101",
+        course_name="FXALPHA_101",
         staging_dir=str(fx["staging"]),
     ))
     assert result["success"]
@@ -265,7 +265,7 @@ def test_flag_unset_does_not_construct_provider(
     monkeypatch.setattr(tsp_mod, "TextbookSynthesisProvider", _Tripwire)
     fx = extractor_fixture
     result = asyncio.run(_call(
-        course_name="PHYS_101",
+        course_name="FXALPHA_101",
         staging_dir=str(fx["staging"]),
     ))
     assert result["success"]
@@ -288,7 +288,7 @@ def test_flag_set_folds_three_enrichment_keys(extractor_fixture, monkeypatch):
     monkeypatch.setenv("TEXTBOOK_SYNTHESIS_PROVIDER", "anthropic")
     fx = extractor_fixture
     result = asyncio.run(_call(
-        course_name="PHYS_101",
+        course_name="FXALPHA_101",
         staging_dir=str(fx["staging"]),
     ))
     assert result["success"]
@@ -318,7 +318,7 @@ def test_flag_set_artifact_passes_outline_validator(
     monkeypatch.setenv("TEXTBOOK_SYNTHESIS_PROVIDER", "anthropic")
     fx = extractor_fixture
     result = asyncio.run(_call(
-        course_name="PHYS_101",
+        course_name="FXALPHA_101",
         staging_dir=str(fx["staging"]),
     ))
     structure_path = Path(result["textbook_structure_path"])
@@ -339,7 +339,7 @@ def test_default_off_artifact_skips_outline_validator(extractor_fixture):
     (the ABCD_MISSING graceful-degrade contract)."""
     fx = extractor_fixture
     result = asyncio.run(_call(
-        course_name="PHYS_101",
+        course_name="FXALPHA_101",
         staging_dir=str(fx["staging"]),
     ))
     gate = TextbookOutlineValidator().validate(
@@ -364,7 +364,7 @@ def test_flag_set_provider_error_propagates(extractor_fixture, monkeypatch):
     fx = extractor_fixture
     with pytest.raises(TextbookSynthesisProviderError) as exc_info:
         asyncio.run(_call(
-            course_name="PHYS_101",
+            course_name="FXALPHA_101",
             staging_dir=str(fx["staging"]),
         ))
     assert exc_info.value.code == "outline_exhausted"

@@ -112,7 +112,7 @@ def _derive(provider, *, cluster_cp: Optional[Path] = None, embed=None):
         chunks_by_id=chunks_by_id,
         all_chunks=all_chunks,
         embed=embed,
-        course_name="MATH_101",
+        course_name="FXMATH_101",
         mint_lo_id=_mint,
         capture=None,
         checkpoint_path=cluster_cp,
@@ -152,7 +152,7 @@ def test_chapter_anchored_signal_and_book_order():
         chunks_by_id={c["id"]: c for c in all_chunks},
         all_chunks=all_chunks,
         embed=None,
-        course_name="MATH_101",
+        course_name="FXMATH_101",
         mint_lo_id=_mint,
     )
     assert cos[0]["terminal_id"] == "TO-01"  # mod-a
@@ -177,7 +177,7 @@ def test_backlink_noop_on_preset_terminal_id():
         chunks_by_id={c["id"]: c for c in all_chunks},
         all_chunks=all_chunks,
         embed=FakeEmbed(),
-        course_name="MATH_101",
+        course_name="FXMATH_101",
         mint_lo_id=_mint,
     )
     before = [c["terminal_id"] for c in cos]
@@ -203,7 +203,7 @@ def test_degrade_single_module_returns_reason():
         chunks_by_id={c["id"]: c for c in all_chunks},
         all_chunks=all_chunks,
         embed=None,
-        course_name="MATH_101",
+        course_name="FXMATH_101",
         mint_lo_id=_mint,
     )
     assert terminals == []
@@ -349,7 +349,7 @@ def _run_window(*, anchor_on: bool, monkeypatch):
             chunks_by_id=chunks_by_id,
             all_chunks=all_chunks,
             grounding_mode="chunk_window",
-            course_name="MATH_101",
+            course_name="FXMATH_101",
             provider_env="local",
             chapter_synthesis_failures=[],
             mint_lo_id=_mint,

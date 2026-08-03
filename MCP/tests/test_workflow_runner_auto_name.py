@@ -94,9 +94,9 @@ def _mk_conversion_output(tmp_path: Path, title="Principles Of Sample Systems"):
 
 def _base_params(**extra):
     params = {
-        "course_name": "prov-book",
+        "course_name": "fixture-source",
         "auto_name": True,
-        "run_id": "TTC_prov-book_20260722_070433",
+        "run_id": "TTC_fixture-source_20260722_070433",
         "corpus": "inputs/synthetic/book.pdf",
     }
     params.update(extra)
@@ -116,7 +116,7 @@ def test_rebind_happy_path(tmp_path, runner):
     runner._maybe_apply_auto_name("staging", params, outputs, state, path)
 
     assert params["course_name"] == FINAL_SLUG
-    assert params["provisional_course_name"] == "prov-book"
+    assert params["provisional_course_name"] == "fixture-source"
     assert params["display_title"] == "Principles Of Sample Systems"
     assert params["auto_name_resolved"] is True
     assert params["auto_name_reason"] == "h1_resolved"
@@ -127,7 +127,7 @@ def test_rebind_happy_path(tmp_path, runner):
     # Persisted so a --resume sees the same identity.
     persisted = json.loads(path.read_text(encoding="utf-8"))
     assert persisted["params"]["course_name"] == FINAL_SLUG
-    assert persisted["params"]["provisional_course_name"] == "prov-book"
+    assert persisted["params"]["provisional_course_name"] == "fixture-source"
     # Exactly ONE capture, recording provisional -> final with signals.
     assert len(_CaptureRecorder.instances) == 1
     cap = _CaptureRecorder.instances[0]
@@ -135,7 +135,7 @@ def test_rebind_happy_path(tmp_path, runner):
     assert len(cap.decisions) == 1
     dec = cap.decisions[0]
     assert dec["decision_type"] == "course_identity_rebind"
-    assert "prov-book" in dec["decision"] and FINAL_SLUG in dec["decision"]
+    assert "fixture-source" in dec["decision"] and FINAL_SLUG in dec["decision"]
     assert "Principles Of Sample Systems" in dec["rationale"]
     assert "2026-07-22" in dec["rationale"]
     assert len(dec["rationale"]) >= 20
@@ -169,7 +169,7 @@ def test_run_id_and_timestamp_use_run_init_not_resolution_time(tmp_path, runner)
 
 
 def test_auto_name_off_is_byte_identical(tmp_path, runner):
-    params = {"course_name": "prov-book", "run_id": "TTC_prov-book_20260722_070433"}
+    params = {"course_name": "fixture-source", "run_id": "TTC_fixture-source_20260722_070433"}
     before = dict(params)
     state, path = _mk_state(tmp_path, params)
     on_disk_before = path.read_text(encoding="utf-8")
@@ -192,7 +192,7 @@ def test_pre_identity_phases_never_trigger(tmp_path, runner, phase):
 
     runner._maybe_apply_auto_name(phase, params, outputs, state, path)
 
-    assert params["course_name"] == "prov-book"
+    assert params["course_name"] == "fixture-source"
     assert "auto_name_resolved" not in params
 
 
@@ -217,7 +217,7 @@ def test_resolution_is_once_per_run(tmp_path, runner):
 
 
 def _assert_fallback(params, reason):
-    assert params["course_name"] == "prov-book"
+    assert params["course_name"] == "fixture-source"
     assert params["auto_name_resolved"] is True
     assert params["auto_name_reason"] == reason
     assert "provisional_course_name" not in params

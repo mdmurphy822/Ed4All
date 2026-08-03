@@ -96,7 +96,7 @@ def _derive(provider: _FakeProvider, checkpoint_path: Path):
         provider=provider,
         chapter_cos=_theme_cos(),
         embed=FakeEmbed(),
-        course_name="MATH_101",
+        course_name="FXMATH_101",
         mint_lo_id=_mint,
         checkpoint_path=checkpoint_path,
     )

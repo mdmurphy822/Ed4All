@@ -135,7 +135,7 @@ async def test_trainforge_assessment_provider_set_bypasses_dispatch(
         {
             "agent_type": "assessment-generator",
             "params": {
-                "course_id": "PHYS_101",
+                "course_id": "FXALPHA_101",
                 "objective_ids": "TO-01",
                 "bloom_levels": "understand",
             },
@@ -164,7 +164,7 @@ async def test_trainforge_assessment_provider_anthropic_value_bypasses_dispatch(
         {
             "agent_type": "assessment-generator",
             "params": {
-                "course_id": "PHYS_101",
+                "course_id": "FXALPHA_101",
                 "objective_ids": "TO-01",
                 "bloom_levels": "understand",
             },
@@ -202,7 +202,7 @@ async def test_trainforge_assessment_provider_unset_preserves_dispatch(
         {
             "agent_type": "assessment-generator",
             "params": {
-                "course_id": "PHYS_101",
+                "course_id": "FXALPHA_101",
                 "objective_ids": "TO-01",
                 "bloom_levels": "understand",
             },
@@ -231,7 +231,7 @@ async def test_trainforge_assessment_provider_empty_string_preserves_dispatch(
         {
             "agent_type": "assessment-generator",
             "params": {
-                "course_id": "PHYS_101",
+                "course_id": "FXALPHA_101",
                 "objective_ids": "TO-01",
                 "bloom_levels": "understand",
             },

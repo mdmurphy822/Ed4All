@@ -52,7 +52,7 @@ from MCP.tools.pipeline_tools import _build_tool_registry  # noqa: E402
 # ---------------------------------------------------------------------------
 
 _SYNTHESIZED_OBJECTIVES: Dict[str, Any] = {
-    "course_name": "POGRAPH_101",
+    "course_name": "FXPHASE_101",
     "mint_method": "fixture",
     "duration_weeks": 8,
     "learning_outcomes": [
@@ -102,7 +102,7 @@ def _lo_tagged_chunkset() -> List[Dict[str, Any]]:
     """Chunks carrying learning_outcome_refs + concept_tags exactly as the
     chunking phase + course_planning LO-backfill leave them on disk."""
     base = {"module_id": "week_01", "item_path": "week_01/page_001.html",
-            "course_id": "POGRAPH_101"}
+            "course_id": "FXPHASE_101"}
     return [
         {
             "id": "pograph_chunk_00001",
@@ -168,7 +168,7 @@ def _run_concept_extraction(
     result = asyncio.run(
         tool(
             project_id="",
-            course_name="POGRAPH_101",
+            course_name="FXPHASE_101",
             staging_dir="",
             dart_chunks_path=str(chunks_path),
             libv2_root=str(custom_libv2),

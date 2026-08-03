@@ -44,7 +44,7 @@ def _make_project(
     project_path = tmp_path / "Courseforge" / "exports" / project_id
     (project_path / "03_content_development").mkdir(parents=True)
     config = {
-        "course_name": "DEMO_101",
+        "course_name": "FXDEMO_101",
         "duration_weeks": duration_weeks,
         "credit_hours": 3,
     }
@@ -120,7 +120,7 @@ def test_extract_and_convert_pdf_emits_html_path(tmp_path: Path, monkeypatch):
     result_json = asyncio.run(registry["extract_and_convert_pdf"](
         pdf_path=str(pdf),
         output_dir=str(out_dir),
-        course_code="DEMO_101",
+        course_code="FXDEMO_101",
         phase="semantik_conversion",
     ))
     result = json.loads(result_json)
@@ -232,7 +232,7 @@ def test_archive_to_libv2_emits_manifest_path(pipeline_registry, tmp_path: Path)
     registry, _tmp = pipeline_registry
 
     result_json = asyncio.run(registry["archive_to_libv2"](
-        course_name="DEMO_101",
+        course_name="FXDEMO_101",
         domain="general",
         division="STEM",
     ))

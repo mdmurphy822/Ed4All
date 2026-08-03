@@ -121,7 +121,7 @@ def test_bottom_up_derives_one_to_per_cluster():
         provider=provider,
         chapter_cos=cos,
         embed=FakeEmbed(),
-        course_name="MATH_101",
+        course_name="FXMATH_101",
         mint_lo_id=_mint,
         capture=None,
     )
@@ -147,7 +147,7 @@ def test_bottom_up_sets_terminal_id_directly_no_orphans():
         provider=_FakeProvider(),
         chapter_cos=cos,
         embed=FakeEmbed(),
-        course_name="MATH_101",
+        course_name="FXMATH_101",
         mint_lo_id=_mint,
     )
     minted_ids = {t["id"] for t in terminals}
@@ -164,7 +164,7 @@ def test_per_cluster_author_failure_uses_rep_fallback():
         provider=provider,
         chapter_cos=cos,
         embed=FakeEmbed(),
-        course_name="MATH_101",
+        course_name="FXMATH_101",
         mint_lo_id=_mint,
     )
     fallback = [t for t in terminals if t.get("to_synthesis") == "cluster_rep_fallback"]
@@ -185,7 +185,7 @@ def test_embed_encode_failure_returns_empty_for_legacy_fallback():
         provider=_FakeProvider(),
         chapter_cos=_theme_cos(),
         embed=_BoomEmbed(),
-        course_name="MATH_101",
+        course_name="FXMATH_101",
         mint_lo_id=_mint,
     )
     assert terminals == []
@@ -278,7 +278,7 @@ def test_backlink_is_assignment_noop_on_bottom_up_path():
         provider=_FakeProvider(),
         chapter_cos=cos,
         embed=FakeEmbed(),
-        course_name="MATH_101",
+        course_name="FXMATH_101",
         mint_lo_id=_mint,
     )
     before = [co["terminal_id"] for co in cos]
@@ -344,7 +344,7 @@ def _run_stage2(provider, *, monkeypatch, embed):
         chunks_by_id={},
         all_chunks=[],
         grounding_mode="chapter_fallback",
-        course_name="MATH_101",
+        course_name="FXMATH_101",
         provider_env="local",
         chapter_synthesis_failures=[],
         mint_lo_id=_mint,
@@ -464,7 +464,7 @@ def test_cluster_guards_default_off_is_noop_with_signals():
         provider=_FakeProvider(),
         chapter_cos=cos,
         embed=FakeEmbed(),
-        course_name="MATH_101",
+        course_name="FXMATH_101",
         mint_lo_id=_mint,
     )
     # Still one TO per (post-guard) cluster; every CO keeps a resolvable parent.
@@ -528,7 +528,7 @@ def test_cluster_guards_on_absorbs_outlier_no_singleton_to(monkeypatch):
         provider=_FakeProvider(),
         chapter_cos=cos,
         embed=FakeEmbed(),
-        course_name="MATH_101",
+        course_name="FXMATH_101",
         mint_lo_id=_mint,
     )
 
@@ -559,7 +559,7 @@ def test_cluster_guards_off_outlier_keeps_its_own_to(monkeypatch):
         provider=_FakeProvider(),
         chapter_cos=cos,
         embed=FakeEmbed(),
-        course_name="MATH_101",
+        course_name="FXMATH_101",
         mint_lo_id=_mint,
     )
 
@@ -617,7 +617,7 @@ def test_dissolve_singletons_default_on_folds_outlier(monkeypatch):
         provider=_FakeProvider(),
         chapter_cos=cos,
         embed=FakeEmbed(),
-        course_name="MATH_101",
+        course_name="FXMATH_101",
         mint_lo_id=_mint,
     )
 
@@ -648,7 +648,7 @@ def test_dissolve_singletons_opt_out_keeps_singleton(monkeypatch):
         provider=_FakeProvider(),
         chapter_cos=cos,
         embed=FakeEmbed(),
-        course_name="MATH_101",
+        course_name="FXMATH_101",
         mint_lo_id=_mint,
     )
 

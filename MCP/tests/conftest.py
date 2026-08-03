@@ -222,7 +222,7 @@ def sample_workflow_state():
                 "task_id": "T001",
                 "agent_type": "course-outliner",
                 "status": "complete",
-                "params": {"course_name": "TEST_101"},
+                "params": {"course_name": "FXTEST_101"},
             },
             "T002": {
                 "task_id": "T002",
@@ -379,7 +379,7 @@ def sample_task():
         "agent_type": "content-generator",
         "status": "pending",
         "params": {
-            "course_name": "TEST_101",
+            "course_name": "FXTEST_101",
             "week": 1,
             "module": 1,
             "content_type": "introduction",

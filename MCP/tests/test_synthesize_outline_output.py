@@ -40,7 +40,7 @@ def runner_stub() -> WorkflowRunner:
     return WorkflowRunner(executor=object(), config=object())
 
 
-def _make_project(tmp_path: Path, course_name: str = "TEST_101") -> Path:
+def _make_project(tmp_path: Path, course_name: str = "FXTEST_101") -> Path:
     """Scaffold a minimal Courseforge project export directory.
 
     Mirrors the layout `_run_*` helpers in ``MCP/tools/pipeline_tools.py``
@@ -77,7 +77,7 @@ def _make_staging(tmp_path: Path) -> Path:
     (staging / "staging_manifest.json").write_text(
         json.dumps({
             "run_id": "run-001",
-            "course_name": "TEST_101",
+            "course_name": "FXTEST_101",
             "files": [
                 {"path": "chapter_01_accessible.html", "role": "content"},
                 {"path": "chapter_02_accessible.html", "role": "content"},
@@ -124,7 +124,7 @@ def _make_libv2(tmp_path: Path, course_slug: str) -> Path:
     )
     (graph_dir / "manifest.json").write_text(
         json.dumps({
-            "course_id": "TEST_101",
+            "course_id": "FXTEST_101",
             "course_slug": course_slug,
             "concept_graph_path": str(graph_dir / "concept_graph_semantic.json"),
             "concept_graph_sha256": "c" * 64,
@@ -152,7 +152,7 @@ def _populate_objectives(project_path: Path) -> None:
     )
     (obj_dir / "synthesized_objectives.json").write_text(
         json.dumps({
-            "course_name": "TEST_101",
+            "course_name": "FXTEST_101",
             "duration_weeks": 8,
             "terminal_objectives": [
                 {"id": "TO-01", "statement": "T1", "bloom_level": "understand"},
@@ -220,7 +220,7 @@ class TestSynthesizeOutlineOutputHappyPath:
     ):
         project_path = _make_project(tmp_path)
         _make_staging(tmp_path)
-        _make_libv2(tmp_path, "test-101")
+        _make_libv2(tmp_path, "fxtest-101")
         _populate_objectives(project_path)
         _populate_source_map(project_path)
         _populate_outline(project_path)
@@ -275,7 +275,7 @@ class TestSynthesizeOutlineOutputHappyPath:
         self, runner_stub, tmp_path, monkeypatch
     ):
         project_path = _make_project(tmp_path)
-        _make_libv2(tmp_path, "test-101")
+        _make_libv2(tmp_path, "fxtest-101")
         monkeypatch.setattr(
             "MCP.core.workflow_runner.PROJECT_ROOT", tmp_path,
         )
@@ -292,7 +292,7 @@ class TestSynthesizeOutlineOutputHappyPath:
         self, runner_stub, tmp_path, monkeypatch
     ):
         project_path = _make_project(tmp_path)
-        _make_libv2(tmp_path, "test-101")
+        _make_libv2(tmp_path, "fxtest-101")
         monkeypatch.setattr(
             "MCP.core.workflow_runner.PROJECT_ROOT", tmp_path,
         )
@@ -454,7 +454,7 @@ class TestSynthesizeOutlineOutputEdgeCases:
         """``target_phases=['course_planning']`` only emits that key."""
         project_path = _make_project(tmp_path)
         _make_staging(tmp_path)
-        _make_libv2(tmp_path, "test-101")
+        _make_libv2(tmp_path, "fxtest-101")
         _populate_objectives(project_path)
         _populate_source_map(project_path)
         _populate_outline(project_path)
@@ -662,7 +662,7 @@ class TestContentGenerationRewriteSynthesis:
         on-disk blocks_final.jsonl is reconstructed for post_rewrite."""
         project_path = _make_project(tmp_path)
         _make_staging(tmp_path)
-        _make_libv2(tmp_path, "test-101")
+        _make_libv2(tmp_path, "fxtest-101")
         _populate_objectives(project_path)
         _populate_source_map(project_path)
         _populate_outline(project_path)

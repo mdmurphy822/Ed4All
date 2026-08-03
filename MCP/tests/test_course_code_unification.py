@@ -39,9 +39,9 @@ def test_normalize_course_code_idempotent():
 def test_normalize_course_code_deterministic():
     """Same input → same output. Tests that two captures built from
     the same source string agree on their course_id."""
-    a = normalize_course_code("PHYS_101")
-    b = normalize_course_code("PHYS_101")
-    assert a == b == "PHYS_101"
+    a = normalize_course_code("FXALPHA_101")
+    b = normalize_course_code("FXALPHA_101")
+    assert a == b == "FXALPHA_101"
 
 
 # --------------------------------------------------------------------- #

@@ -222,7 +222,7 @@ class TestRouterDispatch:
             week_topics=topics,
             week_objectives=objectives,
             all_objectives=objectives,
-            course_code="BIO_101",
+            course_code="FXBIO_101",
             content_router=router,
         )
 
@@ -271,7 +271,7 @@ class TestRouterDispatch:
             week_topics=topics,
             week_objectives=objectives,
             all_objectives=objectives,
-            course_code="BIO_101",
+            course_code="FXBIO_101",
             content_provider=legacy,
             content_router=None,
         )
@@ -306,7 +306,7 @@ class TestRouterDispatch:
             week_topics=topics,
             week_objectives=objectives,
             all_objectives=objectives,
-            course_code="BIO_101",
+            course_code="FXBIO_101",
             content_router=router,
         )
 
@@ -352,7 +352,7 @@ class TestRouterDispatch:
             week_topics=topics,
             week_objectives=objectives,
             all_objectives=objectives,
-            course_code="BIO_101",
+            course_code="FXBIO_101",
             content_router=router,
         )
 
@@ -393,7 +393,7 @@ class TestAuthorshipStats:
         _cgh.build_week_data(
             week_num=1, duration_weeks=1, week_topics=topics,
             week_objectives=objectives, all_objectives=objectives,
-            course_code="BIO_101", content_router=_StubRouter(),
+            course_code="FXBIO_101", content_router=_StubRouter(),
             authorship_stats=stats,
         )
         assert stats == {"llm_authored": 2, "template_fallback": 0}
@@ -408,7 +408,7 @@ class TestAuthorshipStats:
         _cgh.build_week_data(
             week_num=1, duration_weeks=1, week_topics=topics,
             week_objectives=objectives, all_objectives=objectives,
-            course_code="BIO_101",
+            course_code="FXBIO_101",
             content_router=_StubRouter(escalate_indices=[1]),
             authorship_stats=stats,
         )
@@ -425,7 +425,7 @@ class TestAuthorshipStats:
         _cgh.build_week_data(
             week_num=1, duration_weeks=1, week_topics=topics,
             week_objectives=objectives, all_objectives=objectives,
-            course_code="BIO_101", content_provider=_StubLegacyProvider(),
+            course_code="FXBIO_101", content_provider=_StubLegacyProvider(),
             authorship_stats=stats,
         )
         assert stats == {"llm_authored": 2, "template_fallback": 0}
@@ -437,7 +437,7 @@ class TestAuthorshipStats:
         _cgh.build_week_data(
             week_num=1, duration_weeks=1, week_topics=topics,
             week_objectives=objectives, all_objectives=objectives,
-            course_code="BIO_101", authorship_stats=stats,
+            course_code="FXBIO_101", authorship_stats=stats,
         )
         # No provider/router => not an LLM run => no tally.
         assert stats == {"llm_authored": 0, "template_fallback": 0}

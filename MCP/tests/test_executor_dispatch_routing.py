@@ -332,7 +332,7 @@ async def test_trainforge_synthesis_provider_set_bypasses_dispatch(
         {
             "agent_type": "training-synthesizer",
             "params": {
-                "course_code": "PHYS_101",
+                "course_code": "FXALPHA_101",
                 "corpus_dir": "/tmp/fake",
             },
         },
@@ -375,7 +375,7 @@ async def test_trainforge_synthesis_provider_unset_preserves_dispatch(
         {
             "agent_type": "training-synthesizer",
             "params": {
-                "course_code": "PHYS_101",
+                "course_code": "FXALPHA_101",
                 "corpus_dir": "/tmp/fake",
             },
         },

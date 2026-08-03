@@ -392,7 +392,7 @@ def _build_params(**kwargs: Any) -> Dict[str, Any]:
     base = dict(
         workflow="textbook_to_course",
         corpus="corpus.pdf",
-        course_name="TST_101",
+        course_name="FXTERTIARY_101",
         weeks=None,
         no_assessments=False,
         assessment_count=50,
@@ -688,7 +688,7 @@ def test_dry_run_plan_keeps_trainforge_train_phases():
 
     plan = _dry_run_plan(
         "trainforge_train",
-        {"course_name": "TST_101"},
+        {"course_name": "FXTERTIARY_101"},
         mode="local",
         provider="local",
     )

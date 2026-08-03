@@ -204,7 +204,7 @@ def _run(coro):
 def test_archive_manifest_omits_flag_when_no_corpus(archive_tool, tmp_path):
     """No chunks file (no assessment_path) → features.source_provenance=false."""
     result_str = asyncio.run(archive_tool(
-        course_name="TEST_101",
+        course_name="FXTEST_101",
         domain="test-domain",
     ))
     result = json.loads(result_str)
@@ -226,7 +226,7 @@ def test_archive_manifest_flag_true_when_chunks_carry_refs(
         f.write(json.dumps({
             "id": "c_00001",
             "source": {
-                "course_id": "TEST_101",
+                "course_id": "FXTEST_101",
                 "module_id": "m",
                 "lesson_id": "l",
                 "source_references": [
@@ -236,7 +236,7 @@ def test_archive_manifest_flag_true_when_chunks_carry_refs(
         }) + "\n")
 
     result_str = asyncio.run(archive_tool(
-        course_name="TEST_101",
+        course_name="FXTEST_101",
         domain="test-domain",
         assessment_path=str(chunks_path),
     ))
@@ -257,14 +257,14 @@ def test_archive_manifest_flag_false_on_legacy_chunks_corpus(
         f.write(json.dumps({
             "id": "c_00001",
             "source": {
-                "course_id": "TEST_101",
+                "course_id": "FXTEST_101",
                 "module_id": "m",
                 "lesson_id": "l",
             },
         }) + "\n")
 
     result_str = asyncio.run(archive_tool(
-        course_name="TEST_101",
+        course_name="FXTEST_101",
         domain="test-domain",
         assessment_path=str(chunks_path),
     ))

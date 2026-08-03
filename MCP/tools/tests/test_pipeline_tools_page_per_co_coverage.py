@@ -63,7 +63,7 @@ def _mismatched_reuse_doc() -> dict:
          "source_refs": [{"ref": "TO-02", "chunk_ids": ["c7", "c8"]}]},
     ]
     return {
-        "course_name": "COVERAGE_101",
+        "course_name": "FXCOVERAGE_101",
         "duration_weeks": 2,
         "terminal_objectives": [
             {"id": "TO-01", "statement": "Foundations.",
@@ -276,7 +276,7 @@ def runner_stub():
 
 @pytest.fixture
 def project_dir(tmp_path: Path) -> Path:
-    project = tmp_path / "PROJ-COVERAGE_101-20260715"
+    project = tmp_path / "PROJ-FXCOVERAGE_101-20260715"
     (project / "01_learning_objectives").mkdir(parents=True)
     return project
 
@@ -298,7 +298,7 @@ def _run_reuse(runner_stub, tmp_path: Path, project_dir: Path) -> dict:
     )
     out = runner_stub._synthesize_course_planning_reuse_output(
         {"reuse_objectives_path": str(reuse_path),
-         "course_name": "COVERAGE_101"},
+         "course_name": "FXCOVERAGE_101"},
         _phase_outputs(project_dir),
     )
     assert out is not None

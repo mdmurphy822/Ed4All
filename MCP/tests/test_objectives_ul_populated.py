@@ -61,9 +61,9 @@ def test_overview_ul_has_one_li_per_objective(tmp_path: Path):
         week_topics=[topic],
         week_objectives=objectives,
         all_objectives=objectives,
-        course_code="SYNTH_101",
+        course_code="FXSYNTH_101",
     )
-    _gen.generate_week(wd, tmp_path, "SYNTH_101")
+    _gen.generate_week(wd, tmp_path, "FXSYNTH_101")
     overview = (tmp_path / "week_01" / "week_01_overview.html").read_text(
         encoding="utf-8"
     )
@@ -96,9 +96,9 @@ def test_overview_ul_not_empty(tmp_path: Path):
         week_topics=[topic],
         week_objectives=objectives,
         all_objectives=objectives,
-        course_code="SYNTH_101",
+        course_code="FXSYNTH_101",
     )
-    _gen.generate_week(wd, tmp_path, "SYNTH_101")
+    _gen.generate_week(wd, tmp_path, "FXSYNTH_101")
     overview = (tmp_path / "week_01" / "week_01_overview.html").read_text(
         encoding="utf-8"
     )
@@ -125,9 +125,9 @@ def test_per_objective_bloom_attributes_attached(tmp_path: Path):
         week_topics=[topic],
         week_objectives=objectives,
         all_objectives=objectives,
-        course_code="SYNTH_101",
+        course_code="FXSYNTH_101",
     )
-    _gen.generate_week(wd, tmp_path, "SYNTH_101")
+    _gen.generate_week(wd, tmp_path, "FXSYNTH_101")
     overview = (tmp_path / "week_01" / "week_01_overview.html").read_text(
         encoding="utf-8"
     )
@@ -157,9 +157,9 @@ def test_overview_objectives_include_statement_text(tmp_path: Path):
         week_topics=[topic],
         week_objectives=objectives,
         all_objectives=objectives,
-        course_code="SYNTH_101",
+        course_code="FXSYNTH_101",
     )
-    _gen.generate_week(wd, tmp_path, "SYNTH_101")
+    _gen.generate_week(wd, tmp_path, "FXSYNTH_101")
     overview = (tmp_path / "week_01" / "week_01_overview.html").read_text(
         encoding="utf-8"
     )

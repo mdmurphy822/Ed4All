@@ -39,9 +39,9 @@ Unified orchestration system for SemantiK, Courseforge, Trainforge, and LibV2.
 ed4all run <workflow_name> --corpus <PATH> --course-name <NAME> [--mode local|api]
 
 # Examples
-ed4all run textbook-to-course --corpus textbook.pdf --course-name PHYS_101
-ed4all run textbook-to-course --corpus ./pdfs/ --course-name BIO_201 --weeks 16
-ed4all run rag_training --corpus course.imscc --course-name CHEM_101 --mode api
+ed4all run textbook-to-course --corpus textbook.pdf --course-name <course-name>
+ed4all run textbook-to-course --corpus ./pdfs/ --course-name <course-name> --weeks 16
+ed4all run rag_training --corpus course.imscc --course-name <course-name> --mode api
 ed4all run textbook-to-course --corpus x.pdf --course-name T --dry-run   # plan only
 ed4all run textbook-to-course --resume WF-20260420-abc12345               # resume
 
@@ -59,7 +59,7 @@ ed4all stop --clear-all             # remove STOP_ALL (operator-owned)
 # downstream. Canonical "retrieval-ready course, no training synthesis"
 # slice stops after imscc_chunking. Phase name validated (unknown ->
 # error). Full semantics: docs/operations/pipeline-invocation.md.
-ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101 \
+ed4all run textbook-to-course --corpus pdfs/ --course-name <course-name> \
   --skip-training --stop-after imscc_chunking
 
 # --with-training: OPT IN to the in-build training tail of
@@ -70,7 +70,7 @@ ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101 \
 # on --resume (patches the persisted params before the resumed phases
 # run). Training an ALREADY-archived course without rebuilding stays
 # `ed4all run trainforge_train --course-name <slug>`.
-ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101 \
+ed4all run textbook-to-course --corpus pdfs/ --course-name <course-name> \
   --with-training
 
 # Hosted large-model build profile (--provider nvidia = the vendor
@@ -79,7 +79,7 @@ ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101 \
 # redirect, seat pins, licensing caveat): see
 # docs/operations/pipeline-invocation.md § 3.1. Run --dry-run first.
 export COURSEFORGE_TWO_PASS=true
-ed4all run textbook-to-course --provider nvidia --course-name PHYS_101 \
+ed4all run textbook-to-course --provider nvidia --course-name <course-name> \
   --corpus slice.pdf --skip-conversion --skip-training \
   --stop-after imscc_chunking --dry-run   # preflight: resolve+assert, NO dispatch
 
@@ -88,8 +88,8 @@ ed4all run textbook-to-course --provider nvidia --course-name PHYS_101 \
 # the Courseforge + LibV2 archive shapes; normalized on disk. Also valid on
 # --resume (patches the persisted params before the resumed course_planning
 # runs). See docs/operations/pipeline-invocation.md § 3.
-ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101 \
-  --reuse-objectives Courseforge/exports/PROJ-PHYS_101-.../01_learning_objectives/synthesized_objectives.json
+ed4all run textbook-to-course --corpus pdfs/ --course-name <course-name> \
+  --reuse-objectives Courseforge/exports/<project-export>/01_learning_objectives/synthesized_objectives.json
 
 # ed4all objectives restructure: DETERMINISTICALLY (no LLM) rebuild an existing
 # objectives doc — lexical dedup (E), vacuity annotate/drop (B),
@@ -97,13 +97,13 @@ ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101 \
 # instead of a 7B re-roll. Writes <input>.restructured.json + restructure_report.json;
 # feed the output straight back into --reuse-objectives (it round-trips that shape).
 ed4all objectives restructure \
-  Courseforge/exports/PROJ-PHYS_101-.../01_learning_objectives/synthesized_objectives.json \
-  --course-name PHYS_101 --drop-vacuous
+  Courseforge/exports/<project-export>/01_learning_objectives/synthesized_objectives.json \
+  --course-name <course-name> --drop-vacuous
 
 # --reuse-conversion: reuse a prior SemantiK conversion (skips the
 # model-nondeterministic v2 cascade when prior artifacts exist). Mirrors
 # ED4ALL_REUSE_CONVERSION (flag wins). See SemantiK/CLAUDE.md §3.3a.
-ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101 \
+ed4all run textbook-to-course --corpus pdfs/ --course-name <course-name> \
   --reuse-conversion
 
 # --instruction-variants-per-chunk N: how many INSTRUCTION units the
@@ -114,16 +114,16 @@ ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101 \
 # never hold both an accepted anchor and a rejected unit to pair it
 # against. Routed via workflow_params ->
 # config/workflows.yaml::training_synthesis.inputs_from -> run_synthesis.
-ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101 \
+ed4all run textbook-to-course --corpus pdfs/ --course-name <course-name> \
   --instruction-variants-per-chunk 2
 
 # Phase 5: stage-by-stage Courseforge two-pass subcommands — re-run a
 # single tier against an existing export (upstream phases pre-populate
 # from disk). See Courseforge/CLAUDE.md "Operator stage subcommands".
 export COURSEFORGE_TWO_PASS=true
-ed4all run courseforge-outline --course-name PHYS_101              # outline tier only
-ed4all run courseforge-validate --course-name PHYS_101             # validators only
-ed4all run courseforge-rewrite --course-name PHYS_101 \
+ed4all run courseforge-outline --course-name <course-name>              # outline tier only
+ed4all run courseforge-validate --course-name <course-name>             # validators only
+ed4all run courseforge-rewrite --course-name <course-name> \
   --blocks assessment_item,objective                                # per-block-TYPE rewrite
 # I4 stage 2 — two ADDITIVE finer-grained rewrite-eviction scopes (both stack
 # with --blocks; the rewrite tier consumes them). --block-ids: exact
@@ -131,17 +131,17 @@ ed4all run courseforge-rewrite --course-name PHYS_101 \
 # exact page_id (e.g. week_01_content_02) OR a module prefix (e.g. week_01) for a
 # whole week/module. All three unset => byte-identical failure-driven reuse; an
 # unknown id / unmatched page fails the rewrite phase LOUDLY (never a silent no-op).
-ed4all run courseforge-rewrite --course-name PHYS_101 \
+ed4all run courseforge-rewrite --course-name <course-name> \
   --block-ids 'week_01_content_02#example_derivative_03' \
   --pages week_01                                                    # instance + page/module scope
-ed4all run courseforge --course-name PHYS_101 --force               # full two-pass slice
+ed4all run courseforge --course-name <course-name> --force               # full two-pass slice
 
 # --license-note / --attribution: optional corpus-provenance declarations
 # recorded on the LibV2 course_manifest (license.note / attribution.statement,
 # mirrored into the emitted NOTICE). See docs/operations/library-versioning.md
 # + docs/operations/demo-course.md.
-ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101 \
-  --license-note 'CC-BY-4.0' --attribution 'Access for free at openstax.org'
+ed4all run textbook-to-course --corpus pdfs/ --course-name <course-name> \
+  --license-note 'CC-BY-4.0' --attribution 'Provided by the source publisher'
 
 # Standalone verbs (no full pipeline run):
 # ed4all convert — thin accessible-HTML remediation slice: PDF (or dir of PDFs,
@@ -160,7 +160,7 @@ ed4all import-docs ./docs-tree --output ./corpus/
 # into runtime/state/bloom_labels/labels.jsonl — the corpus behind the re-founded
 # bloom_classifier_disagreement voter 1 (ED4ALL_BLOOM_TRIVOTE). --dry-run counts
 # only. Also runs post-build under ED4ALL_HARVEST_BLOOM_LABELS.
-ed4all harvest-bloom-labels ./Courseforge/exports/PROJ-... --dry-run
+ed4all harvest-bloom-labels ./Courseforge/exports/<project-export> --dry-run
 
 # ed4all support-bundle — assemble a redacted .tar.gz of run state + doctor
 # post-mortem for sharing (decision captures excluded unless --include-captures).

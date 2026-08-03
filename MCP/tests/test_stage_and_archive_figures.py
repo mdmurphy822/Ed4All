@@ -153,7 +153,7 @@ def test_archive_to_libv2_copies_figures_dir(tmp_path, monkeypatch):
         result_doc = json.loads(
             asyncio.run(
                 archive(
-                    course_name="TEST_101",
+                    course_name="FXTEST_101",
                     domain="biology",
                     html_paths=str(html_path),
                 )

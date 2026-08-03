@@ -87,7 +87,7 @@ export TRAINFORGE_REQUIRE_EMBEDDINGS=true
 # Run the full pipeline.
 ed4all run textbook-to-course \
   --corpus pdfs/ \
-  --course-name PHYS_101 \
+  --course-name <course-name> \
   --provider local
 ```
 

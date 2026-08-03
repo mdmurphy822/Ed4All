@@ -153,7 +153,7 @@ def runner_with_stub_executor(monkeypatch, tmp_path):
                 "inter_tier_validation", "post_rewrite_validation"
             ):
                 # Write tiny JSONL fixtures into a per-phase subdir.
-                project_path = tmp_path / "PROJ-TEST_101-20260502"
+                project_path = tmp_path / "PROJ-FXTEST_101-20260502"
                 project_path.mkdir(parents=True, exist_ok=True)
                 if phase_name == "inter_tier_validation":
                     sub = project_path / "01_outline"
@@ -460,7 +460,7 @@ class TestPhaseLoopDispatchHonoursStage:
         _create_workflow_state(
             tmp_path,
             workflow_id="WF-REWRITE",
-            course_name="TEST_101",
+            course_name="FXTEST_101",
             courseforge_stage="courseforge_rewrite",
         )
         result = asyncio.run(runner.run_workflow("WF-REWRITE"))
@@ -488,7 +488,7 @@ class TestPhaseLoopDispatchHonoursStage:
         _create_workflow_state(
             tmp_path,
             workflow_id="WF-VALIDATE",
-            course_name="TEST_101",
+            course_name="FXTEST_101",
             courseforge_stage="courseforge_validate",
         )
         result = asyncio.run(runner.run_workflow("WF-VALIDATE"))
@@ -510,7 +510,7 @@ class TestPhaseLoopDispatchHonoursStage:
         _create_workflow_state(
             tmp_path,
             workflow_id="WF-OUTLINE",
-            course_name="TEST_101",
+            course_name="FXTEST_101",
             courseforge_stage="courseforge_outline",
         )
         result = asyncio.run(runner.run_workflow("WF-OUTLINE"))
@@ -541,7 +541,7 @@ class TestValidationReportWriter:
         _create_workflow_state(
             tmp_path,
             workflow_id="WF-VALIDATE-REPORT",
-            course_name="TEST_101",
+            course_name="FXTEST_101",
             courseforge_stage="courseforge_validate",
         )
         result = asyncio.run(runner.run_workflow("WF-VALIDATE-REPORT"))
@@ -549,7 +549,7 @@ class TestValidationReportWriter:
 
         # inter_tier_validation report lives at project_root/02_validation_report/
         report_path = (
-            tmp_path / "PROJ-TEST_101-20260502" / "02_validation_report"
+            tmp_path / "PROJ-FXTEST_101-20260502" / "02_validation_report"
             / "report.json"
         )
         assert report_path.exists(), report_path
@@ -591,7 +591,7 @@ class TestValidationReportWriter:
         _create_workflow_state(
             tmp_path,
             workflow_id="WF-PR-REPORT",
-            course_name="TEST_101",
+            course_name="FXTEST_101",
             courseforge_stage="courseforge_rewrite",
         )
         result = asyncio.run(runner.run_workflow("WF-PR-REPORT"))
@@ -599,7 +599,7 @@ class TestValidationReportWriter:
 
         # post_rewrite_validation report lives INSIDE 04_rewrite/.
         report_path = (
-            tmp_path / "PROJ-TEST_101-20260502" / "04_rewrite"
+            tmp_path / "PROJ-FXTEST_101-20260502" / "04_rewrite"
             / "02_validation_report" / "report.json"
         )
         assert report_path.exists(), report_path
@@ -636,7 +636,7 @@ class TestForceRerunSynthesizerContract:
         # Build a project export root so _resolve_outline_dir picks it up
         # (force_rerun then strips _completed from synthesizer output).
         exports = tmp_path / "Courseforge" / "exports"
-        proj = exports / "PROJ-TEST_101-20260502"
+        proj = exports / "PROJ-FXTEST_101-20260502"
         proj.mkdir(parents=True)
         (proj / "01_outline").mkdir()
         # Minimal project_config so the synthesizer's downstream
@@ -644,7 +644,7 @@ class TestForceRerunSynthesizerContract:
         # absent => those phases just don't get pre-populated.
         (proj / "project_config.json").write_text(
             json.dumps({
-                "course_name": "TEST_101",
+                "course_name": "FXTEST_101",
                 "project_id": proj.name,
             }),
             encoding="utf-8",
@@ -653,7 +653,7 @@ class TestForceRerunSynthesizerContract:
         workflow_id = "WF-FORCE"
         _create_workflow_state(
             tmp_path, workflow_id=workflow_id,
-            course_name="TEST_101",
+            course_name="FXTEST_101",
             courseforge_stage="courseforge_rewrite",
             force_rerun=True,
         )

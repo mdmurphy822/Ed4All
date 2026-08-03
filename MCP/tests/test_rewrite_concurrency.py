@@ -106,7 +106,7 @@ def _setup_project(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     project_path = tmp_path / "Courseforge" / "exports" / project_id
     project_path.mkdir(parents=True, exist_ok=True)
     (project_path / "project_config.json").write_text(
-        json.dumps({"course_name": "TEST_101"}), encoding="utf-8",
+        json.dumps({"course_name": "FXTEST_101"}), encoding="utf-8",
     )
     validated = project_path / "blocks_validated.jsonl"
     _write_validated(validated, n_blocks)

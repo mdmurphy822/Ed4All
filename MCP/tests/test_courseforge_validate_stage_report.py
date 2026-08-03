@@ -54,13 +54,13 @@ def _scaffold_validate_export(tmp_path: Path) -> Path:
     project_config.json + 01_learning_objectives/synthesized_objectives.json
     + 04_rewrite/blocks_final.jsonl.
     """
-    project = tmp_path / "exports" / "PROJ-CALIB_101-20260620"
+    project = tmp_path / "exports" / "PROJ-FXCALIB_101-20260620"
     (project / "01_learning_objectives").mkdir(parents=True)
     (project / "04_rewrite").mkdir(parents=True)
 
     project.joinpath("project_config.json").write_text(
         json.dumps({
-            "course_name": "CALIB_101",
+            "course_name": "FXCALIB_101",
             "project_id": project.name,
             "duration_weeks": 8,
         }),
@@ -70,7 +70,7 @@ def _scaffold_validate_export(tmp_path: Path) -> Path:
         "01_learning_objectives", "synthesized_objectives.json"
     ).write_text(
         json.dumps({
-            "course_name": "CALIB_101",
+            "course_name": "FXCALIB_101",
             "duration_weeks": 8,
             "terminal_objectives": [
                 {"id": "TO-01", "statement": "T1", "bloom_level": "understand"},

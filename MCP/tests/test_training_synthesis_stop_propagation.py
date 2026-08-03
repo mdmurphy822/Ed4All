@@ -56,7 +56,7 @@ def test_pipeline_synthesizer_propagates_graceful_stop(
         asyncio.run(
             tool(
                 corpus_dir=str(corpus_dir),
-                course_code="TEST_101",
+                course_code="FXTEST_101",
                 provider="mock",
             )
         )
@@ -85,7 +85,7 @@ def test_pipeline_synthesizer_propagates_generator_failure(
         asyncio.run(
             tool(
                 corpus_dir=str(corpus_dir),
-                course_code="TEST_101",
+                course_code="FXTEST_101",
                 provider="local",
                 required_training=True,
             )
@@ -124,7 +124,7 @@ def test_pipeline_synthesizer_rejects_empty_pair_artifacts(
         asyncio.run(
             tool(
                 corpus_dir=str(corpus_dir),
-                course_code="TEST_101",
+                course_code="FXTEST_101",
                 provider="local",
                 required_training=True,
             )
@@ -151,7 +151,7 @@ def test_optional_pipeline_synthesizer_preserves_legacy_error_envelope(
     result = asyncio.run(
         tool(
             corpus_dir=str(corpus_dir),
-            course_code="TEST_101",
+            course_code="FXTEST_101",
             provider="local",
         )
     )

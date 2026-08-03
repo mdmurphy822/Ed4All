@@ -85,7 +85,7 @@ class TestDynamicContentPageCount:
             week_topics=week_topics,
             week_objectives=week_objectives,
             all_objectives=week_objectives,
-            course_code="BIO_101",
+            course_code="FXBIO_101",
         )
         assert len(wd["content_modules"]) == 3
 
@@ -99,7 +99,7 @@ class TestDynamicContentPageCount:
             week_topics=week_topics,
             week_objectives=week_objectives,
             all_objectives=week_objectives,
-            course_code="BIO_101",
+            course_code="FXBIO_101",
         )
         assert len(wd["content_modules"]) == 1
 
@@ -112,7 +112,7 @@ class TestDynamicContentPageCount:
             week_topics=[],
             week_objectives=[],
             all_objectives=[],
-            course_code="BIO_101",
+            course_code="FXBIO_101",
         )
         assert len(wd["content_modules"]) == 1
 
@@ -132,7 +132,7 @@ class TestDynamicContentPageCount:
             week_topics=week_topics,
             week_objectives=week_objectives,
             all_objectives=week_objectives,
-            course_code="BIO_101",
+            course_code="FXBIO_101",
         )
         assert len(wd["content_modules"]) == 4
 
@@ -157,7 +157,7 @@ class TestDynamicContentPageCount:
             week_topics=week_topics,
             week_objectives=week_objectives,
             all_objectives=week_objectives,
-            course_code="BIO_101",
+            course_code="FXBIO_101",
         )
         # Only the topic-backed module survives; the two topic-less
         # positions are skipped rather than emitted as empty.
@@ -187,7 +187,7 @@ class TestDynamicContentPageCount:
             week_topics=week_topics,
             week_objectives=week_objectives,
             all_objectives=week_objectives,
-            course_code="BIO_101",
+            course_code="FXBIO_101",
         )
         titles = [m["title"] for m in wd["content_modules"]]
         assert titles == [
@@ -223,11 +223,11 @@ class TestDynamicContentPagesEmitted:
             week_topics=week_topics,
             week_objectives=week_objectives,
             all_objectives=week_objectives,
-            course_code="TST_101",
+            course_code="FXTERTIARY_101",
         )
         output_dir = tmp_path / "out"
         output_dir.mkdir()
-        _gen.generate_week(week_data, output_dir, course_code="TST_101")
+        _gen.generate_week(week_data, output_dir, course_code="FXTERTIARY_101")
         week_dir = output_dir / "week_03"
         content_files = sorted(week_dir.glob("week_03_content_*.html"))
         assert len(content_files) == 3, [p.name for p in content_files]
@@ -243,11 +243,11 @@ class TestDynamicContentPagesEmitted:
             week_topics=week_topics,
             week_objectives=week_objectives,
             all_objectives=week_objectives,
-            course_code="TST_101",
+            course_code="FXTERTIARY_101",
         )
         output_dir = tmp_path / "out"
         output_dir.mkdir()
-        _gen.generate_week(week_data, output_dir, course_code="TST_101")
+        _gen.generate_week(week_data, output_dir, course_code="FXTERTIARY_101")
         week_dir = output_dir / "week_01"
         content_files = sorted(week_dir.glob("week_01_content_*.html"))
         assert len(content_files) == 1

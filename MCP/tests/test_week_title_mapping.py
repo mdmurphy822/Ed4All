@@ -74,10 +74,10 @@ class TestWeekTitleReflectsChapter:
             week_topics=[topic],
             week_objectives=[],
             all_objectives=[],
-            course_code="SYNTH_101",
+            course_code="FXSYNTH_101",
         )
         assert wd["title"] == "Theories of Conceptual Change"
-        _gen.generate_week(wd, tmp_path, "SYNTH_101")
+        _gen.generate_week(wd, tmp_path, "FXSYNTH_101")
         overview = (tmp_path / "week_01" / "week_01_overview.html").read_text(
             encoding="utf-8"
         )
@@ -95,9 +95,9 @@ class TestWeekTitleReflectsChapter:
             week_topics=[],
             week_objectives=[],
             all_objectives=[],
-            course_code="SYNTH_101",
+            course_code="FXSYNTH_101",
         )
-        _gen.generate_week(wd, tmp_path, "SYNTH_101")
+        _gen.generate_week(wd, tmp_path, "FXSYNTH_101")
         overview = (tmp_path / "week_03" / "week_03_overview.html").read_text(
             encoding="utf-8"
         )
@@ -162,7 +162,7 @@ class TestPackagerManifestWeekTitle:
             str(Path(__file__).resolve().parents[2]
                 / "Courseforge" / "scripts"),
         )
-        import package_multifile_imscc as pkg
+        from Courseforge.scripts.packaging import package_multifile_imscc as pkg
 
         wdir = tmp_path / "week_01"
         wdir.mkdir()
@@ -181,7 +181,7 @@ class TestPackagerManifestWeekTitle:
             str(Path(__file__).resolve().parents[2]
                 / "Courseforge" / "scripts"),
         )
-        import package_multifile_imscc as pkg
+        from Courseforge.scripts.packaging import package_multifile_imscc as pkg
 
         wdir = tmp_path / "week_02"
         wdir.mkdir()
@@ -199,7 +199,7 @@ class TestPackagerManifestWeekTitle:
             str(Path(__file__).resolve().parents[2]
                 / "Courseforge" / "scripts"),
         )
-        import package_multifile_imscc as pkg
+        from Courseforge.scripts.packaging import package_multifile_imscc as pkg
 
         wdir = tmp_path / "week_03"
         wdir.mkdir()

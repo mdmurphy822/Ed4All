@@ -185,7 +185,7 @@ def _run(provider, *, checkpoint_path: Path, monkeypatch):
             chunks_by_id=chunks_by_id,
             all_chunks=all_chunks,
             grounding_mode="chunk_window",
-            course_name="MATH_101",
+            course_name="FXMATH_101",
             provider_env="local",
             chapter_synthesis_failures=[],
             mint_lo_id=_mint,
@@ -346,7 +346,7 @@ def _derive(provider, *, cluster_cp: Path, monkeypatch):
         provider=provider,
         chapter_cos=_cos(8),
         embed=_FakeEmbed(),
-        course_name="MATH_101",
+        course_name="FXMATH_101",
         mint_lo_id=_mint,
         checkpoint_path=cluster_cp,
     )

@@ -238,7 +238,7 @@ async def test_content_generation_empty_envelope_fails(state_runs_isolated):
         })
     )
     result = await _run_task(
-        executor, {"project_id": "SAMPLE_101", "week_range": "1-12"}
+        executor, {"project_id": "FXSAMPLE_101", "week_range": "1-12"}
     )
 
     # Task must not survive as COMPLETE — otherwise the phase summary

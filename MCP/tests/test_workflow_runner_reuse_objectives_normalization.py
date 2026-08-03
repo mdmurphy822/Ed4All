@@ -49,7 +49,7 @@ class TestNormalizeToCourseforgeForm:
     def test_libv2_form_normalizes_to_courseforge_form(self):
         libv2 = {
             "schema_version": "v1",
-            "course_code": "test_101",
+            "course_code": "fxtest_101",
             "terminal_outcomes": [
                 {"id": "to-01", "statement": "T1",
                  "bloom_level": "understand"},
@@ -145,7 +145,7 @@ class TestNormalizeToCourseforgeForm:
     def test_libv2_passes_course_code_into_course_name_slot(self):
         libv2 = {
             "schema_version": "v1",
-            "course_code": "phys_101",
+            "course_code": "fxalpha_101",
             "terminal_outcomes": [{"id": "to-01", "statement": "T1"}],
             "component_objectives": [],
             "objective_count": {"terminal": 1, "component": 0},
@@ -155,7 +155,7 @@ class TestNormalizeToCourseforgeForm:
         # Courseforge's synthesized JSON uses ``course_name`` as the
         # canonical key — LibV2's ``course_code`` is the closest
         # equivalent.
-        assert out["course_name"] == "phys_101"
+        assert out["course_name"] == "fxalpha_101"
 
 
 class TestCoerceChapterGroups:
@@ -197,7 +197,7 @@ class TestLibV2ReuseDiskWriteContract:
         libv2.write_text(
             json.dumps({
                 "schema_version": "v1",
-                "course_code": "test_101",
+                "course_code": "fxtest_101",
                 "terminal_outcomes": [
                     {"id": "to-01", "statement": "T1",
                      "bloom_level": "understand"},
@@ -213,7 +213,7 @@ class TestLibV2ReuseDiskWriteContract:
 
         params = {
             "reuse_objectives_path": str(libv2),
-            "course_name": "TEST_101",
+            "course_name": "FXTEST_101",
         }
         phase_outputs = {
             "objective_extraction": {

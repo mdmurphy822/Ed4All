@@ -69,7 +69,7 @@ def test_courseprocessor_accepts_objectives_path(tmp_path):
     processor = CourseProcessor(
         imscc_path=str(imscc),
         output_dir=str(output),
-        course_code="TEST_101",
+        course_code="FXTEST_101",
         objectives_path=str(objectives),
     )
     assert processor.objectives is not None
@@ -87,7 +87,7 @@ def test_valid_outcome_ids_populated_from_objectives(tmp_path):
     processor = CourseProcessor(
         imscc_path=str(imscc),
         output_dir=str(output),
-        course_code="TEST_101",
+        course_code="FXTEST_101",
         objectives_path=str(objectives),
     )
     valid_ids = processor._build_valid_outcome_ids()
@@ -109,12 +109,12 @@ def test_build_course_json_shape(tmp_path):
     processor = CourseProcessor(
         imscc_path=str(imscc),
         output_dir=str(output),
-        course_code="TEST_101",
+        course_code="FXTEST_101",
         objectives_path=str(objectives),
     )
     manifest = {"title": "Test Course"}
     course_data = processor._build_course_json(manifest)
-    assert course_data["course_code"] == "TEST_101"
+    assert course_data["course_code"] == "FXTEST_101"
     assert course_data["title"] == "Test Course"
     outcomes = course_data["learning_outcomes"]
     assert len(outcomes) == 4
