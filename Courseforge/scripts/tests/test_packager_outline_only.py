@@ -69,7 +69,7 @@ class TestBuildManifestOutlineOnly:
         from package_multifile_imscc import build_manifest  # noqa: E402
 
         xml = build_manifest(
-            content_dir, "OUTLINE_101", "Outline Test", outline_only=True,
+            content_dir, "TST_909", "Outline Test", outline_only=True,
         )
         assert "[OUTLINE] " in xml, (
             "outline_only=True must prefix the LOM general description with "
@@ -80,14 +80,14 @@ class TestBuildManifestOutlineOnly:
         """Backward compat: default (outline_only=False) leaves description as-is."""
         from package_multifile_imscc import build_manifest  # noqa: E402
 
-        xml = build_manifest(content_dir, "OUTLINE_101", "Outline Test")
+        xml = build_manifest(content_dir, "TST_909", "Outline Test")
         assert "[OUTLINE] " not in xml
 
     def test_outline_only_excludes_content_pages(self, content_dir):
         from package_multifile_imscc import build_manifest  # noqa: E402
 
         xml = build_manifest(
-            content_dir, "OUTLINE_101", "Outline Test", outline_only=True,
+            content_dir, "TST_909", "Outline Test", outline_only=True,
         )
         # The dropped pages must NOT appear as href / resource entries.
         assert "week_01_content_01_intro.html" not in xml
@@ -102,7 +102,7 @@ class TestBuildManifestOutlineOnly:
         """Without the flag, all six pages should be present in manifest."""
         from package_multifile_imscc import build_manifest  # noqa: E402
 
-        xml = build_manifest(content_dir, "OUTLINE_101", "Outline Test")
+        xml = build_manifest(content_dir, "TST_909", "Outline Test")
         for name in _PAGE_NAMES:
             assert name in xml, f"page {name} missing from default-mode manifest"
 
@@ -115,7 +115,7 @@ class TestPackageImsccOutlineOnly:
 
         out = tmp_path / "outline.imscc"
         package_imscc(
-            content_dir, out, "OUTLINE_101", "Outline Test",
+            content_dir, out, "TST_909", "Outline Test",
             skip_validation=True,
             outline_only=True,
         )
@@ -144,7 +144,7 @@ class TestPackageImsccOutlineOnly:
 
         out = tmp_path / "full.imscc"
         package_imscc(
-            content_dir, out, "OUTLINE_101", "Outline Test",
+            content_dir, out, "TST_909", "Outline Test",
             skip_validation=True,
         )
         with zipfile.ZipFile(out) as zf:
@@ -162,7 +162,7 @@ class TestPackageImsccOutlineOnly:
 
         out = tmp_path / "outline.imscc"
         package_imscc(
-            content_dir, out, "OUTLINE_101", "Outline Test",
+            content_dir, out, "TST_909", "Outline Test",
             skip_validation=True,
             outline_only=True,
         )

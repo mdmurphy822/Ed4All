@@ -30,26 +30,26 @@ class TestCatalogEntry:
 
     def test_to_dict(self):
         entry = CatalogEntry(
-            slug="phys-101",
+            slug="course-kappa",
             title="Physics 101",
             division="STEM",
             primary_domain="physics",
             secondary_domains=["mathematics"],
         )
         d = entry.to_dict()
-        assert d["slug"] == "phys-101"
+        assert d["slug"] == "course-kappa"
         assert d["secondary_domains"] == ["mathematics"]
         assert "primary_domain" in d
 
     def test_from_dict(self):
         data = {
-            "slug": "math-201",
+            "slug": "course-beta",
             "title": "Math 201",
             "division": "STEM",
             "primary_domain": "mathematics",
         }
         entry = CatalogEntry.from_dict(data)
-        assert entry.slug == "math-201"
+        assert entry.slug == "course-beta"
         assert entry.language == "en"  # default
 
     def test_roundtrip(self):

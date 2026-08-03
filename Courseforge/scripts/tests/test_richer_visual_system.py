@@ -46,7 +46,7 @@ _VARIABLES_CSS = (
 def _wrap_kwargs():
     return dict(
         title="week_01_content_01",
-        course_code="PHYS_101",
+        course_code="TST_910",
         week_num=1,
         body_html="<section><p>Body.</p></section>",
     )

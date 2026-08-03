@@ -1,7 +1,7 @@
 /* Shared hash router — vanilla ES module, NO build step.
  *
  * A tiny location.hash router. Routes are matched on the FIRST path segment
- * after `#/` (e.g. `#/viewer/phys-101` → route "viewer", rest ["phys-101"]).
+ * after `#/` (e.g. `#/viewer/course-alpha` → route "viewer", rest ["course-alpha"]).
  * The handler receives the trailing segments + the raw hash so a viewer route
  * can read its course slug / item without a framework.
  *

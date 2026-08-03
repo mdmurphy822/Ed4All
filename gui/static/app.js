@@ -462,7 +462,7 @@ async function renderUpload(view) {
   refreshPhases();
   modeSingle.addEventListener('change', () => { phaseSelect.disabled = !modeSingle.checked; });
 
-  const courseName = el('input', { type: 'text', placeholder: 'e.g. PHYS_101' });
+  const courseName = el('input', { type: 'text', placeholder: '<COURSE_NAME>' });
   const weeks = el('input', { type: 'number', min: '1', placeholder: 'auto' });
   const projectId = el('input', { type: 'text', placeholder: '(phase runs) existing project export id, optional' });
   const runMode = el('select');

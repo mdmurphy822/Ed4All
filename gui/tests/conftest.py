@@ -132,8 +132,8 @@ def courseforge_export(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Dict[
 
     cf_root = tmp_path / "Courseforge"
     exports = cf_root / "exports"
-    project_id = "PROJ-PHYS_101-20260531-abcd1234"
-    course_name = "PHYS_101"
+    project_id = "PROJ-course-alpha-20260531-abcd1234"
+    course_name = "course-alpha"
     export_dir = exports / project_id
     _write_json(
         export_dir / "project_config.json",
@@ -207,7 +207,7 @@ def libv2_course(libv2_root: Path) -> Dict[str, Any]:
             for name in [m for m in sys.modules if m == "tools" or m.startswith("tools.")]:
                 del sys.modules[name]
 
-    slug = "phys-101-demo"
+    slug = "course-alpha-demo"
     course_dir = libv2_root / "courses" / slug
     (course_dir / "imscc_chunks").mkdir(parents=True, exist_ok=True)
 

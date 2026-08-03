@@ -358,7 +358,7 @@ def test_generated_page_jsonld_carries_bloom_plural_fields(tmp_path):
         "reflection_questions": ["Question?"],
     }
     out = tmp_path / "out"
-    generate_course.generate_week(week_data, out, "TEST_101", source_module_map=None)
+    generate_course.generate_week(week_data, out, "TST_915", source_module_map=None)
 
     overview_html = (out / "week_01" / "week_01_overview.html").read_text(
         encoding="utf-8"

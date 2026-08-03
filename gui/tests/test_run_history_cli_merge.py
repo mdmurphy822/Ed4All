@@ -40,7 +40,7 @@ def _write_workflow_state(
     *,
     status: str = "RUNNING",
     age: timedelta = timedelta(minutes=5),
-    course_name: Optional[str] = "TEST_COURSE",
+    course_name: Optional[str] = "synthetic-course",
     params_as_string: bool = False,
     extra: Optional[Dict[str, Any]] = None,
 ) -> Path:
@@ -74,7 +74,7 @@ def _register_gui_run(run_id: str, workflow_id: Optional[str] = None) -> None:
             "kind": "pipeline",
             "workflow": "textbook_to_course",
             "workflow_id": workflow_id,
-            "course_name": "GUI_COURSE",
+            "course_name": "course-alpha",
             "status": "running",
         }
     )
@@ -100,7 +100,7 @@ def test_merge_surfaces_fresh_cli_run_with_mapped_fields(state_dir):
     assert cli["workflow_id"] == "WF-20260101-cli00001"
     assert cli["workflow"] == "textbook_to_course"
     assert cli["status"] == "running"  # lowercased
-    assert cli["course_name"] == "TEST_COURSE"  # from params
+    assert cli["course_name"] == "synthetic-course"  # from params
     assert cli["created_at"] and cli["started_at"]
     # No "Run again" ammunition: orchestrator params are shape-incompatible.
     assert cli["params"] is None
@@ -120,7 +120,7 @@ def test_cli_params_as_json_string_still_yields_course_name(state_dir):
         state_dir, "WF-20260101-cli00003", status="RUNNING", params_as_string=True
     )
     runs = run_service.list_runs()
-    assert runs[0]["course_name"] == "TEST_COURSE"
+    assert runs[0]["course_name"] == "synthetic-course"
 
 
 def test_merge_is_newest_first_across_sources(state_dir):

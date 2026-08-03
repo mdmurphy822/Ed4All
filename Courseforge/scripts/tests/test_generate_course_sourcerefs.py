@@ -126,35 +126,35 @@ def populated_source_map():
     return {
         "week_03": {
             "week_03_overview": {
-                "primary": ["semantik:science_of_learning#s5_p0"],
-                "contributing": ["semantik:science_of_learning#s4_p0"],
+                "primary": ["semantik:source-alpha#s5_p0"],
+                "contributing": ["semantik:source-alpha#s4_p0"],
                 "confidence": 0.82,
             },
             "week_03_content_01_pour_principles": {
-                "primary": ["semantik:science_of_learning#s5_p2"],
+                "primary": ["semantik:source-alpha#s5_p2"],
                 "contributing": [
-                    "semantik:science_of_learning#s4_p0",
-                    "semantik:science_of_learning#s6_p1",
+                    "semantik:source-alpha#s4_p0",
+                    "semantik:source-alpha#s6_p1",
                 ],
                 "confidence": 0.9,
             },
             "week_03_application": {
-                "primary": ["semantik:science_of_learning#s7_p0"],
+                "primary": ["semantik:source-alpha#s7_p0"],
                 "contributing": [],
                 "confidence": 0.75,
             },
             "week_03_self_check": {
                 "primary": [],
-                "contributing": ["semantik:science_of_learning#s5_p2"],
+                "contributing": ["semantik:source-alpha#s5_p2"],
                 "confidence": 0.5,
             },
             "week_03_summary": {
-                "primary": ["semantik:science_of_learning#s5_p0"],
+                "primary": ["semantik:source-alpha#s5_p0"],
                 "contributing": [],
                 "confidence": 0.7,
             },
             "week_03_discussion": {
-                "primary": ["semantik:science_of_learning#s5_p0"],
+                "primary": ["semantik:source-alpha#s5_p0"],
                 "contributing": [],
                 "confidence": 0.6,
             },
@@ -203,7 +203,7 @@ class TestHelpers:
         refs = _page_refs_for(populated_source_map, 3, "week_03_content_01_pour_principles")
         assert refs is not None
         assert refs[0]["role"] == "primary"
-        assert refs[0]["sourceId"] == "semantik:science_of_learning#s5_p2"
+        assert refs[0]["sourceId"] == "semantik:source-alpha#s5_p2"
         # confidence propagates from the map entry to every ref.
         assert all(r["confidence"] == 0.9 for r in refs)
 
@@ -243,13 +243,13 @@ class TestHelpers:
 
 class TestBuildPageMetadata:
     def test_source_references_elided_when_absent(self):
-        meta = _build_page_metadata("SAMPLE_101", 3, "content", "p")
+        meta = _build_page_metadata("TST_913", 3, "content", "p")
         assert "sourceReferences" not in meta
 
     def test_source_references_emitted_when_populated(self):
         refs = [{"sourceId": "semantik:x#y", "role": "primary"}]
         meta = _build_page_metadata(
-            "SAMPLE_101", 3, "content", "p", source_references=refs,
+            "TST_913", 3, "content", "p", source_references=refs,
         )
         assert meta["sourceReferences"] == refs
 
@@ -284,7 +284,7 @@ class TestGenerateWeekWithSourceMap:
     ):
         out = tmp_path / "out"
         generate_week(
-            week_data, out, "SAMPLE_101",
+            week_data, out, "TST_913",
             source_module_map=populated_source_map,
         )
         week_dir = out / "week_03"
@@ -316,51 +316,51 @@ class TestGenerateWeekWithSourceMap:
     ):
         out = tmp_path / "out"
         generate_week(
-            week_data, out, "SAMPLE_101",
+            week_data, out, "TST_913",
             source_module_map=populated_source_map,
         )
         content_html = (out / "week_03" / "week_03_content_01_pour_principles.html").read_text()
         attrs = _all_source_id_attrs(content_html)
         assert attrs, "Content page must carry data-cf-source-ids attributes"
-        assert any("semantik:science_of_learning#s5_p2" in a for a in attrs)
+        assert any("semantik:source-alpha#s5_p2" in a for a in attrs)
 
     def test_data_cf_source_primary_emitted_when_unambiguous(
         self, tmp_path, week_data, populated_source_map
     ):
         out = tmp_path / "out"
         generate_week(
-            week_data, out, "SAMPLE_101",
+            week_data, out, "TST_913",
             source_module_map=populated_source_map,
         )
         content_html = (out / "week_03" / "week_03_content_01_pour_principles.html").read_text()
         primaries = _all_source_primary_attrs(content_html)
         assert primaries
-        assert all(p == "semantik:science_of_learning#s5_p2" for p in primaries)
+        assert all(p == "semantik:source-alpha#s5_p2" for p in primaries)
 
     def test_self_check_wrapper_carries_source_ids(
         self, tmp_path, week_data, populated_source_map
     ):
         out = tmp_path / "out"
         generate_week(
-            week_data, out, "SAMPLE_101",
+            week_data, out, "TST_913",
             source_module_map=populated_source_map,
         )
         sc_html = (out / "week_03" / "week_03_self_check.html").read_text()
         # self-check wrapper must carry data-cf-source-ids
         assert 'class="self-check"' in sc_html
-        assert 'data-cf-source-ids="semantik:science_of_learning#s5_p2"' in sc_html
+        assert 'data-cf-source-ids="semantik:source-alpha#s5_p2"' in sc_html
 
     def test_activity_card_carries_source_ids(
         self, tmp_path, week_data, populated_source_map
     ):
         out = tmp_path / "out"
         generate_week(
-            week_data, out, "SAMPLE_101",
+            week_data, out, "TST_913",
             source_module_map=populated_source_map,
         )
         app_html = (out / "week_03" / "week_03_application.html").read_text()
         assert 'class="activity-card"' in app_html
-        assert 'data-cf-source-ids="semantik:science_of_learning#s7_p0"' in app_html
+        assert 'data-cf-source-ids="semantik:source-alpha#s7_p0"' in app_html
 
     def test_no_source_attrs_on_p_or_li_elements(
         self, tmp_path, week_data, populated_source_map
@@ -368,7 +368,7 @@ class TestGenerateWeekWithSourceMap:
         """P2 decision: never on per-paragraph / list-item / table-row."""
         out = tmp_path / "out"
         generate_week(
-            week_data, out, "SAMPLE_101",
+            week_data, out, "TST_913",
             source_module_map=populated_source_map,
         )
         for page in (out / "week_03").glob("*.html"):
@@ -390,7 +390,7 @@ class TestBackwardCompat:
         self, tmp_path, week_data
     ):
         out = tmp_path / "out"
-        generate_week(week_data, out, "SAMPLE_101", source_module_map=None)
+        generate_week(week_data, out, "TST_913", source_module_map=None)
         for page in (out / "week_03").glob("*.html"):
             html = page.read_text()
             meta = _extract_json_ld(html)
@@ -405,7 +405,7 @@ class TestBackwardCompat:
         self, tmp_path, week_data
     ):
         out = tmp_path / "out"
-        generate_week(week_data, out, "SAMPLE_101", source_module_map={})
+        generate_week(week_data, out, "TST_913", source_module_map={})
         for page in (out / "week_03").glob("*.html"):
             html = page.read_text()
             meta = _extract_json_ld(html)
@@ -424,7 +424,7 @@ class TestBackwardCompat:
             }
         }
         generate_week(
-            week_data, out, "SAMPLE_101", source_module_map=other_week_map,
+            week_data, out, "TST_913", source_module_map=other_week_map,
         )
         for page in (out / "week_03").glob("*.html"):
             html = page.read_text()
@@ -441,7 +441,7 @@ class TestGenerateCourseRoundTrip:
         self, tmp_path, week_data, populated_source_map
     ):
         course_data = {
-            "course_code": "SAMPLE_101",
+            "course_code": "TST_913",
             "course_title": "Sample",
             "weeks": [week_data],
         }
@@ -455,13 +455,13 @@ class TestGenerateCourseRoundTrip:
             source_module_map_path=str(map_path),
         )
         content_html = (out / "week_03" / "week_03_content_01_pour_principles.html").read_text()
-        assert 'data-cf-source-ids="semantik:science_of_learning#s5_p2' in content_html
+        assert 'data-cf-source-ids="semantik:source-alpha#s5_p2' in content_html
 
     def test_generate_course_with_no_map_preserves_legacy_shape(
         self, tmp_path, week_data
     ):
         course_data = {
-            "course_code": "SAMPLE_101",
+            "course_code": "TST_913",
             "course_title": "Sample",
             "weeks": [week_data],
         }
@@ -545,7 +545,7 @@ class TestWave41OverviewBodyWrap:
         bs4 = pytest.importorskip("bs4")
         out = tmp_path / "out"
         generate_week(
-            week_with_long_overview, out, "SAMPLE_101",
+            week_with_long_overview, out, "TST_913",
             source_module_map=populated_source_map,
         )
         html = (out / "week_03" / "week_03_overview.html").read_text()
@@ -561,7 +561,7 @@ class TestWave41OverviewBodyWrap:
                 f"Overview <{el.name}> {el.get_text()[:60]!r} must have "
                 "a data-cf-source-ids ancestor (Wave 41 grounding)."
             )
-            assert "semantik:science_of_learning#s5_p0" in ids
+            assert "semantik:source-alpha#s5_p0" in ids
 
     def test_overview_no_wrap_when_map_empty(
         self, tmp_path, week_with_long_overview
@@ -577,7 +577,7 @@ class TestWave41OverviewBodyWrap:
         """
         out = tmp_path / "out"
         generate_week(
-            week_with_long_overview, out, "SAMPLE_101",
+            week_with_long_overview, out, "TST_913",
             source_module_map=None,
         )
         html = (out / "week_03" / "week_03_overview.html").read_text()
@@ -615,7 +615,7 @@ class TestWave41ApplicationBodyWrap:
         bs4 = pytest.importorskip("bs4")
         out = tmp_path / "out"
         generate_week(
-            week_with_long_activity, out, "SAMPLE_101",
+            week_with_long_activity, out, "TST_913",
             source_module_map=populated_source_map,
         )
         html = (out / "week_03" / "week_03_application.html").read_text()
@@ -628,7 +628,7 @@ class TestWave41ApplicationBodyWrap:
                 f"Application <{el.name}> {el.get_text()[:60]!r} must "
                 "have a data-cf-source-ids ancestor (Wave 41 grounding)."
             )
-            assert "semantik:science_of_learning#s7_p0" in ids
+            assert "semantik:source-alpha#s7_p0" in ids
 
 
 class TestWave41SelfCheckBodyWrap:
@@ -666,12 +666,12 @@ class TestWave41SelfCheckBodyWrap:
         # empty primary list which would suppress the wrapper).
         sm = json.loads(json.dumps(populated_source_map))
         sm["week_03"]["week_03_self_check"] = {
-            "primary": ["semantik:science_of_learning#s5_p2"],
+            "primary": ["semantik:source-alpha#s5_p2"],
             "contributing": [],
             "confidence": 0.8,
         }
         generate_week(
-            week_with_long_self_check, out, "SAMPLE_101",
+            week_with_long_self_check, out, "TST_913",
             source_module_map=sm,
         )
         html = (out / "week_03" / "week_03_self_check.html").read_text()
@@ -684,7 +684,7 @@ class TestWave41SelfCheckBodyWrap:
                 f"Self-check <{el.name}> {el.get_text()[:60]!r} must "
                 "have a data-cf-source-ids ancestor (Wave 41 grounding)."
             )
-            assert "semantik:science_of_learning#s5_p2" in ids
+            assert "semantik:source-alpha#s5_p2" in ids
 
 
 class TestWave41SummaryBodyWrap:
@@ -704,7 +704,7 @@ class TestWave41SummaryBodyWrap:
         bs4 = pytest.importorskip("bs4")
         out = tmp_path / "out"
         generate_week(
-            week_with_long_summary, out, "SAMPLE_101",
+            week_with_long_summary, out, "TST_913",
             source_module_map=populated_source_map,
         )
         html = (out / "week_03" / "week_03_summary.html").read_text()
@@ -717,7 +717,7 @@ class TestWave41SummaryBodyWrap:
                 f"Summary <{el.name}> {el.get_text()[:60]!r} must "
                 "have a data-cf-source-ids ancestor (Wave 41 grounding)."
             )
-            assert "semantik:science_of_learning#s5_p0" in ids
+            assert "semantik:source-alpha#s5_p0" in ids
 
 
 # ---------------------------------------------------------------------- #
@@ -1041,7 +1041,7 @@ class TestWave43SummaryRecapEmit:
         bs4 = pytest.importorskip("bs4")
         out = tmp_path / "out"
         generate_week(
-            week_with_topic_paragraphs, out, "SAMPLE_101",
+            week_with_topic_paragraphs, out, "TST_913",
             source_module_map=populated_source_map,
         )
         html = (out / "week_03" / "week_03_summary.html").read_text()
@@ -1066,7 +1066,7 @@ class TestWave43SummaryRecapEmit:
                 "Wave 43 recap <p> must have a data-cf-source-ids "
                 "ancestor (AGGREGATE_EMPTY_PAGES fix)."
             )
-            assert "semantik:science_of_learning#s5_p0" in ids
+            assert "semantik:source-alpha#s5_p0" in ids
 
     def test_summary_page_no_recap_when_topics_empty(
         self, tmp_path, week_data, populated_source_map,
@@ -1077,7 +1077,7 @@ class TestWave43SummaryRecapEmit:
         week_data["content_modules"] = []
         out = tmp_path / "out"
         generate_week(
-            week_data, out, "SAMPLE_101",
+            week_data, out, "TST_913",
             source_module_map=populated_source_map,
         )
         html = (out / "week_03" / "week_03_summary.html").read_text()
@@ -1104,7 +1104,7 @@ class TestWave43SummaryRecapEmit:
         ]
         out = tmp_path / "out"
         generate_week(
-            week_data, out, "SAMPLE_101",
+            week_data, out, "TST_913",
             source_module_map=populated_source_map,
         )
         html = (out / "week_03" / "week_03_summary.html").read_text()
@@ -1119,7 +1119,7 @@ class TestWave43SummaryRecapEmit:
         bs4 = pytest.importorskip("bs4")
         out = tmp_path / "out"
         generate_week(
-            week_with_topic_paragraphs, out, "SAMPLE_101",
+            week_with_topic_paragraphs, out, "TST_913",
             source_module_map=populated_source_map,
         )
         html = (out / "week_03" / "week_03_summary.html").read_text()
@@ -1144,7 +1144,7 @@ class TestWave43SummaryRecapEmit:
         prose on a page that otherwise had none)."""
         out = tmp_path / "out"
         generate_week(
-            week_with_topic_paragraphs, out, "SAMPLE_101",
+            week_with_topic_paragraphs, out, "TST_913",
             source_module_map=None,
         )
         html = (out / "week_03" / "week_03_summary.html").read_text()

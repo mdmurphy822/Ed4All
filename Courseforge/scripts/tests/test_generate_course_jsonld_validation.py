@@ -59,7 +59,7 @@ def _minimally_valid_metadata() -> dict:
     return {
         "@context": "https://ed4all.dev/ns/courseforge/v1",
         "@type": "CourseModule",
-        "courseCode": "SAMPLE_101",
+        "courseCode": "TST_913",
         "weekNumber": 1,
         "moduleType": "content",
         "pageId": "week_01_content_01_intro",
@@ -229,7 +229,7 @@ def test_real_generate_week_output_validates(
     # then collect errors explicitly and assert none.
     monkeypatch.delenv(_ENFORCE_JSONLD_SCHEMA_ENV, raising=False)
     out = tmp_path / "out"
-    generate_week(week_data, out, "SAMPLE_101", source_module_map=None)
+    generate_week(week_data, out, "TST_913", source_module_map=None)
 
     validator = generate_course._get_jsonld_validator()
     assert validator is not None, "Validator must be built in test env"
@@ -280,7 +280,7 @@ def test_wrap_page_invokes_validation_on_real_emit(
     monkeypatch.setenv(_ENFORCE_JSONLD_SCHEMA_ENV, "1")
     # generate_week should NOT raise on this fixture — sections avoid
     # the pre-existing teachingRole drift documented above.
-    generate_week(week_data, tmp_path / "out", "SAMPLE_101", source_module_map=None)
+    generate_week(week_data, tmp_path / "out", "TST_913", source_module_map=None)
 
 
 def test_wrap_page_raises_when_strict_and_emit_drifts(
@@ -305,7 +305,7 @@ def test_wrap_page_raises_when_strict_and_emit_drifts(
     )
     with pytest.raises(ValueError, match="failed JSON-LD schema"):
         generate_week(
-            week_data, tmp_path / "out", "SAMPLE_101", source_module_map=None,
+            week_data, tmp_path / "out", "TST_913", source_module_map=None,
         )
 
 
@@ -399,7 +399,7 @@ def test_jsonld_provenance_object_validates():
     assert validator is not None
     meta = _minimally_valid_metadata()
     meta["provenance"] = {
-        "runId": "WF-20260502-abc12345",
+        "runId": "run-alpha",
         "pipelineVersion": "0.3.0",
         "tiers": [
             {"tier": "outline", "model": "qwen2.5-14b", "provider": "local"},

@@ -56,7 +56,7 @@ from MCP.tools.pipeline_tools import (  # noqa: E402
 # 2 TOs + 4 COs spread across 2 chapter groups — the shape
 # MCP/tools/pipeline_tools.py::_plan_course_structure writes to disk.
 _SYNTHESIZED_COURSEFORGE_FORM = {
-    "course_name": "PHYS_101",
+    "course_name": "TST_910",
     "generated_from": "textbook_structure.json",
     "mint_method": "synthesize_objectives_from_topics",
     "duration_weeks": 8,
@@ -156,7 +156,7 @@ _SYNTHESIZED_COURSEFORGE_FORM = {
 # list-of-groups + flat-list shapes. Mirrors the vendor dict-of-lists
 # layout — chapter labels as keys, flat CO dict lists as values.
 _SYNTHESIZED_VENDOR_DICT_OF_LISTS_FORM = {
-    "course_name": "PHYS_101",
+    "course_name": "TST_910",
     "duration_weeks": 8,
     "terminal_objectives": [
         {
@@ -204,7 +204,7 @@ _SYNTHESIZED_VENDOR_DICT_OF_LISTS_FORM = {
 # normalizes this to the Courseforge form on disk, but we still must
 # handle it defensively in case a hand-edited file slips through.
 _SYNTHESIZED_LIBV2_FORM = {
-    "course_name": "PHYS_101",
+    "course_name": "TST_910",
     "duration_weeks": 8,
     "terminal_outcomes": [
         {
@@ -320,8 +320,8 @@ class TestCourseJsonEmissionFromSynthesizedObjectives:
         result = _project_synthesized_objectives_to_course_json(
             synth_path,
             course_json_path,
-            course_code="PHYS_101",
-            course_title="Physics 101: Mechanics",
+            course_code="TST_910",
+            course_title="Synthetic Course Alpha",
         )
 
         # Returned dict + on-disk file agree.
@@ -361,8 +361,8 @@ class TestCourseJsonEmissionFromSynthesizedObjectives:
 
         # LibV2 course.json shape (schemas/knowledge/course.schema.json
         # :32-87) — required fields + flat learning_outcomes[].
-        assert on_disk["course_code"] == "PHYS_101"
-        assert on_disk["title"] == "Physics 101: Mechanics"
+        assert on_disk["course_code"] == "TST_910"
+        assert on_disk["title"] == "Synthetic Course Alpha"
         assert isinstance(on_disk["learning_outcomes"], list)
         # The 2 TOs + 4 COs synthesized list.
         assert len(on_disk["learning_outcomes"]) == 6
@@ -390,7 +390,7 @@ class TestCourseJsonEmissionFromSynthesizedObjectives:
         packaging fires.
         """
         sentinel = {
-            "course_code": "REUSED_101",
+            "course_code": "TST_911",
             "title": "Hand-curated course",
             "learning_outcomes": [
                 {
@@ -413,8 +413,8 @@ class TestCourseJsonEmissionFromSynthesizedObjectives:
         result = _project_synthesized_objectives_to_course_json(
             synth_path,
             course_json_path,
-            course_code="PHYS_101",
-            course_title="Physics 101: Mechanics",
+            course_code="TST_910",
+            course_title="Synthetic Course Alpha",
         )
 
         # Return value is None on the idempotent-skip path; on-disk
@@ -423,7 +423,7 @@ class TestCourseJsonEmissionFromSynthesizedObjectives:
         on_disk = json.loads(course_json_path.read_text(encoding="utf-8"))
         assert on_disk == sentinel
         assert on_disk.get("_sentinel_field_only_in_original") is True
-        assert on_disk["course_code"] == "REUSED_101"
+        assert on_disk["course_code"] == "TST_911"
 
     def test_flat_list_chapter_objectives_is_handled(self, tmp_path):
         """Wave2b regression: chapter_objectives as a flat list of CO
@@ -436,7 +436,7 @@ class TestCourseJsonEmissionFromSynthesizedObjectives:
         would for the canonical list-of-groups form.
         """
         flat_form = {
-            "course_name": "PHYS_101",
+            "course_name": "TST_910",
             "duration_weeks": 8,
             "terminal_objectives": [
                 {"id": "TO-01", "statement": "T1.", "bloom_level": "apply"},
@@ -456,8 +456,8 @@ class TestCourseJsonEmissionFromSynthesizedObjectives:
         result = _project_synthesized_objectives_to_course_json(
             synth_path,
             course_json_path,
-            course_code="PHYS_101",
-            course_title="Physics 101 flat-list",
+            course_code="TST_910",
+            course_title="Synthetic Course Flat",
         )
         assert result is not None
         on_disk = json.loads(course_json_path.read_text(encoding="utf-8"))
@@ -496,8 +496,8 @@ class TestCourseJsonEmissionFromSynthesizedObjectives:
         result = _project_synthesized_objectives_to_course_json(
             synth_path,
             course_json_path,
-            course_code="PHYS_101",
-            course_title="Physics 101 vendor-form",
+            course_code="TST_910",
+            course_title="Synthetic Course Vendor",
         )
         assert result is not None
         on_disk = json.loads(course_json_path.read_text(encoding="utf-8"))
@@ -553,8 +553,8 @@ class TestCourseJsonEmissionFromSynthesizedObjectives:
         result = _project_synthesized_objectives_to_course_json(
             synth_path,
             course_json_path,
-            course_code="PHYS_101",
-            course_title="Physics 101 LibV2-form",
+            course_code="TST_910",
+            course_title="Synthetic Course Archive",
         )
         assert result is not None
         on_disk = json.loads(course_json_path.read_text(encoding="utf-8"))

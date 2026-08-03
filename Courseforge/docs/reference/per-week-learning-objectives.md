@@ -8,7 +8,7 @@
 Every generated HTML page has a `<script type="application/ld+json">` block
 with a `learningObjectives` array. Each entry must reference a canonical
 objective ID (a `CO-##` or `TO-##` declared in the course's exam-objectives
-JSON, e.g. `inputs/exam-objectives/SAMPLE_101_objectives.json`) and the list
+JSON, e.g. `inputs/exam-objectives/TST_913_objectives.json`) and the list
 must be the subset of canonical objectives that apply to that page's week.
 
 If a page lists objectives that belong to a different week (or invents
@@ -29,7 +29,7 @@ For a page generated under `week_<N>/`:
    `Trainforge.process_course.load_objectives`, so emit and resolve stay in
    lockstep.
 
-Concretely for a sample 12-week course (`SAMPLE_101`):
+Concretely for a sample 12-week course (`<COURSE_CODE>`):
 
 | Week(s) | Chapter CO IDs emitted on each page |
 |---------|-------------------------------------|
@@ -51,9 +51,9 @@ terminal objectives.
 
 ```
 python Courseforge/scripts/rendering/generate_course.py \
-    inputs/course-data/SAMPLE_101_course_data.json \
-    exports/SAMPLE_101_COURSE/03_content_development \
-    --objectives inputs/exam-objectives/SAMPLE_101_objectives.json
+    inputs/course-data/TST_913_course_data.json \
+    exports/TST_913_COURSE/03_content_development \
+    --objectives inputs/exam-objectives/TST_913_objectives.json
 ```
 
 When the flag is present, each week's `objectives` list in the course data
@@ -74,8 +74,8 @@ are declared for that page's week:
 
 ```
 python Courseforge/scripts/validation/validate_page_objectives.py \
-    --objectives inputs/exam-objectives/SAMPLE_101_objectives.json \
-    --pages exports/SAMPLE_101_COURSE/03_content_development
+    --objectives inputs/exam-objectives/TST_913_objectives.json \
+    --pages exports/TST_913_COURSE/03_content_development
 ```
 
 Exit code `0` on success, `1` if any page leaks another week's IDs. The

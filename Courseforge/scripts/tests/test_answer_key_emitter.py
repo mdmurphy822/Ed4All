@@ -574,7 +574,7 @@ def _make_content_dir_with_answer_key(root: Path) -> Path:
 def test_packager_ships_answer_key_as_webcontent(tmp_path):
     content_dir = _make_content_dir_with_answer_key(tmp_path)
     output = tmp_path / "out.imscc"
-    package_imscc(content_dir, output, "TEST_101", "Test Course",
+    package_imscc(content_dir, output, "TST_915", "Test Course",
                   skip_validation=True)
     assert output.exists()
     with zipfile.ZipFile(output) as zf:

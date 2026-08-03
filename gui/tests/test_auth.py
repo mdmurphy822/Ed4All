@@ -60,7 +60,7 @@ pytestmark_integration = pytest.mark.skipif(
         "/redoc",
         "/openapi.json",
         "/api/courses",
-        "/api/courses/PROJ-x/objectives",
+        "/api/courses/project-alpha/objectives",
         "/api/retrieval",
         "/api/retrieval/slug/adapters",
         "/api/activity/events",

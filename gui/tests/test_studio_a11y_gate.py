@@ -337,7 +337,7 @@ _TIMELINE_BAR = """
 def _dashboard_populated_inner() -> str:
     """The dashboard with ALL THREE zones populated (building / courses / recent)."""
     building_card = _run_card(
-        "PHYS_201", "running", "Building", "◐",
+        "course-delta", "running", "Building", "◐",
         "#/build/GUI-live1", "textbook_to_course · building",
     )
     course_card = _course_card(
@@ -842,7 +842,7 @@ _WIZARD_CONFIGURE_INNER = """
     <div class="field">
       <label for="cname-x">Course name</label>
       <input id="cname-x" type="text" required aria-describedby="cname-h" autocomplete="off">
-      <p id="cname-h" class="field-hint">Letters, numbers, “_” and “-” only (e.g. PHYS_101). At least 2 characters.</p>
+      <p id="cname-h" class="field-hint">Letters, numbers, “_” and “-” only (e.g. course-alpha). At least 2 characters.</p>
       <p class="error" role="alert" hidden></p>
     </div>
     <div class="field">
@@ -889,7 +889,7 @@ _WIZARD_CONFIGURE_TWO_PASS_INNER = _WIZARD_CONFIGURE_INNER.replace(
 )
 
 _WIZARD_PROGRESS_INNER = """
-<h1>Building PHYS_101</h1>
+<h1>Building course-alpha</h1>
 <p class="muted"><span>Run GUI-x</span><span class="sep" aria-hidden="true"> · </span><span class="elapsed">elapsed 12s</span></p>
 <ol class="phase-checklist" aria-label="Course build steps">
   <li class="phase-row is-done" data-phase="semantik_conversion"><span class="phase-icon" aria-hidden="true">●</span><span class="phase-label">Convert textbook to accessible HTML</span><span class="phase-state">Done</span></li>
@@ -899,12 +899,12 @@ _WIZARD_PROGRESS_INNER = """
 </ol>
 <div class="final-box" aria-live="polite">
   <p class="ok">Your course is ready.</p>
-  <a class="btn primary" href="#/viewer/phys-101">Open course</a>
+  <a class="btn primary" href="#/viewer/course-alpha">Open course</a>
 </div>
 """
 
 _WIZARD_PROGRESS_FAILED_INNER = """
-<h1>Building PHYS_101</h1>
+<h1>Building course-alpha</h1>
 <p class="muted"><span>Run GUI-x</span><span class="sep" aria-hidden="true"> · </span><span class="elapsed">finished</span></p>
 <ol class="phase-checklist" aria-label="Course build steps">
   <li class="phase-row is-done" data-phase="semantik_conversion"><span class="phase-icon" aria-hidden="true">●</span><span class="phase-label">Convert textbook to accessible HTML</span><span class="phase-state">Done</span></li>
@@ -919,7 +919,7 @@ _WIZARD_PROGRESS_FAILED_INNER = """
 # A6 operator-failure panel: reconstructed exactly as create.js
 # ``renderFailurePanel`` builds it for a failed build with a validation report.
 _WIZARD_PROGRESS_FAILURE_PANEL_INNER = """
-<h1>Building PHYS_101</h1>
+<h1>Building course-alpha</h1>
 <p class="muted"><span>Run GUI-x</span><span class="sep" aria-hidden="true"> · </span><span class="elapsed">finished</span></p>
 <ol class="phase-checklist" aria-label="Course build steps">
   <li class="phase-row is-done" data-phase="content_generation_outline"><span class="phase-icon" aria-hidden="true">●</span><span class="phase-label">Outline course content</span><span class="phase-state">Done</span></li>

@@ -147,9 +147,9 @@ function cardSection() {
   const grid = el('div', { class: 'gallery-grid' }, [
     courseCard({ title: 'Algebra (Sample)', href: '#/viewer/algebra', meta: '24 pages · 18.2 MB', askReady: true }),
     courseCard({ title: 'Physics 101 (no link)', meta: '12 pages · 9.0 MB' }),
-    runCard({ title: 'PHYS_101', status: 'running', href: '#/build/GUI-1', meta: 'textbook_to_course · building' }),
-    runCard({ title: 'BIO_201', status: 'completed', href: '#/build/GUI-2', meta: 'textbook_to_course · 28m' }),
-    runCard({ title: 'CHEM_101', status: 'failed', href: '#/build/GUI-3', meta: 'textbook_to_course · 6m' }),
+    runCard({ title: 'Sample Course Alpha', status: 'running', href: '#/build/GUI-1', meta: 'textbook_to_course · building' }),
+    runCard({ title: 'course-gamma', status: 'completed', href: '#/build/GUI-2', meta: 'textbook_to_course · 28m' }),
+    runCard({ title: 'Sample Course Beta', status: 'failed', href: '#/build/GUI-3', meta: 'textbook_to_course · 6m' }),
   ]);
   return section('Cards', 'courseCard() + runCard() for the dashboard zones.', grid);
 }
@@ -167,7 +167,7 @@ function emptyStateSection() {
 /* ---- field row ---- */
 function fieldRowSection() {
   const form = el('form', { class: 'gallery-form', novalidate: true }, [
-    fieldRow({ label: 'Course name', help: 'Letters, numbers, “_” and “-” only (e.g. PHYS_101).', name: 'course_name', required: true }).el,
+    fieldRow({ label: 'Course name', help: 'Letters, numbers, “_” and “-” only (<COURSE_NAME>).', name: 'course_name', required: true }).el,
     fieldRow({
       label: 'Outline course model', type: 'select', name: 'outline_provider',
       help: 'The AI provider that drafts the course outline.',
@@ -315,7 +315,7 @@ function runHistorySection() {
   const list = el('ul', { class: 'run-history-list cards', 'aria-label': 'Course builds' });
   const entries = [
     {
-      title: 'PHYS_101', status: 'completed', href: '#/create/GUI-1', meta: 'textbook_to_course · 28m',
+      title: 'Sample Course Alpha', status: 'completed', href: '#/create/GUI-1', meta: 'textbook_to_course · 28m',
       durs: [
         { name: 'semantik_conversion', label: 'Convert', duration_ms: 320000, state: 'done' },
         { name: 'content_generation', label: 'Generate content', duration_ms: 1080000, state: 'done' },
@@ -325,11 +325,11 @@ function runHistorySection() {
       live: false, retry: true,
     },
     {
-      title: 'BIO_201', status: 'running', href: '#/create/GUI-2', meta: 'textbook_to_course · building',
+      title: 'course-gamma', status: 'running', href: '#/create/GUI-2', meta: 'textbook_to_course · building',
       durs: [], live: true, retry: false,
     },
     {
-      title: 'CHEM_101', status: 'failed', href: '#/create/GUI-3', meta: 'textbook_to_course · 6m',
+      title: 'Sample Course Beta', status: 'failed', href: '#/create/GUI-3', meta: 'textbook_to_course · 6m',
       durs: [
         { name: 'semantik_conversion', label: 'Convert', duration_ms: 300000, state: 'done' },
         { name: 'content_generation', label: 'Generate content', duration_ms: 60000, state: 'failed' },

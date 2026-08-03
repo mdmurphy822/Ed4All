@@ -169,7 +169,7 @@ def validate_pattern_22_compliance(html_content):
     if html_content.count('<h') < 3:  # Minimum section headers
         raise ValueError("Pattern 22 violation: Inadequate pedagogical structure")
     
-    # Mathematical rigor validation for Linear Algebra content
+    # Mathematical rigor validation for Synthetic Topic Epsilon content
     math_indicators = ['theorem', 'proof', 'definition', 'example', 'matrix', 'vector']
     if sum(1 for indicator in math_indicators if indicator.lower() in html_content.lower()) < 5:
         raise ValueError("Pattern 22 violation: Insufficient mathematical rigor")

@@ -6,7 +6,7 @@ Asserts that ``package_imscc`` renders the deterministic objectives map into
 mirrored in the zip payload. Also covers the opt-out flag, the author-copy
 preservation contract, and the no-objectives skip.
 
-Synthetic PHYS_101-style fixtures only — no real course identifiers.
+Synthetic TST_910-style fixtures only — no real course identifiers.
 """
 
 from __future__ import annotations
@@ -28,8 +28,8 @@ from package_multifile_imscc import package_imscc  # noqa: E402
 _CC_NS = "http://www.imsglobal.org/xsd/imsccv1p3/imscp_v1p1"
 
 _OBJECTIVES = {
-    "course_name": "PHYS_101",
-    "course_title": "Introductory Mechanics",
+    "course_name": "TST_910",
+    "course_title": "Synthetic Course Alpha",
     "terminal_objectives": [
         {"id": "TO-01", "statement": "Apply Newton's laws.", "bloom_level": "apply"},
     ],
@@ -79,7 +79,7 @@ def _manifest_titles(zf: zipfile.ZipFile) -> list[str]:
 def test_objectives_page_lands_in_manifest_and_zip_by_default(project, tmp_path):
     out = tmp_path / "course.imscc"
     package_imscc(
-        _content_dir(project), out, "PHYS_101", "Introductory Mechanics",
+        _content_dir(project), out, "TST_910", "Synthetic Course Alpha",
         skip_validation=True,
     )
     assert out.exists()
@@ -104,7 +104,7 @@ def test_objectives_page_lands_in_manifest_and_zip_by_default(project, tmp_path)
 def test_course_overview_module_precedes_weeks(project, tmp_path):
     out = tmp_path / "course.imscc"
     package_imscc(
-        _content_dir(project), out, "PHYS_101", "Introductory Mechanics",
+        _content_dir(project), out, "TST_910", "Synthetic Course Alpha",
         skip_validation=True,
     )
     with zipfile.ZipFile(out) as zf:
@@ -116,7 +116,7 @@ def test_course_overview_module_precedes_weeks(project, tmp_path):
 def test_opt_out_suppresses_objectives_page(project, tmp_path):
     out = tmp_path / "course.imscc"
     package_imscc(
-        _content_dir(project), out, "PHYS_101", "Introductory Mechanics",
+        _content_dir(project), out, "TST_910", "Synthetic Course Alpha",
         skip_validation=True,
         emit_objectives_page=False,
     )
@@ -137,7 +137,7 @@ def test_no_objectives_source_skips_module(tmp_path):
     )
     out = tmp_path / "course.imscc"
     package_imscc(
-        content, out, "PHYS_101", "Introductory Mechanics",
+        content, out, "TST_910", "Synthetic Course Alpha",
         skip_validation=True,
     )
     with zipfile.ZipFile(out) as zf:
@@ -155,7 +155,7 @@ def test_author_copy_is_preserved(project, tmp_path):
     )
     out = tmp_path / "course.imscc"
     package_imscc(
-        _content_dir(project), out, "PHYS_101", "Introductory Mechanics",
+        _content_dir(project), out, "TST_910", "Synthetic Course Alpha",
         skip_validation=True,
     )
     with zipfile.ZipFile(out) as zf:
@@ -170,7 +170,7 @@ def test_objectives_page_present_in_outline_only_mode(project, tmp_path):
     )
     out = tmp_path / "course.imscc"
     package_imscc(
-        _content_dir(project), out, "PHYS_101", "Introductory Mechanics",
+        _content_dir(project), out, "TST_910", "Synthetic Course Alpha",
         skip_validation=True,
         outline_only=True,
     )

@@ -284,7 +284,7 @@ def test_generated_page_jsonld_carries_bloom_tagged_misconceptions(tmp_path):
         "reflection_questions": ["q"],
     }
     out = tmp_path / "out"
-    generate_course.generate_week(week_data, out, "TEST_101", source_module_map=None)
+    generate_course.generate_week(week_data, out, "TST_915", source_module_map=None)
 
     # Misconceptions land on the content page, not the overview.
     content_html_path = next((out / "week_01").glob("week_01_content_*.html"))

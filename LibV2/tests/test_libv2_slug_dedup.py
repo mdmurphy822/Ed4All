@@ -9,7 +9,7 @@ Bug observed (2026-04-24): ``python -m Trainforge.process_course
     package_multifile_imscc.py:145), and Trainforge's IMSCC parser
     falls back to ``course_code`` when the manifest carries no other
     usable title (Trainforge/process_course.py:974). So the title round-
-    tripped as ``"DEMO_PREP_101: DEMO_PREP_101"`` and the LibV2 importer's
+    tripped as ``"<COURSE_CODE>: <COURSE_CODE>"`` and the LibV2 importer's
     ``slugify(title)`` doubled the code into the slug.
 
 These tests pin ``derive_course_slug`` so we never regress.
@@ -34,56 +34,56 @@ class TestSlugDedup:
     def test_libv2_slug_strips_course_code_prefix(self):
         """Title carrying a ``{code}: `` prefix collapses to ``{code} {rest}``."""
         slug = derive_course_slug(
-            course_code="DEMO_PREP_101",
-            course_title="DEMO_PREP_101: Demo Course",
+            course_code="CATALOG_ALPHA",
+            course_title="CATALOG_ALPHA: Synthetic Course",
         )
         # The code stays as the leading slug segment; the title remainder
-        # contributes the rest. No doubled ``demo-prep-101-demo-prep-101``.
-        assert slug == "demo-prep-101-demo-course", slug
+        # contributes the rest. No doubled ``catalog-alpha-catalog-alpha``.
+        assert slug == "catalog-alpha-synthetic-course", slug
 
     def test_libv2_slug_no_doubling(self):
         """Title equals course_code → use just slugify(course_code)."""
         slug = derive_course_slug(
-            course_code="DEMO_PREP_101",
-            course_title="DEMO_PREP_101",
+            course_code="CATALOG_ALPHA",
+            course_title="CATALOG_ALPHA",
         )
-        assert slug == "demo-prep-101", slug
+        assert slug == "catalog-alpha", slug
 
     def test_libv2_slug_no_doubling_with_code_colon_code(self):
         """Title is ``{code}: {code}`` — the exact today-bug shape."""
         slug = derive_course_slug(
-            course_code="DEMO_PREP_101",
-            course_title="DEMO_PREP_101: DEMO_PREP_101",
+            course_code="CATALOG_ALPHA",
+            course_title="CATALOG_ALPHA: CATALOG_ALPHA",
         )
         # Both code-prefixes strip out, title remainder is empty, slug
         # is just slugify(course_code).
-        assert slug == "demo-prep-101", slug
+        assert slug == "catalog-alpha", slug
         # Critical: the bug-shape we are guarding against MUST NOT happen.
-        assert slug != "demo-prep-101-demo-prep-101"
+        assert slug != "catalog-alpha-catalog-alpha"
 
     def test_libv2_slug_unchanged_when_distinct(self):
         """Distinct title → slug includes both code + title."""
         slug = derive_course_slug(
-            course_code="MAT_101",
-            course_title="College Algebra",
+            course_code="TST_907",
+            course_title="Synthetic Topic Alpha",
         )
-        assert slug == "mat-101-college-algebra", slug
+        assert slug == "tst-907-synthetic-topic-alpha", slug
 
     def test_libv2_slug_handles_no_course_code(self):
         """Legacy callers that pass only a title still work (slugify-only)."""
         slug = derive_course_slug(
             course_code="",
-            course_title="Introduction to Physics",
+            course_title="Synthetic Topic Beta",
         )
-        assert slug == "introduction-to-physics", slug
+        assert slug == "synthetic-topic-beta", slug
 
     def test_libv2_slug_handles_no_title(self):
         """Code-only callers get slugify(code)."""
         slug = derive_course_slug(
-            course_code="PHYS_101",
+            course_code="TST_910",
             course_title="",
         )
-        assert slug == "phys-101", slug
+        assert slug == "tst-910", slug
 
     def test_libv2_slug_falls_back_when_both_empty(self):
         """When code + title are both empty, fallback (e.g. dir name) wins."""
@@ -97,26 +97,26 @@ class TestSlugDedup:
     def test_libv2_slug_strips_dash_separator(self):
         """``{code} - {title}`` separator is collapsed too."""
         slug = derive_course_slug(
-            course_code="BIO_201",
-            course_title="BIO_201 - Cellular Biology",
+            course_code="TST_903",
+            course_title="TST_903 - Synthetic Topic Gamma",
         )
-        assert slug == "bio-201-cellular-biology", slug
+        assert slug == "tst-903-synthetic-topic-gamma", slug
 
     def test_libv2_slug_strips_repeated_prefix(self):
         """``{code}: {code}: {title}`` — strip the prefix iteratively."""
         slug = derive_course_slug(
-            course_code="CHEM_101",
-            course_title="CHEM_101: CHEM_101: Organic Chemistry",
+            course_code="TST_904",
+            course_title="TST_904: TST_904: Synthetic Topic Delta",
         )
-        assert slug == "chem-101-organic-chemistry", slug
+        assert slug == "tst-904-synthetic-topic-delta", slug
 
     def test_libv2_slug_case_insensitive_prefix_match(self):
         """Prefix match ignores case (manifests aren't case-canonical)."""
         slug = derive_course_slug(
-            course_code="MAT_101",
-            course_title="mat_101: Linear Algebra",
+            course_code="TST_907",
+            course_title="tst_907: Synthetic Topic Epsilon",
         )
-        assert slug == "mat-101-linear-algebra", slug
+        assert slug == "tst-907-synthetic-topic-epsilon", slug
 
 
 @pytest.mark.unit
@@ -126,4 +126,4 @@ def test_slugify_alone_is_unchanged():
     # The bug-shape input: when slugify is called in isolation on a
     # ``code: code`` title, doubling is the expected (legacy) behaviour.
     # ``derive_course_slug`` is what guards against it.
-    assert slugify("DEMO_PREP_101: DEMO_PREP_101") == "demo-prep-101-demo-prep-101"
+    assert slugify("CATALOG_ALPHA: CATALOG_ALPHA") == "catalog-alpha-catalog-alpha"

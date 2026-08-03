@@ -52,8 +52,8 @@ def _write_cli_state(
     status: str = "RUNNING",
     run_id: str = "TTC_liveness_0001",  # synthetic orch run id, slug-guard: allow
     age: timedelta = timedelta(minutes=2),
-    corpus: str = "/data/inputs/demo",
-    course_name: str = "TEST_COURSE",
+    corpus: str = "synthetic/inputs/demo",
+    course_name: str = "synthetic-course",
 ) -> Path:
     """Write a minimal orchestrator workflow-state file (naive-local ISO time)."""
     stamp = (datetime.now() - age).isoformat()
@@ -194,12 +194,12 @@ def test_persisted_incomplete_status_passes_through():
 
 
 def test_attributed_live_process_is_building():
-    procs = [_proc(4242, "/usr/bin/ed4all", "run", "textbook-to-course", "--corpus", "/data/inputs/demo")]
+    procs = [_proc(4242, "/usr/bin/ed4all", "run", "textbook-to-course", "--corpus", "synthetic/inputs/demo")]
     assert (
         liveness.effective_status(
             "running",
             is_cli=True,
-            attribution_tokens=["/data/inputs/demo"],
+            attribution_tokens=["synthetic/inputs/demo"],
             processes=procs,
         )
         == "building"
@@ -213,7 +213,7 @@ def test_unattributable_fresh_process_is_building():
         liveness.effective_status(
             "running",
             is_cli=True,
-            attribution_tokens=["/data/inputs/demo"],
+            attribution_tokens=["synthetic/inputs/demo"],
             processes=procs,
             wf_mtime=now - 5.0,  # fresh
             now=now,
@@ -229,7 +229,7 @@ def test_unattributable_stale_process_is_stalled():
         liveness.effective_status(
             "running",
             is_cli=True,
-            attribution_tokens=["/data/inputs/demo"],
+            attribution_tokens=["synthetic/inputs/demo"],
             processes=procs,
             wf_mtime=now - (liveness.STALE_MTIME_SECONDS + 60.0),
             now=now,
@@ -257,7 +257,7 @@ def test_resume_process_attributes_via_workflow_id_is_building():
             # orch_run_id differs from the workflow id (e.g. TTC_..._113557) and
             # is NOT in the resume argv — only the WF-id token rescues this.
             orch_run_id="TTC_openstax_113557",  # slug-guard: allow
-            attribution_tokens=["/data/inputs/demo", "WF-20260724-ac29168b"],
+            attribution_tokens=["synthetic/inputs/demo", "WF-20260724-ac29168b"],
             processes=procs,
             wf_mtime=now - (liveness.STALE_MTIME_SECONDS + 600.0),  # very stale
             now=now,
@@ -282,7 +282,7 @@ def test_resume_process_without_workflow_id_token_still_stalls():
             "running",
             is_cli=True,
             orch_run_id="TTC_openstax_113557",  # slug-guard: allow
-            attribution_tokens=["/data/inputs/demo"],  # no WF-id token
+            attribution_tokens=["synthetic/inputs/demo"],  # no WF-id token
             processes=procs,
             wf_mtime=now - (liveness.STALE_MTIME_SECONDS + 600.0),
             now=now,
@@ -339,8 +339,8 @@ def test_attribution_tokens_from_params():
         {
             "corpus": "/data/x",
             "pdf_paths": ["/data/a.pdf", "/data/b.pdf"],
-            "project_path": "/exports/proj",
-            "course_name": "PHYS_101",
+            "project_path": "synthetic/exports/project-alpha",
+            "course_name": "course-alpha",
         },
         "TTC_run_0001",  # slug-guard: allow
     )
@@ -348,8 +348,8 @@ def test_attribution_tokens_from_params():
         "/data/x",
         "/data/a.pdf",
         "/data/b.pdf",
-        "/exports/proj",
-        "PHYS_101",
+        "synthetic/exports/project-alpha",
+        "course-alpha",
         "TTC_run_0001",  # slug-guard: allow
     ]
 
@@ -407,12 +407,12 @@ def test_list_runs_stamps_building_on_attributed_process(
     state_dir: Path, monkeypatch: pytest.MonkeyPatch
 ):
     _write_cli_state(
-        state_dir, "WF-20260722-cli00003", status="RUNNING", corpus="/data/inputs/live"
+        state_dir, "WF-20260722-cli00003", status="RUNNING", corpus="synthetic/inputs/live"
     )
     monkeypatch.setattr(
         liveness,
         "scan_pipeline_processes",
-        lambda: [_proc(555, "/usr/bin/ed4all", "run", "textbook-to-course", "--corpus", "/data/inputs/live")],
+        lambda: [_proc(555, "/usr/bin/ed4all", "run", "textbook-to-course", "--corpus", "synthetic/inputs/live")],
     )
 
     runs = run_service.list_runs()
@@ -427,7 +427,7 @@ def test_list_runs_stamps_effective_status_on_gui_paused_run(state_dir: Path):
             "kind": "pipeline",
             "workflow": "textbook_to_course",
             "workflow_id": "WF-20260722-gui00001",
-            "course_name": "GUI_COURSE",
+            "course_name": "course-alpha",
             "status": "paused",
         }
     )
@@ -455,12 +455,12 @@ def test_run_progress_effective_status_building_when_attributed(
     state_dir: Path, monkeypatch: pytest.MonkeyPatch
 ):
     _write_cli_state(
-        state_dir, "WF-20260722-prog0002", status="RUNNING", corpus="/data/inputs/live2"
+        state_dir, "WF-20260722-prog0002", status="RUNNING", corpus="synthetic/inputs/live2"
     )
     monkeypatch.setattr(
         liveness,
         "scan_pipeline_processes",
-        lambda: [_proc(777, "ed4all", "run", "textbook-to-course", "--corpus", "/data/inputs/live2")],
+        lambda: [_proc(777, "ed4all", "run", "textbook-to-course", "--corpus", "synthetic/inputs/live2")],
     )
     payload = progress_service.run_progress("WF-20260722-prog0002")
     assert payload is not None

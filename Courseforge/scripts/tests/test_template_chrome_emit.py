@@ -44,7 +44,7 @@ def _render_minimal_page() -> str:
     }
     with tempfile.TemporaryDirectory() as td:
         out = Path(td)
-        generate_week(week_data, out, "SAMPLE_101")
+        generate_week(week_data, out, "TST_913")
         overview = (out / "week_03" / "week_03_overview.html").read_text()
         return overview
 

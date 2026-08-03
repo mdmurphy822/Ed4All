@@ -88,7 +88,7 @@ def derive_course_slug(
     Courseforge writes the IMSCC manifest title as ``f"{course_code}:
     {course_title}"`` and Trainforge's IMSCC parser falls back to
     ``course_code`` when the manifest carries no usable title — so the
-    title round-tripped as ``"DEMO_PREP_101: DEMO_PREP_101"`` and
+    title round-tripped as ``"<COURSE_CODE>: <COURSE_CODE>"`` and
     ``slugify`` doubled the code.
 
     This helper collapses that pattern: when ``course_title`` starts with
@@ -98,7 +98,7 @@ def derive_course_slug(
     distinct title remains, else just ``slugify(course_code)``.
 
     Args:
-        course_code: Stable course identifier (e.g. ``"DEMO_PREP_101"``).
+        course_code: Stable course identifier (e.g. ``"<COURSE_CODE>"``).
         course_title: Human-friendly title from the source manifest.
         fallback: Used when both code + title are empty (e.g. the source
             directory name).
@@ -325,8 +325,8 @@ def import_course(
     sf_manifest_data = read_sourceforge_manifest(source_dir)
 
     # Generate slug. Use the dedupe-aware helper so titles like
-    # ``"DEMO_PREP_101: DEMO_PREP_101"`` (Courseforge IMSCC manifest +
-    # Trainforge fallback) don't collapse into ``demo-prep-101-demo-prep-101``.
+    # ``"<COURSE_CODE>: <COURSE_CODE>"`` (Courseforge IMSCC manifest +
+    # Trainforge fallback) don't collapse into ``catalog-alpha-catalog-alpha``.
     title = sf_manifest_data.get("course_title", source_dir.name)
     course_code = sf_manifest_data.get("course_id") or ""
     slug = derive_course_slug(

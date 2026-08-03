@@ -417,7 +417,7 @@ def test_generated_page_jsonld_carries_ladder_rung_when_flag_on(monkeypatch, tmp
     monkeypatch.setenv(ENV_BLOOM_LADDER, "1")
     out = tmp_path / "out"
     generate_course.generate_week(
-        _week_data_with_laddered_misconception(), out, "TEST_101",
+        _week_data_with_laddered_misconception(), out, "TST_915",
         source_module_map=None,
     )
     content_html_path = next((out / "week_01").glob("week_01_content_*.html"))
@@ -434,7 +434,7 @@ def test_generated_page_jsonld_omits_ladder_rung_when_flag_off(monkeypatch, tmp_
     monkeypatch.delenv(ENV_BLOOM_LADDER, raising=False)
     out = tmp_path / "out"
     generate_course.generate_week(
-        _week_data_with_laddered_misconception(), out, "TEST_101",
+        _week_data_with_laddered_misconception(), out, "TST_915",
         source_module_map=None,
     )
     content_html_path = next((out / "week_01").glob("week_01_content_*.html"))

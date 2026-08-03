@@ -160,7 +160,7 @@ Rules:
 
 **Example:**
 ```html
-<section data-cf-source-ids="semantik:phys101#s3_p1" data-cf-objective-id="TO-02,CO-05">
+<section data-cf-source-ids="semantik:source-alpha#s3_p1" data-cf-objective-id="TO-02,CO-05">
   <h2>Newton's Second Law</h2>
   <p>...</p>
 </section>
@@ -385,8 +385,8 @@ byte for courses that don't have a SemantiK textbook input.
 
 ```
 Source Material for this page (week_03_content_01_visual_perception):
-  Primary:      semantik:science_of_learning#s5_p2
-  Contributing: semantik:science_of_learning#s4_p0, semantik:science_of_learning#s6_p1
+  Primary:      semantik:source-alpha#s5_p2
+  Contributing: semantik:source-alpha#s4_p0, semantik:source-alpha#s6_p1
   Confidence:   0.85
 
 Read the staging sidecar at {staging_dir}/science_of_learning_synthesized.json

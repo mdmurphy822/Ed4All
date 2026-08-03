@@ -64,7 +64,7 @@ def test_launch_pipeline_invokes_real_create_textbook(
 
     req = {
         "workflow": "textbook_to_course",
-        "course_name": "PHYS_101",
+        "course_name": "course-alpha",
         "corpus": str(corpus),
         "weeks": 14,
         "mode": "api",
@@ -77,7 +77,7 @@ def test_launch_pipeline_invokes_real_create_textbook(
     assert result["workflow_id"] == "WF-TEST-0001"
     # Real function was called with routed params.
     kw = recorded["kwargs"]
-    assert kw["course_name"] == "PHYS_101"
+    assert kw["course_name"] == "course-alpha"
     assert kw["pdf_paths"] == str(corpus)
     assert kw["duration_weeks"] == 14
     assert kw["duration_weeks_explicit"] is True
@@ -113,19 +113,19 @@ def test_launch_pipeline_generic_workflow_uses_create_workflow_impl(
 
     req = {
         "workflow": "rag_training",
-        "course_name": "CHEM_101",
-        "corpus": "/tmp/course.imscc",
+        "course_name": "course-beta",
+        "corpus": "synthetic/inputs/course.imscc",
         "options": {"priority": "high"},
     }
     result = asyncio.run(run_service.launch_pipeline(req))
     assert result["workflow_id"] == "WF-RAG-0001"
     assert recorded["workflow_type"] == "rag_training"
-    assert recorded["params"]["course_name"] == "CHEM_101"
+    assert recorded["params"]["course_name"] == "course-beta"
     assert recorded["priority"] == "high"
 
 
 def test_launch_pipeline_unknown_workflow_fails_closed(state_dir):
-    req = {"workflow": "not_a_workflow", "course_name": "X1", "corpus": "/tmp/x.pdf"}
+    req = {"workflow": "not_a_workflow", "course_name": "X1", "corpus": "synthetic/inputs/document.pdf"}
     result = asyncio.run(run_service.launch_pipeline(req))
     assert result["status"] == "failed"
     assert "unknown workflow" in result["error"]
@@ -146,7 +146,7 @@ def test_launch_pipeline_creation_error_persists_failed(state_dir, monkeypatch):
 
     req = {
         "workflow": "textbook_to_course",
-        "course_name": "PHYS_101",
+        "course_name": "course-alpha",
         "corpus": "/nonexistent/path.pdf",
     }
     result = asyncio.run(run_service.launch_pipeline(req))
@@ -164,7 +164,7 @@ def test_launch_pipeline_crash_persists_failed(state_dir, monkeypatch):
 
     monkeypatch.setattr(pt, "create_textbook_pipeline", boom)
 
-    req = {"workflow": "textbook_to_course", "course_name": "PHYS_101", "corpus": "x.pdf"}
+    req = {"workflow": "textbook_to_course", "course_name": "course-alpha", "corpus": "x.pdf"}
     result = asyncio.run(run_service.launch_pipeline(req))
     assert result["status"] == "failed"
     assert "orchestrator exploded" in result["error"]
@@ -354,7 +354,7 @@ def test_launch_phase_invokes_real_execute_phase(state_dir, monkeypatch):
     req = {
         "workflow": "textbook_to_course",
         "phase": phase_name,
-        "course_name": "PHYS_101",
+        "course_name": "course-alpha",
         "options": {"duration_weeks": 9},
     }
     result = asyncio.run(run_service.launch_phase(req))
@@ -370,7 +370,7 @@ def test_launch_phase_invokes_real_execute_phase(state_dir, monkeypatch):
 
 
 def test_launch_phase_missing_phase_field_fails(state_dir):
-    req = {"workflow": "textbook_to_course", "course_name": "PHYS_101"}
+    req = {"workflow": "textbook_to_course", "course_name": "course-alpha"}
     result = asyncio.run(run_service.launch_phase(req))
     assert result["status"] == "failed"
     assert "phase is required" in result["error"]
@@ -382,7 +382,7 @@ def test_launch_phase_unknown_phase_fails(state_dir, monkeypatch):
     req = {
         "workflow": "textbook_to_course",
         "phase": "not_a_real_phase",
-        "course_name": "PHYS_101",
+        "course_name": "course-alpha",
     }
     result = asyncio.run(run_service.launch_phase(req))
     assert result["status"] == "failed"
@@ -654,11 +654,11 @@ def test_resume_run_redrives_existing_workflow(state_dir, monkeypatch):
             "kind": "pipeline",
             "workflow": "textbook_to_course",
             "workflow_id": workflow_id,
-            "course_name": "PHYS_101",
+            "course_name": "course-alpha",
             "status": "interrupted",
             "provider": "local",
             "mode": "local",
-            "params": {"course_name": "PHYS_101"},
+            "params": {"course_name": "course-alpha"},
         }
     )
 
@@ -678,7 +678,7 @@ def test_resume_run_redrives_existing_workflow(state_dir, monkeypatch):
     rec = shared_state.read_run(new_id)
     assert rec["workflow_id"] == workflow_id
     assert rec["resumed_from"] == prior_id
-    assert rec["params"] == {"course_name": "PHYS_101"}
+    assert rec["params"] == {"course_name": "course-alpha"}
 
 
 def test_resume_run_unknown_prior_fails_closed(state_dir):
@@ -925,7 +925,7 @@ def test_launch_pipeline_sets_blessed_route_env(state_dir, monkeypatch):
 
     req = {
         "workflow": "textbook_to_course",
-        "course_name": "PHYS_101",
+        "course_name": "course-alpha",
         "corpus": str(corpus),
         "provider": "local",
     }
@@ -999,7 +999,7 @@ def test_infer_failed_phase_picks_first_failing():
     assert "validation" in reason
 
 
-def _register_failed_run(course_name="PHYS_101", project_id=None, gate_results=None):
+def _register_failed_run(course_name="course-alpha", project_id=None, gate_results=None):
     run_id = shared_state.new_run_id("GUI")
     shared_state.register_run(
         {
@@ -1043,12 +1043,12 @@ def test_validation_report_locates_synthetic_report(state_dir, monkeypatch):
     import lib.paths as paths
 
     cf_root = state_dir / "Courseforge"
-    project_id = "PROJ-PHYS_101-20260610-deadbeef"
+    project_id = "PROJ-course-alpha-20260610-deadbeef"
     export_dir = cf_root / "exports" / project_id
     export_dir.mkdir(parents=True, exist_ok=True)
     report_doc = {
         "schema_version": "1.1",
-        "course_code": "PHYS_101",
+        "course_code": "course-alpha",
         "status": "fail",
         "summary": {"total_gates": 4, "passed_count": 2, "failed_count": 2},
         "per_block_results": [
@@ -1066,7 +1066,7 @@ def test_validation_report_locates_synthetic_report(state_dir, monkeypatch):
     run_id = _register_failed_run(project_id=project_id)
     out = run_service.validation_report(run_id)
     assert out["report"] is not None
-    assert out["report"]["course_code"] == "PHYS_101"
+    assert out["report"]["course_code"] == "course-alpha"
     assert out["report_path"].endswith("courseforge_validation_report.json")
 
 
@@ -1297,7 +1297,7 @@ def test_run_single_phase_emits_progress_and_suppresses_validator_phase(
             run_id=run_id,
             workflow="textbook_to_course",
             phase_name=phase_name,
-            course_name="PHYS_101",
+            course_name="course-alpha",
             project_id=None,
             options={},
         )
@@ -1673,7 +1673,7 @@ def test_run_single_phase_emits_gate_lines_from_real_results(
             run_id=run_id,
             workflow="textbook_to_course",
             phase_name="post_rewrite_validation",
-            course_name="PHYS_101",
+            course_name="course-alpha",
             project_id=None,
             options={},
         )
@@ -1751,7 +1751,7 @@ def test_run_single_phase_no_gates_emits_no_gate_line(state_dir, monkeypatch):
             run_id=run_id,
             workflow="textbook_to_course",
             phase_name="staging",
-            course_name="PHYS_101",
+            course_name="course-alpha",
             project_id=None,
             options={},
         )

@@ -22,7 +22,7 @@ from gui.routers import learn as learn_router  # noqa: E402
 # --------------------------------------------------------------------- fixtures
 
 
-def _grounded(status, *, answer_text=None, citations=None, slug="phys-101"):
+def _grounded(status, *, answer_text=None, citations=None, slug="course-alpha"):
     """A minimal ``GroundedAnswer.to_dict()``-shaped dict for one status."""
     return {
         "status": status,
@@ -66,7 +66,7 @@ def client(monkeypatch):
     monkeypatch.setattr(
         retrieval_service,
         "list_courses",
-        lambda: [{"slug": "phys-101", "chunk_count": 3}],
+        lambda: [{"slug": "course-alpha", "chunk_count": 3}],
     )
     return TestClient(create_app())
 
@@ -84,11 +84,11 @@ def test_courses_delegates_list_courses(client, monkeypatch):
     monkeypatch.setattr(
         retrieval_service,
         "list_courses",
-        lambda: [{"slug": "phys-101", "chunk_count": 3}],
+        lambda: [{"slug": "course-alpha", "chunk_count": 3}],
     )
     resp = client.get("/api/learn/courses")
     assert resp.status_code == 200
-    assert resp.json() == [{"slug": "phys-101", "chunk_count": 3}]
+    assert resp.json() == [{"slug": "course-alpha", "chunk_count": 3}]
 
 
 def test_courses_failure_is_500(client, monkeypatch):
@@ -112,7 +112,7 @@ def test_ask_answered_200_json_and_html(client, monkeypatch):
         ),
     )
     resp = client.post(
-        "/api/learn/ask", json={"slug": "phys-101", "query": "what is velocity?"}
+        "/api/learn/ask", json={"slug": "course-alpha", "query": "what is velocity?"}
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -134,7 +134,7 @@ def test_ask_answered_200_json_and_html(client, monkeypatch):
 def test_ask_refusal_and_block_are_200(client, monkeypatch, status):
     _stub_ask(monkeypatch, lambda slug, query, engine: _grounded(status))
     resp = client.post(
-        "/api/learn/ask", json={"slug": "phys-101", "query": "anything"}
+        "/api/learn/ask", json={"slug": "course-alpha", "query": "anything"}
     )
     # refusals/blocks are data, not errors → 200
     assert resp.status_code == 200
@@ -145,7 +145,7 @@ def test_ask_refusal_and_block_are_200(client, monkeypatch, status):
 
 
 def test_ask_empty_query_is_422(client):
-    resp = client.post("/api/learn/ask", json={"slug": "phys-101", "query": "   "})
+    resp = client.post("/api/learn/ask", json={"slug": "course-alpha", "query": "   "})
     assert resp.status_code == 422
     body = resp.json()
     assert body["error"] == "invalid_query"
@@ -192,7 +192,7 @@ def test_ask_typed_error_mapping(
 
     _stub_ask(monkeypatch, raiser)
     resp = client.post(
-        "/api/learn/ask", json={"slug": "phys-101", "query": "x"}
+        "/api/learn/ask", json={"slug": "course-alpha", "query": "x"}
     )
     assert resp.status_code == expected_status
     body = resp.json()
@@ -209,7 +209,7 @@ def test_backend_down_renders_facilitator_copy(client, monkeypatch):
         raise _named_exc("AnswerBackendUnavailable")
 
     _stub_ask(monkeypatch, raiser)
-    resp = client.post("/api/learn/ask", json={"slug": "phys-101", "query": "x"})
+    resp = client.post("/api/learn/ask", json={"slug": "course-alpha", "query": "x"})
     assert resp.status_code == 503
     assert "The answer engine" in resp.json()["html"]
     assert "facilitator" in resp.json()["html"]
@@ -228,7 +228,7 @@ def test_ask_passes_engine_to_service(client, monkeypatch):
     _stub_ask(monkeypatch, capture)
     client.post(
         "/api/learn/ask",
-        json={"slug": "phys-101", "query": "x", "engine": "semantic"},
+        json={"slug": "course-alpha", "query": "x", "engine": "semantic"},
     )
     assert seen["engine"] == "semantic"
 
@@ -237,7 +237,7 @@ def test_ask_passes_engine_to_service(client, monkeypatch):
 
 
 def test_source_requires_item_path(client):
-    resp = client.get("/api/learn/source/phys-101")
+    resp = client.get("/api/learn/source/course-alpha")
     assert resp.status_code == 422
     assert resp.json()["error"] == "invalid_item_path"
 
@@ -262,13 +262,13 @@ def test_source_delegates_to_source_page(client, monkeypatch):
 
     monkeypatch.setattr(source_page, "render_source_page", render_source_page)
 
-    resp = client.get("/api/learn/source/phys-101?item_path=ch01/p.html")
+    resp = client.get("/api/learn/source/course-alpha?item_path=ch01/p.html")
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/html")
     assert resp.headers["x-content-type-options"] == "nosniff"
     assert "<h1>Page</h1>" in resp.text
 
-    miss = client.get("/api/learn/source/phys-101?item_path=boom.html")
+    miss = client.get("/api/learn/source/course-alpha?item_path=boom.html")
     assert miss.status_code == 404
     assert miss.json()["error"] == "source_page_missing"
 
@@ -280,7 +280,7 @@ def test_learner_only_app_exposes_only_learner_surface(monkeypatch):
     monkeypatch.setattr(
         retrieval_service,
         "list_courses",
-        lambda: [{"slug": "phys-101", "chunk_count": 3}],
+        lambda: [{"slug": "course-alpha", "chunk_count": 3}],
     )
     app = create_app(learner_only=True)
     lc = TestClient(app)
@@ -337,8 +337,8 @@ def test_ask_path_wires_capture_and_disables_groundedness(client, monkeypatch):
 
     monkeypatch.setattr(lw_mod, "answer_course_question", fake_answer_course_question)
 
-    resp = client.post("/api/learn/ask", json={"slug": "phys-101", "query": "x"})
+    resp = client.post("/api/learn/ask", json={"slug": "course-alpha", "query": "x"})
     assert resp.status_code == 200
     assert seen["capture"] == "CAPTURE"  # capture handle threaded into the pipeline
     assert seen["with_groundedness"] is False  # D4
-    assert seen["capture_slug"] == "phys-101"
+    assert seen["capture_slug"] == "course-alpha"

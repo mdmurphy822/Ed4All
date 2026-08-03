@@ -110,7 +110,7 @@ def test_generator_emitted_unconditionally(monkeypatch, emit_blocks) -> None:
         monkeypatch.setenv("COURSEFORGE_EMIT_BLOCKS", emit_blocks)
     else:
         monkeypatch.delenv("COURSEFORGE_EMIT_BLOCKS", raising=False)
-    meta = _build_page_metadata("SAMPLE_101", 1, "content", "week_01_content_01")
+    meta = _build_page_metadata("TST_913", 1, "content", "week_01_content_01")
     assert "generator" in meta
     gen = meta["generator"]
     assert gen["name"] == "Ed4All Courseforge"
@@ -121,9 +121,9 @@ def test_generator_emitted_unconditionally(monkeypatch, emit_blocks) -> None:
 def test_generated_page_carries_generator_in_jsonld(monkeypatch) -> None:
     """A full page emit surfaces the generator object in the <script> JSON-LD."""
     monkeypatch.delenv("COURSEFORGE_EMIT_BLOCKS", raising=False)
-    meta = _build_page_metadata("SAMPLE_101", 1, "content", "week_01_content_01")
+    meta = _build_page_metadata("TST_913", 1, "content", "week_01_content_01")
     page = generate_course._wrap_page(
-        "T4 Page", "SAMPLE_101", 1, "<p>body</p>", page_metadata=meta,
+        "T4 Page", "TST_913", 1, "<p>body</p>", page_metadata=meta,
     )
     match = re.search(
         r'<script\s+type="application/ld\+json">(.*?)</script>', page, re.DOTALL,
@@ -152,7 +152,7 @@ def test_pipeline_version_is_generator_version(monkeypatch) -> None:
         content={"heading": "Intro", "body": "text"},
     )
     meta = _build_page_metadata(
-        "SAMPLE_101", 1, "content", "week_01_content_01", blocks=[block],
+        "TST_913", 1, "content", "week_01_content_01", blocks=[block],
     )
     assert meta["provenance"]["pipelineVersion"] == _generator_version()
     assert meta["provenance"]["pipelineVersion"] != "phase2"
@@ -185,12 +185,12 @@ def test_generator_timestamp_excluded_from_content_hash(monkeypatch) -> None:
     monkeypatch.setattr(generate_course, "_generator_metadata",
                         _stamp("2026-01-01T00:00:00Z"))
     meta1 = _build_page_metadata(
-        "SAMPLE_101", 1, "content", "week_01_content_01", blocks=[block],
+        "TST_913", 1, "content", "week_01_content_01", blocks=[block],
     )
     monkeypatch.setattr(generate_course, "_generator_metadata",
                         _stamp("2030-12-31T23:59:59Z"))
     meta2 = _build_page_metadata(
-        "SAMPLE_101", 1, "content", "week_01_content_01", blocks=[block],
+        "TST_913", 1, "content", "week_01_content_01", blocks=[block],
     )
     monkeypatch.setattr(generate_course, "_generator_metadata", real)
 
@@ -209,7 +209,7 @@ def _minimally_valid_metadata() -> dict:
     return {
         "@context": "https://ed4all.dev/ns/courseforge/v1",
         "@type": "CourseModule",
-        "courseCode": "SAMPLE_101",
+        "courseCode": "TST_913",
         "weekNumber": 1,
         "moduleType": "content",
         "pageId": "week_01_content_01_intro",
@@ -261,5 +261,5 @@ def test_full_generated_meta_validates(monkeypatch) -> None:
     monkeypatch.delenv("COURSEFORGE_EMIT_BLOCKS", raising=False)
     validator = generate_course._get_jsonld_validator()
     assert validator is not None
-    meta = _build_page_metadata("SAMPLE_101", 1, "content", "week_01_content_01")
+    meta = _build_page_metadata("TST_913", 1, "content", "week_01_content_01")
     assert not list(validator.iter_errors(meta))

@@ -47,7 +47,7 @@ def _parse(html: str) -> _Collector:
 def _answered_payload(**overrides):
     base = {
         "status": ar.STATUS_ANSWERED,
-        "course_slug": "phys-101",
+        "course_slug": "course-alpha",
         "answer_text": "Velocity is a vector.\n\nIt has magnitude and direction.",
         "citations": [
             {
@@ -106,7 +106,7 @@ def test_answered_citation_link_text_and_href():
     assert ">Source: Velocity</a>" in html
     assert len(c.hrefs) == 1
     href = c.hrefs[0]
-    assert href.startswith("/api/learn/source/phys-101?item_path=")
+    assert href.startswith("/api/learn/source/course-alpha?item_path=")
     # heading fragment → URL #slug
     assert href.endswith("#velocity")
     assert "ch01" in href  # item_path urlencoded but recognisable
@@ -257,8 +257,8 @@ def test_source_url_for_builds_expected_shape():
             "fragment": {"kind": "heading", "value": "intro-section"},
         },
     }
-    url = ar.source_url_for(cit, "bio-201")
-    assert url.startswith("/api/learn/source/bio-201?item_path=")
+    url = ar.source_url_for(cit, "course-gamma")
+    assert url.startswith("/api/learn/source/course-gamma?item_path=")
     assert "ch%201" in url or "ch+1" in url  # space encoded
     assert url.endswith("#intro-section")
 
@@ -393,7 +393,7 @@ def test_provenance_source_block_is_escaped():
 
 def test_original_source_link_rendered_when_source_block_present():
     payload = _answered_payload()
-    payload["citations"][0]["source_block"] = "semantik:intro-textbook-vol1#a1b2c3d4e5f60718"
+    payload["citations"][0]["source_block"] = "semantik:synthetic-source#a1b2c3d4e5f60718"
     payload["citations"][0]["pdf_pages"] = []
     html = ar.render_answer_fragment(payload)
     # The source-block row is a "View original source" deep link (new tab).
@@ -403,11 +403,11 @@ def test_original_source_link_rendered_when_source_block_present():
     assert "opens in new tab" in html
     # href: /api/courses/{slug}/source-doc?doc=<doc>&ref=<block>#semantik-<block>
     assert (
-        "/api/courses/phys-101/source-doc?doc=intro-textbook-vol1"
+        "/api/courses/course-alpha/source-doc?doc=synthetic-source"
         "&amp;ref=a1b2c3d4e5f60718#semantik-a1b2c3d4e5f60718" in html
     )
     # The sourceId rides along as secondary <code> text.
-    assert "<code>semantik:intro-textbook-vol1#a1b2c3d4e5f60718</code>" in html
+    assert "<code>semantik:synthetic-source#a1b2c3d4e5f60718</code>" in html
 
 
 def test_original_source_url_helper_shape():
@@ -454,18 +454,18 @@ def test_main_source_link_is_anchored_source_doc_for_citations():
     block in the original document (user-reported: the unanchored learner
     source URL opened the doc at the top — the attribution front matter)."""
     payload = _answered_payload()
-    payload["citations"][0]["source_block"] = "semantik:intro-textbook-vol1#a1b2c3d4e5f60718"
+    payload["citations"][0]["source_block"] = "semantik:synthetic-source#a1b2c3d4e5f60718"
     html = ar.render_answer_fragment(payload)
     c = _parse(html)
     main_href = c.hrefs[0]
-    assert main_href.startswith("/api/courses/phys-101/source-doc?doc=intro-textbook-vol1")
+    assert main_href.startswith("/api/courses/course-alpha/source-doc?doc=synthetic-source")
     assert main_href.endswith("#semantik-a1b2c3d4e5f60718")
 
 
 def test_main_source_link_unchanged_for_course_page_citations():
     payload = _answered_payload()  # no source_block -> course-page citation
     html = ar.render_answer_fragment(payload)
-    assert _parse(html).hrefs[0].startswith("/api/learn/source/phys-101?item_path=")
+    assert _parse(html).hrefs[0].startswith("/api/learn/source/course-alpha?item_path=")
 
 
 # ------------------------------------ page-number deep-links (Phase 3 mirror)

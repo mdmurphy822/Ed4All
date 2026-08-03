@@ -106,7 +106,7 @@ def _emit_full_page(blocks: List[Block]) -> str:
     this helper so the new ``blocks[]`` / ``provenance`` /
     ``contentHash`` fields are present.
     """
-    course_code = "ROUNDTRIP_101"
+    course_code = "TST_912"
     week_num = 1
     page_id = blocks[0].page_id
     meta = _build_page_metadata(

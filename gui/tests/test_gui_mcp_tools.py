@@ -153,7 +153,7 @@ async def test_read_events_sees_gui_message(state_dir, gui_tools):
 
 async def test_enqueue_run_registers_requested(state_dir, gui_tools):
     out = await gui_tools["gui_enqueue_run"](
-        "textbook_to_course", "PHYS_101", "/tmp/x.pdf", '{"weeks": 12}'
+        "textbook_to_course", "course-alpha", "synthetic/inputs/document.pdf", '{"weeks": 12}'
     )
     rec = json.loads(out)
     assert rec["status"] == "requested"
@@ -170,7 +170,7 @@ async def test_enqueue_run_registers_requested(state_dir, gui_tools):
 
 
 async def test_enqueue_run_bad_options_json_typed_error(state_dir, gui_tools):
-    out = await gui_tools["gui_enqueue_run"]("wf", "C1", "/tmp/x.pdf", "{not json")
+    out = await gui_tools["gui_enqueue_run"]("wf", "C1", "synthetic/inputs/document.pdf", "{not json")
     err = json.loads(out)
     assert "error" in err
     assert err.get("detail") == "validation_error"

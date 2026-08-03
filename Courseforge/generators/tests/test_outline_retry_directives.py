@@ -58,10 +58,10 @@ def test_match_retry_directive_bloom_enum_drift():
 
 
 def test_match_retry_directive_curie_pattern_violation():
-    """Validator emits "'demo_prep_101' does not match '^[a-z]...'"
+    """Validator emits "'invalid_identifier' does not match '^[a-z]...'"
     on the §1.3 invented-CURIE-prefix case + on the §1.5 full-IRI
     case ("rdf:https://...")."""
-    invented = "'demo_prep_101' does not match '^[a-z][a-z0-9]*:[A-Za-z0-9_-]+$'"
+    invented = "'invalid_identifier' does not match '^[a-z][a-z0-9]*:[A-Za-z0-9_-]+$'"
     full_iri = "'rdf:https://www.w3.org/1999/02/22-rdf-syntax-ns#' does not match '^[a-z][a-z0-9]*:[A-Za-z0-9_-]+$'"
     for err in (invented, full_iri):
         directive = _match_retry_directive(err)

@@ -85,7 +85,7 @@ def _valid_payload(
         "key_claims": key_claims,
         "section_skeleton": section_skeleton,
         "source_refs": [
-            {"sourceId": "semantik:shacl-spec#sec1", "role": "primary"},
+            {"sourceId": "semantik:source-delta#sec1", "role": "primary"},
         ],
         "structural_warnings": [],
     }
@@ -134,20 +134,20 @@ _STRUCTURED_CLAIMS_BY_TYPE: Dict[str, List[Dict[str, Any]]] = {
         {
             "claim": "A SHACL node shape declares constraints "
             "that fire on target nodes.",
-            "source_chunk_ids": ["semantik:shacl-spec#sec1"],
+            "source_chunk_ids": ["semantik:source-delta#sec1"],
         },
         {
             "claim": "Each constraint references a property predicate.",
             "source_chunk_ids": [
-                "semantik:shacl-spec#sec2",
-                "semantik:shacl-spec#sec3",
+                "semantik:source-delta#sec2",
+                "semantik:source-delta#sec3",
             ],
         },
     ],
     "assessment_item": [
         {
             "claim": "Stem references the SHACL node shape concept.",
-            "source_chunk_ids": ["semantik:shacl-spec#sec1"],
+            "source_chunk_ids": ["semantik:source-delta#sec1"],
         },
     ],
     "prereq_set": [
@@ -159,17 +159,17 @@ _STRUCTURED_CLAIMS_BY_TYPE: Dict[str, List[Dict[str, Any]]] = {
     "summary_takeaway": [
         {
             "claim": "SHACL gates structural validity of an RDF graph.",
-            "source_chunk_ids": ["semantik:shacl-spec#sec0"],
+            "source_chunk_ids": ["semantik:source-delta#sec0"],
         },
         {
             "claim": "Node shapes are composable with property shapes.",
-            "source_chunk_ids": ["semantik:shacl-spec#sec5"],
+            "source_chunk_ids": ["semantik:source-delta#sec5"],
         },
     ],
     "callout": [
         {
             "claim": "Note: SHACL targets are not the same as OWL ranges.",
-            "source_chunk_ids": ["semantik:shacl-spec#sec1"],
+            "source_chunk_ids": ["semantik:source-delta#sec1"],
         },
     ],
 }
@@ -235,7 +235,7 @@ def test_mixed_shape_fails() -> None:
             "A bare-string legacy claim.",
             {
                 "claim": "A structured claim mixed in.",
-                "source_chunk_ids": ["semantik:shacl-spec#sec1"],
+                "source_chunk_ids": ["semantik:source-delta#sec1"],
             },
         ],
     )

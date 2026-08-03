@@ -586,13 +586,13 @@ Phase / Wave 1.6 amends the objective-synthesis output contract: every newly aut
   "source_refs": [
     {
       "ref": "ch7",
-      "chunk_ids": ["semantik:shacl-spec_accessible#sec3-1-targets"]
+      "chunk_ids": ["semantik:source-gamma#sec3-1-targets"]
     },
     {
       "ref": "ch8",
       "chunk_ids": [
-        "semantik:shacl-spec_accessible#sec4-1-core-constraints",
-        "semantik:shacl-spec_accessible#sec4-2-property-shapes"
+        "semantik:source-gamma#sec4-1-core-constraints",
+        "semantik:source-gamma#sec4-2-property-shapes"
       ]
     }
   ]

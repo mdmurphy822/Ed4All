@@ -246,7 +246,7 @@ def test_local_backend_routes_to_local_base_url(monkeypatch):
     )
     out = p.synthesize_objectives(
         _stub_textbook_structure(),
-        course_name="BIO_101",
+        course_name="TST_902",
         chapter_count=2,
         weeks=10,
     )
@@ -282,7 +282,7 @@ def test_anthropic_backend_returns_objectives(monkeypatch):
     )
     out = p.synthesize_objectives(
         _stub_textbook_structure(),
-        course_name="BIO_101",
+        course_name="TST_902",
         chapter_count=2,
         weeks=10,
     )
@@ -308,7 +308,7 @@ def test_synthesize_objectives_returns_canonical_shape(monkeypatch):
     p = OutlinerProvider(provider="local", client=_make_client(handler))
     out = p.synthesize_objectives(
         _stub_textbook_structure(),
-        course_name="DEMO_101",
+        course_name="TST_906",
         chapter_count=2,
         weeks=8,
     )
@@ -320,7 +320,7 @@ def test_synthesize_objectives_returns_canonical_shape(monkeypatch):
         "mint_method",
         "duration_weeks",
     }
-    assert out["course_name"] == "DEMO_101"
+    assert out["course_name"] == "TST_906"
     # Re-minted IDs follow TO-NN / CO-NN pattern.
     assert out["terminal_objectives"][0]["id"] == "TO-01"
     co_ids = [
@@ -353,7 +353,7 @@ def test_lenient_json_recovers_markdown_fenced_response(monkeypatch):
     p = OutlinerProvider(provider="local", client=_make_client(handler))
     out = p.synthesize_objectives(
         _stub_textbook_structure(),
-        course_name="DEMO_101",
+        course_name="TST_906",
         chapter_count=2,
         weeks=8,
     )
@@ -377,7 +377,7 @@ def test_persistent_gibberish_raises_outliner_exhausted(monkeypatch):
     with pytest.raises(OutlinerProviderError) as excinfo:
         p.synthesize_objectives(
             _stub_textbook_structure(),
-            course_name="DEMO_101",
+            course_name="TST_906",
             chapter_count=2,
             weeks=8,
         )
@@ -402,7 +402,7 @@ def test_empty_objectives_payload_raises_exhausted(monkeypatch):
     with pytest.raises(OutlinerProviderError) as excinfo:
         p.synthesize_objectives(
             _stub_textbook_structure(),
-            course_name="DEMO_101",
+            course_name="TST_906",
             chapter_count=2,
             weeks=8,
         )
@@ -437,7 +437,7 @@ def test_decision_capture_fires_with_dynamic_signals(monkeypatch):
     )
     p.synthesize_objectives(
         _stub_textbook_structure(),
-        course_name="DEMO_101",
+        course_name="TST_906",
         chapter_count=2,
         weeks=8,
     )
@@ -451,7 +451,7 @@ def test_decision_capture_fires_with_dynamic_signals(monkeypatch):
     # verbatim. NOT a static "course-outliner" or "outliner" label.
     assert "provider=local" in rationale
     assert "model=" in rationale
-    assert "course_name=DEMO_101" in rationale
+    assert "course_name=TST_906" in rationale
     assert "chapter_count_input=2" in rationale
     assert "weeks_input=8" in rationale
     assert "terminal_count_emit=1" in rationale
@@ -460,7 +460,7 @@ def test_decision_capture_fires_with_dynamic_signals(monkeypatch):
     assert "success=True" in rationale
 
     decision = event["decision"]
-    assert "DEMO_101" in decision
+    assert "TST_906" in decision
     assert "success" in decision
 
 
@@ -484,7 +484,7 @@ def test_decision_capture_records_failure_with_last_error(monkeypatch):
     with pytest.raises(OutlinerProviderError):
         p.synthesize_objectives(
             _stub_textbook_structure(),
-            course_name="DEMO_101",
+            course_name="TST_906",
             chapter_count=2,
             weeks=8,
         )
@@ -522,7 +522,7 @@ def test_decision_capture_dynamic_provider_anthropic(monkeypatch):
     )
     p.synthesize_objectives(
         _stub_textbook_structure(),
-        course_name="DEMO_101",
+        course_name="TST_906",
         chapter_count=2,
         weeks=8,
     )
@@ -557,7 +557,7 @@ def test_non_dict_textbook_structure_raises(monkeypatch):
     with pytest.raises(ValueError) as excinfo:
         p.synthesize_objectives(
             "not-a-dict",  # type: ignore[arg-type]
-            course_name="DEMO_101",
+            course_name="TST_906",
         )
     assert "textbook_structure" in str(excinfo.value)
 
@@ -575,11 +575,11 @@ def test_user_prompt_includes_course_name_and_chapters(monkeypatch):
     p = OutlinerProvider(provider="local")
     rendered = p._render_user_prompt(
         textbook_structure=_stub_textbook_structure(),
-        course_name="BIO_101",
+        course_name="TST_902",
         chapter_count=2,
         weeks=10,
     )
-    assert "BIO_101" in rendered
+    assert "TST_902" in rendered
     assert "ch1" in rendered
     assert "ch2" in rendered
     assert "Introduction to Photosynthesis" in rendered

@@ -132,7 +132,7 @@ def test_courses_route_with_export(state_dir, libv2_root, courseforge_export):
     resp = c.get("/api/courses")
     assert resp.status_code == 200
     names = {row["course_name"] for row in resp.json()}
-    assert "PHYS_101" in names
+    assert "course-alpha" in names
 
     # Objectives GET via the route.
     obj = c.get(f"/api/courses/{courseforge_export['project_id']}/objectives")
@@ -181,7 +181,7 @@ def test_retrieval_query_empty_is_422(client, libv2_course):
 def test_bad_workflow_launch_is_422(client):
     resp = client.post(
         "/api/runs",
-        json={"workflow": "not_a_workflow", "course_name": "X1", "corpus": "/tmp/x.pdf"},
+        json={"workflow": "not_a_workflow", "course_name": "X1", "corpus": "synthetic/inputs/document.pdf"},
     )
     assert resp.status_code == 422
 
@@ -196,7 +196,7 @@ def test_bad_phase_launch_is_422(client, monkeypatch):
         json={
             "workflow": "textbook_to_course",
             "phase": "not_a_real_phase",
-            "course_name": "PHYS_101",
+            "course_name": "course-alpha",
         },
     )
     assert resp.status_code == 422
@@ -262,14 +262,14 @@ def test_validation_report_endpoint_returns_digest_and_report(
     from gui.app import create_app as _create
 
     cf_root = state_dir / "Courseforge"
-    project_id = "PROJ-BIO_201-20260610-cafef00d"
+    project_id = "PROJ-course-gamma-20260610-cafef00d"
     export_dir = cf_root / "exports" / project_id
     export_dir.mkdir(parents=True, exist_ok=True)
     (export_dir / "courseforge_validation_report.json").write_text(
         _json.dumps(
             {
                 "schema_version": "1.1",
-                "course_code": "BIO_201",
+                "course_code": "course-gamma",
                 "status": "fail",
                 "per_block_results": [
                     {"block_id": "b1", "block_type": "assessment_item", "status": "failed"},
@@ -286,7 +286,7 @@ def test_validation_report_endpoint_returns_digest_and_report(
             "run_id": run_id,
             "kind": "pipeline",
             "workflow": "courseforge",
-            "course_name": "BIO_201",
+            "course_name": "course-gamma",
             "status": "failed",
             "params": {"project_id": project_id},
             "gate_results": [
@@ -302,7 +302,7 @@ def test_validation_report_endpoint_returns_digest_and_report(
     resp = client.get(f"/api/runs/{run_id}/validation-report")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["report"]["course_code"] == "BIO_201"
+    assert body["report"]["course_code"] == "course-gamma"
     assert body["failed_gates"][0]["gate_id"] == "curie_anchoring"
     assert body["failed_phase"] == "inter_tier_validation"
 
@@ -480,7 +480,7 @@ def test_request_validation_error_detail_is_array(client):
         json={
             "workflow": "textbook_to_course",
             "course_name": "X1",
-            "corpus": "/tmp/x.pdf",
+            "corpus": "synthetic/inputs/document.pdf",
             "weeks": "not-a-number",
         },
     )

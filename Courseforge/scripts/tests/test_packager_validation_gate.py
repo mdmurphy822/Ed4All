@@ -139,7 +139,7 @@ class TestValidationGate:
         output = tmp_path / "out.imscc"
         with pytest.raises(SystemExit) as excinfo:
             package_imscc(
-                content_dir, output, "TEST_101", "Test Course",
+                content_dir, output, "TST_915", "Test Course",
                 objectives_path=objectives_path,
             )
         assert excinfo.value.code == 2
@@ -156,7 +156,7 @@ class TestValidationGate:
         )
         output = tmp_path / "out.imscc"
         package_imscc(
-            content_dir, output, "TEST_101", "Test Course",
+            content_dir, output, "TST_915", "Test Course",
             objectives_path=objectives_path,
         )
         assert output.exists()
@@ -176,7 +176,7 @@ class TestValidationGate:
         output = tmp_path / "out.imscc"
         # With skip_validation=True, violation is logged but packaging proceeds.
         package_imscc(
-            content_dir, output, "TEST_101", "Test Course",
+            content_dir, output, "TST_915", "Test Course",
             objectives_path=objectives_path,
             skip_validation=True,
         )
@@ -192,5 +192,5 @@ class TestValidationGate:
             encoding="utf-8",
         )
         output = tmp_path / "out.imscc"
-        package_imscc(content_dir, output, "TEST_101", "Test Course")
+        package_imscc(content_dir, output, "TST_915", "Test Course")
         assert output.exists()

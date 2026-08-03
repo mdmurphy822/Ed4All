@@ -212,15 +212,15 @@ def test_rewrite_user_prompt_surfaces_outline_source_refs_for_stamping(
 
     p = RewriteProvider(provider="local")
     block = _rewrite_block_fixture(
-        source_refs=["semantik:phys101#s3_p1", "semantik:phys101#s3_p2"],
+        source_refs=["semantik:source-alpha#s3_p1", "semantik:source-alpha#s3_p2"],
         objective_refs=["TO-02", "CO-05"],
     )
     rendered = p._render_user_prompt(block=block)
 
     # Outline source_refs are dumped via the JSON payload; the sourceId
     # values must appear so the model has the literal data to stamp.
-    assert "semantik:phys101#s3_p1" in rendered
-    assert "semantik:phys101#s3_p2" in rendered
+    assert "semantik:source-alpha#s3_p1" in rendered
+    assert "semantik:source-alpha#s3_p2" in rendered
     # objective_refs LO IDs likewise.
     assert "TO-02" in rendered
     assert "CO-05" in rendered

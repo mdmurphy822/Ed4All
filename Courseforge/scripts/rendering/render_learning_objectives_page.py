@@ -896,7 +896,7 @@ if __name__ == "__main__":  # pragma: no cover - thin CLI
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("objectives_json", type=Path)
     p.add_argument("output_html", type=Path)
-    p.add_argument("--course-code", default="SAMPLE_101")
+    p.add_argument("--course-code", default="TST_900")
     p.add_argument("--course-title", default="")
     p.add_argument(
         "--content-dir",

@@ -67,7 +67,7 @@ def test_launch_with_pause_for_review_threads_stop_after(state_dir, monkeypatch)
 
     req = {
         "workflow": "textbook_to_course",
-        "course_name": "PHYS_101",
+        "course_name": "course-alpha",
         "corpus": str(corpus),
         "options": {"stop_after": "course_planning"},
     }
@@ -130,7 +130,7 @@ def test_drive_pipeline_maps_paused_status_and_persists_paused_phase(
     run_id = shared_state.new_run_id("GUI")
     shared_state.register_run(
         {"run_id": run_id, "kind": "pipeline", "workflow": "textbook_to_course",
-         "status": "queued", "course_name": "PHYS_101",
+         "status": "queued", "course_name": "course-alpha",
          "params": {"stop_after": "course_planning"}}
     )
     asyncio.run(
@@ -184,7 +184,7 @@ def test_paused_review_info_exposes_paused_state(state_dir):
     run_id = shared_state.new_run_id("GUI")
     shared_state.register_run(
         {"run_id": run_id, "kind": "pipeline", "workflow": "textbook_to_course",
-         "status": "paused", "course_name": "PHYS_101", "paused_phase": "course_planning",
+         "status": "paused", "course_name": "course-alpha", "paused_phase": "course_planning",
          "params": {"stop_after": "course_planning"}}
     )
     info = run_service.paused_review_info(run_id)
@@ -192,10 +192,10 @@ def test_paused_review_info_exposes_paused_state(state_dir):
     assert info["paused"] is True
     assert info["paused_phase"] == "course_planning"
     assert info["stop_after"] == "course_planning"
-    assert info["course_name"] == "PHYS_101"
+    assert info["course_name"] == "course-alpha"
     # course_id degrades to the course_name when no export resolves (no export
     # on disk in this synthetic state), never raising.
-    assert info["course_id"] == "PHYS_101"
+    assert info["course_id"] == "course-alpha"
     assert info["objectives_available"] is False
 
 
@@ -213,14 +213,14 @@ def test_clear_stop_after_strips_marker(state_dir):
     _write_workflow_state(
         workflow_id,
         {"stopped_after": "course_planning",
-         "params": {"stop_after": "course_planning", "course_name": "PHYS_101"}},
+         "params": {"stop_after": "course_planning", "course_name": "course-alpha"}},
     )
     assert run_service._clear_stop_after(workflow_id) is True
     state = json.loads(run_service._workflow_state_file(workflow_id).read_text())
     assert "stop_after" not in state["params"]
     assert "stopped_after" not in state
     # Other params survive.
-    assert state["params"]["course_name"] == "PHYS_101"
+    assert state["params"]["course_name"] == "course-alpha"
     # Idempotent: a second clear is a no-op (nothing left to strip).
     assert run_service._clear_stop_after(workflow_id) is False
 
@@ -246,7 +246,7 @@ def test_resume_run_clear_stop_after_strips_marker_before_drive(state_dir, monke
     prior_id = shared_state.new_run_id("GUI")
     shared_state.register_run(
         {"run_id": prior_id, "kind": "pipeline", "workflow": "textbook_to_course",
-         "workflow_id": workflow_id, "status": "paused", "course_name": "PHYS_101",
+         "workflow_id": workflow_id, "status": "paused", "course_name": "course-alpha",
          "params": {"stop_after": "course_planning"}}
     )
 
@@ -285,7 +285,7 @@ def test_resume_run_without_clear_keeps_stop_after(state_dir, monkeypatch):
     prior_id = shared_state.new_run_id("GUI")
     shared_state.register_run(
         {"run_id": prior_id, "kind": "pipeline", "workflow": "textbook_to_course",
-         "workflow_id": workflow_id, "status": "paused", "course_name": "PHYS_101",
+         "workflow_id": workflow_id, "status": "paused", "course_name": "course-alpha",
          "params": {"stop_after": "course_planning"}}
     )
 
@@ -318,7 +318,7 @@ def test_review_endpoint_returns_paused_info(client, state_dir):
     run_id = shared_state.new_run_id("GUI")
     shared_state.register_run(
         {"run_id": run_id, "kind": "pipeline", "workflow": "textbook_to_course",
-         "status": "paused", "course_name": "PHYS_101", "paused_phase": "course_planning",
+         "status": "paused", "course_name": "course-alpha", "paused_phase": "course_planning",
          "params": {"stop_after": "course_planning"}}
     )
     resp = client.get(f"/api/runs/{run_id}/review")
@@ -326,7 +326,7 @@ def test_review_endpoint_returns_paused_info(client, state_dir):
     body = resp.json()
     assert body["paused"] is True
     assert body["paused_phase"] == "course_planning"
-    assert body["course_name"] == "PHYS_101"
+    assert body["course_name"] == "course-alpha"
 
 
 def test_review_endpoint_unknown_run_is_404(client):
@@ -354,7 +354,7 @@ def test_ws_sends_paused_status_frame_and_closes(client, state_dir):
     run_id = shared_state.new_run_id("GUI")
     shared_state.register_run(
         {"run_id": run_id, "kind": "pipeline", "workflow": "textbook_to_course",
-         "status": "paused", "course_name": "PHYS_101", "paused_phase": "course_planning"}
+         "status": "paused", "course_name": "course-alpha", "paused_phase": "course_planning"}
     )
     shared_state.append_log(run_id, "[iso] paused for review after phase course_planning\n")
     with client.websocket_connect(f"/api/ws/runs/{run_id}") as ws:
@@ -432,7 +432,7 @@ _CONFIGURE_REVIEW_CHECK_INNER = """
 # rendered into the final-box exactly as create.js ``renderReviewPanel`` builds
 # it (labelled section, objectives-file disclosure, edit + resume actions).
 _PROGRESS_PAUSED_INNER = """
-<h1>Building PHYS_101</h1>
+<h1>Building course-alpha</h1>
 <p class="muted"><span>Run GUI-x</span><span class="sep" aria-hidden="true"> · </span><span class="elapsed">finished</span></p>
 <ol class="phase-checklist" aria-label="Course build steps">
   <li class="phase-row is-done" data-phase="course_planning"><span class="phase-icon" aria-hidden="true">●</span><span class="phase-label">Plan learning objectives</span><span class="phase-state">Done</span></li>
@@ -442,12 +442,12 @@ _PROGRESS_PAUSED_INNER = """
   <section class="review-panel" aria-labelledby="review-h">
     <h2 id="review-h" class="review-title">Review the learning objectives</h2>
     <p class="review-intro">The build paused after planning the learning objectives so you can review and edit them before the rest of the course is generated. When you are done, resume the build below.</p>
-    <p class="review-path"><span class="review-path-label">Objectives file: </span><code class="kv">/tmp/exports/PROJ-PHYS_101-x/01_learning_objectives/synthesized_objectives.json</code></p>
+    <p class="review-path"><span class="review-path-label">Objectives file: </span><code class="kv">synthetic/exports/project-alpha/01_learning_objectives/synthesized_objectives.json</code></p>
     <div class="review-actions">
       <a class="btn" href="/advanced/#/courses" target="_blank" rel="noopener" aria-label="Edit objectives (opens the Advanced objectives editor in a new tab)">Edit objectives</a>
       <button type="button" class="btn primary">Resume build</button>
     </div>
-    <p class="review-hint muted"><span>In the objectives editor, open the course </span><code class="kv">PROJ-PHYS_101-x</code><span>, save your edits, then return here and resume the build.</span></p>
+    <p class="review-hint muted"><span>In the objectives editor, open the course </span><code class="kv">project-alpha-x</code><span>, save your edits, then return here and resume the build.</span></p>
   </section>
 </div>
 """

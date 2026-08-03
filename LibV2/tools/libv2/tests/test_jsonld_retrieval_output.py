@@ -48,7 +48,7 @@ def _full_result() -> RetrievalResult:
         chunk_id="chunk-abc-001",
         text="Newton's second law states F = ma",
         score=0.8532,
-        course_slug="classical-mechanics",
+        course_slug="course-jsonld-alpha",
         domain="physics",
         chunk_type="explanation",
         difficulty="intermediate",

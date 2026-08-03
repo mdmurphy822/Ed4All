@@ -27,7 +27,7 @@ def _seed(
             "kind": "pipeline",
             "workflow": "textbook_to_course",
             "workflow_id": workflow_id,
-            "course_name": "TEST_COURSE",
+            "course_name": "synthetic-course",
             "status": gui_status,
             "started_at": "2026-01-01T00:00:00",
         }

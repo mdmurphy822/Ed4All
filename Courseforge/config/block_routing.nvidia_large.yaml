@@ -16,7 +16,7 @@
 #   export COURSEFORGE_TWO_PASS=true
 #   export COURSEFORGE_BLOCK_ROUTING_PATH=Courseforge/config/block_routing.nvidia_large.yaml
 #   export NVIDIA_API_KEY=...    # ships in a gitignored env file
-#   ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101
+#   ed4all run textbook-to-course --corpus <CORPUS_PATH> --course-name <COURSE_NAME>
 #
 # What this gets you: every block's outline-tier first draft stays on
 # the local 7B model; every rewrite goes to the NVIDIA large tier (the

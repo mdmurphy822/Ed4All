@@ -89,7 +89,7 @@ def _package_and_read_week_titles(export_root: Path, tmp_path: Path):
     content_dir = export_root / "03_content_development"
     output = tmp_path / "out.imscc"
     package_imscc(
-        content_dir, output, "TEST_101", "Test Course", skip_validation=True
+        content_dir, output, "TST_915", "Test Course", skip_validation=True
     )
     with zipfile.ZipFile(output) as zf:
         manifest = zf.read("imsmanifest.xml").decode("utf-8")

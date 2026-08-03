@@ -36,7 +36,7 @@ const WORKFLOW = 'textbook_to_course';
 const ACCEPT_EXT = ['.pdf'];
 const MAX_FILE_BYTES = 200 * 1024 * 1024; // 200 MB client-side guard
 // Slug rule mirrors the course_name validation surface: letters, digits,
-// underscore, hyphen (PHYS_101, BIO-201). Client-side HINT only — the server is
+// underscore, hyphen (for example, <COURSE_NAME>). Client-side HINT only — the server is
 // authoritative.
 const SLUG_HINT_RE = /^[A-Za-z0-9_-]{2,}$/;
 
@@ -268,7 +268,7 @@ function renderConfigureStep(shell, panel, model, summary, goto) {
       'aria-describedby': nameHintId,
       autocomplete: 'off',
     }),
-    el('p', { id: nameHintId, class: 'field-hint', text: 'Letters, numbers, “_” and “-” only (e.g. PHYS_101). At least 2 characters.' }),
+    el('p', { id: nameHintId, class: 'field-hint', text: 'Letters, numbers, “_” and “-” only (<COURSE_NAME>). At least 2 characters.' }),
     el('p', { class: 'error', role: 'alert', hidden: true }),
   ]);
   form.appendChild(nameField);

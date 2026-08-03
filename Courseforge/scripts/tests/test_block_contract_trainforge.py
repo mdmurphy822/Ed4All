@@ -286,7 +286,7 @@ def _parse_with_emit_blocks(
         monkeypatch.setenv("COURSEFORGE_EMIT_BLOCKS", "true")
     else:
         monkeypatch.setenv("COURSEFORGE_EMIT_BLOCKS", "false")
-    course_code = "TEST_101"
+    course_code = "TST_915"
     week_num = 1
     page_id = block.page_id
     # ``objectives`` / ``sections`` / ``misconceptions`` builders read

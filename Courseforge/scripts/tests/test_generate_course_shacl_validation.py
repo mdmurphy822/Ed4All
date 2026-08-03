@@ -73,7 +73,7 @@ def well_formed_metadata() -> dict:
     return {
         "@context": "https://ed4all.dev/ns/courseforge/v1",
         "@type": "CourseModule",
-        "courseCode": "SAMPLE_101",
+        "courseCode": "TST_913",
         "weekNumber": 1,
         "moduleType": "content",
         "pageId": "week_01_content_01_intro",
@@ -92,7 +92,7 @@ def bad_bloom_iri_metadata() -> dict:
     return {
         "@context": "https://ed4all.dev/ns/courseforge/v1",
         "@type": "CourseModule",
-        "courseCode": "SAMPLE_101",
+        "courseCode": "TST_913",
         "weekNumber": 1,
         "moduleType": "content",
         "pageId": "week_01_content_01_bad_bloom",
@@ -187,7 +187,7 @@ def test_real_generate_week_output_passes_shacl(
     with caplog.at_level(logging.WARNING, logger=generate_course.logger.name):
         # Must not raise.
         generate_week(
-            week_data, tmp_path / "out", "SAMPLE_101", source_module_map=None,
+            week_data, tmp_path / "out", "TST_913", source_module_map=None,
         )
     assert not any(
         "SHACL validation failed" in rec.getMessage()
@@ -303,7 +303,7 @@ def test_wrap_page_raises_when_strict_and_emit_drifts(
     )
     with pytest.raises(ValueError, match="failed SHACL validation"):
         generate_week(
-            week_data, tmp_path / "out", "SAMPLE_101", source_module_map=None,
+            week_data, tmp_path / "out", "TST_913", source_module_map=None,
         )
 
 
@@ -344,7 +344,7 @@ def test_wrap_page_succeeds_when_shacl_deps_missing(
     )
     # Must not raise.
     generate_week(
-        week_data, tmp_path / "out", "SAMPLE_101", source_module_map=None,
+        week_data, tmp_path / "out", "TST_913", source_module_map=None,
     )
 
 
@@ -429,7 +429,7 @@ def _block_payload(touched_by: list | None = None) -> dict:
     return {
         "@context": "https://ed4all.dev/ns/courseforge/v1",
         "@type": "CourseModule",
-        "courseCode": "SAMPLE_101",
+        "courseCode": "TST_913",
         "weekNumber": 1,
         "moduleType": "content",
         "pageId": "week_01_content_01_intro",

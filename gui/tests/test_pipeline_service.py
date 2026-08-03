@@ -37,7 +37,7 @@ from gui.services import pipeline_service
 from lib.ontology.slugs import libv2_course_slug
 
 # Invented synthetic course identity (never a real book/campaign name).
-COURSE_NAME = "Sample Physics 101"
+COURSE_NAME = "Sample Course Alpha"
 COURSE_SLUG = libv2_course_slug(COURSE_NAME)
 
 

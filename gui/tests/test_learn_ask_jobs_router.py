@@ -19,7 +19,7 @@ from gui.services import ask_jobs, retrieval_service  # noqa: E402
 from gui.routers import learn as learn_router  # noqa: E402
 
 
-def _grounded(status, *, answer_text=None, citations=None, slug="phys-101"):
+def _grounded(status, *, answer_text=None, citations=None, slug="course-alpha"):
     return {
         "status": status,
         "query": "what is velocity?",
@@ -61,7 +61,7 @@ def client(monkeypatch):
     monkeypatch.setattr(
         retrieval_service,
         "list_courses",
-        lambda: [{"slug": "phys-101", "chunk_count": 3}],
+        lambda: [{"slug": "course-alpha", "chunk_count": 3}],
     )
     return TestClient(create_app())
 
@@ -70,7 +70,7 @@ def client(monkeypatch):
 
 
 def test_submit_empty_query_is_422(client):
-    resp = client.post("/api/learn/ask-jobs", json={"slug": "phys-101", "query": " "})
+    resp = client.post("/api/learn/ask-jobs", json={"slug": "course-alpha", "query": " "})
     assert resp.status_code == 422
     assert resp.json()["error"] == "invalid_query"
 
@@ -91,7 +91,7 @@ def test_submit_returns_ask_id_and_pending(client, monkeypatch):
             "queue_position": 0,
         },
     )
-    resp = client.post("/api/learn/ask-jobs", json={"slug": "phys-101", "query": "q"})
+    resp = client.post("/api/learn/ask-jobs", json={"slug": "course-alpha", "query": "q"})
     assert resp.status_code == 200
     body = resp.json()
     assert body == {"ask_id": "ASK-test-1", "status": "pending", "queue_position": 0}
@@ -108,7 +108,7 @@ def test_submit_passes_engine(client, monkeypatch):
     monkeypatch.setattr(ask_jobs, "submit", stub)
     client.post(
         "/api/learn/ask-jobs",
-        json={"slug": "phys-101", "query": "q", "engine": "semantic"},
+        json={"slug": "course-alpha", "query": "q", "engine": "semantic"},
     )
     assert seen["engine"] == "semantic"
     assert seen["library_wide"] is None
@@ -210,16 +210,16 @@ def test_ask_ready_reports_index_presence(client, monkeypatch):
     from gui.services import answer_service
 
     monkeypatch.setattr(answer_service, "_has_vector_index", lambda root, slug: True)
-    resp = client.get("/api/learn/ask-ready/phys-101")
+    resp = client.get("/api/learn/ask-ready/course-alpha")
     assert resp.status_code == 200
-    assert resp.json() == {"slug": "phys-101", "exists": True, "has_vector_index": True}
+    assert resp.json() == {"slug": "course-alpha", "exists": True, "has_vector_index": True}
 
 
 def test_ask_ready_no_index(client, monkeypatch):
     from gui.services import answer_service
 
     monkeypatch.setattr(answer_service, "_has_vector_index", lambda root, slug: False)
-    resp = client.get("/api/learn/ask-ready/phys-101")
+    resp = client.get("/api/learn/ask-ready/course-alpha")
     assert resp.status_code == 200
     assert resp.json()["has_vector_index"] is False
 
@@ -231,7 +231,7 @@ def test_ask_ready_stat_failure_degrades_to_no_index(client, monkeypatch):
         raise OSError("fs gone")
 
     monkeypatch.setattr(answer_service, "_has_vector_index", boom)
-    resp = client.get("/api/learn/ask-ready/phys-101")
+    resp = client.get("/api/learn/ask-ready/course-alpha")
     assert resp.status_code == 200
     assert resp.json()["has_vector_index"] is False
 
@@ -243,7 +243,7 @@ def test_ask_jobs_mounted_on_studio_app(monkeypatch):
     monkeypatch.setattr(
         retrieval_service,
         "list_courses",
-        lambda: [{"slug": "phys-101", "chunk_count": 3}],
+        lambda: [{"slug": "course-alpha", "chunk_count": 3}],
     )
     monkeypatch.setattr(
         ask_jobs,
@@ -256,7 +256,7 @@ def test_ask_jobs_mounted_on_studio_app(monkeypatch):
     )
     app = create_app(mode="studio")
     sc = TestClient(app)
-    resp = sc.post("/api/learn/ask-jobs", json={"slug": "phys-101", "query": "q"})
+    resp = sc.post("/api/learn/ask-jobs", json={"slug": "course-alpha", "query": "q"})
     assert resp.status_code == 200
     assert resp.json()["ask_id"] == "ASK-s"
 
@@ -309,7 +309,7 @@ def test_submit_threads_explicit_library_wide(client, monkeypatch):
     monkeypatch.setattr(ask_jobs, "submit", stub)
     resp = client.post(
         "/api/learn/ask-jobs",
-        json={"slug": "phys-101", "query": "q", "library_wide": True},
+        json={"slug": "course-alpha", "query": "q", "library_wide": True},
     )
     assert resp.status_code == 200
     assert seen["library_wide"] is True
@@ -361,7 +361,7 @@ def test_feedback_up_fans_out_to_event_log(client, monkeypatch):
     monkeypatch.setattr(learn_router.shared_state, "append_event", _cap)
     resp = client.post(
         "/api/learn/feedback",
-        json={"slug": "phys-101", "ask_id": "ASK-1", "verdict": "up", "comment": "nice"},
+        json={"slug": "course-alpha", "ask_id": "ASK-1", "verdict": "up", "comment": "nice"},
     )
     assert resp.status_code == 200
     assert resp.json() == {"ok": True, "verdict": "up"}
@@ -374,7 +374,7 @@ def test_feedback_up_fans_out_to_event_log(client, monkeypatch):
 
 def test_feedback_rejects_unknown_verdict(client):
     resp = client.post(
-        "/api/learn/feedback", json={"slug": "phys-101", "verdict": "maybe"}
+        "/api/learn/feedback", json={"slug": "course-alpha", "verdict": "maybe"}
     )
     assert resp.status_code == 422
     assert resp.json()["error"] == "invalid_verdict"
@@ -390,7 +390,7 @@ def test_feedback_comment_is_size_capped(client, monkeypatch):
     long_comment = "x" * (learn_router._FEEDBACK_COMMENT_MAX + 500)
     resp = client.post(
         "/api/learn/feedback",
-        json={"slug": "phys-101", "verdict": "down", "comment": long_comment},
+        json={"slug": "course-alpha", "verdict": "down", "comment": long_comment},
     )
     assert resp.status_code == 200
     assert len(seen["payload"]["comment"]) == learn_router._FEEDBACK_COMMENT_MAX
@@ -400,20 +400,20 @@ def test_feedback_writes_course_feedback_jsonl(client, monkeypatch, tmp_path):
     import json as _json
     from gui.services import answer_service
 
-    course_dir = tmp_path / "courses" / "phys-101"
+    course_dir = tmp_path / "courses" / "course-alpha"
     course_dir.mkdir(parents=True)
     monkeypatch.setattr(answer_service, "_libv2_root", lambda: tmp_path)
     # Silence the event-log arm; only exercise the per-course file.
     monkeypatch.setattr(learn_router.shared_state, "append_event", lambda s, k, p: {"seq": 0})
     resp = client.post(
-        "/api/learn/feedback", json={"slug": "phys-101", "verdict": "up"}
+        "/api/learn/feedback", json={"slug": "course-alpha", "verdict": "up"}
     )
     assert resp.status_code == 200
     fpath = course_dir / "feedback.jsonl"
     assert fpath.is_file()
     rec = _json.loads(fpath.read_text(encoding="utf-8").strip())
     assert rec["verdict"] == "up"
-    assert rec["slug"] == "phys-101"
+    assert rec["slug"] == "course-alpha"
 
 
 def test_feedback_tolerates_absent_course_dir(client, monkeypatch, tmp_path):
@@ -422,11 +422,11 @@ def test_feedback_tolerates_absent_course_dir(client, monkeypatch, tmp_path):
     monkeypatch.setattr(answer_service, "_libv2_root", lambda: tmp_path)  # no courses/
     monkeypatch.setattr(learn_router.shared_state, "append_event", lambda s, k, p: {"seq": 0})
     resp = client.post(
-        "/api/learn/feedback", json={"slug": "phys-101", "verdict": "down"}
+        "/api/learn/feedback", json={"slug": "course-alpha", "verdict": "down"}
     )
     # No course dir → no file, but the request still succeeds.
     assert resp.status_code == 200
-    assert not (tmp_path / "courses" / "phys-101" / "feedback.jsonl").exists()
+    assert not (tmp_path / "courses" / "course-alpha" / "feedback.jsonl").exists()
 
 
 def test_feedback_rate_limit_returns_429(client, monkeypatch, tmp_path):
@@ -439,11 +439,11 @@ def test_feedback_rate_limit_returns_429(client, monkeypatch, tmp_path):
     try:
         for _ in range(learn_router._FEEDBACK_RATE_MAX):
             ok = client.post(
-                "/api/learn/feedback", json={"slug": "phys-101", "verdict": "up"}
+                "/api/learn/feedback", json={"slug": "course-alpha", "verdict": "up"}
             )
             assert ok.status_code == 200
         blocked = client.post(
-            "/api/learn/feedback", json={"slug": "phys-101", "verdict": "up"}
+            "/api/learn/feedback", json={"slug": "course-alpha", "verdict": "up"}
         )
         assert blocked.status_code == 429
         assert blocked.json()["error"] == "rate_limited"

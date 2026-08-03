@@ -12,7 +12,7 @@
 #
 #   export COURSEFORGE_TWO_PASS=true
 #   export COURSEFORGE_BLOCK_ROUTING_PATH=Courseforge/config/block_routing.license_clean.yaml
-#   ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101
+#   ed4all run textbook-to-course --corpus <CORPUS_PATH> --course-name <COURSE_NAME>
 #
 # Cross-references:
 #   - docs/operations/license-clean-run.md (4-env-var deployment recipe)

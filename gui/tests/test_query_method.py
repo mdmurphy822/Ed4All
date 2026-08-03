@@ -22,7 +22,7 @@ from gui.routers import http_query  # noqa: E402
 from gui.services import answer_service, retrieval_service  # noqa: E402
 
 
-_COURSES = [{"slug": "phys-101", "chunk_count": 3}]
+_COURSES = [{"slug": "course-alpha", "chunk_count": 3}]
 
 
 def _grounded(status="answered"):
@@ -30,7 +30,7 @@ def _grounded(status="answered"):
     return {
         "status": status,
         "query": "what is velocity?",
-        "course_slug": "phys-101",
+        "course_slug": "course-alpha",
         "engine": "lexical",
         "answer_text": "Velocity is a vector." if status == "answered" else None,
         "citations": [],
@@ -78,7 +78,7 @@ def test_query_methods_constant_is_query_then_post():
 
 
 def _query_body():
-    return {"slug": "phys-101", "query": "what is velocity?", "mode": "bm25"}
+    return {"slug": "course-alpha", "query": "what is velocity?", "mode": "bm25"}
 
 
 def test_retrieval_query_via_QUERY_matches_POST(client):
@@ -115,7 +115,7 @@ def test_retrieval_query_QUERY_empty_query_still_422(client):
     r = client.request(
         "QUERY",
         "/api/retrieval/query",
-        json={"slug": "phys-101", "query": "  ", "mode": "bm25"},
+        json={"slug": "course-alpha", "query": "  ", "mode": "bm25"},
     )
     assert r.status_code == 422
     assert r.json()["error"] == "invalid_query"
@@ -125,7 +125,7 @@ def test_retrieval_query_POST_error_path_also_carries_deprecation(client):
     # A typed-error (JSONResponse) POST result is tagged in place too.
     r = client.post(
         "/api/retrieval/query",
-        json={"slug": "phys-101", "query": "  ", "mode": "bm25"},
+        json={"slug": "course-alpha", "query": "  ", "mode": "bm25"},
     )
     assert r.status_code == 422
     assert r.headers.get("deprecation") == "true"
@@ -135,7 +135,7 @@ def test_retrieval_query_POST_error_path_also_carries_deprecation(client):
 
 
 def _ask_body():
-    return {"slug": "phys-101", "query": "what is velocity?"}
+    return {"slug": "course-alpha", "query": "what is velocity?"}
 
 
 def test_learn_ask_via_QUERY_matches_POST(client):
@@ -167,7 +167,7 @@ def test_learn_ask_unknown_method_is_405(client):
 
 def test_learn_ask_QUERY_empty_query_still_422_with_fragment(client):
     r = client.request(
-        "QUERY", "/api/learn/ask", json={"slug": "phys-101", "query": "  "}
+        "QUERY", "/api/learn/ask", json={"slug": "course-alpha", "query": "  "}
     )
     assert r.status_code == 422
     body = r.json()

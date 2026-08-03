@@ -225,7 +225,7 @@ def test_dispatch_calls_content_generator_agent(monkeypatch):
     p = RewriteProvider(
         provider="claude_session",
         dispatcher=dispatcher,
-        run_id="WF-Wave6-test",
+        run_id="run-gamma",
     )
     block = _outline_block(curies=[])
     out = p.generate_rewrite(block)
@@ -235,7 +235,7 @@ def test_dispatch_calls_content_generator_agent(monkeypatch):
     agent_type, task_name, params, run_id = dispatcher.calls[0]
     assert agent_type == _CLAUDE_SESSION_AGENT_TYPE == "content-generator"
     assert task_name == _CLAUDE_SESSION_TASK_NAME
-    assert run_id == "WF-Wave6-test"
+    assert run_id == "run-gamma"
     # Expected task_params surface — every key the production
     # ``_dispatch_call`` is contractually obliged to emit.
     for key in (

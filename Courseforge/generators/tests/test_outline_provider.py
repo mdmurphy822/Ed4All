@@ -1565,7 +1565,7 @@ def test_repair_source_refs_noop_when_absent_or_not_list():
 # exact clean-fractions shape the live 7B probe exercises.
 _PREREQ_SOURCE = [
     {
-        "id": "semantik:simplifying-fractions#sec_01",
+        "id": "semantik:source-beta#sec_01",
         "text": (
             "To simplify a fraction, divide both the numerator and the "
             "denominator by their greatest common factor (GCF).\n\n"
@@ -1706,11 +1706,11 @@ def test_repair_prereq_pages_output_satisfies_strict_schema():
         "curies": ["math:gcf"],
         "key_claims": [
             {"claim": "Learners need factoring first.",
-             "source_chunk_ids": ["semantik:simplifying-fractions#sec_01"]}
+             "source_chunk_ids": ["semantik:source-beta#sec_01"]}
         ],
         "section_skeleton": [{"heading": "Prerequisites"}],
         "source_refs": [
-            {"sourceId": "semantik:simplifying-fractions#sec_01", "role": "primary"}
+            {"sourceId": "semantik:source-beta#sec_01", "role": "primary"}
         ],
         "structural_warnings": [],
         "prerequisitePages": ["p#bad_0"],  # garbage-only → would fail minItems

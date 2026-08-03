@@ -23,7 +23,7 @@ Resolution order for the objectives file:
 Usage:
     python package_multifile_imscc.py <content_dir> <output_imscc>
     python package_multifile_imscc.py <content_dir> <output_imscc> \
-        --objectives inputs/exam-objectives/SAMPLE_101_objectives.json
+        --objectives inputs/exam-objectives/TST_913_objectives.json
     python package_multifile_imscc.py <content_dir> <output_imscc> \
         --skip-validation  # escape hatch, not recommended for production
 """
@@ -1344,7 +1344,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("content_dir", type=Path, help="Course content dir containing week_* subdirs")
     p.add_argument("output_imscc", type=Path, help="Output .imscc file path")
-    p.add_argument("course_code", nargs="?", default="SAMPLE_101", help="Course code (default: SAMPLE_101)")
+    p.add_argument("course_code", nargs="?", default="TST_900", help="Course code (default: TST_900)")
     p.add_argument("course_title", nargs="?", default="Sample Course",
                    help="Course title (default: Sample Course)")
     p.add_argument("--objectives", type=Path, default=None,

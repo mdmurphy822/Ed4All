@@ -24,7 +24,7 @@ _ENTRIES = [
     {
         "question": "Is it true that you can divide by zero?",
         "answer": "Dividing by zero is undefined.",
-        "source_link": "/api/learn/source/algebra-101?item_path=ch1/div.html",
+        "source_link": "/api/learn/source/course-alpha?item_path=ch1/div.html",
     },
     {"question": "What is a fraction?", "answer": "A fraction is a part of a whole."},
 ]

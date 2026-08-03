@@ -195,7 +195,7 @@ class TestAssessmentPackaging:
     ):
         output = tmp_path / "out.imscc"
         package_imscc(
-            content_dir_with_assessments, output, "TEST_101", "Test Course",
+            content_dir_with_assessments, output, "TST_915", "Test Course",
             skip_validation=True,
         )
         assert output.exists()
@@ -216,7 +216,7 @@ class TestAssessmentPackaging:
         still land in the cartridge via the sibling-fallback discovery."""
         output = tmp_path / "out.imscc"
         package_imscc(
-            sibling_layout_content_dir, output, "TEST_101", "Test Course",
+            sibling_layout_content_dir, output, "TST_915", "Test Course",
             skip_validation=True,
         )
         assert output.exists()
@@ -232,7 +232,7 @@ class TestAssessmentPackaging:
     ):
         output = tmp_path / "out.imscc"
         package_imscc(
-            content_dir_with_assessments, output, "TEST_101", "Test Course",
+            content_dir_with_assessments, output, "TST_915", "Test Course",
             skip_validation=True,
         )
         manifest_xml = _manifest_str(output)
@@ -253,7 +253,7 @@ class TestAssessmentPackaging:
     ):
         output = tmp_path / "out.imscc"
         package_imscc(
-            content_dir_with_assessments, output, "TEST_101", "Test Course",
+            content_dir_with_assessments, output, "TST_915", "Test Course",
             skip_validation=True,
         )
         names = _zip_names(output)
@@ -270,7 +270,7 @@ class TestAssessmentPackaging:
         """A ``week_03_*`` file name infers week 3 → nested under WEEK_3 item."""
         output = tmp_path / "out.imscc"
         package_imscc(
-            content_dir_with_assessments, output, "TEST_101", "Test Course",
+            content_dir_with_assessments, output, "TST_915", "Test Course",
             skip_validation=True,
         )
         root = ET.fromstring(_manifest_str(output))
@@ -305,10 +305,10 @@ class TestNoRegression:
         """No 06_assessments/ dir → build_manifest output is unchanged whether
         or not the assessments arg is threaded (empty list == None)."""
         baseline = build_manifest(
-            content_dir_no_assessments, "TEST_101", "Test Course",
+            content_dir_no_assessments, "TST_915", "Test Course",
         )
         with_arg = build_manifest(
-            content_dir_no_assessments, "TEST_101", "Test Course",
+            content_dir_no_assessments, "TST_915", "Test Course",
             assessments=[],
         )
         assert baseline == with_arg
@@ -323,7 +323,7 @@ class TestNoRegression:
     ):
         output = tmp_path / "out.imscc"
         package_imscc(
-            content_dir_no_assessments, output, "TEST_101", "Test Course",
+            content_dir_no_assessments, output, "TST_915", "Test Course",
             skip_validation=True,
         )
         names = _zip_names(output)
@@ -348,7 +348,7 @@ class TestMalformedDropped:
         )
         output = tmp_path / "out.imscc"
         package_imscc(
-            content_dir_with_assessments, output, "TEST_101", "Test Course",
+            content_dir_with_assessments, output, "TST_915", "Test Course",
             skip_validation=True,
         )
         assert output.exists(), "package must still build with one bad item"
@@ -374,7 +374,7 @@ class TestMalformedDropped:
         )
         output = tmp_path / "out.imscc"
         package_imscc(
-            content_dir_with_assessments, output, "TEST_101", "Test Course",
+            content_dir_with_assessments, output, "TST_915", "Test Course",
             skip_validation=True,
         )
         assert output.exists()
@@ -396,7 +396,7 @@ class TestMalformedDropped:
         )
         output = tmp_path / "out.imscc"
         package_imscc(
-            content_dir_with_assessments, output, "TEST_101", "Test Course",
+            content_dir_with_assessments, output, "TST_915", "Test Course",
             skip_validation=True,
         )
         captured = capsys.readouterr().out
@@ -438,7 +438,7 @@ class TestSidecarAndCoverage:
         )
         output = tmp_path / "out.imscc"
         package_imscc(
-            tmp_path, output, "TEST_101", "Test Course", skip_validation=True,
+            tmp_path, output, "TST_915", "Test Course", skip_validation=True,
         )
         manifest_xml = _manifest_str(output)
         root = ET.fromstring(manifest_xml)
@@ -480,7 +480,7 @@ class TestSidecarAndCoverage:
         )
         output = tmp_path / "out.imscc"
         package_imscc(
-            tmp_path, output, "TEST_101", "Test Course", skip_validation=True,
+            tmp_path, output, "TST_915", "Test Course", skip_validation=True,
         )
         root = ET.fromstring(_manifest_str(output))
         assessments_item = next(
@@ -502,7 +502,7 @@ class TestSidecarAndCoverage:
         output = tmp_path / "out.imscc"
         report_path = tmp_path / "packaging_report.json"
         package_imscc(
-            content_dir_with_assessments, output, "TEST_101", "Test Course",
+            content_dir_with_assessments, output, "TST_915", "Test Course",
             skip_validation=True,
             coverage_sidecar_path=report_path,
         )
@@ -523,7 +523,7 @@ class TestSidecarAndCoverage:
         output = tmp_path / "out.imscc"
         report_path = tmp_path / "packaging_report.json"
         package_imscc(
-            content_dir_no_assessments, output, "TEST_101", "Test Course",
+            content_dir_no_assessments, output, "TST_915", "Test Course",
             skip_validation=True,
             coverage_sidecar_path=report_path,
         )
@@ -538,7 +538,7 @@ class TestSidecarAndCoverage:
         output = tmp_path / "out.imscc"
         report_path = tmp_path / "packaging_report.json"
         package_imscc(
-            content_dir_with_assessments, output, "TEST_101", "Test Course",
+            content_dir_with_assessments, output, "TST_915", "Test Course",
             skip_validation=True,
             coverage_sidecar_path=report_path,
         )

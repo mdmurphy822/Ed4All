@@ -171,7 +171,7 @@ def test_local_backend_routes_to_local_base_url(monkeypatch):
         client=_make_client(handler),
     )
     out = p.generate_page(
-        course_code="DEMO_101",
+        course_code="TST_906",
         week_number=1,
         page_id="week_01_content_01_intro",
         page_template="<!--TEMPLATE-->",
@@ -208,7 +208,7 @@ def test_together_backend_returns_html(monkeypatch):
         client=_make_client(handler),
     )
     out = p.generate_page(
-        course_code="DEMO_101",
+        course_code="TST_906",
         week_number=2,
         page_id="week_02_content_01_topic",
         page_template="<!--TEMPLATE-->",
@@ -242,7 +242,7 @@ def test_anthropic_backend_returns_html(monkeypatch):
         anthropic_client=_FakeClient(),
     )
     out = p.generate_page(
-        course_code="DEMO_101",
+        course_code="TST_906",
         week_number=4,
         page_id="week_04_content_01_topic",
         page_template="<!--TEMPLATE-->",
@@ -279,7 +279,7 @@ def test_decision_capture_fires_with_page_id_and_provider_in_rationale(
         client=_make_client(handler),
     )
     p.generate_page(
-        course_code="DEMO_101",
+        course_code="TST_906",
         week_number=3,
         page_id="week_03_content_01_topic",
         page_template="<!--TEMPLATE-->",
@@ -290,7 +290,7 @@ def test_decision_capture_fires_with_page_id_and_provider_in_rationale(
     assert event["decision_type"] == "content_generator_call"
     rationale = event["rationale"]
     assert len(rationale) >= 20
-    assert "course_code=DEMO_101" in rationale
+    assert "course_code=TST_906" in rationale
     assert "week_number=3" in rationale
     assert "week_03_content_01_topic" in rationale
     assert "provider=local" in rationale
@@ -310,7 +310,7 @@ def test_empty_page_id_raises_value_error(monkeypatch):
     )
     with pytest.raises(ValueError):
         p.generate_page(
-            course_code="DEMO_101",
+            course_code="TST_906",
             week_number=1,
             page_id="",
             page_template="<!--TEMPLATE-->",
@@ -449,7 +449,7 @@ def test_pipeline_tools_routes_through_provider_when_env_set(
     (project_path / "03_content_development").mkdir(parents=True, exist_ok=True)
     config = {
         "project_id": project_id,
-        "course_name": "DEMO_PROVIDER_101",
+        "course_name": "PROVIDER_ALPHA",
         "duration_weeks": 1,
         "objectives_path": None,
     }
@@ -459,7 +459,7 @@ def test_pipeline_tools_routes_through_provider_when_env_set(
 
     # Stage a single SemantiK HTML so build_week_data has at least one
     # renderable topic (the provider seam fires per-topic).
-    staging_dir = staging_root / "WF-PROV-01"
+    staging_dir = staging_root / "run-beta"
     staging_dir.mkdir(parents=True, exist_ok=True)
     (staging_dir / "photosynthesis.html").write_text(
         _SEMANTIK_HTML_FIXTURE, encoding="utf-8"

@@ -114,9 +114,9 @@ class TestSemantikChunksOnlyCourse:
     """A course whose chunks live only in ``semantik_chunks/`` (no catalog entry)."""
 
     def test_decompose_returns_results(self, tmp_path):
-        _make_course(tmp_path, "alg-semantik", _algebra_chunks(), chunkset_dir="semantik_chunks")
+        _make_course(tmp_path, "scope-alpha", _algebra_chunks(), chunkset_dir="semantik_chunks")
         retriever = MultiQueryRetriever(
-            repo_root=tmp_path, course_slug="alg-semantik",
+            repo_root=tmp_path, course_slug="scope-alpha",
         )
         fusion, decomposed = retriever.retrieve_with_decomposition(
             query="linear equation", limit=5,
@@ -127,9 +127,9 @@ class TestSemantikChunksOnlyCourse:
     def test_decompose_false_returns_results(self, tmp_path):
         """The non-decomposed branch must surface results, not an empty list
         (the pre-fix branch dropped ``results`` on the floor)."""
-        _make_course(tmp_path, "alg-semantik", _algebra_chunks(), chunkset_dir="semantik_chunks")
+        _make_course(tmp_path, "scope-alpha", _algebra_chunks(), chunkset_dir="semantik_chunks")
         retriever = MultiQueryRetriever(
-            repo_root=tmp_path, course_slug="alg-semantik",
+            repo_root=tmp_path, course_slug="scope-alpha",
         )
         fusion = retriever.retrieve(
             query="linear equation", limit=5, decompose=False,
@@ -138,11 +138,11 @@ class TestSemantikChunksOnlyCourse:
         assert fusion.query_coverage.get("original", 0) > 0
 
     def test_per_call_slug_overrides_instance_default(self, tmp_path):
-        _make_course(tmp_path, "alg-semantik", _algebra_chunks(), chunkset_dir="semantik_chunks")
+        _make_course(tmp_path, "scope-alpha", _algebra_chunks(), chunkset_dir="semantik_chunks")
         # No instance-level scope; supply it per call.
         retriever = MultiQueryRetriever(repo_root=tmp_path)
         fusion, _ = retriever.retrieve_with_decomposition(
-            query="linear equation", limit=5, course_slug="alg-semantik",
+            query="linear equation", limit=5, course_slug="scope-alpha",
         )
         assert fusion.result_count > 0
 
@@ -153,10 +153,10 @@ class TestLegacyChunksReadFallbackNoRegression:
 
     def test_legacy_staged_chunks_course_returns_results(self, tmp_path):
         _make_course(
-            tmp_path, "alg-legacy-staged", _algebra_chunks(), chunkset_dir="dart_chunks"
+            tmp_path, "scope-beta", _algebra_chunks(), chunkset_dir="dart_chunks"
         )
         retriever = MultiQueryRetriever(
-            repo_root=tmp_path, course_slug="alg-legacy-staged",
+            repo_root=tmp_path, course_slug="scope-beta",
         )
         fusion, _ = retriever.retrieve_with_decomposition(
             query="linear equation", limit=5,
@@ -168,9 +168,9 @@ class TestLegacyCorpusCourseNoRegression:
     """A legacy ``corpus/``-only course must still resolve."""
 
     def test_corpus_course_returns_results(self, tmp_path):
-        _make_course(tmp_path, "alg-legacy", _algebra_chunks(), chunkset_dir="corpus")
+        _make_course(tmp_path, "scope-gamma", _algebra_chunks(), chunkset_dir="corpus")
         retriever = MultiQueryRetriever(
-            repo_root=tmp_path, course_slug="alg-legacy",
+            repo_root=tmp_path, course_slug="scope-gamma",
         )
         fusion, _ = retriever.retrieve_with_decomposition(
             query="linear equation", limit=5,
@@ -178,9 +178,9 @@ class TestLegacyCorpusCourseNoRegression:
         assert fusion.result_count > 0
 
     def test_corpus_course_decompose_false(self, tmp_path):
-        _make_course(tmp_path, "alg-legacy", _algebra_chunks(), chunkset_dir="corpus")
+        _make_course(tmp_path, "scope-gamma", _algebra_chunks(), chunkset_dir="corpus")
         retriever = MultiQueryRetriever(
-            repo_root=tmp_path, course_slug="alg-legacy",
+            repo_root=tmp_path, course_slug="scope-gamma",
         )
         fusion = retriever.retrieve(
             query="linear equation", limit=5, decompose=False,

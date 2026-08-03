@@ -57,7 +57,7 @@ from validate_page_objectives import validate_page  # noqa: E402
 # week in source order: week1->CO-01/CO-02, week2->CO-03/CO-04, etc.
 # ---------------------------------------------------------------------------
 NUMBER_KEYED_OBJECTIVES = {
-    "course_name": "MINI_101",
+    "course_name": "TST_908",
     "course_title": "Number-Keyed Chapter Objectives Fixture",
     "duration_weeks": 4,
     "terminal_objectives": [

@@ -19,7 +19,7 @@ Run-record schema persisted to ``runtime/state/gui/runs/<run_id>.json`` (via
       "kind":         "pipeline" | "phase",
       "workflow":     "textbook_to_course",     # workflow name (or stage alias)
       "workflow_id":  "WF-20260531-abcd1234",   # orchestrator workflow id
-      "course_name":  "PHYS_101",
+      "course_name":  "course-alpha",
       "phase":        "courseforge-outline",    # phase runs only
       "mode":         "api" | "local",
       "provider":     "anthropic",

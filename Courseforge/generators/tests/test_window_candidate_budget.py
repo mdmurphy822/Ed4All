@@ -168,7 +168,7 @@ def test_schema_budget_sets_max_items_without_mutating_module():
 def test_budget_reaches_prompt(monkeypatch):
     monkeypatch.setenv(ENV_WINDOW_MAX_CANDIDATES, "12")
     p = _provider([json.dumps(_payload(1))])
-    p.synthesize_window_objectives(_window(["c1"]), course_name="ALG_101")
+    p.synthesize_window_objectives(_window(["c1"]), course_name="TST_901")
     sent = _sent_prompts(p)
     assert "Synthesize 1-12 candidate learning" in sent
     assert "Synthesize 1-3 candidate" not in sent
@@ -176,7 +176,7 @@ def test_budget_reaches_prompt(monkeypatch):
 
 def test_legacy_prompt_byte_identical_when_unset():
     p = _provider([json.dumps(_payload(1))])
-    p.synthesize_window_objectives(_window(["c1"]), course_name="ALG_101")
+    p.synthesize_window_objectives(_window(["c1"]), course_name="TST_901")
     sent = _sent_prompts(p)
     assert (
         "Synthesize 1-3 candidate learning objectives this window's chunks "
@@ -192,14 +192,14 @@ def test_over_budget_payload_rejected_by_schema(monkeypatch):
     monkeypatch.setenv(ENV_WINDOW_MAX_CANDIDATES, "2")
     p = _provider([json.dumps(_payload(3))])
     with pytest.raises(TextbookSynthesisProviderError) as exc:
-        p.synthesize_window_objectives(_window(["c1"]), course_name="ALG_101")
+        p.synthesize_window_objectives(_window(["c1"]), course_name="TST_901")
     assert exc.value.code == "chapter_objectives_exhausted"
 
 
 def test_budget_12_accepts_12_candidates(monkeypatch):
     monkeypatch.setenv(ENV_WINDOW_MAX_CANDIDATES, "12")
     p = _provider([json.dumps(_payload(12))])
-    out = p.synthesize_window_objectives(_window(["c1"]), course_name="ALG_101")
+    out = p.synthesize_window_objectives(_window(["c1"]), course_name="TST_901")
     assert len(out["candidate_objectives"]) == 12
 
 
@@ -208,7 +208,7 @@ def test_per_section_env_defaults_budget_into_prompt(monkeypatch):
     into the prompt — the run-env only needs the one flag."""
     monkeypatch.setenv(_PER_SECTION_ENV, "1")
     p = _provider([json.dumps(_payload(1))])
-    p.synthesize_window_objectives(_window(["c1"]), course_name="ALG_101")
+    p.synthesize_window_objectives(_window(["c1"]), course_name="TST_901")
     assert "Synthesize 1-12 candidate learning" in _sent_prompts(p)
 
 
@@ -222,7 +222,7 @@ def test_section_label_reaches_prompt(monkeypatch):
     p = _provider([json.dumps(_payload(1))])
     p.synthesize_window_objectives(
         _window(["c1"], section_label="1.2 Use the Language of Algebra"),
-        course_name="ALG_101",
+        course_name="TST_901",
     )
     sent = json.loads(_sent_prompts(p))[0]["messages"][0]["content"]
     assert "Section: 1.2 Use the Language of Algebra\n" in sent
@@ -231,6 +231,6 @@ def test_section_label_reaches_prompt(monkeypatch):
 def test_no_section_line_without_label(monkeypatch):
     monkeypatch.setenv(_PER_SECTION_ENV, "1")
     p = _provider([json.dumps(_payload(1))])
-    p.synthesize_window_objectives(_window(["c1"]), course_name="ALG_101")
+    p.synthesize_window_objectives(_window(["c1"]), course_name="TST_901")
     sent = json.loads(_sent_prompts(p))[0]["messages"][0]["content"]
     assert "Section:" not in sent

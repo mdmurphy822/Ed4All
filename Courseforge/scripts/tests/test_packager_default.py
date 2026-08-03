@@ -112,7 +112,7 @@ class TestPackagerDefaultOn:
         )
         output = tmp_path / "out.imscc"
         package_imscc(
-            content_dir_with_courseJson, output, "TEST_101", "Test Course",
+            content_dir_with_courseJson, output, "TST_915", "Test Course",
         )
         captured = capsys.readouterr().out
         assert "Auto-discovered objectives" in captured
@@ -130,7 +130,7 @@ class TestPackagerDefaultOn:
         )
         output = tmp_path / "out.imscc"
         package_imscc(
-            content_dir_with_courseJson, output, "TEST_101", "Test Course",
+            content_dir_with_courseJson, output, "TST_915", "Test Course",
             skip_validation=True,
         )
         captured = capsys.readouterr().out
@@ -153,7 +153,7 @@ class TestPackagerDefaultOn:
         output = tmp_path / "out.imscc"
         with pytest.raises(SystemExit) as excinfo:
             package_imscc(
-                content_dir_with_courseJson, output, "TEST_101", "Test Course",
+                content_dir_with_courseJson, output, "TST_915", "Test Course",
             )
         assert excinfo.value.code == 2
         assert not output.exists(), "packager must not create the zip on validation failure"
@@ -173,7 +173,7 @@ class TestPackagerDefaultOn:
         )
         output = tmp_path / "out.imscc"
         package_imscc(
-            content_dir_no_courseJson, output, "TEST_101", "Test Course",
+            content_dir_no_courseJson, output, "TST_915", "Test Course",
         )
         captured = capsys.readouterr().out
         assert "WARNING: no objectives file found" in captured
@@ -284,7 +284,7 @@ class TestPackagerStubInclusion:
         # Stub body is arbitrary JSON; the packager does not parse it,
         # only bundles it. Shape mirrors Worker J's emit contract.
         stub_payload = {
-            "courseCode": "TEST_101",
+            "courseCode": "TST_915",
             "classification": {
                 "division": "STEM",
                 "primary_domain": "computer-science",
@@ -297,7 +297,7 @@ class TestPackagerStubInclusion:
         )
         output = tmp_path / "out.imscc"
         package_imscc(
-            content_dir_with_courseJson, output, "TEST_101", "Test Course",
+            content_dir_with_courseJson, output, "TST_915", "Test Course",
         )
         assert output.exists(), "package must be produced"
 
@@ -323,7 +323,7 @@ class TestPackagerStubInclusion:
         # Explicitly NO course_metadata.json (backward-compat path).
         output = tmp_path / "out.imscc"
         package_imscc(
-            content_dir_with_courseJson, output, "TEST_101", "Test Course",
+            content_dir_with_courseJson, output, "TST_915", "Test Course",
         )
         assert output.exists(), "package must be produced without stub"
 
@@ -345,11 +345,11 @@ class TestPackagerStubInclusion:
             _page_html(["TO-01", "CO-03", "CO-04"]), encoding="utf-8",
         )
         (content_dir_with_courseJson / "course_metadata.json").write_text(
-            json.dumps({"courseCode": "TEST_101"}), encoding="utf-8",
+            json.dumps({"courseCode": "TST_915"}), encoding="utf-8",
         )
         output = tmp_path / "out.imscc"
         package_imscc(
-            content_dir_with_courseJson, output, "TEST_101", "Test Course",
+            content_dir_with_courseJson, output, "TST_915", "Test Course",
         )
         captured = capsys.readouterr().out
         assert "course_metadata.json" in captured, (

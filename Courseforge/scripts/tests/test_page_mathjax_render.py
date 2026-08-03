@@ -37,7 +37,7 @@ def _page(monkeypatch, value):
         monkeypatch.delenv("COURSEFORGE_PAGE_MATHJAX", raising=False)
     else:
         monkeypatch.setenv("COURSEFORGE_PAGE_MATHJAX", value)
-    return gc._wrap_page("Chapter 1", "PHYS_101", 1, _BODY)
+    return gc._wrap_page("Chapter 1", "TST_910", 1, _BODY)
 
 
 def test_default_on_include_present_exactly_once(monkeypatch):

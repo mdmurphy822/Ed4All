@@ -199,7 +199,7 @@ class ContentGeneratorProvider(_BaseLLMProvider):
         provenance of this in-process LLM call.
 
         Args:
-            course_code: Course slug (e.g. ``"DEMO_101"``). Used in the
+            course_code: Course slug (e.g. ``"<COURSE_CODE>"``). Used in the
                 decision-capture rationale and propagated into the user
                 prompt for the model's context.
             week_number: 1-indexed week number for the page.

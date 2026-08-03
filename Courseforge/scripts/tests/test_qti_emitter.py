@@ -149,7 +149,7 @@ def _assessment(questions: list) -> dict:
     return {
         "assessment_id": "quiz-week-01",
         "title": "Week 1 Quiz",
-        "course_code": "ALG_101",
+        "course_code": "TST_901",
         "questions": questions,
         "objectives_targeted": ["CO-01", "CO-02"],
         "bloom_levels": ["remember", "understand"],
@@ -403,7 +403,7 @@ def test_accepts_dataclass_to_dict_input():
     a = AssessmentData(
         assessment_id="quiz-dc",
         title="Dataclass Quiz",
-        course_code="ALG_101",
+        course_code="TST_901",
         questions=[q],
     )
     # Pass the dataclasses directly (to_dict path).

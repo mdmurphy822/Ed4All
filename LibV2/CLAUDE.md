@@ -177,7 +177,7 @@ python -m LibV2.tools.libv2.cli info [slug]          # Course details
 ```
 Division (STEM/ARTS)
   └── Domain (physics, chemistry, etc.)
-      └── Subdomain (mechanics, organic-chemistry, etc.)
+      └── Subdomain (mechanics, synthetic-topic-delta, etc.)
           └── Topic (kinematics, alkenes, etc.)
               └── Subtopic
 ```
@@ -497,7 +497,7 @@ Required fields:
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `course_code` | string | Stable identifier (e.g. `PHYS_101`). |
+| `course_code` | string | Stable identifier (for example, `<COURSE_CODE>`). |
 | `title` | string | Course title from IMSCC manifest. |
 | `learning_outcomes[]` | array | Flat list of terminal + chapter LOs (terminal first). |
 

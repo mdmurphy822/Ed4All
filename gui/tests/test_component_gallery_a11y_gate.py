@@ -272,9 +272,9 @@ _CARD_INNER = (
     '<div class="gallery-grid">'
     + _course_card("Algebra (Sample)", href="#/viewer/algebra", meta="24 pages · 18.2 MB", ask=True)
     + _course_card("Physics 101", meta="12 pages · 9.0 MB")
-    + _run_card("PHYS_101", "running", "◐", "Building", href="#/build/GUI-1", meta="textbook_to_course · building")
-    + _run_card("BIO_201", "done", "●", "Ready", href="#/build/GUI-2", meta="textbook_to_course · 28m")
-    + _run_card("CHEM_101", "failed", "✕", "Failed", href="#/build/GUI-3", meta="textbook_to_course · 6m")
+    + _run_card("Sample Course Alpha", "running", "◐", "Building", href="#/build/GUI-1", meta="textbook_to_course · building")
+    + _run_card("course-gamma", "done", "●", "Ready", href="#/build/GUI-2", meta="textbook_to_course · 28m")
+    + _run_card("Sample Course Beta", "failed", "✕", "Failed", href="#/build/GUI-3", meta="textbook_to_course · 6m")
     + "</div></section>"
 )
 
@@ -434,25 +434,25 @@ _RUN_HISTORY_INNER = (
     '<p>The Studio #/runs view — runCards with persisted-duration timelineBars.</p>'
     '<ul class="run-history-list cards" aria-label="Course builds">'
     + _run_history_entry(
-        "PHYS_101", "done", "●", "Ready", href="#/create/GUI-1", meta="textbook_to_course · 28m",
+        "Sample Course Alpha", "done", "●", "Ready", href="#/create/GUI-1", meta="textbook_to_course · 28m",
         durs=(
             '<div class="tl-bar-track" aria-hidden="true">' + _tl_seg("done", "50.00") + _tl_seg("done", "50.00") + "</div>"
-            '<figcaption class="visually-hidden">Phase durations for PHYS_101: total 23m</figcaption>'
-            '<ul class="tl-legend" aria-label="Phase durations for PHYS_101">'
+            '<figcaption class="visually-hidden">Phase durations for Sample Course Alpha: total 23m</figcaption>'
+            '<ul class="tl-legend" aria-label="Phase durations for Sample Course Alpha">'
             + _tl_li("done", "Convert", "5m 20s") + _tl_li("done", "Generate content", "18m") + "</ul>"
         ),
         actions='<button type="button" class="btn">Run again</button>',
     )
     + _run_history_entry(
-        "BIO_201", "running", "◐", "Building", href="#/create/GUI-2", meta="textbook_to_course · building",
+        "course-gamma", "running", "◐", "Building", href="#/create/GUI-2", meta="textbook_to_course · building",
         actions='<button type="button" class="btn">Re-open build</button>',
     )
     + _run_history_entry(
-        "CHEM_101", "failed", "✕", "Failed", href="#/create/GUI-3", meta="textbook_to_course · 6m",
+        "Sample Course Beta", "failed", "✕", "Failed", href="#/create/GUI-3", meta="textbook_to_course · 6m",
         durs=(
             '<div class="tl-bar-track" aria-hidden="true">' + _tl_seg("done", "80.00") + _tl_seg("failed", "20.00") + "</div>"
-            '<figcaption class="visually-hidden">Phase durations for CHEM_101: total 6m</figcaption>'
-            '<ul class="tl-legend" aria-label="Phase durations for CHEM_101">'
+            '<figcaption class="visually-hidden">Phase durations for Sample Course Beta: total 6m</figcaption>'
+            '<ul class="tl-legend" aria-label="Phase durations for Sample Course Beta">'
             + _tl_li("done", "Convert", "5m") + _tl_li("failed", "Generate content", "1m") + "</ul>"
         ),
         actions='<button type="button" class="btn">Run again</button>',

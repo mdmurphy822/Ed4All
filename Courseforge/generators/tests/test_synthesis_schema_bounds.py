@@ -100,7 +100,7 @@ _STRUCTURE = {
         {"id": "ch1", "title": "Chapter One", "sections": [], "chapter_text": "x"}
     ]
 }
-_COURSE = "SUBJ_101"
+_COURSE = "TST_914"
 
 
 def _concepts_valid(n: int = 1) -> str:

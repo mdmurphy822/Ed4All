@@ -408,7 +408,7 @@ def test_collapse_respects_level_and_non_adjacency():
 
 
 def test_breadcrumb_emitted_only_when_richer_on(monkeypatch):
-    kwargs = dict(title="week_03_content_01", course_code="PHYS_101",
+    kwargs = dict(title="week_03_content_01", course_code="TST_910",
                   week_num=3, body_html="<section><p>x</p></section>")
     monkeypatch.delenv("ED4ALL_RICHER_VISUAL_SYSTEM", raising=False)
     off = _wrap_page(**kwargs)
@@ -478,7 +478,7 @@ def test_dark_theme_no_media_query_in_composed_style(monkeypatch):
 def test_wrapped_page_has_real_head_and_stylesheet():
     page = _wrap_page(
         title="week_01_content_01",
-        course_code="PHYS_101",
+        course_code="TST_910",
         week_num=1,
         body_html="<section><p>Body.</p></section>",
     )

@@ -20,7 +20,7 @@ import pytest
 from gui.services import ask_jobs
 
 
-def _grounded(status="answered", answer_text="Velocity is a vector.", slug="phys-101"):
+def _grounded(status="answered", answer_text="Velocity is a vector.", slug="course-alpha"):
     return {
         "status": status,
         "query": "what is velocity?",
@@ -67,7 +67,7 @@ def _await_status(ask_id, want, timeout=5.0):
 
 def test_submit_returns_pending_then_runs_to_done(state_dir, monkeypatch):
     monkeypatch.setattr(ask_jobs, "_answer_fn", lambda slug, q, e: _grounded())
-    rec = ask_jobs.submit("phys-101", "what is velocity?")
+    rec = ask_jobs.submit("course-alpha", "what is velocity?")
     assert rec["status"] == ask_jobs.STATUS_PENDING
     assert rec["ask_id"].startswith("ASK-")
     assert "queue_position" in rec
@@ -87,7 +87,7 @@ def test_engine_is_threaded_to_answer_fn(state_dir, monkeypatch):
         return _grounded()
 
     monkeypatch.setattr(ask_jobs, "_answer_fn", stub)
-    rec = ask_jobs.submit("phys-101", "q", engine="semantic")
+    rec = ask_jobs.submit("course-alpha", "q", engine="semantic")
     _await_status(rec["ask_id"], ask_jobs.STATUS_DONE)
     assert seen["engine"] == "semantic"
 
@@ -103,7 +103,7 @@ def test_error_path_persists_typed_error(state_dir, monkeypatch):
         raise AnswerBackendUnavailable("ollama down")
 
     monkeypatch.setattr(ask_jobs, "_answer_fn", boom)
-    rec = ask_jobs.submit("phys-101", "q")
+    rec = ask_jobs.submit("course-alpha", "q")
     err = _await_status(rec["ask_id"], ask_jobs.STATUS_ERROR)
     assert err["status"] == ask_jobs.STATUS_ERROR
     assert err["error"] == "AnswerBackendUnavailable"
@@ -124,9 +124,9 @@ def test_queue_position_reflects_pending_order(state_dir, monkeypatch):
         return _grounded()
 
     monkeypatch.setattr(ask_jobs, "_answer_fn", slow)
-    r1 = ask_jobs.submit("phys-101", "q1")
-    r2 = ask_jobs.submit("phys-101", "q2")
-    r3 = ask_jobs.submit("phys-101", "q3")
+    r1 = ask_jobs.submit("course-alpha", "q1")
+    r2 = ask_jobs.submit("course-alpha", "q2")
+    r3 = ask_jobs.submit("course-alpha", "q3")
 
     # r1 may be running (pos 0); r2/r3 are queued behind it in submit order.
     pos2 = ask_jobs.status(r2["ask_id"])["queue_position"]
@@ -149,7 +149,7 @@ def test_finished_answer_survives_fresh_read(state_dir, monkeypatch):
     read (the only source of truth) still returns the answer.
     """
     monkeypatch.setattr(ask_jobs, "_answer_fn", lambda slug, q, e: _grounded())
-    rec = ask_jobs.submit("phys-101", "q")
+    rec = ask_jobs.submit("course-alpha", "q")
     _await_status(rec["ask_id"], ask_jobs.STATUS_DONE)
 
     # Fresh read — no worker, no queue, just the persisted file.
@@ -169,7 +169,7 @@ def test_status_unknown_id_is_none(state_dir):
 
 def test_sweep_removes_expired_jobs(state_dir, monkeypatch):
     monkeypatch.setattr(ask_jobs, "_answer_fn", lambda slug, q, e: _grounded())
-    rec = ask_jobs.submit("phys-101", "q")
+    rec = ask_jobs.submit("course-alpha", "q")
     _await_status(rec["ask_id"], ask_jobs.STATUS_DONE)
     path = ask_jobs.ask_jobs_dir() / f"{rec['ask_id']}.json"
     assert path.is_file()
@@ -182,7 +182,7 @@ def test_sweep_removes_expired_jobs(state_dir, monkeypatch):
 
 def test_sweep_keeps_fresh_jobs(state_dir, monkeypatch):
     monkeypatch.setattr(ask_jobs, "_answer_fn", lambda slug, q, e: _grounded())
-    rec = ask_jobs.submit("phys-101", "q")
+    rec = ask_jobs.submit("course-alpha", "q")
     _await_status(rec["ask_id"], ask_jobs.STATUS_DONE)
     removed = ask_jobs.sweep(ttl_seconds=ask_jobs.DEFAULT_TTL_SECONDS)
     assert removed == 0
@@ -213,7 +213,7 @@ def test_on_progress_persists_passages_on_running_record(state_dir, monkeypatch)
         return _grounded()
 
     monkeypatch.setattr(ask_jobs, "_answer_fn", stub)
-    rec = ask_jobs.submit("phys-101", "q")
+    rec = ask_jobs.submit("course-alpha", "q")
     ask_id = rec["ask_id"]
 
     deadline = time.time() + 3.0
@@ -243,7 +243,7 @@ def test_library_wide_threaded_to_answer_fn(state_dir, monkeypatch):
         return _grounded()
 
     monkeypatch.setattr(ask_jobs, "_answer_fn", stub)
-    rec = ask_jobs.submit("phys-101", "q", library_wide=True)
+    rec = ask_jobs.submit("course-alpha", "q", library_wide=True)
     assert rec.get("library_wide") is True
     _await_status(rec["ask_id"], ask_jobs.STATUS_DONE)
     assert seen["library_wide"] is True
@@ -256,7 +256,7 @@ def test_legacy_three_arg_answer_fn_stays_byte_identical(state_dir, monkeypatch)
     seam is called exactly as before and the record carries no passages key.
     """
     monkeypatch.setattr(ask_jobs, "_answer_fn", lambda slug, q, e: _grounded())
-    rec = ask_jobs.submit("phys-101", "q")
+    rec = ask_jobs.submit("course-alpha", "q")
     assert "library_wide" not in rec  # None default not persisted
     done = _await_status(rec["ask_id"], ask_jobs.STATUS_DONE)
     assert done["status"] == ask_jobs.STATUS_DONE

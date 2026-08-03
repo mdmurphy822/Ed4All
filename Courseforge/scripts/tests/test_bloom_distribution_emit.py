@@ -214,7 +214,7 @@ def test_helper_output_validates_against_schema():
 
 def test_page_metadata_attaches_distribution_when_los_tagged():
     meta = _build_page_metadata(
-        course_code="TEST_101",
+        course_code="TST_915",
         week_num=1,
         module_type="overview",
         page_id="week_01_overview",
@@ -238,7 +238,7 @@ def test_page_metadata_attaches_distribution_when_los_tagged():
 
 def test_page_metadata_elides_distribution_when_no_objectives():
     meta = _build_page_metadata(
-        course_code="TEST_101",
+        course_code="TST_915",
         week_num=1,
         module_type="content",
         page_id="week_01_content",
@@ -249,7 +249,7 @@ def test_page_metadata_elides_distribution_when_no_objectives():
 
 def test_page_metadata_elides_distribution_when_all_los_lack_bloom():
     meta = _build_page_metadata(
-        course_code="TEST_101",
+        course_code="TST_915",
         week_num=1,
         module_type="overview",
         page_id="week_01_overview",
@@ -308,7 +308,7 @@ def test_generated_page_jsonld_carries_bloom_distribution(tmp_path):
         "reflection_questions": ["q"],
     }
     out = tmp_path / "out"
-    generate_course.generate_week(week_data, out, "TEST_101", source_module_map=None)
+    generate_course.generate_week(week_data, out, "TST_915", source_module_map=None)
 
     overview = (out / "week_01" / "week_01_overview.html").read_text(encoding="utf-8")
     blocks = re.findall(

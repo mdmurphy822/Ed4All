@@ -114,7 +114,7 @@ def _seed_run(
             "kind": "pipeline",
             "workflow": workflow,
             "workflow_id": workflow_id,
-            "course_name": "PHYS_101",
+            "course_name": "course-alpha",
             "status": gui_status,
             "started_at": "2026-01-01T00:00:00",
         }
@@ -2121,7 +2121,7 @@ def test_course_name_falls_back_to_record(state_dir):
         orch_run_id="TTC_cname_0002",
     )
     payload = progress_service.run_progress(run_id)
-    assert payload["course_name"] == "PHYS_101"  # the record's name
+    assert payload["course_name"] == "course-alpha"  # the record's name
 
 
 def test_course_name_updates_when_auto_name_rebinds(state_dir):

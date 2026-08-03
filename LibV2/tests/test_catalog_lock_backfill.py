@@ -53,11 +53,11 @@ def test_concurrent_registration_no_lost_update(tmp_path):
 @pytest.mark.unit
 def test_register_is_idempotent(tmp_path):
     libv2_root = tmp_path / "libv2"
-    manifest = {"slug": "phys-101", "title": "Physics", "classification": {}}
-    _register_course_in_catalog("phys-101", manifest, libv2_root)
-    _register_course_in_catalog("phys-101", manifest, libv2_root)
+    manifest = {"slug": "course-kappa", "title": "Physics", "classification": {}}
+    _register_course_in_catalog("course-kappa", manifest, libv2_root)
+    _register_course_in_catalog("course-kappa", manifest, libv2_root)
     catalog = load_master_catalog(libv2_root)
-    assert [c.slug for c in catalog.courses] == ["phys-101"]
+    assert [c.slug for c in catalog.courses] == ["course-kappa"]
 
 
 # --- W0.8: backfill enumerates ALL archived course dirs ---------------------

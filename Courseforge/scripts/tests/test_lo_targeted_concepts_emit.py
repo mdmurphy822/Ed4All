@@ -347,7 +347,7 @@ def test_generated_page_jsonld_carries_targeted_concepts(tmp_path):
         "reflection_questions": ["How would you apply this?"],
     }
     out = tmp_path / "out"
-    generate_course.generate_week(week_data, out, "TEST_101", source_module_map=None)
+    generate_course.generate_week(week_data, out, "TST_915", source_module_map=None)
 
     # The overview page carries the page-level learningObjectives.
     overview_html = (out / "week_01" / "week_01_overview.html").read_text(

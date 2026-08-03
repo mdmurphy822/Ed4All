@@ -67,13 +67,13 @@ All three are routed via `config/workflows.yaml` explicit `inputs_from`.
 {
   "week_03": {
     "week_03_content_01_visual_perception": {
-      "primary":      ["semantik:science_of_learning#s5_p2"],
-      "contributing": ["semantik:science_of_learning#s4_p0",
-                       "semantik:science_of_learning#s6_p1"],
+      "primary":      ["semantik:source-alpha#s5_p2"],
+      "contributing": ["semantik:source-alpha#s4_p0",
+                       "semantik:source-alpha#s6_p1"],
       "confidence":   0.85
     },
     "week_03_application": {
-      "primary":      ["semantik:science_of_learning#s7_p0"],
+      "primary":      ["semantik:source-alpha#s7_p0"],
       "contributing": [],
       "confidence":   0.72
     }
@@ -178,15 +178,15 @@ Emit the `source_chunk_ids` CSV output as the flat union of every
 {
   "week_02": {
     "week_02_content_01_how_we_learn": {
-      "primary":      ["semantik:science_of_learning#s2_p0"],
-      "contributing": ["semantik:science_of_learning#s2_p1",
-                       "semantik:science_of_learning#s3_p0"],
+      "primary":      ["semantik:source-alpha#s2_p0"],
+      "contributing": ["semantik:source-alpha#s2_p1",
+                       "semantik:source-alpha#s3_p0"],
       "confidence":   0.91
     },
     "week_02_self_check": {
       "primary":      [],
-      "contributing": ["semantik:science_of_learning#s2_p0",
-                       "semantik:science_of_learning#s2_p1"],
+      "contributing": ["semantik:source-alpha#s2_p0",
+                       "semantik:source-alpha#s2_p1"],
       "confidence":   0.55
     }
   }
@@ -201,7 +201,7 @@ override) is logged via `lib.decision_capture.DecisionCapture`:
 ```python
 capture.log_decision(
     decision_type="source_routing",
-    decision="semantik:science_of_learning#s5_p2 -> week_03_content_01_visual_perception",
+    decision="semantik:source-alpha#s5_p2 -> week_03_content_01_visual_perception",
     rationale="TF-IDF score 0.87 vs. second-best 0.51; objective CO-03 keyword 'color contrast' co-occurs 7x in block",
     alternatives_considered=[
         "s4_p0: score 0.51 — also mentions contrast but focuses on typography",

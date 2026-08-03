@@ -319,7 +319,7 @@ def test_generated_page_jsonld_carries_hierarchy_and_parent_fields(tmp_path):
         "reflection_questions": ["q"],
     }
     out = tmp_path / "out"
-    generate_course.generate_week(week_data, out, "TEST_101", source_module_map=None)
+    generate_course.generate_week(week_data, out, "TST_915", source_module_map=None)
 
     overview = (out / "week_01" / "week_01_overview.html").read_text(encoding="utf-8")
     blocks = re.findall(

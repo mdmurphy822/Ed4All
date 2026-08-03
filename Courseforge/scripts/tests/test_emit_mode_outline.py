@@ -40,7 +40,7 @@ if str(_SCRIPTS) not in sys.path:
 
 
 _COURSE_DATA = {
-    "course_code": "OUTLINE_101",
+    "course_code": "TST_909",
     "course_title": "Outline Mode Test Course",
     "weeks": [
         {
@@ -329,7 +329,7 @@ class TestEmitModeOutline:
         stub = json.loads(stub_path.read_text(encoding="utf-8"))
         assert stub.get("blocks_summary", {}).get("outline_only") is True
         # Course code + title still populated.
-        assert stub["course_code"] == "OUTLINE_101"
+        assert stub["course_code"] == "TST_909"
 
     def test_outline_mode_invalid_value_raises(self, course_data_path, tmp_path):
         from generate_course import generate_course  # noqa: E402

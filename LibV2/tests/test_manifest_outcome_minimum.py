@@ -38,7 +38,7 @@ def _write_course_archive(
     if course_outcomes is not None:
         (course_dir / "course.json").write_text(
             json.dumps({
-                "course_code": "TEST_101",
+                "course_code": "TST_915",
                 "title": "Test Course",
                 "learning_outcomes": course_outcomes,
             })

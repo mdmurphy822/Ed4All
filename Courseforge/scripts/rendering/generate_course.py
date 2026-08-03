@@ -12,7 +12,7 @@ and Courseforge HTML templates. Each week produces:
   - discussion.html (forum prompt with guidelines)
 
 Usage:
-    python generate_course.py SAMPLE_101_course_data.json output_dir/
+    python generate_course.py TST_913_course_data.json output_dir/
 """
 
 import argparse
@@ -5228,7 +5228,7 @@ def generate_course(
             activities, self-checks, etc.).
         output_dir: Directory to write the generated ``week_XX/`` folders.
         objectives_path: Optional path to the canonical objectives JSON
-            (e.g. ``Courseforge/inputs/exam-objectives/SAMPLE_101_objectives.json``).
+            (e.g. ``Courseforge/inputs/exam-objectives/TST_913_objectives.json``).
             When provided, each page's ``learningObjectives`` JSON-LD is
             emitted using canonical CO / TO IDs resolved from the week
             mapping declared in the objectives JSON. Pass ``None`` to
@@ -5267,7 +5267,7 @@ def generate_course(
         )
     data = json.loads(Path(course_data_path).read_text())
     out = Path(output_dir)
-    course_code = data.get("course_code", "COURSE_101")
+    course_code = data.get("course_code", "TST_900")
 
     # Resolve effective classification: CLI/caller arg wins over course-data JSON.
     effective_classification = classification

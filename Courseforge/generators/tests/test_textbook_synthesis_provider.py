@@ -299,7 +299,7 @@ def test_registry_provider_routes_through_wd12_backend(monkeypatch):
         openai_compatible_backend=backend,
     )
     out = p.synthesize_outline(
-        {"chapters": [_stub_chapter()]}, course_name="ALG_101"
+        {"chapters": [_stub_chapter()]}, course_name="TST_901"
     )
     assert backend.calls == 1
     assert out["structure_enrichment"]["provider"] == "acme"
@@ -350,7 +350,7 @@ def test_synthesize_outline_returns_normalised_shape():
     p = _provider([json.dumps(_outline_payload())])
     out = p.synthesize_outline(
         {"chapters": [_stub_chapter("ch1"), _stub_chapter("ch2")]},
-        course_name="ALG_101",
+        course_name="TST_901",
     )
     assert set(out) == {
         "semantic_outline",
@@ -375,7 +375,7 @@ def test_synthesize_outline_lenient_fenced_json():
     fenced = "```json\n" + json.dumps(_outline_payload()) + "\n```"
     p = _provider([fenced])
     out = p.synthesize_outline(
-        {"chapters": [_stub_chapter()]}, course_name="ALG_101"
+        {"chapters": [_stub_chapter()]}, course_name="TST_901"
     )
     assert len(out["draft_terminal_objectives"]) == 2
 
@@ -390,7 +390,7 @@ def test_synthesize_outline_exhausted_raises_outline_code():
     p = _provider(["not json at all"])
     with pytest.raises(TextbookSynthesisProviderError) as exc:
         p.synthesize_outline(
-            {"chapters": [_stub_chapter()]}, course_name="ALG_101"
+            {"chapters": [_stub_chapter()]}, course_name="TST_901"
         )
     assert exc.value.code == "outline_exhausted"
 
@@ -409,7 +409,7 @@ def test_synthesize_outline_chaptered_split_past_skeleton_budget():
     capture = _FakeCapture()
     # Provide one payload per expected call (last repeats anyway).
     p = _provider([json.dumps(_outline_payload())] * 50, capture=capture)
-    out = p.synthesize_outline({"chapters": chapters}, course_name="ALG_101")
+    out = p.synthesize_outline({"chapters": chapters}, course_name="TST_901")
 
     assert out["structure_enrichment"]["call_mode"] == "chaptered"
     assert out["structure_enrichment"]["calls"] >= 2
@@ -436,7 +436,7 @@ def test_synthesize_outline_chaptered_split_past_skeleton_budget():
 def test_synthesize_concepts_returns_normalised_shape():
     p = _provider([json.dumps(_concepts_payload())])
     out = p.synthesize_concepts(
-        _stub_chapter("ch4"), course_name="ALG_101"
+        _stub_chapter("ch4"), course_name="TST_901"
     )
     assert out["chapter_id"] == "ch4"
     concepts = out["concepts"]
@@ -452,7 +452,7 @@ def test_synthesize_concepts_returns_normalised_shape():
 def test_synthesize_concepts_exhausted_raises_concepts_code():
     p = _provider(["garbage"])
     with pytest.raises(TextbookSynthesisProviderError) as exc:
-        p.synthesize_concepts(_stub_chapter("ch4"), course_name="ALG_101")
+        p.synthesize_concepts(_stub_chapter("ch4"), course_name="TST_901")
     assert exc.value.code == "concepts_exhausted"
 
 
@@ -462,7 +462,7 @@ def test_synthesize_concepts_truncation_flag_in_decision():
     huge = "z" * (tsp._CHAPTER_TEXT_BUDGET + 5_000)
     p = _provider([json.dumps(_concepts_payload())], capture=capture)
     p.synthesize_concepts(
-        _stub_chapter("ch9", text=huge), course_name="ALG_101"
+        _stub_chapter("ch9", text=huge), course_name="TST_901"
     )
     ev = [
         e for e in capture.events
@@ -481,7 +481,7 @@ def test_synthesize_chapter_objectives_returns_normalised_shape():
     p = _provider([json.dumps(_chapter_objectives_payload())])
     out = p.synthesize_chapter_objectives(
         _stub_chapter("ch1"),
-        course_name="ALG_101",
+        course_name="TST_901",
         draft_terminal_objectives=[
             {"statement": "Students will analyze linear systems."}
         ],
@@ -505,7 +505,7 @@ def test_synthesize_chapter_objectives_exhausted_raises_code():
     p = _provider(["::not json::"])
     with pytest.raises(TextbookSynthesisProviderError) as exc:
         p.synthesize_chapter_objectives(
-            _stub_chapter("ch1"), course_name="ALG_101"
+            _stub_chapter("ch1"), course_name="TST_901"
         )
     assert exc.value.code == "chapter_objectives_exhausted"
 
@@ -525,7 +525,7 @@ def test_reconcile_terminal_objectives_returns_normalised_shape():
         chapter_objectives=[
             {"statement": "Students will solve two-step equations."},
         ],
-        course_name="ALG_101",
+        course_name="TST_901",
     )
     terminals = out["terminal_objectives"]
     assert len(terminals) == 1
@@ -541,7 +541,7 @@ def test_reconcile_terminal_objectives_exhausted_raises_code():
         p.reconcile_terminal_objectives(
             draft_terminal_objectives=[{"statement": "x"}],
             chapter_objectives=[{"statement": "y"}],
-            course_name="ALG_101",
+            course_name="TST_901",
         )
     assert exc.value.code == "reconcile_exhausted"
 
@@ -578,7 +578,7 @@ def _cluster_cos() -> List[Dict[str, Any]]:
 def test_author_terminal_for_cluster_returns_single_to():
     p = _provider([json.dumps(_author_terminal_payload())])
     to = p.author_terminal_for_cluster(
-        _cluster_cos(), course_name="ALG_101", cluster_index=1
+        _cluster_cos(), course_name="TST_901", cluster_index=1
     )
     assert to is not None
     assert to["statement"]
@@ -601,7 +601,7 @@ def test_author_terminal_lenient_list_payload():
     }
     p = _provider([json.dumps(payload)])
     to = p.author_terminal_for_cluster(
-        _cluster_cos(), course_name="ALG_101", cluster_index=2
+        _cluster_cos(), course_name="TST_901", cluster_index=2
     )
     assert to is not None
     assert "id" not in to
@@ -617,7 +617,7 @@ def test_author_terminal_parse_exhaustion_returns_none():
     capture = _FakeCapture()
     p = _provider(["not json at all"] * 3, capture=capture)
     to = p.author_terminal_for_cluster(
-        _cluster_cos(), course_name="ALG_101", cluster_index=3
+        _cluster_cos(), course_name="TST_901", cluster_index=3
     )
     assert to is None
     ev = next(
@@ -634,7 +634,7 @@ def test_author_terminal_retries_past_bad_reply():
         ["not json at all", json.dumps(_author_terminal_payload())]
     )
     to = p.author_terminal_for_cluster(
-        _cluster_cos(), course_name="ALG_101", cluster_index=4
+        _cluster_cos(), course_name="TST_901", cluster_index=4
     )
     assert to is not None
     assert to["statement"]
@@ -663,7 +663,7 @@ def test_author_terminal_forwards_grammar_payload(monkeypatch):
         grammar_mode="response_format",
     )
     to = p.author_terminal_for_cluster(
-        _cluster_cos(), course_name="ALG_101", cluster_index=1
+        _cluster_cos(), course_name="TST_901", cluster_index=1
     )
     assert to is not None
     rf = (backend.kwargs.get("extra_payload") or {}).get("response_format")
@@ -679,7 +679,7 @@ def test_author_terminal_decision_capture_fires():
     capture = _FakeCapture()
     p = _provider([json.dumps(_author_terminal_payload())], capture=capture)
     p.author_terminal_for_cluster(
-        _cluster_cos(), course_name="ALG_101", cluster_index=7
+        _cluster_cos(), course_name="TST_901", cluster_index=7
     )
     events = [
         e for e in capture.events
@@ -699,7 +699,7 @@ def test_author_terminal_decision_capture_fires():
 def test_author_terminal_prompt_keeps_anti_invent_guard():
     p = _provider([json.dumps(_author_terminal_payload())])
     prompt = p._render_author_terminal_prompt(
-        cluster_cos=_cluster_cos(), course_name="ALG_101"
+        cluster_cos=_cluster_cos(), course_name="TST_901"
     )
     assert "Do NOT invent" in prompt
     assert "EXACTLY ONE terminal" in prompt
@@ -744,7 +744,7 @@ def test_batch_chapters_dispatch_in_groups():
     for batch in batches:
         for chapter in batch:
             results.append(
-                p.synthesize_concepts(chapter, course_name="ALG_101")
+                p.synthesize_concepts(chapter, course_name="TST_901")
             )
     assert len(results) == 25
     concept_events = [
@@ -771,16 +771,16 @@ def test_all_four_decision_events_fire_with_runtime_provider():
         capture=capture,
     )
     p.synthesize_outline(
-        {"chapters": [_stub_chapter()]}, course_name="ALG_101"
+        {"chapters": [_stub_chapter()]}, course_name="TST_901"
     )
-    p.synthesize_concepts(_stub_chapter("ch4"), course_name="ALG_101")
+    p.synthesize_concepts(_stub_chapter("ch4"), course_name="TST_901")
     p.synthesize_chapter_objectives(
-        _stub_chapter("ch1"), course_name="ALG_101"
+        _stub_chapter("ch1"), course_name="TST_901"
     )
     p.reconcile_terminal_objectives(
         draft_terminal_objectives=[{"statement": "x"}],
         chapter_objectives=[{"statement": "y"}],
-        course_name="ALG_101",
+        course_name="TST_901",
     )
     seen_types = {e["decision_type"] for e in capture.events}
     assert seen_types == {
@@ -814,7 +814,7 @@ def test_decision_events_carry_registry_provider_name(monkeypatch):
         openai_compatible_backend=_FakeBackend(),
         capture=capture,
     )
-    p.synthesize_concepts(_stub_chapter("ch4"), course_name="ALG_101")
+    p.synthesize_concepts(_stub_chapter("ch4"), course_name="TST_901")
     assert capture.events
     assert "provider=acme" in capture.events[0]["rationale"]
 
@@ -825,7 +825,7 @@ def test_decision_event_fires_on_failure_with_success_false():
     capture = _FakeCapture()
     p = _provider(["garbage"], capture=capture)
     with pytest.raises(TextbookSynthesisProviderError):
-        p.synthesize_concepts(_stub_chapter("ch4"), course_name="ALG_101")
+        p.synthesize_concepts(_stub_chapter("ch4"), course_name="TST_901")
     assert len(capture.events) == 1
     assert "success=False" in capture.events[0]["rationale"]
     assert "last_error=" in capture.events[0]["rationale"]
@@ -987,7 +987,7 @@ def test_synthesis_provider_error_resurfaces_as_textbook_error(monkeypatch):
         openai_compatible_backend=_RaisingBackend(code="404"),
     )
     with pytest.raises(TextbookSynthesisProviderError) as exc:
-        p.synthesize_concepts(_stub_chapter("ch4"), course_name="ALG_101")
+        p.synthesize_concepts(_stub_chapter("ch4"), course_name="TST_901")
     # The original SynthesisProviderError must NOT escape uncaught.
     assert not isinstance(exc.value, SynthesisProviderError)
     assert exc.value.code == "dispatch_404"
@@ -1008,7 +1008,7 @@ def test_synthesis_provider_error_on_local_backend_resurfaces(monkeypatch):
     monkeypatch.setattr(p._oa_client, "_post_with_retry", _boom)
     with pytest.raises(TextbookSynthesisProviderError) as exc:
         p.synthesize_outline(
-            {"chapters": [_stub_chapter()]}, course_name="ALG_101"
+            {"chapters": [_stub_chapter()]}, course_name="TST_901"
         )
     assert exc.value.code == "dispatch_400"
 
@@ -1041,7 +1041,7 @@ def test_local_dispatch_includes_num_ctx_in_payload(monkeypatch):
 
     monkeypatch.setattr(p._oa_client, "_post_with_retry", _capture_payload)
     p.synthesize_outline(
-        {"chapters": [_stub_chapter()]}, course_name="ALG_101"
+        {"chapters": [_stub_chapter()]}, course_name="TST_901"
     )
     assert "options" in seen
     assert seen["options"]["num_ctx"] == _LOCAL_NUM_CTX
@@ -1130,7 +1130,7 @@ def test_window_objectives_strips_out_of_set_citation():
     # Model cites one in-set id (c1) + one out-of-set id (c9).
     p = _provider([json.dumps(_window_payload(["c1", "c9"]))], capture=capture)
     out = p.synthesize_window_objectives(
-        _window(["c1", "c2"]), course_name="ALG_101",
+        _window(["c1", "c2"]), course_name="TST_901",
     )
     objs = out["candidate_objectives"]
     assert len(objs) == 1
@@ -1151,7 +1151,7 @@ def test_window_objectives_empty_citation_not_dropped_at_normalize():
     capture = _FakeCapture()
     p = _provider([json.dumps(_window_payload(["zzz"]))], capture=capture)
     out = p.synthesize_window_objectives(
-        _window(["c1", "c2"]), course_name="ALG_101",
+        _window(["c1", "c2"]), course_name="TST_901",
     )
     objs = out["candidate_objectives"]
     assert len(objs) == 1  # NOT dropped at normalize
@@ -1169,7 +1169,7 @@ def test_window_objectives_lenient_fenced_json():
         + ",}\n```"  # trailing comma drift
     )
     p = _provider([fenced])
-    out = p.synthesize_window_objectives(_window(["c1"]), course_name="ALG_101")
+    out = p.synthesize_window_objectives(_window(["c1"]), course_name="TST_901")
     assert len(out["candidate_objectives"]) == 1
     assert out["candidate_objectives"][0]["source_chunk_ids"] == ["c1"]
 
@@ -1178,7 +1178,7 @@ def test_window_objectives_schema_valid_parses_one_attempt():
     """A clean schema-valid JSON parses on the first attempt."""
     p = _provider([json.dumps(_window_payload(["c1", "c2"]))])
     out = p.synthesize_window_objectives(
-        _window(["c1", "c2"]), course_name="ALG_101",
+        _window(["c1", "c2"]), course_name="TST_901",
     )
     assert out["chapter_id"] == "ch1"
     assert out["window_index"] == 0
@@ -1189,7 +1189,7 @@ def test_window_objectives_exhausted_raises_chapter_code():
     """Unparseable output exhausts the retry budget → chapter_objectives_exhausted."""
     p = _provider(["not json at all"])
     with pytest.raises(TextbookSynthesisProviderError) as exc:
-        p.synthesize_window_objectives(_window(["c1"]), course_name="ALG_101")
+        p.synthesize_window_objectives(_window(["c1"]), course_name="TST_901")
     assert exc.value.code == "chapter_objectives_exhausted"
 
 
@@ -1199,7 +1199,7 @@ def test_window_objectives_empty_minitems_rejected_then_retried():
     bad = json.dumps(_window_payload([]))          # source_chunk_ids: [] → invalid
     good = json.dumps(_window_payload(["c1"]))
     p = _provider([bad, good])
-    out = p.synthesize_window_objectives(_window(["c1"]), course_name="ALG_101")
+    out = p.synthesize_window_objectives(_window(["c1"]), course_name="TST_901")
     assert out["candidate_objectives"][0]["source_chunk_ids"] == ["c1"]
 
 
@@ -1355,7 +1355,7 @@ def test_outline_prompt_interpolates_band_and_span_clause():
     mega = _stub_chapter_with_sections(
         "ch1", [f"S{i}" for i in range(141)], text="prose"
     )
-    prompt = p._render_outline_prompt(chapters=[mega], course_name="ALG_101")
+    prompt = p._render_outline_prompt(chapters=[mega], course_name="TST_901")
     assert "6-12 DRAFT" in prompt
     assert "span the whole" in prompt
     assert "section range" in prompt
@@ -1368,7 +1368,7 @@ def test_outline_prompt_default_band_normal_input():
         _stub_chapter_with_sections("ch1", ["S1"]),
         _stub_chapter_with_sections("ch2", ["S1"]),
     ]
-    prompt = p._render_outline_prompt(chapters=chapters, course_name="ALG_101")
+    prompt = p._render_outline_prompt(chapters=chapters, course_name="TST_901")
     assert "3-6 DRAFT" in prompt
 
 
@@ -1383,7 +1383,7 @@ def test_single_megachapter_stays_call_mode_single():
     assert len(rendered) < _SKELETON_CHAR_BUDGET
     capture = _FakeCapture()
     p = _provider([json.dumps(_outline_payload())] * 4, capture=capture)
-    out = p.synthesize_outline({"chapters": [mega]}, course_name="ALG_101")
+    out = p.synthesize_outline({"chapters": [mega]}, course_name="TST_901")
     assert out["structure_enrichment"]["call_mode"] == "single"
     assert out["structure_enrichment"]["calls"] == 1
 
@@ -1396,7 +1396,7 @@ def test_outline_decision_carries_band_and_section_count():
     )
     capture = _FakeCapture()
     p = _provider([json.dumps(_outline_payload())], capture=capture)
-    p.synthesize_outline({"chapters": [mega]}, course_name="ALG_101")
+    p.synthesize_outline({"chapters": [mega]}, course_name="TST_901")
     events = [
         e for e in capture.events
         if e["decision_type"] == "textbook_outline_call"
@@ -1626,7 +1626,7 @@ def test_skeleton_flag_off_prompt_byte_identical(monkeypatch):
         chapter_id="ch1",
         window_index=0,
         window_chunks=window["chunks"],
-        course_name="ALG_101",
+        course_name="TST_901",
         draft_terminal_objectives=[],
         heading_skeleton=p_no_structure._build_window_heading_skeleton("ch1"),
     )
@@ -1634,7 +1634,7 @@ def test_skeleton_flag_off_prompt_byte_identical(monkeypatch):
         chapter_id="ch1",
         window_index=0,
         window_chunks=window["chunks"],
-        course_name="ALG_101",
+        course_name="TST_901",
         draft_terminal_objectives=[],
         heading_skeleton=p_with_structure._build_window_heading_skeleton("ch1"),
     )
@@ -1668,7 +1668,7 @@ def test_skeleton_flag_on_section_present(monkeypatch):
         chapter_id="ch1",
         window_index=0,
         window_chunks=[{"id": "c1", "text": "body"}],
-        course_name="ALG_101",
+        course_name="TST_901",
         draft_terminal_objectives=[],
         heading_skeleton=skeleton,
     )
@@ -1767,7 +1767,7 @@ def test_skeleton_flag_on_synthesize_window_still_cites_chunks(monkeypatch):
         textbook_structure=_structure_with_headings(),
     )
     out = p.synthesize_window_objectives(
-        _window(["c1", "c2"], chapter_id="ch1"), course_name="ALG_101",
+        _window(["c1", "c2"], chapter_id="ch1"), course_name="TST_901",
     )
     objs = out["candidate_objectives"]
     assert len(objs) == 1
