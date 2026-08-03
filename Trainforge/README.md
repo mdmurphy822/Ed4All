@@ -1,38 +1,168 @@
+<div align="center">
+
+<pre align="center">
+╭──────────────────────────────────────────────────────╮
+│  ████████╗██████╗  █████╗ ██╗███╗   ██╗             │
+│  ╚══██╔══╝██╔══██╗██╔══██╗██║████╗  ██║             │
+│     ██║   ██████╔╝███████║██║██╔██╗ ██║             │
+│     ██║   ██╔══██╗██╔══██║██║██║╚██╗██║             │
+│     ██║   ██║  ██║██║  ██║██║██║ ╚████║             │
+│     ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝  FORGE     │
+╰──────────────────────────────────────────────────────╯
+</pre>
+
 # Trainforge
 
-**Turn a packaged course into a retrieval corpus, a typed knowledge graph, and a course-pinned SLM adapter.**
+### Turn packaged courses into grounded learning data—and optional adapters
 
-Trainforge is the back half of the Ed4All pipeline. It consumes IMSCC course packages (from Courseforge or any supported LMS) and does four things:
+Trainforge transforms IMS Common Cartridge packages into structured chunks,
+assessments, knowledge artifacts, and source-grounded SFT and DPO pairs.
+Adapter training is an explicit, operator-controlled stage.
 
-1. **Chunks + enriches.** Splits course content into pedagogical units tagged with Bloom's level, content type, key terms, and references back to the source region. The canonical chunker (`Trainforge/chunker/`) is shared with the conversion and IMSCC paths — one chunker, one contract.
-2. **Builds the concept graph.** A typed graph over the corpus: three taxonomic relations (is-a, prerequisite, related-to) plus five pedagogical ones (assesses, exemplifies, misconception-of, derived-from-objective, defined-by).
-3. **Synthesizes training pairs.** SFT (`instruction_pairs.jsonl`) and DPO (`preference_pairs.jsonl`) from the chunkset, through a license-clean local or hosted-OSS teacher seat — never through the orchestrating assistant.
-4. **Trains and evaluates an adapter.** A course-pinned LoRA adapter with a model card pinning seven SHA-256 provenance hashes back to the LibV2 paths that produced it.
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![Training](https://img.shields.io/badge/Training-Optional-7C3AED)](../docs/operations/nemotron-lora-canary.md)
+[![License](https://img.shields.io/badge/License-Apache--2.0-22C55E)](../LICENSE)
 
-Assessment generation also lives here, but in the current `textbook_to_course` pipeline the graded artifacts are emitted upstream by Courseforge's `assessment_synthesis` phase; Trainforge's optional `trainforge_assessment` phase harvests and extends them.
+[Quick start](#quick-start) · [See the flow](#from-course-package-to-training-assets) · [Understand licensing](../docs/LICENSING.md) · [Read the architecture](architecture.md)
 
-## Quick example
+</div>
 
-```bash
-# As part of the full pipeline (steps 1-3; training is opt-in via --with-training):
-ed4all run textbook-to-course --corpus <CORPUS_PATH> --course-name <COURSE_NAME>
+---
 
-# Standalone RAG training on an existing IMSCC:
-ed4all run rag_training --corpus <IMSCC_PATH> --course-name <COURSE_NAME>
+## What Trainforge delivers
 
-# Train an adapter for an already-imported course (step 4):
-ed4all run trainforge_train --course-name <course-slug> --base-model <name>
+- **A reusable course corpus.** The canonical chunker preserves instructional
+  structure, metadata, and source references for downstream retrieval.
+- **Learning-aware artifacts.** Assessments, objectives, concept relationships,
+  and pedagogy metadata stay connected to the course they came from.
+- **Grounded training pairs.** SFT instructions and DPO preferences are
+  synthesized from course artifacts and validated before publication.
+- **Optional adapter training.** A separate post-import stage can fit and
+  evaluate a course-pinned LoRA adapter, with provenance recorded in LibV2.
+
+## From course package to training assets
+
+```mermaid
+flowchart LR
+    package["IMS Common Cartridge<br/>course package"]
+
+    subgraph prepare["Prepare the course corpus"]
+        direction LR
+        parse["Parse content,<br/>objectives + assessments"]
+        chunks["Canonical v4 chunks<br/>metadata + provenance"]
+        graph["Concept + pedagogy<br/>artifacts"]
+        parse --> chunks --> graph
+    end
+
+    subgraph synthesize["Create grounded learning data"]
+        direction TB
+        sft["SFT instruction pairs"]
+        dpo["DPO preference pairs"]
+        gates["Validation + licensing<br/>preflight"]
+        sft --> gates
+        dpo --> gates
+    end
+
+    subgraph optional["Operator-controlled training"]
+        direction TB
+        lora["Optional LoRA fit"]
+        evaluation["Evaluation + model card"]
+        lora --> evaluation
+    end
+
+    archive["LibV2 course archive"]
+
+    package --> parse
+    chunks --> sft
+    chunks --> dpo
+    graph --> archive
+    chunks --> archive
+    gates --> archive
+    gates -. explicit opt-in .-> lora
+    evaluation --> archive
+
+    classDef input fill:#eef6ff,stroke:#2563eb,color:#172554,stroke-width:2px;
+    classDef corpus fill:#f0fdf4,stroke:#16a34a,color:#14532d;
+    classDef data fill:#fff7ed,stroke:#ea580c,color:#7c2d12;
+    classDef train fill:#faf5ff,stroke:#9333ea,color:#581c87;
+
+    class package input;
+    class parse,chunks,graph,archive corpus;
+    class sft,dpo,gates data;
+    class lora,evaluation train;
 ```
 
-Pipeline output lands under `LibV2/courses/<slug>/` — `imscc_chunks/`, `graph/`, `training_specs/`, `models/`. (`Trainforge/output/` is only the default for a direct `python -m Trainforge.process_course --output ...` invocation.) Decision JSONL lands under `runtime/training-captures/trainforge/<COURSE_CODE>/`.
+In plain language: Trainforge parses a packaged course, produces a structured
+corpus and knowledge artifacts, and uses those grounded inputs to create SFT
+and DPO data. Validated artifacts can be archived without training anything.
+LoRA fitting and evaluation happen only when an operator explicitly starts the
+post-import training workflow.
 
-## More
+## Quick start
 
-- [`Trainforge/CLAUDE.md`](CLAUDE.md) — chunk shape, metadata extraction priority chain, Bloom's rubric, concept-graph edge taxonomy, decision-capture contract, and the behavior-flag table. Read **§ "Training-pair synthesis — what actually runs"** before touching synthesis: it documents which entry point reaches which pair program, and which capabilities exist but are currently unreachable.
-- [`Trainforge/architecture.md`](architecture.md) — module map.
-- [`docs/operations/nemotron-lora-canary.md`](../docs/operations/nemotron-lora-canary.md) — the qualified training environment (`scripts/ops/bootstrap-training-env.sh` + `scripts/ops/ed4all-training`) and the required canary preflight before a production fit.
-- [`docs/LICENSING.md`](../docs/LICENSING.md) — which teacher seats may author a shippable training corpus.
+Install Ed4All from the repository root. Add the large training dependencies
+only when you intend to evaluate or fit an adapter:
+
+```bash
+pip install -e '.[full]'
+pip install -e '.[full,training]'  # optional adapter work
+```
+
+Build Trainforge artifacts from an existing IMSCC package:
+
+```bash
+ed4all run rag_training \
+  --corpus <IMSCC_PATH> \
+  --course-name <COURSE_NAME>
+```
+
+Train from an already imported LibV2 course only after reviewing the training
+environment and licensing requirements:
+
+```bash
+ed4all run trainforge_train \
+  --course-name <COURSE_SLUG> \
+  --base-model <SUPPORTED_MODEL>
+```
+
+The full `textbook_to_course` workflow also reaches Trainforge; its training
+stages run only when explicitly enabled. Generated course data belongs under
+the ignored LibV2 course archive, not in Git.
+
+## Training and licensing are deliberate
+
+Training-pair synthesis and adapter fitting are different surfaces. The model
+provider that authors SFT/DPO content, the underlying teacher license, the base
+model license, and the source corpus rights all affect whether an artifact can
+be distributed. The deterministic `mock` provider is for plumbing tests, not a
+shippable training corpus. Read [Licensing and ToS posture](../docs/LICENSING.md)
+before synthesis or training.
+
+Production fitting is GPU-bound and operator-driven. Follow the
+[Nemotron LoRA canary runbook](../docs/operations/nemotron-lora-canary.md) and
+the repository-managed training environment; do not treat a successful dry run
+as approval to train or promote an adapter.
+
+## Key surfaces
+
+| Surface | Role |
+|---|---|
+| `chunker/` | Shared canonical chunking contract |
+| `parsers/` | IMSCC, QTI, HTML, and provenance extraction |
+| `generators/` | Assessments and grounded pair generation |
+| `synthesis/` | Canonical SFT/DPO synthesis implementation |
+| `rag/` | Concept, pedagogy, and retrieval-support artifacts |
+| `training/` | Optional LoRA fitting, evaluation, and model cards |
+
+## Documentation
+
+- [Trainforge architecture](architecture.md)
+- [Trainforge operating contract](CLAUDE.md)
+- [Behavior flags](../docs/operations/behavior-flags-trainforge.md)
+- [Pipeline invocation](../docs/operations/pipeline-invocation.md)
+- [Installation and local dependencies](../docs/operations/installation.md)
+- [Licensing and ToS posture](../docs/LICENSING.md)
 
 ## License
 
-MIT
+Trainforge is distributed with Ed4All under the [Apache License 2.0](../LICENSE).

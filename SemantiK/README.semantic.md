@@ -1,8 +1,31 @@
-# SemantiK — Accessible-HTML Conversion Engine
+<div align="center">
 
-SemantiK turns PDFs into structured, accessible HTML while preserving the
-source provenance downstream systems need for citations, review, and
-reprocessing. Its ML cascade is built on one principle:
+<pre align="center">
+  ____                       _   _ _  __
+ / ___|  ___ _ __ ___   __ _| \ | | |/ /
+ \___ \ / _ \ '_ ` _ \ / _` |  \| | ' /
+  ___) |  __/ | | | | | (_| | |\  | . \
+ |____/ \___|_| |_| |_|\__,_|_| \_|_|\_\
+</pre>
+
+# SemantiK
+
+### Turn source documents into accessible, traceable web content
+
+SemantiK converts PDFs into structured HTML while preserving the block-level
+provenance downstream systems need for citations, review, and reprocessing.
+
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-22C55E)](../LICENSE)
+[![Output](https://img.shields.io/badge/Output-Accessible_HTML-2563EB)](#integrate-reliable-outputs)
+[![Runtime](https://img.shields.io/badge/Runtime-Local_by_default-7C3AED)](#choose-a-runtime)
+
+[Quick start](#quick-start) · [See the flow](#how-conversion-works) · [Output contract](#integrate-reliable-outputs) · [Architecture](architecture.md) · [Ed4All](../README.md)
+
+</div>
+
+---
+
+Its ML cascade is built on one principle:
 
 > **Learned models are narrow candidate generators; deterministic code
 > orchestrates, gates, and assembles.**
@@ -17,8 +40,8 @@ assemble output are visible code, not hidden in model weights.
   extraction and rendering, pdfplumber (MIT) for layout, pikepdf (MPL-2.0)
   for structure, and Tesseract (Apache-2) for OCR. The code ships Apache-2.0
   (see `LICENSE`).
-- **No cloud LLM at runtime.** The Stage-6 specialists run fully offline on
-  local GGUF weights. A hosted 70B endpoint is an opt-in quality seat, not a
+- **Local by default.** The Stage-6 specialists can run offline on local GGUF
+  weights. A hosted model endpoint is an explicit opt-in quality seat, not a
   dependency.
 - **Explicit outcomes.** Four deterministic exit actions distinguish
   validated output, flagged output, retry routing, and non-certified output.
@@ -36,6 +59,22 @@ assemble output are visible code, not hidden in model weights.
 
 ## How conversion works
 
+```mermaid
+flowchart LR
+    A[PDF or supported source] --> B[Extract text and layout]
+    B --> C[Classify and structure blocks]
+    C --> D[Generate HTML candidates]
+    D --> E[Run hard validation gates]
+    E --> F[Assemble structured HTML]
+    F --> G[Emit provenance and audit sidecars]
+```
+
+In words: SemantiK extracts source text and geometry, classifies the resulting
+blocks, generates structured HTML candidates, removes candidates that fail hard
+validation, assembles the surviving document, and emits provenance and audit
+sidecars with the HTML. The diagram is a summary; the stage table below is the
+implementation map.
+
 Entry point: `semantik_structure/cascade.py::run_full_cascade` (reachable as
 `pipeline_v2.run(pdf, mode="v2")`). Per-stage depth is in
 [`architecture.md`](architecture.md); the one-liner map:
@@ -47,7 +86,7 @@ Entry point: `semantik_structure/cascade.py::run_full_cascade` (reachable as
 | 3 | council | BERT specialists (Structure · Semantic · MergeOrSplit · TableSpecialist · Math), shared backbone with one-resident LoRA adapter swap |
 | 4 | cross-BERT reranker | arbitrate conflicting council signals → routing decisions |
 | 5 | structure_graph | deterministic 6-pass grouping → typed `Region` objects |
-| 6 | Qwen specialists | prose/table/math HTML generation; local GGUF or hosted 70B endpoint; batched by adapter |
+| 6 | Qwen specialists | prose/table/math HTML generation; local GGUF or hosted endpoint; batched by adapter |
 | 7 | per-region hard gate | axe-wcag22aa · html5 · text-preservation · MathML · table/heading (eliminating) |
 | 8 | per-region soft reranker | pick the top surviving candidate per region |
 | 9 | assembler | role→HTML, heading-tree normalize, gap-fill splice |
@@ -62,13 +101,31 @@ back to a rule, an algorithm, or a model confidence. See
 specialists, the two-tier validation gate, the theta evaluator, and the
 exit-decision table.
 
-## Get started
+## Quick start
 
 SemantiK runs inside Ed4All as the `semantik_conversion` conversion backend (via
 the bridge in `MCP/tools/pipeline_tools.py`) — no dedicated CLI of its own.
-To provision the runtime in-process, install the deps into a venv that
-already carries the heavy ML stack (Ed4All's `[training]`+`[embedding]`
-extras satisfy torch / transformers / peft / scikit-learn / scipy):
+
+Convert a source without building a course:
+
+```bash
+ed4all convert <SOURCE_PATH> --output <OUTPUT_DIR>
+```
+
+To include conversion in the complete Ed4All pipeline:
+
+```bash
+ed4all run textbook-to-course \
+  --corpus <SOURCE_PATH> \
+  --course-name <COURSE_NAME>
+```
+
+Start with the [installation guide](../docs/operations/installation.md), then
+use the [conversion guide](../docs/operations/convert-verb.md) for accepted
+inputs, output sidecars, and failure behavior. For an in-process SemantiK
+runtime, install the conversion dependencies into a venv that already carries
+the heavy ML stack (Ed4All's `[training]` and `[embedding]` extras satisfy the
+shared ML dependencies):
 
 ```bash
 # 1. The pure-pip deps (the [semantik] extra).
@@ -84,15 +141,18 @@ CMAKE_ARGS="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=86" \
 ```
 
 Step 3 is **optional for structure-only conversion**: the Stage-6
-specialists can run on the hosted 70B endpoint seat instead
-(`SEMANTIK_SPECIALIST_PROVIDER=nvidia`, key `NVIDIA_API_KEY`), so a box
-without a CUDA-built `llama-cpp-python` can still run the full cascade.
+specialists can run on a configured hosted endpoint instead
+(`SEMANTIK_SPECIALIST_PROVIDER=nvidia` plus the explicit
+`SEMANTIK_SPECIALIST_ENDPOINT_DISPLACE=1` opt-in), so a box without a
+CUDA-built `llama-cpp-python` can still run the full cascade when its endpoint
+and credentials are configured.
 
 Alternatively, the cascade runs **out of process** in its own venv behind a
 JSON bridge (`scripts/run_cascade_json.py`); point `SEMANTIK_PYTHON` at that
-venv's interpreter and `SEMANTIK_RUNTIME_DIR` at this repo root. Full
-provisioning, runtime modes, and the env-flag table are in
-[`CLAUDE.md`](CLAUDE.md).
+venv's interpreter and `SEMANTIK_RUNTIME_DIR` at the SemantiK project root.
+Runtime modes and the agent-facing environment contracts are in
+[`CLAUDE.md`](CLAUDE.md); the public flag reference is
+[`behavior-flags-semantik.md`](../docs/operations/behavior-flags-semantik.md).
 
 ## Choose a runtime
 
@@ -100,12 +160,13 @@ provisioning, runtime modes, and the env-flag table are in
   (or unset) runs the Stage-6 specialists in-process on `llama-cpp-python`
   (built against CUDA), fully offline, no key. This is the byte-stable
   default.
-- **Hosted 70B endpoint seat.** Any non-local
-  `SEMANTIK_SPECIALIST_PROVIDER` value (e.g. `nvidia`) routes Stage-6
-  generation (and the optional Stage-5d structure reviewer) to an
-  OpenAI-compatible hosted endpoint. This is the **only** part of SemantiK
-  that selects an LLM provider, so it is the only flag carrying a
-  `docs/LICENSING.md` row.
+- **Hosted endpoint seat (explicit opt-in).** A non-local
+  `SEMANTIK_SPECIALIST_PROVIDER` value configures the OpenAI-compatible
+  endpoint, but does not displace local Stage-6 authoring by itself. Use
+  `SEMANTIK_SPECIALIST_REFINE=1` for a hosted refinement pass or
+  `SEMANTIK_SPECIALIST_ENDPOINT_DISPLACE=1` for endpoint-only Stage-6
+  generation. Provider and model licensing is documented in
+  [`docs/LICENSING.md`](../docs/LICENSING.md).
 
 Specialist generation is **batched by adapter** (one PROSE/TABLE/MATH
 adapter resident at a time — never interleaved on 8 GB VRAM). The optional
