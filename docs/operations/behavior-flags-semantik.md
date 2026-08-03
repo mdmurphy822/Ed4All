@@ -1,173 +1,170 @@
-# SemantiK behavior flags
+# SemantiK Behavior Flags
 
-SemantiK converts source documents into accessible HTML through the preferred
-GLM-OCR SDK path: extraction, deterministic normalization, accessibility and
-document enrichment, then the Super heading judge. This page documents the
-public `SEMANTIK_*` operator controls without embedding deployment-specific
-hosts, ports, paths, identifiers, or model inventory.
+SemantiK converts source documents through the preferred conversion path in
+this order: **GLM-OCR SDK extraction → deterministic normalization → document
+and accessibility enrichment → Super heading judge**. This registry documents
+the public `SEMANTIK_*` controls used by that path and its rendered-output
+contract.
 
-> **Private by design.** Source documents, converted HTML, layout sidecars,
-> course and run identifiers, caches, model artifacts, credentials, endpoint
-> values, evaluation data, and logs are always operator-private. Keep them in
-> ignored or external storage and never commit them to code, documentation,
-> examples, fixtures, or comments.
+> **Private by design.** Source documents, converted HTML, course and run
+> identifiers, caches, model artifacts, credentials, endpoint values,
+> evaluation data, and logs are always operator-private. Keep them in ignored
+> or external storage and never commit them to source, documentation, fixtures,
+> examples, or comments.
 
-For installation, use [Installation and local dependencies](installation.md).
-Provider and model choices must follow [Licensing and terms posture](../LICENSING.md).
-For invocation, stop/resume, and failure handling, use
-[Run Ed4All pipelines](pipeline-invocation.md). SemantiK architecture and its
-output contract are described in the [SemantiK architecture](../../SemantiK/architecture.md).
+See [installation](installation.md), [pipeline invocation](pipeline-invocation.md),
+[licensing](../LICENSING.md), and the
+[SemantiK architecture](../../SemantiK/architecture.md) before changing a
+provider, model, or execution profile.
 
 ## Preferred conversion profile
 
-`SEMANTIK_GLMOCR_LANE=1` selects the preferred conversion path. The lane sends
-rendered pages through the GLM-OCR SDK, normalizes the returned layout into the
-SemantiK provenance contract, enriches document structure and accessibility,
-and invokes the Super heading judge for headings that remain unresolved.
+`SEMANTIK_GLMOCR_LANE=1` selects the preferred conversion path. The GLM-OCR
+lane is **opt-in**: unset, blank, falsey, or malformed values leave it off. The
+heading judge is **default-on** when its workflow stage receives GLM-OCR
+sidecars: only `0`, `false`, `no`, or `off` disables it. With no pending
+headings, the judge is a natural no-op.
 
-The two defaults are intentionally different:
+The tables use these parsing classes:
 
-- the GLM-OCR lane is **opt-in** at the resolver level, so
-  `SEMANTIK_GLMOCR_LANE` is off when unset;
-- the heading judge is **default-on** whenever its phase has GLM-OCR layout
-  sidecars. Only `0`, `false`, `no`, or `off` disables it. A document without
-  pending headings is a natural no-op.
+- **opt-in boolean** — only `1`, `true`, `yes`, or `on` enables; all other
+  values resolve off;
+- **default-on boolean** — only `0`, `false`, `no`, or `off` disables; malformed
+  values retain the enabled default;
+- **bounded number** — malformed, non-finite, or out-of-range input resolves to
+  the documented default unless the row states a clamp; and
+- **string** — blank input resolves to the documented default.
 
-Use deployment-managed environment or secret configuration for endpoint,
-credential, and model values. Do not copy concrete operator values into this
-document.
+Service failures are always observable. GLM-OCR conversion failures fail the
+producing task. Heading-judge request or chapter-timeout failures retain the
+pre-judge structure and emit warnings; they never masquerade as successful
+judgments. Deterministic audits and enrichments either report their failure or
+leave the input unchanged according to the row below.
 
 ## Flag reference
 
-Defaults below are resolver defaults. “Within lane” means the control has no
-effect unless its owning master lane is active. Invalid numeric input follows
-the repository parse-with-fallback convention and resolves to the stated
-default.
+Each row gives the live resolver default, accepted behavior, failure behavior,
+and owning source. Endpoint values and credentials are configured privately;
+the public default is described by role rather than exposing deployment data.
 
-### GLM-OCR conversion and enrichment
+### GLM-OCR SDK and figure enrichment
 
-| Flag | Default | Purpose |
+| Flag | Default | Behavior, failure, and source |
 |---|---|---|
-| `SEMANTIK_GLMOCR_LANE` | off | Selects the preferred whole-document GLM-OCR SDK conversion path. Truthy values are `1`, `true`, `yes`, and `on`; all other values resolve off. |
-| `SEMANTIK_GLMOCR_BASE_URL` | local OpenAI-compatible endpoint | GLM-OCR service endpoint. Configure the concrete endpoint outside tracked files. |
-| `SEMANTIK_GLMOCR_MODEL` | `glm-ocr` | Served GLM-OCR model identifier. A changed model must remain covered by `docs/LICENSING.md`. |
-| `SEMANTIK_GLMOCR_WORKERS` | `4` | Parallel SDK worker count; positive integers only. |
-| `SEMANTIK_GLMOCR_RENDER_DPI` | `300` | Page-raster resolution, with a minimum of 72 DPI. |
-| `SEMANTIK_GLMOCR_LAYOUT_DEVICE` | `cpu` | Device used by the SDK layout model. |
-| `SEMANTIK_GLMOCR_OUTPUT_DIR` | operator-managed output | Private layout and escalation sidecar destination. Keep it ignored or external. |
-| `SEMANTIK_GLMOCR_MATH_NORMALIZE` | on within lane | Applies deterministic OCR math, ordinal, and placeholder normalization. Explicit falsey values disable it. |
-| `SEMANTIK_CHAPTER_LADDER_RECONCILE` | on | Reconciles multi-chapter heading roots and prevents duplicate or phantom chapter ladders; natural no-op on unrelated document shapes. |
-| `SEMANTIK_ALTTEXT_PROVIDER` | `off` | Optional figure alt-text provider. `qwen30` selects the implemented provider path; unknown values resolve off. |
-| `SEMANTIK_ALTTEXT_BASE_URL` | local OpenAI-compatible endpoint | Alt-text service endpoint; private deployment configuration. |
-| `SEMANTIK_ALTTEXT_MODEL` | `qwen3-vl-30b` | Alt-text model identifier. Model changes require licensing review. |
-| `SEMANTIK_ALTTEXT_API_KEY` | unset | Optional bearer credential. Supply only through secret management. |
-| `SEMANTIK_ALTTEXT_CONCURRENCY` | `8` | Alt-text request fan-out width. |
-| `SEMANTIK_ALTTEXT_TIMEOUT_SECONDS` | `120` | Per-request timeout in seconds. |
+| `SEMANTIK_GLMOCR_LANE` | off | Opt-in boolean selecting the whole-document SDK lane. Conversion errors fail the task. Source: `SemantiK/semantik_structure/glmocr/__init__.py`. |
+| `SEMANTIK_GLMOCR_BASE_URL` | local OpenAI-compatible service | Nonblank URL override; blank uses the resolver default. Connection and protocol failures fail conversion. Source: `SemantiK/semantik_structure/glmocr/__init__.py`. |
+| `SEMANTIK_GLMOCR_MODEL` | `glm-ocr` | Nonblank served-model override. An unavailable or mismatched model fails the SDK request. Source: `SemantiK/semantik_structure/glmocr/__init__.py`. |
+| `SEMANTIK_GLMOCR_WORKERS` | `4` | Positive integer worker count; invalid or non-positive input uses `4`. Source: `SemantiK/semantik_structure/glmocr/__init__.py`. |
+| `SEMANTIK_GLMOCR_RENDER_DPI` | `300` | Integer page-raster DPI with minimum `72`; invalid or smaller input uses `300`. Source: `SemantiK/semantik_structure/glmocr/__init__.py`. |
+| `SEMANTIK_GLMOCR_LAYOUT_DEVICE` | `cpu` | Nonblank SDK layout-device string. Device startup failures fail conversion rather than silently changing device. Source: `SemantiK/semantik_structure/glmocr/__init__.py`. |
+| `SEMANTIK_GLMOCR_OUTPUT_DIR` | source-adjacent private output | Nonblank path redirects private layout and escalation sidecars. Unwritable output fails the producing step. Source: `SemantiK/semantik_structure/cascade.py` and `MCP/tools/pipeline_tools.py`. |
+| `SEMANTIK_GLMOCR_MATH_NORMALIZE` | on within lane | Default-on boolean for deterministic OCR math, ordinal, and placeholder normalization. Disabled means the original transformed text is retained. Source: `SemantiK/semantik_structure/glmocr/math_normalize.py`. |
+| `SEMANTIK_CHAPTER_LADDER_RECONCILE` | on | Default-on boolean reconciling chapter-root ladders during rendering. A nonmatching document shape is a no-op. Source: `lib/semantik/adapter.py`. |
+| `SEMANTIK_ALTTEXT_PROVIDER` | `off` | Accepts `off` or `qwen30`; unknown input resolves `off`. Provider failure retains harvested captions or an honest placeholder. Source: `SemantiK/semantik_structure/glmocr/__init__.py`. |
+| `SEMANTIK_ALTTEXT_BASE_URL` | local OpenAI-compatible service | Nonblank private endpoint override. Used only when the provider is enabled. Source: `SemantiK/semantik_structure/glmocr/__init__.py`. |
+| `SEMANTIK_ALTTEXT_MODEL` | `qwen3-vl-30b` | Nonblank model override; changes require licensing review. Unavailable models follow the alt-text failure contract. Source: `SemantiK/semantik_structure/glmocr/__init__.py`. |
+| `SEMANTIK_ALTTEXT_API_KEY` | unset | Nonblank bearer credential; blank means no credential. Supply only through secret management. Source: `SemantiK/semantik_structure/glmocr/__init__.py`. |
+| `SEMANTIK_ALTTEXT_CONCURRENCY` | `8` | Positive integer request fan-out; invalid input uses `8`. Source: `SemantiK/semantik_structure/glmocr/__init__.py`. |
+| `SEMANTIK_ALTTEXT_TIMEOUT_SECONDS` | `120` | Positive finite request timeout; invalid input uses `120`. Timeout follows the alt-text failure contract. Source: `SemantiK/semantik_structure/glmocr/__init__.py`. |
 
-### Super heading judge
+### Super heading judge: service and request policy
 
-| Flag | Default | Purpose |
+| Flag | Default | Behavior, failure, and source |
 |---|---|---|
-| `SEMANTIK_HEADING_JUDGE` | on | Master heading-judge gate. Unset, blank, truthy, or malformed values keep it on; only explicit falsey values disable it. |
-| `SEMANTIK_HEADING_JUDGE_BASE_URL` | local OpenAI-compatible endpoint | Super heading-judge endpoint. Keep the concrete value private. |
-| `SEMANTIK_HEADING_JUDGE_MODEL` | served Nemotron-3 Super identifier | Model identifier reported by the configured service. Model changes require licensing review. |
-| `SEMANTIK_HEADING_JUDGE_API_KEY` | unset | Optional bearer credential supplied through secret management. |
-| `SEMANTIK_HEADING_JUDGE_TIMEOUT` | `1200` | Timeout for one judge request, in seconds. |
-| `SEMANTIK_HEADING_JUDGE_CHAPTER_TIMEOUT` | `5400` | Pipeline subprocess timeout for one chapter. A timeout retains the pre-judge result and records a warning. |
-| `SEMANTIK_HEADING_JUDGE_CHECKPOINT` | on | Content-addressed per-window resume cache. The site value overrides `ED4ALL_GENERATION_CHECKPOINT`. |
-| `SEMANTIK_HEADING_JUDGE_ENABLE_THINKING` | off | Enables model reasoning explicitly. Heading assignment defaults to compact classification without a reasoning block. |
-| `SEMANTIK_HEADING_JUDGE_REASONING_EFFORT` | `high` when thinking is enabled | Selects `low`, `medium`, `high`, or `off`; ignored while thinking is disabled. |
-| `SEMANTIK_HEADING_JUDGE_FREQUENCY_PENALTY` | `0.3` thinking-off; omitted thinking-on | Anti-repetition request setting. Any finite explicit value is honored; zero omits the request key. |
-| `SEMANTIK_HEADING_JUDGE_MAX_TOKENS_THINKOFF` | `4096` | Thinking-off completion ceiling. |
-| `SEMANTIK_HEADING_JUDGE_TOKENS_FLOOR_THINKOFF` | `512` | Thinking-off completion floor. |
-| `SEMANTIK_HEADING_JUDGE_EST_PER_JUDGMENT_THINKOFF` | `64` | Thinking-off completion estimate per pending heading. |
-| `SEMANTIK_HEADING_JUDGE_SEAT_CONTEXT` | `auto` | Reads the configured service context and derives safe prompt/completion budgets. `off` uses fixed compatibility budgets; a positive integer pins context directly. |
-| `SEMANTIK_HEADING_JUDGE_CTX_MARGIN` | `4096` | Context headroom used by automatic budget derivation. |
-| `SEMANTIK_HEADING_JUDGE_COMPLETION_FRACTION` | `0.7` | Completion share of usable context, clamped to `[0.4, 0.9]`. |
-| `SEMANTIK_HEADING_JUDGE_CTX_BUDGET` | seat-derived | Explicit prompt-plus-completion budget override; fixed compatibility value is `31500`. |
-| `SEMANTIK_HEADING_JUDGE_DIGEST_BUDGET` | seat-derived | Explicit digest budget override; fixed compatibility value is `24000`. |
-| `SEMANTIK_HEADING_JUDGE_MAX_TOKENS` | seat-derived when thinking is on | Thinking-on completion ceiling override; fixed compatibility value is `30000`. Thinking-off uses `SEMANTIK_HEADING_JUDGE_MAX_TOKENS_THINKOFF`. |
-| `SEMANTIK_HEADING_JUDGE_TOKENS_FLOOR` | `20480` when thinking is on | Thinking-on completion floor. Thinking-off uses the dedicated 512-token default. |
-| `SEMANTIK_HEADING_JUDGE_EST_PER_JUDGMENT` | `300` when thinking is on | Thinking-on per-heading estimate. Thinking-off uses the dedicated 64-token default. |
-| `SEMANTIK_HEADING_JUDGE_MAX_PENDING_PER_WINDOW` | `96` | Hard pending-heading ceiling per window. The effective thinking-off cap is normally lower because it is budget-derived. |
-| `SEMANTIK_HEADING_JUDGE_MIN_PENDING_WINDOW_CAP` | `8` | Lower bound for the budget-derived pending count. |
-| `SEMANTIK_HEADING_JUDGE_CONCURRENCY` | `4` | Concurrent independent judge requests. |
-| `SEMANTIK_HEADING_JUDGE_MAX_COVERAGE_RESPLIT_ROUNDS` | `3` | Maximum coverage-recovery split rounds. |
-| `SEMANTIK_HEADING_JUDGE_MIN_PENDING_PER_SPLIT` | `2` | Minimum pending count eligible for another split. |
-| `SEMANTIK_HEADING_JUDGE_ANCHOR_TRUNCATE` | `80` | Content-anchor character limit in judge digests. |
-| `SEMANTIK_HEADING_JUDGE_HEADING_TEXT_TRUNCATE` | `90` | Heading-text character limit in judge digests. |
-| `SEMANTIK_HEADING_JUDGE_CONTEXT_TEXT_TRUNCATE` | `40` | Fixed-anchor context character limit. |
-| `SEMANTIK_HEADING_JUDGE_TOKENIZER` | `auto` | Uses the configured judge model tokenizer when locally available; supported fallbacks remain deterministic. |
-| `SEMANTIK_HEADING_JUDGE_TOKENIZER_ID` | judge model identifier | Optional explicit tokenizer identifier for offline loading. |
-| `SEMANTIK_HEADING_JUDGE_AUDIT` | on | Deterministic post-judge structural audit. Explicit falsey values disable it. |
-| `SEMANTIK_HEADING_JUDGE_REJUDGE` | off | Enables bounded targeted re-judging of audit failures. |
-| `SEMANTIK_HEADING_JUDGE_REJUDGE_MAX_ATTEMPTS` | `1` | Maximum targeted re-judge attempts. |
-| `SEMANTIK_HEADING_JUDGE_FULLDOC_CONTEXT` | off | Adds a read-only whole-document heading skeleton to each window. |
-| `SEMANTIK_HEADING_JUDGE_FULLDOC_ANCHORS` | off | Adds content anchors to full-document context; no-op unless full-document context is enabled. |
-| `SEMANTIK_HEADING_JUDGE_FINAL_REVIEW` | off | Runs one bounded whole-document consistency review after initial judgments. Failures retain the pre-review tree. |
-| `SEMANTIK_HEADING_JUDGE_CHAPTER_MODE` | off | Uses one content-aware work unit per chapter instead of standard windows. |
-| `SEMANTIK_HEADING_JUDGE_DOC_SCHEMA` | on within chapter mode | Adds a compact document-derived hierarchy convention to chapter work units. |
-| `SEMANTIK_HEADING_JUDGE_CHAPTER_CONTENT_WORDS` | `60` | Per-region word cap when chapter content must be reduced to fit. |
-| `SEMANTIK_HEADING_JUDGE_NORMALIZE` | off | Enables bounded overlapping slices for chapters exceeding the selected work-unit size. |
-| `SEMANTIK_HEADING_JUDGE_NORMALIZE_WINDOW` | adaptive | Optional fixed normalized-window size. |
-| `SEMANTIK_HEADING_JUDGE_NORMALIZE_PERCENTILE` | `100` | Percentile used to derive the adaptive window. |
-| `SEMANTIK_HEADING_JUDGE_NORMALIZE_WINDOW_MIN` | `4096` | Lower clamp for the adaptive window. |
-| `SEMANTIK_HEADING_JUDGE_SLICE_OVERLAP` | `2` | Boundary headings repeated across adjacent normalized slices. |
-| `SEMANTIK_HEADING_JUDGE_CHAPTER_REVIEW` | on within normalized mode | Reconciles overlapping slice judgments; deterministic reconciliation remains available when disabled or unavailable. |
+| `SEMANTIK_HEADING_JUDGE` | on | Default-on boolean. Request failures retain the pre-judge hierarchy with a warning. Source: `SemantiK/semantik_structure/glmocr/__init__.py` and `MCP/tools/pipeline_tools.py`. |
+| `SEMANTIK_HEADING_JUDGE_BASE_URL` | local OpenAI-compatible Super service | Nonblank private endpoint override; transport failures are classified and retained in reports. Source: `SemantiK/semantik_structure/glmocr/__init__.py`. |
+| `SEMANTIK_HEADING_JUDGE_MODEL` | `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4` | Nonblank served-model override; changes require licensing review. A service/model mismatch is a request failure. Source: `SemantiK/semantik_structure/glmocr/__init__.py`. |
+| `SEMANTIK_HEADING_JUDGE_API_KEY` | unset | Nonblank bearer credential; blank means no credential. Source: `SemantiK/semantik_structure/glmocr/heading_judge_standalone.py`. |
+| `SEMANTIK_HEADING_JUDGE_TIMEOUT` | `1200` | Positive finite per-request seconds; invalid input uses `1200`. Timeout triggers bounded split recovery, then a surfaced unresolved result. Source: `SemantiK/semantik_structure/glmocr/__init__.py`. |
+| `SEMANTIK_HEADING_JUDGE_CHAPTER_TIMEOUT` | `5400` | Positive finite subprocess seconds; invalid input uses `5400`. Timeout keeps that chapter's pre-judge result and records a warning. Source: `MCP/tools/pipeline_tools.py`. |
+| `SEMANTIK_HEADING_JUDGE_CHECKPOINT` | on | Default-on content-addressed cache; the site value overrides `ED4ALL_GENERATION_CHECKPOINT`. Cache failure cannot fabricate a verdict. Source: `SemantiK/semantik_structure/glmocr/__init__.py`. |
+| `SEMANTIK_HEADING_JUDGE_ENABLE_THINKING` | off | Opt-in boolean. Off sends compact classification requests; malformed input remains off. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_REASONING_EFFORT` | `high` when thinking is enabled | Accepts `low`, `medium`, `high`, or `off`; invalid input uses `high`; ignored while thinking is off. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_FREQUENCY_PENALTY` | `0.3` thinking-off; omitted thinking-on | Any finite float is accepted while thinking is off; invalid input uses `0.3`; zero omits the request key. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
 
-### Supported enrichment and compatibility controls
+### Super heading judge: context and capacity
 
-These controls remain supported for specialized inputs and compatibility
-testing. They do not replace the preferred GLM-OCR route. Keep them unset
-unless the owning architecture or operations guide calls for them.
-
-| Flag | Default | Purpose |
+| Flag | Default | Behavior, failure, and source |
 |---|---|---|
-| `SEMANTIK_STRUCTURE_CLEAN` | on | Deterministic structure cleanup with conservation checks. |
-| `SEMANTIK_BLOCK_RESEGMENT` | off | Deterministic join/split pass over formed regions. |
-| `SEMANTIK_BLOCK_RESEGMENT_LLM` | off | Adds bounded model proposals to resegmentation; deterministic conservation remains authoritative. |
-| `SEMANTIK_UNIT_REGROUP` | on | Regroups adjacent pedagogical label/body regions under partition conservation. |
-| `SEMANTIK_CONTAINMENT` | on | Builds materialized containment relationships used by accessible assembly. |
-| `SEMANTIK_REGION_ORDER` | `fb` | Selects the supported region-order policy; `geom` and `off` are compatibility choices. |
-| `SEMANTIK_COLUMN_EXTRACT` | off | Enables column-aware extraction. |
-| `SEMANTIK_COLUMN_ORDER` | off | Enables column-major ordering; column-aware extraction implies it. |
-| `SEMANTIK_DETECT_FIGURES` | off | Enables deterministic image-candidate extraction. |
-| `SEMANTIK_VLM_FIGURE_DETECT` | off | Enables model-proposed sub-page figure boxes followed by deterministic acceptance guards. |
-| `SEMANTIK_VLM_FIGURE_DETECT_CONCURRENCY` | `4` | Figure-detection request fan-out. |
-| `SEMANTIK_VLM_FIGURE_DETECT_TIMEOUT` | `600` | Per-request figure-detection timeout in seconds. |
-| `SEMANTIK_VLM_FIGURE_DETECT_CHECKPOINT` | on | Private content-addressed page cache with stop-aware dispatch. |
-| `SEMANTIK_VLM_FIGURE_DETECT_DISABLE_THINKING` | off | Explicitly disables reasoning for figure localization; default behavior keeps it enabled. |
-| `SEMANTIK_VLM_FIGURE_DETECT_MAX_WORDS` | `20` | Text-density rejection ceiling; zero disables this arm. |
-| `SEMANTIK_VLM_FIGURE_DETECT_GRID_REJECT` | on within detector | Rejects table-like grids from the figure path. |
-| `SEMANTIK_VLM_FIGURE_DETECT_MAX_PER_PAGE` | `8` | Hard accepted-figure cap per page. |
-| `SEMANTIK_PAGE_ARRANGER` | off | Compatibility structure path for OCR-heavy pages; not part of the preferred profile. |
-| `SEMANTIK_PAGE_ARRANGER_CONCURRENCY` | `4` | Page-arrangement request fan-out. |
-| `SEMANTIK_REASONING_QC` | off | Optional report/reconcile quality-control pass. |
-| `SEMANTIK_REASONING_QC_DISABLE_THINKING` | off | Explicit reasoning opt-out for quality-control requests. |
-| `SEMANTIK_REASONING_QC_CONCURRENCY` | `8` | Quality-control request fan-out. |
-| `SEMANTIK_SPECIALIST_PROVIDER` | `local` | Compatibility generation backend selector. Non-local providers require licensing and credential review. |
-| `SEMANTIK_SPECIALIST_MODEL` | provider default | Compatibility generation model selector; changes require licensing review. |
-| `SEMANTIK_SPECIALIST_BASE_URL` | provider-derived | Private OpenAI-compatible endpoint configuration. |
-| `SEMANTIK_SPECIALIST_API_KEY` | provider-derived | Private credential configuration. |
-| `SEMANTIK_THETA_DEVICE` | `cpu` | Device for the optional semantic-preservation evaluator; unavailable CUDA falls back to CPU. |
-| `SEMANTIK_ALLOW_THETA_STUB` | off | Development/evaluation-only placeholder opt-in. Stub output is non-production and must never be treated as completed validation. |
-| `SEMANTIK_MODEL_DIR` | package model root | Private model-artifact location. |
-| `SEMANTIK_CACHE_DIR` | package data root | Private cache location. |
-| `SEMANTIK_DATA_DIR` | package data root | Private evaluation/training-data location. |
-| `SEMANTIK_CONFIG_DIR` | package data root | Private calibration/configuration location. |
-| `SEMANTIK_HOME` | unset | Relocates the four private SemantiK data roots by basename. |
-| `SEMANTIK_COURSE_CODE` | generic telemetry label | Decision-capture context only; never controls conversion. The resolved identifier is private. |
-| `SEMANTIK_RUN_ID` | Ed4All run context when available | Decision-capture context only; never controls conversion. The resolved identifier is private. |
+| `SEMANTIK_HEADING_JUDGE_SEAT_CONTEXT` | `auto` | `auto` probes service context, `off` uses fixed compatibility budgets, and a positive integer pins context; invalid input uses `auto`. Probe failure uses explicit compatibility budgeting with a warning. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_SEAT_TIERS` | built-in ordered tiers | Comma-separated `name:context:sequences`; malformed entries are warned and skipped, and no valid entries restores defaults. Source: `SemantiK/semantik_structure/glmocr/seat_profile.py`. |
+| `SEMANTIK_HEADING_JUDGE_SEAT_KV_FRONTIER` | unset | Positive integer derives sequence counts from context; invalid or non-positive input leaves tier counts unchanged. Source: `SemantiK/semantik_structure/glmocr/seat_profile.py`. |
+| `SEMANTIK_HEADING_JUDGE_SEAT_MAX_SEQS` | `64` | Positive integer ceiling used with the KV frontier; invalid input uses `64`. Source: `SemantiK/semantik_structure/glmocr/seat_profile.py`. |
+| `SEMANTIK_HEADING_JUDGE_SEAT_SELECT_SAFETY` | `1.3` | Positive finite fit multiplier; invalid input uses `1.3`. Overflow selects the largest tier and is surfaced. Source: `SemantiK/semantik_structure/glmocr/seat_profile.py`. |
+| `SEMANTIK_HEADING_JUDGE_CTX_MARGIN` | `4096` | Positive integer context headroom; invalid or non-positive input uses `4096`. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_COMPLETION_FRACTION` | `0.7` | Finite fraction clamped to `[0.4, 0.9]`; invalid input uses `0.7`. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_CTX_BUDGET` | seat-derived | Positive integer prompt-plus-completion override; invalid input uses the derived budget, or `31500` in fixed mode. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_DIGEST_BUDGET` | seat-derived | Positive integer digest override; invalid input uses the derived budget, or `24000` in fixed mode. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_MAX_TOKENS` | seat-derived thinking-on ceiling | Positive integer override; invalid input uses the derived ceiling, or `30000` in fixed mode. Thinking-off uses its dedicated control. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_TOKENS_FLOOR` | `20480` thinking-on | Positive integer floor; invalid or non-positive input uses `20480`. Thinking-off uses its dedicated control. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_EST_PER_JUDGMENT` | `300` thinking-on | Positive integer token estimate; invalid input uses `300`. Thinking-off uses its dedicated control. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_MAX_TOKENS_THINKOFF` | `4096` | Positive integer thinking-off ceiling; invalid input uses `4096`. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_TOKENS_FLOOR_THINKOFF` | `512` | Positive integer thinking-off floor; invalid or non-positive input uses `512`. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_EST_PER_JUDGMENT_THINKOFF` | `64` | Positive integer thinking-off estimate; invalid input uses `64`. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_MAX_PENDING_PER_WINDOW` | `96` | Positive integer hard ceiling; invalid input uses `96`. Effective capacity may be lower after budget calculation. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_MIN_PENDING_WINDOW_CAP` | `8` | Positive integer lower bound; invalid input uses `8`. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_CONCURRENCY` | `4` | Positive integer independent-request fan-out; invalid input uses `4`. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_MAX_COVERAGE_RESPLIT_ROUNDS` | `3` | Positive integer recovery-round limit; invalid or non-positive input uses `3`. Exhaustion leaves uncovered headings explicit. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_MIN_PENDING_PER_SPLIT` | `2` | Positive integer minimum eligible pending count; invalid input uses `2`. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_MAX_SPLIT_DEPTH` | `3` | Non-negative integer timeout-split depth; invalid input uses `3`. Exhaustion reports the failure mechanism. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
 
-## Maintenance contract
+### Super heading judge: digest, tokenizer, and document modes
 
-- Resolver code and tests are authoritative for defaults and parsing.
-- A new or changed `SEMANTIK_*` control must update this table in the same
-  change.
-- Provider or model selectors must also update `docs/LICENSING.md`.
-- Flags must not silently downgrade required behavior. Optional operations may
-  retain an input unchanged only when that fail-open behavior is explicit and
-  observable.
-- Never add source-specific measurements, deployment history, machine-specific
-  values, private identifiers, or temporary implementation rationale to this
-  public guide.
+| Flag | Default | Behavior, failure, and source |
+|---|---|---|
+| `SEMANTIK_HEADING_JUDGE_ANCHOR_TRUNCATE` | `80` | Positive integer content-anchor character cap; invalid input uses `80`. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_HEADING_TEXT_TRUNCATE` | `90` | Positive integer heading-text character cap; invalid input uses `90`. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_CONTEXT_TEXT_TRUNCATE` | `40` | Positive integer fixed-anchor context cap; invalid input uses `40`. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_TOKENIZER` | `auto` | Accepts `auto`, falsey/off compatibility mode, or an explicit local tokenizer ID/path. Load failure uses a conservative estimator and warns; it never downloads. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_TOKENIZER_ID` | heading-judge model tokenizer | Nonblank local tokenizer override for `auto`; a local cache miss uses the conservative estimator. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_FULLDOC_CONTEXT` | off | Opt-in boolean adding the read-only whole-document heading skeleton. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_FULLDOC_ANCHORS` | off | Opt-in boolean adding content anchors; no-op unless full-document context is on. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_CHAPTER_MODE` | off | Opt-in boolean selecting chapter work units. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_DOC_SCHEMA` | on within chapter mode | Default-on boolean adding a document-derived hierarchy convention; no-op outside chapter mode. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_CHAPTER_CONTENT_WORDS` | `60` | Positive integer region-word cap used during fit reduction; invalid input uses `60`. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_NORMALIZE` | off | Opt-in boolean enabling bounded overlapping slices for oversized chapters. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_NORMALIZE_WINDOW` | adaptive | Positive integer fixed slice size; invalid or absent input uses the adaptive resolver. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_NORMALIZE_PERCENTILE` | `100` | Integer percentile clamped to `[1, 100]`; invalid input uses `100`. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_NORMALIZE_WINDOW_MIN` | `4096` | Positive integer adaptive lower clamp; invalid input uses `4096`. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_SLICE_OVERLAP` | `2` | Non-negative integer repeated-boundary heading count; invalid input uses `2`. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_CHAPTER_REVIEW` | on within normalized mode | Default-on boolean reconciling slice judgments. Failure uses deterministic overlap reconciliation and warns. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_FINAL_REVIEW` | off | Opt-in boolean for bounded whole-document consistency review. Failure retains the pre-review tree. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+| `SEMANTIK_HEADING_JUDGE_FINAL_REVIEW_MIN_CHAPTERS` | `2` | Positive integer minimum in normalized mode; invalid input uses `2`. Below the floor, chapter-review results stand. Source: `SemantiK/semantik_structure/glmocr/heading_judge.py`. |
+
+### Super heading judge: audit and targeted recovery
+
+| Flag | Default | Behavior, failure, and source |
+|---|---|---|
+| `SEMANTIK_HEADING_JUDGE_AUDIT` | on | Default-on deterministic post-judge audit. Audit failure is warned and never rewrites the judged tree. Source: `MCP/tools/pipeline_tools.py`. |
+| `SEMANTIK_HEADING_JUDGE_AUDIT_COLLAPSE_SHARE` | `0.95` | Finite fraction in `[0, 1]`; invalid input uses `0.95`. Source: `SemantiK/semantik_structure/glmocr/heading_judge_audit.py`. |
+| `SEMANTIK_HEADING_JUDGE_AUDIT_MIN_HEADINGS` | `4` | Positive integer minimum for collapse checks; invalid input uses `4`. Source: `SemantiK/semantik_structure/glmocr/heading_judge_audit.py`. |
+| `SEMANTIK_HEADING_JUDGE_REJUDGE` | off | Opt-in boolean re-running only audit-flagged chapters. Failure retains the prior judged output and warns. Source: `MCP/tools/pipeline_tools.py`. |
+| `SEMANTIK_HEADING_JUDGE_REJUDGE_MAX_ATTEMPTS` | `1` | Positive integer targeted-recovery limit; invalid input uses `1`. Source: `MCP/tools/pipeline_tools.py`. |
+
+### Deterministic rendering and enrichment
+
+| Flag | Default | Behavior, failure, and source |
+|---|---|---|
+| `SEMANTIK_DROP_FRONTMATTER_TOC` | on | Default-on detector for printed front-matter contents runs. Explicit falsey input preserves them. Source: `lib/semantik/toc_frontmatter_detector.py`. |
+| `SEMANTIK_DROP_FRONTMATTER_ZONE` | on | Default-on suppression of non-content front-matter zones; falsey input preserves the zone. Source: `lib/semantik/toc_frontmatter_detector.py`. |
+| `SEMANTIK_EMIT_TOC` | on | Default-on accessible contents navigation; explicit falsey input disables it. Source: `lib/semantik/adapter.py`. |
+| `SEMANTIK_BOX_TITLE_HEADINGS` | off | Opt-in boolean carving presentational callout titles into headings under deterministic guards. Ineligible blocks remain unchanged. Source: `lib/semantik/adapter.py`. |
+| `SEMANTIK_TABLE_STRUCTURE` | off | Opt-in deterministic table-cell topology reconstruction. Unconfirmed topology remains ordinary text/table content. Source: `lib/semantik/adapter.py`. |
+| `SEMANTIK_LATEX_MATHML` | off | Opt-in LaTeX-to-presentation-MathML rendering. Missing validity support or invalid output fails loudly instead of emitting unvalidated MathML. Source: `lib/semantik/adapter.py` and `lib/semantik/latex_mathml.py`. |
+| `SEMANTIK_RENDER_TIKZ_FIGURES` | off | Opt-in deterministic rendering of accepted TikZ figure sources. Render failure preserves the source representation and is surfaced. Source: `lib/semantik/adapter.py`. |
+| `SEMANTIK_SEMANTIC_SUBCLASS` | off | Opt-in model-assisted composite-unit subclass label. Call or parse failure leaves the unit unlabelled; no prose is invented. Source: `lib/semantik/subclassifier.py`. |
+| `SEMANTIK_SUBCLASS_SAMPLES` | `1` | Positive integer self-consistency sample count; invalid input uses `1`; only used when subclassing is enabled. Source: `lib/semantik/subclassifier.py`. |
+| `SEMANTIK_AFFORDANCE_GATE` | off | Opt-in deterministic affordance-conservation audit. Findings are explicit and do not fabricate repaired content. Source: `lib/semantik/affordance_conservation.py`. |
+| `SEMANTIK_AFFORDANCE_SECTION_RECALL_MIN` | `0.80` | Finite fraction in `[0, 1]`; invalid input uses `0.80`; only used by the affordance audit. Source: `lib/semantik/affordance_conservation.py`. |
+
+## Registry boundary
+
+This page intentionally excludes compatibility-only extraction paths, internal
+subprocess plumbing, usage-meter destinations, run identifiers, private cache
+locations, and controls with no production source reader. Those are not public
+SemantiK behavior contracts.
+
+Resolver code and focused tests are authoritative. A public flag change must
+update its row in the same change; provider and model selectors must also update
+`docs/LICENSING.md`. Required behavior must fail loudly. Optional behavior may
+retain its input only when that outcome is explicit, observable, and documented.
