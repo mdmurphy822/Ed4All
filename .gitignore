@@ -226,6 +226,7 @@ schemas/training/schema_translation_catalog.*.yaml
 # Plans directory — local-only working notes, never committed
 # =============================================================================
 plans/
+/plan/
 
 # =============================================================================
 # Windows-from-WSL leftovers
@@ -237,6 +238,8 @@ plans/
 
 # Local-only generated index maintained by the recurring review loop
 docs/MANIFEST.md
+# Local repository-cleanup evidence may enumerate ignored operator artifacts.
+docs/file-audit-cleanup.md
 docker-compose.override.yml
 
 # Untracked operator runbook for the big-memory concurrent-serving profile.
