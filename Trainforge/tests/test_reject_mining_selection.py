@@ -18,10 +18,14 @@ reducing factuality 44.7 -> 42.3 FActScore exactly that way.
 from __future__ import annotations
 
 import random
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pytest
+from jsonschema import Draft202012Validator
+from referencing import Registry, Resource
+from referencing.jsonschema import DRAFT202012
 
 from Trainforge.synthesis_reject_mining import (
     DEFAULT_MAX_FRACTION,
@@ -911,13 +915,24 @@ def test_no_anchor_emits_nothing_and_never_synthesizes_a_chosen():
 
 
 def _real_schema_validator():
-    from Trainforge.scripts.harness.gate_d_single_row import _offline_pair_validator
-
     knowledge = Path("schemas/knowledge").resolve()
-    validator, _evidence = _offline_pair_validator(
-        knowledge / "preference_pair.schema.json", knowledge_dir=knowledge,
+    schemas = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(knowledge.glob("*.schema.json"))
+    ]
+    resources = [
+        (schema["$id"], Resource.from_contents(
+            schema, default_specification=DRAFT202012,
+        ))
+        for schema in schemas
+        if isinstance(schema.get("$id"), str)
+    ]
+    root = next(
+        schema for schema in schemas
+        if schema.get("$id")
+        == "https://ed4all.dev/ns/knowledge/v1/preference_pair.schema.json"
     )
-    return validator
+    return Draft202012Validator(root, registry=Registry().with_resources(resources))
 
 
 def test_emitted_shape():

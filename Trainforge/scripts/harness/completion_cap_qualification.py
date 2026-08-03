@@ -28,7 +28,7 @@ from Trainforge.generators.synthesis_window_contract import (
     build_evidence_window,
     objective_card,
 )
-from Trainforge.scripts.harness.staged_window_abcd_pilot import apply_runtime_focus
+from Trainforge.scripts.maintenance.runtime_focus import apply_runtime_focus
 from Trainforge.synthesis.synthesis_eligibility import pair_eligibility
 
 CAP_QUALIFICATION_CONTRACT = "ed4all.completion-cap-qualification.v1"

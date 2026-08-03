@@ -9,14 +9,9 @@ trace row that captures:
 * Whether the model cited the correct chunk and answered correctly.
 * The classified failure mode (one of five canonical labels).
 
-Traces land at ``<run_dir>/eval_traces.jsonl`` and serve two
-downstream consumers:
-
-1. :mod:`Trainforge.eval.diagnostics` runs auto-detection rules over
-   the traces (e.g. retrieval-hit-no-cite triggers
-   ``prompting_failure``).
-2. Manual auditing during procurement review - a human can scroll the
-   first 50 rows and sanity-check the failure-mode classifier.
+Traces land at ``<run_dir>/eval_traces.jsonl`` for manual auditing during
+procurement review. A reviewer can inspect a bounded sample and sanity-check
+the failure-mode classifier against the recorded retrieval evidence.
 """
 from __future__ import annotations
 
@@ -31,8 +26,8 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-# Canonical failure-mode labels. Locked - downstream diagnostics rules
-# pattern-match against these strings.
+# Canonical failure-mode labels. Locked because persisted trace consumers and
+# historical reports rely on these strings.
 FAILURE_MODES = (
     "none",
     "retrieval_miss",

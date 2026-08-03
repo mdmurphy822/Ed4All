@@ -88,21 +88,6 @@ MICRO_DEFAULT_COMPLETION_CAP = 600
 MICRO_STAGE_E_AUTHORITY_CONTRACT_VERSION = (
     "ed4all.micro-stage-e-misconception-authority.v2"
 )
-MICRO_LEGACY_EXECUTION_POLICY = "legacy-repair-loops.v1"
-MICRO_GATE_D_EXECUTION_POLICY = "gate-d-single-pass.v1"
-MICRO_GATE_D_BINDING_SCHEMA = "ed4all.training-synthesis-gate-d-subset.v1"
-MICRO_GATE_D_STAGE_LIMITS = {
-    "A_model_calls": 0,
-    "B_per_slot": 1,
-    "B_slots_max": 3,
-    "C_model_calls": 0,
-    "D": 1,
-    "E": 1,
-    "F": 1,
-    "Q_model_calls": 0,
-    "semantic_repairs": 0,
-    "leakage_repairs": 0,
-}
 MICRO_STAGE_MAX_TOKENS = {
     "A": 2048,
     "B": 1536,
@@ -284,11 +269,6 @@ def micro_contract_components() -> Dict[str, Any]:
             "instruction": MICRO_SFT_PROJECTION,
             "preference": MICRO_DPO_PROJECTION,
         },
-        "execution_policy_contract": {
-            "default": MICRO_LEGACY_EXECUTION_POLICY,
-            "trusted_harness_selectable": MICRO_GATE_D_EXECUTION_POLICY,
-            "gate_d_limits": dict(MICRO_GATE_D_STAGE_LIMITS),
-        },
         "stages": list(_STAGES),
         "systems_sha256": {
             "A": _sha(_TASK_SYSTEM),
@@ -438,17 +418,6 @@ def micro_contract_components() -> Dict[str, Any]:
             "stage_budget_dispatch": _sha(
                 inspect.getsource(MicroStagedSynthesisProvider._call_stage)
             ),
-            "execution_policy": _sha("\n".join((
-                inspect.getsource(
-                    MicroStagedSynthesisProvider.bind_trusted_gate_d_single_pass
-                ),
-                inspect.getsource(
-                    MicroStagedSynthesisProvider.execution_policy_identity
-                ),
-                inspect.getsource(
-                    MicroStagedSynthesisProvider.planned_stage_identities
-                ),
-            ))),
             "task_design": _sha(
                 inspect.getsource(MicroStagedSynthesisProvider._task_design)
             ),
@@ -2305,79 +2274,6 @@ class MicroStagedSynthesisProvider(StagedSynthesisProvider):
                 code="staged_micro_completion_cap_invalid",
             )
         self._completion_cap = int(completion_cap)
-        self._execution_policy = MICRO_LEGACY_EXECUTION_POLICY
-        self._gate_d_binding: Optional[Dict[str, Any]] = None
-        self._gate_d_seen_model_stages: set[str] = set()
-
-    def bind_trusted_gate_d_single_pass(
-        self, binding: Mapping[str, Any],
-    ) -> Dict[str, Any]:
-        """Select the one-use policy only with a verified harness subset.
-
-        The harness must first verify the signed GO and construct its canonical
-        subset binding. Ordinary construction deliberately has no policy
-        argument, environment switch, or permissive default.
-        """
-        if self._execution_policy != MICRO_LEGACY_EXECUTION_POLICY:
-            raise SynthesisProviderError(
-                "micro execution policy is already bound",
-                code="staged_micro_execution_policy_rebind",
-            )
-        candidate = dict(binding)
-        subset_sha = candidate.pop("subset_sha256", None)
-        required = {
-            "schema", "full_manifest_sha256", "eligibility_sha256",
-            "ordered_identity_sha256", "go_artifact_sha256",
-            "go_decision_sha256", "strict_dialect_capability_sha256",
-            "synthesis_seed", "run_id", "output_dir", "row_count", "row",
-        }
-        hashes = (
-            "full_manifest_sha256", "eligibility_sha256",
-            "ordered_identity_sha256", "go_artifact_sha256",
-            "go_decision_sha256", "strict_dialect_capability_sha256",
-        )
-        if (
-            set(candidate) != required
-            or candidate.get("schema") != MICRO_GATE_D_BINDING_SCHEMA
-            or candidate.get("row_count") != 1
-            or candidate.get("synthesis_seed") != self._synthesis_seed
-            or not all(
-                isinstance(candidate.get(key), str)
-                and re.fullmatch(r"[0-9a-f]{64}", candidate[key])
-                for key in hashes
-            )
-            or not isinstance(candidate.get("row"), Mapping)
-            or not _clean(candidate.get("run_id"))
-            or not _clean(candidate.get("output_dir"))
-            or subset_sha != _sha(_stable_json(candidate))
-        ):
-            raise SynthesisProviderError(
-                "trusted Gate D binding is incomplete, drifted, or unverified",
-                code="staged_micro_gate_d_binding_invalid",
-            )
-        self._gate_d_binding = {**candidate, "subset_sha256": subset_sha}
-        self._execution_policy = MICRO_GATE_D_EXECUTION_POLICY
-        return self.execution_policy_identity()
-
-    def execution_policy_identity(self) -> Dict[str, Any]:
-        identity = {
-            "version": self._execution_policy,
-            "limits": (
-                dict(MICRO_GATE_D_STAGE_LIMITS)
-                if self._execution_policy == MICRO_GATE_D_EXECUTION_POLICY
-                else {
-                    "claim_attempts_per_slot": 2,
-                    "semantic_repairs_per_stage": 2,
-                    "leakage_repairs_per_stage": 2,
-                }
-            ),
-        }
-        if self._gate_d_binding is not None:
-            identity["trusted_binding_sha256"] = self._gate_d_binding[
-                "subset_sha256"
-            ]
-        identity["sha256"] = _sha(_stable_json(identity))
-        return identity
 
     def _release_identity(self) -> Dict[str, Any]:
         """Return the core-owned, immutable portion of the release tuple."""
@@ -2394,8 +2290,6 @@ class MicroStagedSynthesisProvider(StagedSynthesisProvider):
             "model": self._model,
             "completion_cap": self._completion_cap,
         }
-        if self._execution_policy != MICRO_LEGACY_EXECUTION_POLICY:
-            identity["execution_policy"] = self.execution_policy_identity()
         return identity
 
     def _decision_identity_context(self) -> Dict[str, Any]:
@@ -2430,28 +2324,6 @@ class MicroStagedSynthesisProvider(StagedSynthesisProvider):
                 "micro stage token budget cannot be overridden per call",
                 code="staged_micro_token_budget_override",
             )
-        if self._execution_policy == MICRO_GATE_D_EXECUTION_POLICY:
-            if re.search(r"_attempt_(?:[2-9]|[1-9][0-9]+)(?:_|$)", stage):
-                raise SynthesisProviderError(
-                    "Gate D forbids semantic attempt 2 before provider dispatch",
-                    code="staged_micro_gate_d_attempt_forbidden",
-                )
-            if kwargs.get("max_stage_repairs", 0) != 0 or (
-                kwargs.get("max_leakage_repairs", 0) != 0
-            ):
-                raise SynthesisProviderError(
-                    "Gate D requires zero semantic and leakage repair budgets",
-                    code="staged_micro_gate_d_repair_budget_invalid",
-                )
-            stage_identity = self._gate_d_model_stage_identity(stage)
-            if stage_identity in self._gate_d_seen_model_stages:
-                raise SynthesisProviderError(
-                    f"Gate D repeated atomic stage before provider call: {stage_identity}",
-                    code="staged_micro_gate_d_stage_repeated",
-                )
-            self._gate_d_seen_model_stages.add(stage_identity)
-            kwargs["max_stage_repairs"] = 0
-            kwargs["max_leakage_repairs"] = 0
         self._validation_audit.decision_capture_event_id = ""
         result = super()._call_stage(
             stage=stage,
@@ -2493,120 +2365,6 @@ class MicroStagedSynthesisProvider(StagedSynthesisProvider):
                 },
             )
         return event_id
-
-    @staticmethod
-    def _gate_d_model_stage_identity(stage: str) -> str:
-        family = MicroStagedSynthesisProvider._micro_stage_family(stage)
-        if family == "B":
-            match = re.fullmatch(r"micro_B_claim_([0-2])_attempt_1", stage)
-            if match is None:
-                raise SynthesisProviderError(
-                    f"Gate D claim stage identity is invalid: {stage}",
-                    code="staged_micro_gate_d_stage_unknown",
-                )
-            return f"B:slot-{match.group(1)}"
-        expected = {
-            "A": {"micro_A_task_design"},
-            "D": {"micro_D_sft", "micro_D_dpo_chosen"},
-            "E": {"micro_E_misconception_selection"},
-            "F": {"micro_F_one_fault_rejected"},
-        }
-        if stage not in expected[family]:
-            raise SynthesisProviderError(
-                f"Gate D stage identity is invalid: {stage}",
-                code="staged_micro_gate_d_stage_unknown",
-            )
-        return family
-
-    def planned_stage_identities(
-        self, chunk: Mapping[str, Any], *, kind: str,
-    ) -> list[Dict[str, Any]]:
-        """Expose the exact deterministic Gate-D callback/intent schedule."""
-        if self._execution_policy != MICRO_GATE_D_EXECUTION_POLICY:
-            raise SynthesisProviderError(
-                "planned Gate D stages require a verified trusted binding",
-                code="staged_micro_gate_d_policy_unbound",
-            )
-        if kind not in {"instruction", "preference"}:
-            raise SynthesisProviderError(
-                "planned Gate D kind is invalid",
-                code="staged_micro_gate_d_kind_invalid",
-            )
-        focus = self._focus(chunk)
-        # Fail before exposing a dispatch schedule when the source-owned card
-        # cannot deterministically supply Stage A.
-        deterministic_stage_a_task(
-            focus, synthesis_seed=self._synthesis_seed,
-        )
-        if kind == "preference":
-            eligibility = micro_preference_eligibility(
-                chunk, focus=focus, capture=self._capture,
-            )
-            if not eligibility["eligible"]:
-                raise SynthesisProviderError(
-                    "micro preference input lacks a usable source-backed "
-                    "misconception candidate",
-                    code=str(eligibility["reason"]),
-                    chunk_id=_clean(chunk.get("id") or chunk.get("chunk_id")),
-                    details={
-                        "terminal_content_rejection": True,
-                        "stage": "micro_preference_eligibility",
-                        "eligibility": eligibility["telemetry"],
-                        "model_calls": 0,
-                    },
-                )
-        eligible = self._routed_claim_blocks(chunk, focus=focus)
-        target = min(3, len(eligible))
-        if target < 1:
-            raise SynthesisProviderError(
-                "Gate D has no eligible deterministic claim slot",
-                code="staged_micro_claim_unavailable",
-            )
-        stage_a_card = objective_card(focus)
-        specifications = [(
-            "A", None, "micro_A_task_design", False, {
-                "contract_version": MICRO_STAGE_A_SEED_CONTRACT_VERSION,
-                "objective_card_sha256": _sha(_stable_json(stage_a_card)),
-                "synthesis_seed": self._synthesis_seed,
-            },
-        )]
-        specifications.extend(
-            (
-                "B", slot, f"micro_B_claim_{slot}_attempt_1", True,
-                {
-                    "source_block_id": _clean(eligible[slot]["block_id"]),
-                    "source_block_sha256": _sha(_clean(eligible[slot]["text"])),
-                },
-            )
-            for slot in range(target)
-        )
-        specifications.append(("C", None, "micro_C_assembly", False, None))
-        specifications.append((
-            "D", None,
-            "micro_D_dpo_chosen" if kind == "preference" else "micro_D_sft",
-            True, None,
-        ))
-        if kind == "preference":
-            specifications.extend((
-                ("E", None, "micro_E_misconception_selection", True, None),
-                ("F", None, "micro_F_one_fault_rejected", True, None),
-            ))
-        specifications.append(("Q", None, "micro_Q_finalization", False, None))
-        return [
-            {
-                "family": family,
-                "slot": slot,
-                "stage": stage,
-                "unit": self._journal_unit(kind, family, slot),
-                "logical_attempt": 1,
-                "model_call": model_call,
-                "input_identity": input_identity,
-                "execution_policy_sha256": self.execution_policy_identity()[
-                    "sha256"
-                ],
-            }
-            for family, slot, stage, model_call, input_identity in specifications
-        ]
 
     @staticmethod
     def _routed_claim_blocks(
@@ -2980,14 +2738,6 @@ class MicroStagedSynthesisProvider(StagedSynthesisProvider):
             )
 
         for attempt in (1, 2):
-            if (
-                self._execution_policy == MICRO_GATE_D_EXECUTION_POLICY
-                and attempt != 1
-            ):
-                raise SynthesisProviderError(
-                    "Gate D claim attempt 2 is forbidden",
-                    code="staged_micro_gate_d_attempt_forbidden",
-                )
             self._check_stop(slot)
             try:
                 result = self._call_stage(
@@ -3004,17 +2754,6 @@ class MicroStagedSynthesisProvider(StagedSynthesisProvider):
                 return result
             except SynthesisProviderError as exc:
                 last_error = str(exc)
-                if self._execution_policy == MICRO_GATE_D_EXECUTION_POLICY:
-                    raise SynthesisProviderError(
-                        f"Gate D claim slot failed its single attempt: {last_error}",
-                        code="staged_micro_gate_d_stage_terminal",
-                        chunk_id=chunk_id,
-                        details={
-                            "terminal_content_rejection": True,
-                            "stage": "micro_B",
-                            "slot": slot,
-                        },
-                    ) from exc
                 if attempt == 2:
                     break
                 user += (
@@ -3752,8 +3491,6 @@ class MicroStagedSynthesisProvider(StagedSynthesisProvider):
         out["provenance"]["provenance_sha256"] = _sha(
             _stable_json(out["provenance"])
         )
-        if self._execution_policy != MICRO_LEGACY_EXECUTION_POLICY:
-            out["execution_policy"] = self.execution_policy_identity()
         finalized = self._journaled(
             store, cache, kind="instruction", stage="Q", slot=None, attempt=1,
             call=lambda: self._finalize_objective_execution(
@@ -4043,8 +3780,6 @@ class MicroStagedSynthesisProvider(StagedSynthesisProvider):
         out["provenance"]["provenance_sha256"] = _sha(
             _stable_json(out["provenance"])
         )
-        if self._execution_policy != MICRO_LEGACY_EXECUTION_POLICY:
-            out["execution_policy"] = self.execution_policy_identity()
         finalized = self._journaled(
             store, cache, kind="preference", stage="Q", slot=None, attempt=1,
             call=lambda: self._finalize_objective_execution(
@@ -4079,9 +3814,6 @@ __all__ = [
     "MICRO_COMPLETION_CAP_CANDIDATES",
     "MICRO_DEFAULT_COMPLETION_CAP",
     "MICRO_DPO_PROJECTION",
-    "MICRO_GATE_D_EXECUTION_POLICY",
-    "MICRO_GATE_D_STAGE_LIMITS",
-    "MICRO_LEGACY_EXECUTION_POLICY",
     "MICRO_RELEASE_CONTRACT_VERSION",
     "MICRO_SFT_PROJECTION",
     "MICRO_STAGE_MAX_TOKENS",

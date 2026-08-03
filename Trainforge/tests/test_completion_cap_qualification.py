@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from types import SimpleNamespace
-
 import pytest
 
 from Trainforge.generators.objective_execution_contract import (
     CANDIDATE_COMPLETION_CAPS,
 )
 from Trainforge.scripts.harness import completion_cap_qualification as capq
-from Trainforge.scripts.harness import staged_window_abcd_pilot as pilot
 
 
 def _row(key, ordinal):
@@ -259,27 +256,6 @@ def test_runner_manifest_identity_fails_before_traffic(mutation):
         (capq.CapQualificationError, KeyError),
     ):
         capq.cap_manifests(rows)
-
-
-def test_runner_uses_one_nonrepeating_identical_schedule_per_cap_arm():
-    args = SimpleNamespace(
-        completion_cap_qualification=True,
-        fixed_qualification_concurrency=19,
-        stop_after_concurrency=None,
-    )
-    cells, repeat_scheduled = pilot._benchmark_execution_cells(args)
-    assert cells == [(19, "qualification-c19")]
-    assert repeat_scheduled is True
-    rows = _runner_rows()
-    first = pilot.counterbalanced_cell_rows(
-        rows, run_id="frozen-cap-run", cell_id=cells[0][1],
-    )
-    second = pilot.counterbalanced_cell_rows(
-        deepcopy(rows), run_id="frozen-cap-run", cell_id=cells[0][1],
-    )
-    assert [row["row_id"] for row in first] == [
-        row["row_id"] for row in second
-    ]
 
 
 def test_adjudication_selects_smallest_cap_with_per_bucket_headroom():

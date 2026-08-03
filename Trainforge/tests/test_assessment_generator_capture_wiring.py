@@ -6,9 +6,8 @@ flagged by ``plans/wave-D1-p0-fixes-2026-05-07.md`` § 2.5 (#1 of 6) and
 enforces the CLAUDE.md "LLM call-site instrumentation" rule for the
 assessment-generation surface.
 
-Three assertions per file (mirrors
-``Trainforge/tests/test_anthropic_synthesis_provider.py:336-398`` and
-``Trainforge/tests/test_qualitative_judge_capture_wiring.py``):
+Three assertions per file (following the repository's decision-capture test
+contract):
 
 1. With a wired capture, at least one event fires; the first event's
    ``decision_type`` is ``"assessment_planning"`` (the per-call planning

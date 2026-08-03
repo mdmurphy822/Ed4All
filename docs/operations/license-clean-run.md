@@ -14,7 +14,6 @@ Cross-reference: `docs/LICENSING.md` is the canonical ToS-posture document. Read
 | `COURSEPLANNER_PROVIDER` | `local` | **W-D14**: routes the Courseforge course-outliner surface (canonical `TO-NN` / `CO-NN` objective synthesis from `textbook_structure.json`) through `Courseforge/generators/outline/_outliner_provider.py::OutlinerProvider`. The synthesised objective text propagates to every downstream chunk's `learning_outcome_refs[]`, so this surface IS training-data exposure. Bypasses the Claude Code `course-outliner` subagent dispatch. Reuses the same `LOCAL_SYNTHESIS_*` env vars as the other local-OSS surfaces. |
 | `TRAINFORGE_ASSESSMENT_PROVIDER` | `local` | **W-D15**: routes the Trainforge assessment-generator surface (assessment-question authoring grounded in course content chunks) through `Trainforge/generators/providers/_assessment_provider.py::AssessmentGeneratorProvider`. The authored questions land in `assessments.json` and feed into the downstream `training_synthesis` instruction-pair / preference-pair surface, so this surface IS training-data exposure. Bypasses the Claude Code `assessment-generator` subagent dispatch. Reuses the same `LOCAL_SYNTHESIS_*` env vars as the other local-OSS surfaces. |
 | `TRAINFORGE_TARGET_MODELS` | `local/qwen2.5-14b,together/llama-3.3-70b` (or similar — operator-chosen CSV) | Cosmetic dataset_config.json field documenting which teacher models the corpus was synthesized against; lets the LibV2 audit trail record the actual ToS-clean teachers used. |
-| `ED4ALL_LLM_JUDGE_PROVIDER` | `local_nli` | Wave-102 ablation eval routes its qualitative-judge calls through a local NLI classifier (`MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli`) instead of the default `none` (no LLM judge) or `anthropic`. |
 | `COURSEFORGE_BLOCK_ROUTING_PATH` | optional legacy override | The checked-in routing YAML still has per-tier Qwen choices; it is not required for the canonical shared Nemotron seat. |
 
 Plus the prerequisites the pipeline already documents on the canonical `--provider local` path:
@@ -31,10 +30,8 @@ Plus the prerequisites the pipeline already documents on the canonical `--provid
 Before kicking off a license-clean run:
 
 - [ ] A strict OpenAI-compatible local model server is running at `http://localhost:8000/v1`. Provision it with the exact pinned command in `docs/operations/nemotron-spark-serving.md` § “Serve Nano (fast tier)”. Ed4All does not launch a server and has no implicit Ollama fallback.
-- [ ] All required model pulls completed. For the recipe below the local server must serve:
-  - `nemotron-3-nano-30b-a3b` (canonical NVIDIA Nano served ID; roughly 30B total / 3.5B active parameters, with deployment memory determined by engine and precision).
-  - `MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli` for the local-NLI judge — auto-downloaded by `transformers` on first call; no manual pull required.
-- [ ] **`ANTHROPIC_API_KEY` is explicitly UNSET** for the run. The orchestrator's `--mode local` default uses the Claude Code session, which does not consume the env var, but several legacy code paths (`Trainforge/generators/providers/_anthropic_provider.py`, `Trainforge/eval/qualitative_judge.py` when `ED4ALL_LLM_JUDGE_PROVIDER=anthropic`) silently route to Anthropic if the key is present. Unsetting the key is the belt-and-braces guarantee that no legacy path leaks training-data through Anthropic.
+- [ ] The required model pull completed. For the recipe below the local server must serve `nemotron-3-nano-30b-a3b` (canonical NVIDIA Nano served ID; roughly 30B total / 3.5B active parameters, with deployment memory determined by engine and precision).
+- [ ] **`ANTHROPIC_API_KEY` is explicitly UNSET** for the run. License-clean provider routing fails closed on restricted synthesis paths; unsetting the key is an additional operator safeguard against an explicitly selected Anthropic SDK surface.
 - [ ] Calibration prerequisite for `assessment_item` is met (see next section).
 - [ ] `pip install -e '.[embedding]'` has run — the four statistical-tier validators wired into the two-pass router (objective_assessment_similarity, concept_example_similarity, objective_roundtrip_similarity, bloom_classifier_disagreement) need `sentence-transformers` + `transformers` + `torch`. Without these the validators emit `EMBEDDING_DEPS_MISSING` warnings and skip; for production runs set `TRAINFORGE_REQUIRE_EMBEDDINGS=true` to fail-closed instead.
 - [ ] `ED4ALL_EMBEDDING_DEVICE` is pinned to a device this host actually has (default `cuda`; there is **no** CUDA→CPU fallback). Distinct from the extras check above and not covered by `TRAINFORGE_REQUIRE_EMBEDDINGS`: with the extras installed but the requested device absent, the embedding-tier gates raise `EmbeddingModelUnavailable` and the gate manager fails them closed with a critical `EMBEDDING_MODEL_UNAVAILABLE`, even though every one of those gate rows is wired `on_error: warn`. On a GPU-less box export `ED4ALL_EMBEDDING_DEVICE=cpu`. See `docs/architecture/validation-architecture.md` § 4.2.
@@ -74,7 +71,6 @@ export COURSEFORGE_REWRITE_PROVIDER=local
 export COURSEPLANNER_PROVIDER=local             # W-D14 — course-outliner surface
 export TRAINFORGE_ASSESSMENT_PROVIDER=local     # W-D15 — assessment-generator surface
 export TRAINFORGE_TARGET_MODELS="local/nemotron-3-nano-30b-a3b"
-export ED4ALL_LLM_JUDGE_PROVIDER=local_nli
 
 # Prerequisites the canonical license-clean recipe already documents.
 export COURSEFORGE_TWO_PASS=true

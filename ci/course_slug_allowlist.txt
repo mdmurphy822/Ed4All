@@ -14,12 +14,3 @@
 # placeholders (<COURSE_CODE>, <RUN_ID>, course-a) never match the
 # scheme patterns and need no entry either. Prefer marking a single doc line
 # with the inline 'slug-guard: allow' comment over allowlisting a whole file.
-
-# Gate-D one-use release-evidence pin (reviewed 2026-07-29). The pinned row
-# identity in Trainforge/scripts/harness/gate_d_single_row.py (and the functional-row
-# id in its test) embeds the source-corpus edition short-code; re-keying to a
-# synthetic id would invalidate PINNED_TUPLE/AUTHORITY/CONTRACT_SHA256 and the
-# frozen release-evidence chain, so the token is allowlisted instead. Remove
-# these two entries if the Gate-D evidence chain is ever re-issued.
-Trainforge/scripts/harness/gate_d_single_row.py	ea2e
-Trainforge/tests/test_gate_d_single_row.py	ea2e

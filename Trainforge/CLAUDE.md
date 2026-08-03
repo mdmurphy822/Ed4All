@@ -408,7 +408,11 @@ Trainforge/
 │   └── assessment_quality_report.py     # quality_report assessments dimension
 ├── eval/                        # 5-layer × 3-tier eval harness (slm_eval_harness.py)
 ├── training/                    # base_models.py, peft_trainer.py, runner.py, configs/
-├── scripts/                     # backfill_form_data, smoke_generators, audit_pairs, …
+├── scripts/                     # operator, harness, and contract-maintenance tools
+│   ├── ops/                     # durable operator commands
+│   ├── harness/                 # active repeatable measurements
+│   ├── maintenance/             # shared contract helpers
+│   └── regression/              # ignored local shelf for obsolete campaigns
 ├── agents/
 │   ├── CLAUDE.md                # Agent coordination protocols
 │   ├── assessment-extractor.md  # Content extraction agent
@@ -417,8 +421,6 @@ Trainforge/
 │   ├── rag-indexer.md           # RAG indexing agent
 │   ├── pedagogy-graph-builder.md  # Pedagogy-graph agent spec
 │   └── training-synthesizer.md  # Training-pair synthesis agent
-├── examples/
-│   └── sample_assessment.json   # Example assessment output
 ├── output/                      # Generated output directory
 └── tests/                       # (large suite — representative entries only)
     ├── conftest.py

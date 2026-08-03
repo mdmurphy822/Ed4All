@@ -132,7 +132,7 @@ class AblationSetup:
     setup: str  # "base" | "base+rag" | "adapter" | "adapter+rag"
     callable: Callable[[str], str]
     rag_callable: Optional[Any] = None  # RAGCallable instance, for latency
-    qualitative_judge: Optional[Any] = None  # QualitativeJudge or None
+    qualitative_judge: Optional[Any] = None  # Optional external scorer protocol
     extras: Dict[str, Any] = field(default_factory=dict)
 
 

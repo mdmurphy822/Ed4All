@@ -14,9 +14,6 @@ from Trainforge.generators.staged_synthesis_micro import (
     MICRO_COMPLETION_CAP_CANDIDATES,
     MICRO_DEFAULT_COMPLETION_CAP,
     MICRO_DPO_PROJECTION,
-    MICRO_GATE_D_EXECUTION_POLICY,
-    MICRO_GATE_D_STAGE_LIMITS,
-    MICRO_LEGACY_EXECUTION_POLICY,
     MICRO_RELEASE_CONTRACT_VERSION,
     MICRO_SFT_PROJECTION,
     MICRO_STAGE_MAX_TOKENS,
@@ -133,29 +130,6 @@ def _claim(*, text: str = "The product is commutative.", block: str = "b-1") -> 
     }
 
 
-def _gate_d_binding(seed: int = 17) -> dict:
-    candidate = {
-        "schema": "ed4all.training-synthesis-gate-d-subset.v1",
-        "full_manifest_sha256": "1" * 64,
-        "eligibility_sha256": "2" * 64,
-        "ordered_identity_sha256": "3" * 64,
-        "go_artifact_sha256": "4" * 64,
-        "go_decision_sha256": "5" * 64,
-        "strict_dialect_capability_sha256": "6" * 64,
-        "synthesis_seed": seed,
-        "run_id": "generic-gate-d-run",
-        "output_dir": "generic-gate-d-output",
-        "row_count": 1,
-        "row": {"position": 0, "kind": "preference"},
-    }
-    candidate["subset_sha256"] = hashlib.sha256(
-        json.dumps(
-            candidate, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-        ).encode()
-    ).hexdigest()
-    return candidate
-
-
 def _stage_d_artifact() -> dict:
     return assemble_claims(
         [
@@ -257,11 +231,6 @@ def test_contract_fingerprint_binds_every_schema_prompt_and_gate():
         "instruction": MICRO_SFT_PROJECTION,
         "preference": MICRO_DPO_PROJECTION,
     }
-    assert components["execution_policy_contract"] == {
-        "default": MICRO_LEGACY_EXECUTION_POLICY,
-        "trusted_harness_selectable": MICRO_GATE_D_EXECUTION_POLICY,
-        "gate_d_limits": MICRO_GATE_D_STAGE_LIMITS,
-    }
     assert set(components["stages"]) == set("ABCDEFQ")
     assert set(components["schemas_sha256"]) == {
         "task", "claim", "sft", "chosen", "misconception", "rejected"
@@ -281,7 +250,7 @@ def test_contract_fingerprint_binds_every_schema_prompt_and_gate():
     }
     assert set(components["implementation_sha256"]) == {
         "resume_store", "journal_dispatch", "stop_poll", "task_design",
-        "stage_budget_dispatch", "execution_policy", "claim_slot", "assembly_router",
+        "stage_budget_dispatch", "claim_slot", "assembly_router",
         "realization", "instruction_flow", "preference_flow",
     }
     assert len(micro_contract_fingerprint()) == 64
@@ -976,83 +945,6 @@ def test_release_identity_binds_seed_projections_provider_model_and_fingerprint(
         "completion_cap": MICRO_DEFAULT_COMPLETION_CAP,
     }
     assert provider._decision_identity_context() == identity
-    assert "execution_policy" not in identity
-    assert (
-        provider.execution_policy_identity()["version"]
-        == MICRO_LEGACY_EXECUTION_POLICY
-    )
-
-
-def test_gate_d_policy_requires_verified_binding_and_drifts_release_identity():
-    class Base:
-        _model = "generic-model"
-        _provider_name = "local"
-
-    provider = MicroStagedSynthesisProvider(Base(), synthesis_seed=17)
-    legacy = provider._release_identity()
-    invalid = _gate_d_binding()
-    invalid["subset_sha256"] = "0" * 64
-    with pytest.raises(SynthesisProviderError) as caught:
-        provider.bind_trusted_gate_d_single_pass(invalid)
-    assert caught.value.code == "staged_micro_gate_d_binding_invalid"
-    policy = provider.bind_trusted_gate_d_single_pass(_gate_d_binding())
-    assert policy["version"] == MICRO_GATE_D_EXECUTION_POLICY
-    assert policy["limits"] == MICRO_GATE_D_STAGE_LIMITS
-    assert provider._release_identity() != legacy
-    with pytest.raises(SynthesisProviderError) as rebound:
-        provider.bind_trusted_gate_d_single_pass(_gate_d_binding())
-    assert rebound.value.code == "staged_micro_execution_policy_rebind"
-
-
-def test_gate_d_planned_stage_identities_are_exact_and_c_is_no_call():
-    class Base:
-        _model = "generic-model"
-        _provider_name = "local"
-
-    provider = MicroStagedSynthesisProvider(Base(), synthesis_seed=17)
-    with pytest.raises(SynthesisProviderError):
-        provider.planned_stage_identities({}, kind="preference")
-    provider.bind_trusted_gate_d_single_pass(_gate_d_binding())
-    chunk = {
-        "id": "generic-chunk",
-        "text": (
-            "A factual source block supports the objective. A mistaken view "
-            "says the relation is absent. The correction is that the source "
-            "relation is present."
-        ),
-        "misconceptions": [{
-            "misconception": "the relation is absent",
-            "correction": "the source relation is present",
-        }],
-        "learning_outcome_refs": ["co-1"],
-        "bloom_level": "analyze",
-        "synthesis_focus_objective": {
-            "id": "co-1",
-            "statement": "Analyze the source-backed relation.",
-            "bloom_level": "analyze",
-            "bloom_verb": "analyze",
-            "action_object": "the source-backed relation",
-        },
-    }
-    planned = provider.planned_stage_identities(chunk, kind="preference")
-    assert [(row["family"], row["slot"], row["stage"], row["model_call"])
-            for row in planned] == [
-        ("A", None, "micro_A_task_design", False),
-        ("B", 0, "micro_B_claim_0_attempt_1", True),
-        ("C", None, "micro_C_assembly", False),
-        ("D", None, "micro_D_dpo_chosen", True),
-        ("E", None, "micro_E_misconception_selection", True),
-        ("F", None, "micro_F_one_fault_rejected", True),
-        ("Q", None, "micro_Q_finalization", False),
-    ]
-    assert len({row["unit"] for row in planned}) == len(planned)
-    assert len({row["execution_policy_sha256"] for row in planned}) == 1
-    assert planned[0]["model_call"] is False
-    assert planned[0]["input_identity"]["contract_version"] == (
-        MICRO_STAGE_A_SEED_CONTRACT_VERSION
-    )
-    assert planned[0]["input_identity"]["synthesis_seed"] == 17
-    assert len(planned[0]["input_identity"]["objective_card_sha256"]) == 64
 
 
 @pytest.mark.parametrize(
@@ -2242,26 +2134,7 @@ def test_canary025_polarity_and_operator_mutation_cannot_reuse_authority_id():
         assert caught.value.code == "staged_micro_E_authority_invalid"
 
 
-def test_gate_d_rejects_attempt_two_repeat_and_repair_budget_before_base_call():
-    class Base:
-        _model = "generic-model"
-        _provider_name = "local"
-        calls = 0
-
-    provider = MicroStagedSynthesisProvider(Base(), synthesis_seed=17)
-    provider.bind_trusted_gate_d_single_pass(_gate_d_binding())
-    with pytest.raises(SynthesisProviderError) as attempt:
-        provider._call_stage(stage="micro_B_claim_0_attempt_2")
-    assert attempt.value.code == "staged_micro_gate_d_attempt_forbidden"
-    with pytest.raises(SynthesisProviderError) as repair:
-        provider._call_stage(
-            stage="micro_A_task_design", max_stage_repairs=1,
-        )
-    assert repair.value.code == "staged_micro_gate_d_repair_budget_invalid"
-    assert Base.calls == 0
-
-
-def test_gate_d_provider_failure_is_terminal_and_legacy_claim_retry_is_unchanged(
+def test_claim_provider_failure_retries_once_before_succeeding(
     monkeypatch,
 ):
     class Base:
@@ -2271,57 +2144,27 @@ def test_gate_d_provider_failure_is_terminal_and_legacy_claim_retry_is_unchanged
     class Result:
         value = _claim()
 
-    gate = MicroStagedSynthesisProvider(Base(), synthesis_seed=17)
-    gate.bind_trusted_gate_d_single_pass(_gate_d_binding())
-    gate_calls = []
-
-    def fail_once(self, **kwargs):
-        gate_calls.append(kwargs["stage"])
-        raise SynthesisProviderError("validator rejected", code="synthetic_invalid")
-
     from Trainforge.generators import staged_synthesis_provider as staged_base
-    monkeypatch.setattr(staged_base.StagedSynthesisProvider, "_call_stage", fail_once)
-    with pytest.raises(SynthesisProviderError) as terminal:
-        gate._claim_slot(
-            chunk_id="generic-chunk", slot=0,
-            block={
-                "block_id": "b-1", "polarity": "factual",
-                "text": "The product is commutative.",
-            },
-        )
-    assert terminal.value.code == "staged_micro_gate_d_stage_terminal"
-    assert gate_calls == ["micro_B_claim_0_attempt_1"]
-    with pytest.raises(SynthesisProviderError) as repeated:
-        gate._claim_slot(
-            chunk_id="generic-chunk", slot=0,
-            block={
-                "block_id": "b-1", "polarity": "factual",
-                "text": "The product is commutative.",
-            },
-        )
-    assert repeated.value.code == "staged_micro_gate_d_stage_terminal"
-    assert gate_calls == ["micro_B_claim_0_attempt_1"]
-
-    legacy = MicroStagedSynthesisProvider(Base(), synthesis_seed=17)
-    legacy_calls = []
+    provider = MicroStagedSynthesisProvider(Base(), synthesis_seed=17)
+    calls = []
 
     def fail_then_pass(self, **kwargs):
-        legacy_calls.append(kwargs["stage"])
-        if len(legacy_calls) == 1:
+        calls.append(kwargs["stage"])
+        if len(calls) == 1:
             raise SynthesisProviderError("validator rejected", code="synthetic_invalid")
         return Result()
 
     monkeypatch.setattr(
         staged_base.StagedSynthesisProvider, "_call_stage", fail_then_pass,
     )
-    assert legacy._claim_slot(
+    assert provider._claim_slot(
         chunk_id="generic-chunk", slot=0,
         block={
             "block_id": "b-1", "polarity": "factual",
             "text": "The product is commutative.",
         },
     ) == _claim()
-    assert legacy_calls == [
+    assert calls == [
         "micro_B_claim_0_attempt_1",
         "micro_B_claim_0_attempt_2",
     ]

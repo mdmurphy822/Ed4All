@@ -283,7 +283,9 @@ risk. Completed items are marked below.
    root-derivation updates landed with the move; the flat cap is now 3.
    **`Trainforge/scripts/` is also DONE:** durable commands live in `ops/`,
    repeatable experiments in `harness/`, contract helpers in `maintenance/`,
-   and retained one-use tooling in `archive/`; its loose-file cap is now zero.
+   and proven-obsolete campaigns move to the ignored local `regression/`
+   shelf; its loose-file cap is now zero. The retired staged-window/Gate-D
+   campaign is preserved there locally rather than shipped as public source.
 2. **`Trainforge/` synthesis cluster — DONE.** The nine implementation
    modules now live in `Trainforge/synthesis/`. Root-level compatibility
    shims preserve the documented CLI/import surface and MCP dotted dispatch,
@@ -292,8 +294,9 @@ risk. Completed items are marked below.
    inward in the follow-up pass, reducing the exact root cap from 19 to 15.
 3. **`Trainforge/eval/` — DONE.** Metrics, retrieval checks, and runners now
    live in named subpackages. Two documented compatibility aliases remain at
-   the package root, alongside 17 cohesive orchestration/configuration peers;
-   the exact flat cap is 19.
+   the package root, alongside 15 cohesive orchestration/configuration peers.
+   Two unused regression-era modules moved to the ignored dead-code shelf,
+   reducing the exact flat cap from 19 to 17.
 4. **`SemantiK/data/` — DONE.** Dataset utilities now live under `alignment/`,
    `augmentation/`, `builders/`, `common/`, and `sources/`; two package-level
    entry modules remain flat and the exact cap is 2.
