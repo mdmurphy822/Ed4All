@@ -7,12 +7,11 @@ Covers REC-BL-01 (Wave 1.2, Worker H):
   * The richest callsite (bloom_taxonomy_mapper) preserves its local
     Dict[BloomLevel, List[BloomVerb]] shape after migration.
   * detect_bloom_level returns the documented (level, verb) tuples.
-  * LibV2 vendored copy is byte-identical to the authoritative schema.
+  * LibV2 resolves the authoritative taxonomy without a duplicate data copy.
 """
 
 from __future__ import annotations
 
-import hashlib
 import importlib.util
 import sys
 from pathlib import Path
@@ -148,7 +147,7 @@ def test_migrated_sites_match_canonical_apply_level():
 # test_migrated_sites_match_canonical_apply_level above.
 
 
-def test_libv2_vendor_loader_matches_canonical():
+def test_libv2_loader_matches_canonical():
     """LibV2's internal loader returns the same verbs as the canonical loader."""
     # Add LibV2/tools to path so the internal loader imports cleanly.
     libv2_tools = str(_REPO_ROOT / "LibV2" / "tools")
@@ -159,12 +158,12 @@ def test_libv2_vendor_loader_matches_canonical():
     from lib.ontology.bloom import get_verbs_list as canonical_get_verbs_list
 
     canonical = canonical_get_verbs_list()
-    vendored = libv2_get_verbs_list()
+    libv2_verbs = libv2_get_verbs_list()
 
-    assert set(vendored.keys()) == set(canonical.keys())
+    assert set(libv2_verbs.keys()) == set(canonical.keys())
     for level in canonical:
-        assert set(vendored[level]) == set(canonical[level]), (
-            f"LibV2 vendored verbs drift at level={level}"
+        assert set(libv2_verbs[level]) == set(canonical[level]), (
+            f"LibV2 Bloom verbs drift at level={level}"
         )
 
 
@@ -291,17 +290,29 @@ def test_content_gen_helpers_uses_canonical_helper():
     )
 
 
-def test_libv2_vendor_hash_sync():
-    """LibV2/vendor/bloom_verbs.json must be byte-identical to the source."""
-    auth = _REPO_ROOT / "schemas" / "taxonomies" / "bloom_verbs.json"
-    vendored = _REPO_ROOT / "LibV2" / "vendor" / "bloom_verbs.json"
+def test_libv2_resolves_canonical_taxonomy_without_vendor_copy():
+    """LibV2 reads the root taxonomy and does not ship a duplicate payload."""
+    from LibV2.tools.libv2 import _bloom_verbs
 
-    assert auth.exists(), f"Authoritative copy missing: {auth}"
-    assert vendored.exists(), f"Vendored copy missing: {vendored}"
+    canonical = _REPO_ROOT / "schemas" / "taxonomies" / "bloom_verbs.json"
+    assert _bloom_verbs._CANONICAL_PATH == canonical
+    assert canonical.is_file()
+    assert not (_REPO_ROOT / "LibV2" / "vendor" / "bloom_verbs.json").exists()
 
-    h_auth = hashlib.sha256(auth.read_bytes()).hexdigest()
-    h_vendored = hashlib.sha256(vendored.read_bytes()).hexdigest()
 
-    assert h_auth == h_vendored, (
-        f"Hash drift:\n  auth:     {h_auth}\n  vendored: {h_vendored}"
+def test_libv2_loader_fails_loudly_when_canonical_taxonomy_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    """A broken repository contract must not degrade to embedded defaults."""
+    from LibV2.tools.libv2 import _bloom_verbs
+
+    _bloom_verbs._load_raw.cache_clear()
+    monkeypatch.setattr(
+        _bloom_verbs,
+        "_CANONICAL_PATH",
+        tmp_path / "missing-bloom-verbs.json",
     )
+    with pytest.raises(FileNotFoundError, match="Canonical Bloom taxonomy missing"):
+        _bloom_verbs.get_verbs_list()
+    _bloom_verbs._load_raw.cache_clear()

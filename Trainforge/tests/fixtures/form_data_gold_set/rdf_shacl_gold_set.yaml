@@ -144,7 +144,7 @@ forms:
     provenance:
       provider: operator_hand_curated
       generated_by: operator
-      reviewed_by: '@mdmurphy822'
+      reviewed_by: '@operator'
       prompt_version: n/a-pre-wave-136c
       timestamp: '2026-05-01T00:00:00Z'
       notes: Wave 125b authored; Wave 137c gold-set lock.
@@ -281,7 +281,7 @@ forms:
     provenance:
       provider: operator_hand_curated
       generated_by: operator
-      reviewed_by: '@mdmurphy822'
+      reviewed_by: '@operator'
       prompt_version: n/a-pre-wave-136c
       timestamp: '2026-05-01T00:00:00Z'
       notes: Wave 125b authored; Wave 137c gold-set lock.
@@ -418,7 +418,7 @@ forms:
     provenance:
       provider: operator_hand_curated
       generated_by: operator
-      reviewed_by: '@mdmurphy822'
+      reviewed_by: '@operator'
       prompt_version: n/a-pre-wave-136c
       timestamp: '2026-05-01T00:00:00Z'
       notes: Wave 125b authored; Wave 137c gold-set lock.
@@ -558,7 +558,7 @@ forms:
     provenance:
       provider: operator_hand_curated
       generated_by: operator
-      reviewed_by: '@mdmurphy822'
+      reviewed_by: '@operator'
       prompt_version: n/a-pre-wave-136c
       timestamp: '2026-05-01T00:00:00Z'
       notes: Wave 125b authored; Wave 137c gold-set lock.
@@ -699,7 +699,7 @@ forms:
     provenance:
       provider: operator_hand_curated
       generated_by: operator
-      reviewed_by: '@mdmurphy822'
+      reviewed_by: '@operator'
       prompt_version: n/a-pre-wave-136c
       timestamp: '2026-05-01T00:00:00Z'
       notes: Wave 125b authored; Wave 137c gold-set lock.
@@ -841,7 +841,7 @@ forms:
     provenance:
       provider: operator_hand_curated
       generated_by: operator
-      reviewed_by: '@mdmurphy822'
+      reviewed_by: '@operator'
       prompt_version: n/a-pre-wave-136c
       timestamp: '2026-05-01T00:00:00Z'
       notes: Wave 125b authored; Wave 137c gold-set lock.

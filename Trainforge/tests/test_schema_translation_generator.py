@@ -1412,7 +1412,7 @@ def _synthetic_complete_entry(
         provenance=Provenance(
             provider="operator_hand_curated",
             generated_by="operator",
-            reviewed_by="@mdmurphy822",
+            reviewed_by="@operator",
             prompt_version="wave-137a-fixture",
             timestamp="2026-05-01T00:00:00Z",
         ),
@@ -1792,7 +1792,7 @@ def test_yaml_loader_round_trips_provenance(
         "    provenance:\n"
         "      provider: operator_hand_curated\n"
         "      generated_by: operator\n"
-        "      reviewed_by: '@mdmurphy822'\n"
+        "      reviewed_by: '@operator'\n"
         "      prompt_version: n/a-pre-wave-136c\n"
         "      timestamp: '2026-05-01T00:00:00Z'\n"
         "      notes: Wave 137c round-trip test fixture.\n",
@@ -1806,7 +1806,7 @@ def test_yaml_loader_round_trips_provenance(
     assert "test:Foo" in overlay
     entry = overlay["test:Foo"]
     assert entry.provenance is not None
-    assert entry.provenance.reviewed_by == "@mdmurphy822"
+    assert entry.provenance.reviewed_by == "@operator"
     assert entry.provenance.provider == "operator_hand_curated"
     assert entry.provenance.notes == "Wave 137c round-trip test fixture."
 
@@ -2277,7 +2277,7 @@ def test_style_consistency_fires_on_conversational_definitions() -> None:
         provenance=Provenance(
             provider="operator_hand_curated",
             generated_by="operator",
-            reviewed_by="@mdmurphy822",
+            reviewed_by="@operator",
             prompt_version="wave-137a-fixture",
             timestamp="2026-05-01T00:00:00Z",
         ),
@@ -2389,7 +2389,7 @@ def _operator_provenance():
     return Provenance(
         provider="operator_hand_curated",
         generated_by="operator",
-        reviewed_by="@mdmurphy822",
+        reviewed_by="@operator",
         prompt_version="wave-137a-fixture",
         timestamp="2026-05-01T00:00:00Z",
     )

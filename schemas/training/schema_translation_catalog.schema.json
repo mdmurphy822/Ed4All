@@ -109,7 +109,7 @@
               "reviewed_by": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Operator handle who reviewed the entry (e.g. '@mdmurphy822'), 'AUTOMATED', or 'PENDING_REVIEW'. Plan A rejects entries with reviewed_by='PENDING_REVIEW' or empty."
+                "description": "Operator handle who reviewed the entry (e.g. '@operator'), 'AUTOMATED', or 'PENDING_REVIEW'. Plan A rejects entries with reviewed_by='PENDING_REVIEW' or empty."
               },
               "prompt_version": {
                 "type": "string",

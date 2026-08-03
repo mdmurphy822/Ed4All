@@ -256,7 +256,7 @@ def _coerce_to_surface_form_data(
     Wave 137c: every drafted entry carries an auto-stamped
     :class:`Provenance` block with ``reviewed_by="PENDING_REVIEW"``.
     Operators MUST replace ``PENDING_REVIEW`` with their handle (e.g.
-    ``@mdmurphy822``) before committing; Plan A's validator rejects
+    ``@operator``) before committing; Plan A's validator rejects
     entries whose ``reviewed_by`` is ``PENDING_REVIEW`` or empty.
     """
 
@@ -374,7 +374,7 @@ def _build_provider(
 _NEXT_STEPS_TEMPLATE = """\
 # NEXT STEPS
 # 0. **REVIEW the drafted content + UPDATE provenance.reviewed_by from
-#    PENDING_REVIEW to your operator handle (e.g. @mdmurphy822)** before
+#    PENDING_REVIEW to your operator handle (e.g. @operator)** before
 #    committing. Plan A's validator rejects entries with reviewed_by
 #    set to PENDING_REVIEW or empty.
 # 1. Append the `forms.{curie}:` block above to:

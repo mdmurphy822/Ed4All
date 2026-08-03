@@ -122,9 +122,9 @@ runtime/training-captures/*/*
 # tracked); the ignore rule must outlive the code rename.
 runtime/training-captures/dart/
 
-# Compat symlinks at the old root locations (kept until the paused run
-# WF-20260728 finishes and operator env files stop referencing seats/*.sh;
-# then delete the symlinks and these three rules).
+# Retired root aliases remain ignored defensively so an old operator script
+# cannot recreate mutable state outside runtime/. Canonical paths are the
+# corresponding runtime/ directories above; no root aliases are supported.
 /state
 /training-captures
 /seats

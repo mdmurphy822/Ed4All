@@ -12,9 +12,10 @@ Pre-Wave-55 there were four divergent detectors across the repo:
 Sites 1-3 used ``text_lower.startswith(verb) or f" {verb} " in text_lower``
 which silently missed verbs at end-of-text or followed by punctuation. Wave 55
 has every site delegate to ``lib.ontology.bloom.detect_bloom_level`` (for
-packages inside Ed4All) or to a byte-identical vendored implementation at
+packages inside Ed4All) or to a package-local implementation at
 ``LibV2/tools/libv2/_bloom_verbs.py`` (for LibV2, which is sandboxed from
-``lib/`` per ``LibV2/CLAUDE.md``).
+``lib/`` per ``LibV2/CLAUDE.md``). The latter reads the same root taxonomy
+directly instead of maintaining a vendored data copy.
 
 These tests assert two properties:
 
@@ -120,12 +121,12 @@ def test_trainforge_html_parser_delegates_to_canonical():
         )
 
 
-def test_libv2_query_decomposer_delegates_to_vendored_canonical():
-    """``QueryDecomposer._detect_bloom_level`` uses the vendored matcher.
+def test_libv2_query_decomposer_delegates_to_package_matcher():
+    """``QueryDecomposer._detect_bloom_level`` uses the LibV2 matcher.
 
-    LibV2 is sandboxed from ``lib/`` (``LibV2/CLAUDE.md``) so it vendors
-    ``detect_bloom_level`` in ``LibV2/tools/libv2/_bloom_verbs.py``. The
-    vendored copy and the canonical must agree byte-for-byte on behavior,
+    LibV2 is sandboxed from ``lib/`` (``LibV2/CLAUDE.md``), so its matcher
+    lives in ``LibV2/tools/libv2/_bloom_verbs.py``. The package matcher and
+    the canonical must agree on behavior,
     which this test enforces.
     """
     from LibV2.tools.libv2.query_decomposer import QueryDecomposer
@@ -139,17 +140,17 @@ def test_libv2_query_decomposer_delegates_to_vendored_canonical():
         )
 
 
-def test_libv2_vendored_detector_matches_canonical():
-    """Direct test of the vendored LibV2 detector against the canonical.
+def test_libv2_detector_matches_canonical():
+    """Direct test of the LibV2 detector against the canonical.
 
     Covers the (level, verb) tuple — not just the level — so any divergence
-    in verb selection surfaces here rather than upstream of the vendored
-    copy being re-used.
+    in verb selection surfaces here rather than upstream of the package
+    matcher being re-used.
     """
-    from LibV2.tools.libv2._bloom_verbs import detect_bloom_level as vendored
+    from LibV2.tools.libv2._bloom_verbs import detect_bloom_level as libv2_detect
 
     for text, _expected_level in REGRESSION_INPUTS:
-        assert vendored(text) == canonical_detect(text), (
-            f"vendored detect_bloom_level({text!r}) diverged from canonical: "
-            f"vendored={vendored(text)!r} canonical={canonical_detect(text)!r}"
+        assert libv2_detect(text) == canonical_detect(text), (
+            f"LibV2 detect_bloom_level({text!r}) diverged from canonical: "
+            f"libv2={libv2_detect(text)!r} canonical={canonical_detect(text)!r}"
         )

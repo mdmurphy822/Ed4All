@@ -155,7 +155,7 @@ class Provenance:
 
     provider: str          # qwen_local_14b_q4 / together_llama33_70b / operator_hand_curated
     generated_by: str      # draft_form_data_entry v1.0 / operator
-    reviewed_by: str       # @mdmurphy822 / AUTOMATED / PENDING_REVIEW
+    reviewed_by: str       # @operator / AUTOMATED / PENDING_REVIEW
     prompt_version: str    # wave-136c-v1.0 (only meaningful for Qwen-drafted)
     timestamp: str         # ISO-8601
     notes: Optional[str] = None

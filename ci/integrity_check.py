@@ -847,20 +847,10 @@ def check_validator_test_coverage(
     return result
 
 
-def check_libv2_vendor_sync(verbose: bool = False) -> CheckResult:
-    """Verify LibV2/vendor/bloom_verbs.json matches the authoritative copy.
-
-    LibV2 is sandboxed from importing Ed4All's lib/ package (cross-package
-    caveat documented in LibV2/CLAUDE.md). Instead of reaching across the
-    package boundary, LibV2 reads a byte-identical vendored copy of
-    schemas/taxonomies/bloom_verbs.json at LibV2/vendor/bloom_verbs.json.
-
-    This check ensures the vendored copy has not drifted from the source.
-    """
-    import hashlib
-
+def check_libv2_taxonomy_resolution(verbose: bool = False) -> CheckResult:
+    """Verify LibV2 resolves the root Bloom taxonomy without a vendor copy."""
     start_time = time.time()
-    result = CheckResult(name="LibV2 Vendor Sync", passed=True, message="")
+    result = CheckResult(name="LibV2 Taxonomy Resolution", passed=True, message="")
 
     auth_path = PROJECT_ROOT / "schemas" / "taxonomies" / "bloom_verbs.json"
     vendored_path = PROJECT_ROOT / "LibV2" / "vendor" / "bloom_verbs.json"
@@ -872,32 +862,44 @@ def check_libv2_vendor_sync(verbose: bool = False) -> CheckResult:
         result.duration_seconds = time.time() - start_time
         return result
 
-    if not vendored_path.exists():
-        result.errors.append(f"Vendored copy missing: {vendored_path}")
+    if vendored_path.exists():
+        result.errors.append(f"Duplicate taxonomy payload present: {vendored_path}")
         result.passed = False
-        result.message = "LibV2 vendored bloom_verbs.json missing"
+        result.message = "LibV2 contains a duplicate Bloom taxonomy payload"
         result.duration_seconds = time.time() - start_time
         return result
 
-    auth_hash = hashlib.sha256(auth_path.read_bytes()).hexdigest()
-    vendored_hash = hashlib.sha256(vendored_path.read_bytes()).hexdigest()
+    try:
+        from LibV2.tools.libv2 import _bloom_verbs
 
-    result.details["auth_sha256"] = auth_hash
-    result.details["vendored_sha256"] = vendored_hash
+        resolved_path = _bloom_verbs._CANONICAL_PATH
+        verbs = _bloom_verbs.get_verbs_list()
+    except Exception as exc:
+        result.errors.append(f"LibV2 Bloom taxonomy load failed: {exc}")
+        result.passed = False
+        result.message = "LibV2 could not load the canonical Bloom taxonomy"
+        result.duration_seconds = time.time() - start_time
+        return result
 
-    if auth_hash != vendored_hash:
+    result.details["canonical_path"] = str(resolved_path)
+    result.details["levels"] = sorted(verbs)
+
+    if resolved_path != auth_path:
         result.errors.append(
-            f"Hash drift between {auth_path.name} and {vendored_path}: "
-            f"auth={auth_hash[:16]}... vendored={vendored_hash[:16]}..."
+            f"LibV2 resolved {resolved_path}, expected canonical path {auth_path}"
         )
         result.passed = False
-        result.message = "LibV2 vendored bloom_verbs.json has drifted"
+        result.message = "LibV2 resolves a non-canonical Bloom taxonomy path"
+    elif not verbs:
+        result.errors.append("LibV2 canonical Bloom taxonomy loaded no levels")
+        result.passed = False
+        result.message = "LibV2 canonical Bloom taxonomy is empty"
     else:
-        result.message = f"LibV2 vendored copy in sync (sha256={auth_hash[:16]}...)"
+        result.message = "LibV2 loads the canonical Bloom taxonomy directly"
 
     if verbose:
-        logger.info(f"  auth sha256:     {auth_hash}")
-        logger.info(f"  vendored sha256: {vendored_hash}")
+        logger.info(f"  canonical path: {resolved_path}")
+        logger.info(f"  taxonomy levels: {sorted(verbs)}")
 
     result.duration_seconds = time.time() - start_time
     return result
@@ -1257,7 +1259,10 @@ def run_integrity_checks(
         ("Tool Registry", lambda: check_tool_registry(verbose)),
         ("Hash Chains", lambda: check_hash_chains(runs_path, verbose)),
         ("Sample Finalization", lambda: check_sample_finalization(runs_path, verbose)),
-        ("LibV2 Vendor Sync", lambda: check_libv2_vendor_sync(verbose)),
+        (
+            "LibV2 Taxonomy Resolution",
+            lambda: check_libv2_taxonomy_resolution(verbose),
+        ),
         ("Course Slug Leak", lambda: check_course_slug_leak(verbose)),
         ("Legacy Token Leak", lambda: check_legacy_token_leak(verbose)),
         ("Foreign Repo Leak", lambda: check_foreign_repo_leak(verbose)),

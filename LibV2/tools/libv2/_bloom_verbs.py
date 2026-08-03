@@ -1,13 +1,10 @@
-"""Internal LibV2 loader for vendored Bloom verb data.
+"""Internal LibV2 loader for the canonical Bloom verb taxonomy.
 
 LibV2 is sandboxed from importing Ed4All's ``lib/`` package (cross-package
-caveat documented in ``LibV2/CLAUDE.md``). Instead of reaching across the
-package boundary, LibV2 reads a byte-identical vendored copy of
-``schemas/taxonomies/bloom_verbs.json`` at ``LibV2/vendor/bloom_verbs.json``.
-
-The vendored copy is kept in sync with the authoritative source via:
-  * CI hash check in ``ci/integrity_check.py``
-  * Regression test ``lib/tests/test_bloom_ontology.py::test_libv2_vendor_hash_sync``
+caveat documented in ``LibV2/CLAUDE.md``). It therefore reads the taxonomy
+artifact directly from the Ed4All repository contract at
+``schemas/taxonomies/bloom_verbs.json`` without importing the canonical
+Python package or maintaining a second byte copy.
 
 This module exposes ``get_verbs_list()`` with the same signature as
 ``lib.ontology.bloom.get_verbs_list`` so that call sites inside LibV2 can
@@ -31,19 +28,22 @@ _BLOOM_LEVELS = (
     "create",
 )
 
-_VENDOR_PATH = (
-    Path(__file__).resolve().parents[2] / "vendor" / "bloom_verbs.json"
+_CANONICAL_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "schemas"
+    / "taxonomies"
+    / "bloom_verbs.json"
 )
 
 
 @lru_cache(maxsize=1)
 def _load_raw() -> Dict[str, List[str]]:
-    if not _VENDOR_PATH.exists():
+    if not _CANONICAL_PATH.is_file():
         raise FileNotFoundError(
-            f"Vendored bloom verbs missing at {_VENDOR_PATH}. "
-            "Expected byte-copy of schemas/taxonomies/bloom_verbs.json."
+            f"Canonical Bloom taxonomy missing at {_CANONICAL_PATH}. "
+            "LibV2 must run inside the Ed4All repository layout."
         )
-    with open(_VENDOR_PATH, encoding="utf-8") as f:
+    with open(_CANONICAL_PATH, encoding="utf-8") as f:
         schema = json.load(f)
     properties = schema.get("properties", {})
     return {
@@ -66,14 +66,14 @@ def get_verbs_list() -> Dict[str, List[str]]:
 
 
 # ---------------------------------------------------------------------------
-# Canonical detector (vendored, Wave 55)
+# Canonical-data detector
 # ---------------------------------------------------------------------------
 #
 # ``lib.ontology.bloom.detect_bloom_level`` is the authoritative matcher.
-# LibV2 cannot import it directly (cross-package boundary) so we vendor the
-# algorithm here, reading verbs from the same vendored JSON the CI hash
-# check already keeps in sync. Any divergence in detection logic between
-# this copy and the canonical is caught by
+# LibV2 cannot import it directly (cross-package boundary), so this small
+# package-local matcher reads the authoritative taxonomy artifact directly.
+# Any divergence in detection logic between this implementation and the
+# canonical matcher is caught by
 # ``lib/tests/test_bloom_detector_unification.py``.
 
 _LEVEL_PRIORITY = {level: idx for idx, level in enumerate(_BLOOM_LEVELS)}
