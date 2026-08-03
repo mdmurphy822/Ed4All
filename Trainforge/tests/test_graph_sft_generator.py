@@ -1,4 +1,4 @@
-"""Regression net for ``Trainforge/generators/graph_sft_generator.py`` (SFT S5).
+"""Regression net for ``Trainforge/generators/deterministic/graph_sft_generator.py`` (SFT S5).
 
 Covers the concept-graph->SFT contract:
   * required DecisionCapture (None raises) + one event per family batch;
@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.generators.graph_sft_generator import (  # noqa: E402
+from Trainforge.generators.deterministic.graph_sft_generator import (  # noqa: E402
     generate_graph_sft_pairs,
 )
 

@@ -1,7 +1,7 @@
 """Wave W-D1 T1.5 — ``kg_metadata_generator`` capture-wiring regression test.
 
 Pins one ``kg_metadata_generation`` event per RELATION BATCH (not per
-pair) at ``Trainforge/generators/kg_metadata_generator.py:370-408``.
+pair) at ``Trainforge/generators/deterministic/kg_metadata_generator.py:370-408``.
 Capture is **required** — ``capture=None`` raises ``ValueError`` per
 ``kg_metadata_generator.py:319-324``.
 
@@ -27,7 +27,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.generators.kg_metadata_generator import (  # noqa: E402
+from Trainforge.generators.deterministic.kg_metadata_generator import (  # noqa: E402
     generate_kg_metadata_pairs,
 )
 

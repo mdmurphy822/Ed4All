@@ -1,6 +1,6 @@
 """Single source of truth for KG-relation training/eval templates.
 
-The kg_metadata generator (`Trainforge/generators/kg_metadata_generator.py`)
+The kg_metadata generator (`Trainforge/generators/deterministic/kg_metadata_generator.py`)
 emits ``(positive, negative)`` tuples per relation; the faithfulness
 evaluator (`Trainforge/eval/faithfulness.py`) probes the positive form.
 

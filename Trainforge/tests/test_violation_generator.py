@@ -37,7 +37,7 @@ if str(PROJECT_ROOT) not in sys.path:
 pyshacl = pytest.importorskip("pyshacl")
 rdflib = pytest.importorskip("rdflib")
 
-from Trainforge.generators.violation_generator import (  # noqa: E402
+from Trainforge.generators.deterministic.violation_generator import (  # noqa: E402
     ShapeFixture,
     ViolationStats,
     built_in_shape_catalog,

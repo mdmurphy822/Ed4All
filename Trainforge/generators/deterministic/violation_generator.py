@@ -1,15 +1,12 @@
 """SHACL-violation SFT pair generator.
 
-A prior evaluation exposed a negative-grounding gap because the training
-corpus had no pairs that taught the model to reject a graph that
-violates a shape. Pyshacl is an oracle that gives us ground-truth
-"this graph is invalid because <reason>" labels for free; this
-generator runs pyshacl over a programmatically-expanded catalog of
-shape + graph fixtures and emits one SFT pair per (shape, graph,
-valid?, reason) tuple.
+Pyshacl supplies ground-truth labels for graphs that satisfy or violate a
+shape. This generator runs that oracle over a programmatically expanded
+fixture catalog and emits one SFT pair per `(shape, graph, valid?, reason)`
+tuple.
 
-Pair shape (Wave 125 prompt restructure — TTL moves into the
-completion so prompts stay well below the 400-char schema cap):
+Shape TTL lives in the completion so prompts stay below the 400-character
+schema cap:
 
     prompt:
         "Does this RDF graph satisfy the SHACL shape `<name>`
@@ -35,10 +32,8 @@ Pyshacl is an OPTIONAL dependency — see `pyproject.toml::dependencies`.
 The generator raises `RuntimeError` if pyshacl isn't installed when a
 caller tries to use it; tests `pytest.skip` the import-error path.
 
-Wave 125 expansion (audit fix, 2026-04-30): catalog grew from 6
-hand-authored fixtures (12 pairs) to ~430 fixtures (>= 800 pairs)
-covering every surface form in `property_manifest.rdf_shacl.yaml`
-with deterministic programmatic factories. SHACL families:
+The deterministic catalog covers every surface form in
+`property_manifest.rdf_shacl.yaml` through these SHACL-family factories:
 
 * `_datatype_fixtures()` — sh:datatype across 8 xsd types × predicates
 * `_class_fixtures()` — sh:class across 5+ hierarchies × variants
@@ -72,7 +67,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -1238,10 +1233,8 @@ def _compound_fixtures() -> List[ShapeFixture]:
 def built_in_shape_catalog() -> List[ShapeFixture]:
     """Return the union of all family fixtures.
 
-    Wave 125 expansion: ~430 fixtures × 2 graphs/fixture = ~860 pairs
-    deterministically generated and pyshacl-verified. Per-family
-    breakdown is computed at call time so the count tracks with any
-    factory edits.
+    Every fixture supplies valid and invalid graphs that pyshacl verifies.
+    Per-family totals are computed at call time so they track factory edits.
 
     The returned list is a fresh copy each call so caller mutations
     don't leak back into the module-level singleton.
@@ -1379,8 +1372,8 @@ def _build_pair(
     """Render one instruction-pair record from a (shape, graph,
     validity) tuple.
 
-    Wave 125 prompt restructure: prompt carries the question + graph
-    TTL only (every pair is unique because the graph is unique per
+    The prompt carries the question and graph TTL only (every pair is unique
+    because the graph is unique per
     fixture-graph tuple). Shape TTL moves into the completion alongside
     the verdict + (for invalid pairs) pyshacl's violation reason. This
     keeps prompt < 400 even when fixtures programmatically blow up
@@ -1458,7 +1451,7 @@ def generate_violation_pairs(
             unset / no match — the `concept_tags` CURIE preserves the
             linkage either way.
         seed: Carried into the emitted pair's `seed` field.
-        max_pairs: Optional cap on emitted pairs (Wave 125a). When
+        max_pairs: Optional cap on emitted pairs. When
             set, the post-validation pair list is trimmed via a
             family-balanced round-robin so every surface form keeps
             representation up to the cap. ``None`` (default) =
@@ -1602,8 +1595,7 @@ def generate_violation_pairs(
             stats.per_kind.get(fixture.kind, 0) + len(fixture_pairs)
         )
 
-    # Wave 125a: optional cap with family-balanced round-robin so a
-    # cap below the catalog size keeps every surface form represented
+    # A family-balanced round-robin cap keeps every surface form represented
     # rather than dropping a whole family. Deterministic — same input
     # always produces the same selection.
     if max_pairs is not None and 0 <= max_pairs < len(pairs):

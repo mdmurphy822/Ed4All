@@ -4218,7 +4218,7 @@ def run_synthesis(
         # grade-rubric / hint-no-reveal / verify-answer). Hoisted here so the
         # deterministic cohort lands in the .in_progress sidecar up front.
         if _with_assessment_sft:
-            from Trainforge.generators.assessment_sft_generator import (
+            from Trainforge.generators.deterministic.assessment_sft_generator import (
                 generate_assessment_sft_pairs,
             )
             _assess_doc, _ak_doc = _resolve_assessment_docs(corpus_dir)
@@ -4261,7 +4261,7 @@ def run_synthesis(
         # (relation-QA / prereq study-path / concept verbalization), over the
         # holdout-REDUCED concept graph, consensus-filtered.
         if _with_graph_sft:
-            from Trainforge.generators.graph_sft_generator import (
+            from Trainforge.generators.deterministic.graph_sft_generator import (
                 generate_graph_sft_pairs,
             )
             _cg_path = _resolve_concept_graph_path(corpus_dir)
@@ -4313,7 +4313,7 @@ def run_synthesis(
         # the eval harness asks these questions, the corpus must teach
         # them.
         if with_kg_metadata:
-            from Trainforge.generators.kg_metadata_generator import (
+            from Trainforge.generators.deterministic.kg_metadata_generator import (
                 generate_kg_metadata_pairs,
             )
             ped_path = _resolve_pedagogy_graph_path(
@@ -4391,7 +4391,7 @@ def run_synthesis(
                 _vk,
             )
         if with_violation_detection and pilot_manifest is not None and _vk == "shacl":
-            from Trainforge.generators.violation_generator import (
+            from Trainforge.generators.deterministic.violation_generator import (
                 built_in_shape_catalog,
                 generate_violation_pairs,
             )
@@ -4451,7 +4451,7 @@ def run_synthesis(
         # for absent edges and the corpus must teach the model to
         # abstain rather than hallucinate yes-answers.
         if with_abstention:
-            from Trainforge.generators.abstention_generator import (
+            from Trainforge.generators.deterministic.abstention_generator import (
                 generate_abstention_pairs,
             )
             ped_path = _resolve_pedagogy_graph_path(
@@ -4500,7 +4500,7 @@ def run_synthesis(
         # definition + one usage pair per CURIE. Closes the schema-
         # to-English gap that weakens faithfulness.
         if with_schema_translation:
-            from Trainforge.generators.schema_translation_generator import (
+            from Trainforge.generators.deterministic.schema_translation_generator import (
                 generate_schema_translation_pairs,
             )
             manifest_for_st = pilot_manifest

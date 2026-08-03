@@ -2,7 +2,7 @@
 regression test.
 
 Pins one ``schema_translation_generation`` event per emitted pair
-(``Trainforge/generators/schema_translation_generator.py:2908-2924``).
+(``Trainforge/generators/deterministic/schema_translation_generator.py:2908-2924``).
 Capture is **required** — ``capture=None`` raises ``ValueError`` per
 ``schema_translation_generator.py:2836-2841``.
 
@@ -28,7 +28,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.generators.schema_translation_generator import (  # noqa: E402
+from Trainforge.generators.deterministic.schema_translation_generator import (  # noqa: E402
     generate_schema_translation_pairs,
 )
 from lib.ontology.property_manifest import (  # noqa: E402

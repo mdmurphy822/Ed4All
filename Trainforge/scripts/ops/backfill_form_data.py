@@ -77,7 +77,7 @@ from lib.ontology.family_map import (  # noqa: E402
 from lib.ontology.property_manifest import (  # noqa: E402
     load_property_manifest,
 )
-from Trainforge.generators.schema_translation_generator import (  # noqa: E402
+from Trainforge.generators.deterministic.schema_translation_generator import (  # noqa: E402
     SurfaceFormData,
     _invalidate_form_data_cache,
     _load_form_data,

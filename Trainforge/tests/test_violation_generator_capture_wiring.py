@@ -1,7 +1,7 @@
 """Wave W-D1 T1.5 — ``violation_generator`` capture-wiring regression test.
 
 Pins one ``violation_generation`` event per FIXTURE (not per pair) at
-``Trainforge/generators/violation_generator.py:1538-1577``. Capture is
+``Trainforge/generators/deterministic/violation_generator.py:1538-1577``. Capture is
 **required** — ``capture=None`` raises ``ValueError`` per
 ``violation_generator.py:1476-1481``.
 
@@ -34,7 +34,7 @@ if str(PROJECT_ROOT) not in sys.path:
 # [training] extras has no pyshacl wheel.
 pytest.importorskip("pyshacl")
 
-from Trainforge.generators.violation_generator import (  # noqa: E402
+from Trainforge.generators.deterministic.violation_generator import (  # noqa: E402
     ShapeFixture,
     generate_violation_pairs,
 )

@@ -332,7 +332,12 @@ The Courseforge content-generator surface (`Courseforge/generators/_provider.py:
 
 ### Deterministic generators (no LLM exposure)
 
-The four generators in `Trainforge/generators/` that emit deterministic pairs without any LLM call — `kg_metadata_generator.py`, `violation_generator.py` (Wave 125a, pyshacl-oracle-verified), `abstention_generator.py` (Wave 124), `schema_translation_generator.py` (Wave 125b) — are fully off-grid for ToS analysis. No provider's terms apply because no provider is invoked. Their pairs are derived from the course's pedagogy graph + property manifest + SHACL fixtures, all of which are project-internal. Pairs from these generators are licence-clean regardless of which `--provider` is selected for the paraphrase loop.
+The provider-free programs under `Trainforge/generators/deterministic/` emit
+their pairs without an LLM call. The KG-metadata, pyshacl-verified violation,
+abstention, schema-translation, assessment-SFT, and graph-SFT programs are
+therefore outside provider ToS analysis. Their outputs derive from project
+contracts and operator-private course artifacts; selecting a paraphrase
+provider does not affect their licensing posture.
 
 ---
 

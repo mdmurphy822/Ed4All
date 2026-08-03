@@ -335,9 +335,13 @@ risk. Completed items are marked below.
    paths. Benchmark telemetry, deterministic summary enrichment, and mandatory
    pair decontamination now live under `postprocessing/`; internal callers use
    canonical paths, while documented summary and decontamination paths retain
-   identity-preserving aliases. The exact loose-module cap remains 18 with
-   eight supported aliases. Assessment and deterministic-program families
-   remain candidates for later bounded moves.
+   identity-preserving aliases. Provider-free assessment, graph, KG-metadata,
+   violation, abstention, and schema-translation programs now live under
+   `deterministic/`; these internal modules had no package export, CLI,
+   dynamic-dispatch, or external compatibility obligation, and all tracked
+   callers use the canonical paths. The exact loose-module cap is now 12.
+   The remaining assessment orchestration family is a candidate for a later
+   bounded move.
 8. **`LibV2/tools/libv2/` — IN PROGRESS.** Evaluation implementations live
    under `evaluation/`, with three documented compatibility modules retained
    at the package root through their deprecation window. Cross-package concept

@@ -75,7 +75,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Literal, Optional, Tuple
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -148,9 +148,8 @@ _DEGRADED_USAGE_COMPLETION_STUB = (
 class Provenance:
     """operator/Codex/Qwen attribution + ToS audit trail.
 
-    Required for anchored_status="complete" entries (Plan A's validator
-    enforces). Optional for "degraded_placeholder" entries (no content
-    yet to attribute).
+    Required for `anchored_status="complete"` entries and optional for
+    unauthored `degraded_placeholder` entries.
     """
 
     provider: str          # qwen_local_14b_q4 / together_llama33_70b / operator_hand_curated
@@ -194,14 +193,12 @@ class SurfaceFormData:
     pitfalls: List[Tuple[str, str]] = field(default_factory=list)
     # (other_curie, composition_explanation including both CURIEs)
     combinations: List[Tuple[str, str]] = field(default_factory=list)
-    # discriminator. Default "complete" preserves the
-    # six pre-Wave-135a entries' shape without reauthoring.
+    # Default "complete" preserves existing authored-entry behavior.
     anchored_status: Literal["complete", "degraded_placeholder"] = "complete"
     # optional operator/Codex/Qwen provenance block.
     # Populated only by the YAML loader (when overlay carries a
     # provenance block); the in-Python fallback dict's entries leave
-    # this None, and Plan A's validator enforces presence on
-    # anchored_status="complete" entries at backfill time.
+    # this None; validation requires it on complete backfilled entries.
     provenance: Optional[Provenance] = None
 
 
@@ -1696,9 +1693,7 @@ _PROVENANCE_REQUIRED_KEYS = (
 
 # style consistency score thresholds + signal regexes.
 #
-# CALIBRATION FINDING: brief proposed `_STYLE_CONSISTENCY_MIN = 0.85`
-# with a "ground truth all >=0.95" claim. Empirical probe of the 6
-# pre-Wave-135a complete entries:
+# The threshold preserves the lowest-scoring reviewed complete entry:
 #     sh:datatype       1.00
 #     sh:class          0.80   <-- below 0.85
 #     sh:NodeShape      1.00
@@ -2242,8 +2237,7 @@ def validate_form_data_contract(
             })
 
     # warning rule — OVERLAY_LOAD_REGRESSION.
-    # Surfaces the complete -> degraded_placeholder transition Wave
-    # 136a's loader logger.warning's. Visibility-only (non-blocking).
+    # Surface complete-to-placeholder regressions as non-blocking warnings.
     warnings_list: List[Dict[str, str]] = []
     if base_form_data is not None:
         for curie, base_entry in base_form_data.items():
@@ -2502,8 +2496,7 @@ _FAMILY_FACTORIES: Dict[
 def _python_fallback_for_family(family: str) -> Dict[str, SurfaceFormData]:
     """returns the in-Python fallback dict for the family.
 
-    Today only ``rdf_shacl`` ships with an in-Python fallback — Wave
-    125b's hand-curated 40-entry catalog. Other families return an
+    Only ``rdf_shacl`` ships with an in-Python fallback. Other families return an
     empty dict and rely entirely on their YAML overlay.
     """
     if family == "rdf_shacl":
@@ -2521,7 +2514,7 @@ def _coerce_provenance(raw: Any) -> Optional[Provenance]:
     non-empty strings after ``.strip()``. Missing-key or empty-value
     payloads emit ``logger.error`` and return ``None`` (preserves the
     base-fallback safety property: malformed provenance never raises
-    here; Plan A's validator is the strict-enforcement surface).
+    here; catalog validation is the strict-enforcement surface).
 
     Optional ``notes`` is passed through verbatim when present.
     """

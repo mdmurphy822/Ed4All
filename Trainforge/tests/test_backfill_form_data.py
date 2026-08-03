@@ -52,7 +52,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from Trainforge.scripts.ops import backfill_form_data as cli  # noqa: E402
-from Trainforge.generators.schema_translation_generator import (  # noqa: E402
+from Trainforge.generators.deterministic.schema_translation_generator import (  # noqa: E402
     SurfaceFormData,
 )
 

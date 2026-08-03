@@ -1,4 +1,4 @@
-"""Regression net for ``Trainforge/generators/assessment_sft_generator.py``.
+"""Regression net for ``Trainforge/generators/deterministic/assessment_sft_generator.py``.
 
 Covers the SFT-program Phase-1 contract:
 
@@ -25,7 +25,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.generators.assessment_sft_generator import (  # noqa: E402
+from Trainforge.generators.deterministic.assessment_sft_generator import (  # noqa: E402
     generate_assessment_sft_pairs,
     _FORMATS,
     ASSESSMENT_SFT_SOURCE_MARKER,

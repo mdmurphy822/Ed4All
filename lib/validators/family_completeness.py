@@ -130,7 +130,7 @@ class FamilyCompletenessValidator:
         form_data: Optional[Dict[str, Any]] = inputs.get("form_data")
         if form_data is None:
             try:
-                from Trainforge.generators.schema_translation_generator import (  # noqa: WPS433
+                from Trainforge.generators.deterministic.schema_translation_generator import (  # noqa: WPS433
                     _invalidate_form_data_cache,
                     _load_form_data,
                 )

@@ -224,7 +224,7 @@ def test_force_injection_uses_anchored_definition_for_complete_entry():
     assert not degraded_events
     # And the pair body should contain a substring that comes from
     # FORM_DATA.definitions — not the token-stuffing template.
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         _RDF_SHACL_FALLBACK_FORM_DATA,
     )
     entry = _RDF_SHACL_FALLBACK_FORM_DATA["sh:datatype"]

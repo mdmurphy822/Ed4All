@@ -51,15 +51,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 logger = logging.getLogger(__name__)
 
 
-# Edges that count as "the chunk addresses this concept". The four
-# Wave 91+ pedagogical edge types where the chunk is the source.
+# Edges where the chunk is the source count as addressing the concept.
 _ADDRESS_RELATIONS = (
     "assesses",
     "exemplifies",
@@ -254,8 +253,7 @@ def _build_pair(
 def _last_event_id(capture: Any) -> str:
     """Return the event_id of the most recent decision logged via `capture`.
 
-    Mirrors `synthesize_training._last_event_id` so the emitted pairs
-    carry valid `decision_capture_id` strings (Wave 112 invariant).
+    Emitted pairs use this identifier to retain their decision provenance.
     """
     decisions = getattr(capture, "decisions", None) or []
     if not decisions:
@@ -407,8 +405,8 @@ def generate_abstention_pairs(
             # Per-emit decision. Rationale interpolates dynamic
             # signals so audit replay can distinguish a chunk that
             # legitimately addresses few concepts from one that has
-            # bug-poisoned edges. Wave 22+ alternatives_considered
-            # convention: list of {option, reason_rejected} dicts.
+            # bug-poisoned edges. alternatives_considered uses a list of
+            # {option, reason_rejected} dictionaries.
             capture.log_decision(
                 decision_type="abstention_generation",
                 decision=(

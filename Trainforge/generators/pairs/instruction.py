@@ -579,7 +579,7 @@ def _enforce_preserve_tokens_in_instruction(
     # heavily by tests; keeping the FORM_DATA load behind the
     # force-injection call means tests that don't exercise this path
     # don't pay the import cost.
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         _RDF_SHACL_FALLBACK_FORM_DATA,
         resolve_anchor_text_for_curie,
     )

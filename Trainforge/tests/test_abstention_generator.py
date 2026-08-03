@@ -29,7 +29,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.generators.abstention_generator import (  # noqa: E402
+from Trainforge.generators.deterministic.abstention_generator import (  # noqa: E402
     AbstentionStats,
     generate_abstention_pairs,
 )

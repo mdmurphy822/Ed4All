@@ -39,16 +39,16 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from lib.decision_capture import DecisionCapture  # noqa: E402
 from lib.ontology.property_manifest import load_property_manifest  # noqa: E402
-from Trainforge.generators.abstention_generator import (  # noqa: E402
+from Trainforge.generators.deterministic.abstention_generator import (  # noqa: E402
     generate_abstention_pairs,
 )
-from Trainforge.generators.kg_metadata_generator import (  # noqa: E402
+from Trainforge.generators.deterministic.kg_metadata_generator import (  # noqa: E402
     generate_kg_metadata_pairs,
 )
-from Trainforge.generators.schema_translation_generator import (  # noqa: E402
+from Trainforge.generators.deterministic.schema_translation_generator import (  # noqa: E402
     generate_schema_translation_pairs,
 )
-from Trainforge.generators.violation_generator import (  # noqa: E402
+from Trainforge.generators.deterministic.violation_generator import (  # noqa: E402
     generate_violation_pairs,
 )
 

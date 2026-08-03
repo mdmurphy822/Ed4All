@@ -33,7 +33,7 @@ from lib.ontology.property_manifest import (  # noqa: E402
     PropertyEntry,
     PropertyManifest,
 )
-from Trainforge.generators.schema_translation_generator import (  # noqa: E402
+from Trainforge.generators.deterministic.schema_translation_generator import (  # noqa: E402
     SchemaTranslationStats,
     generate_schema_translation_pairs,
 )
@@ -517,7 +517,7 @@ def test_schema_translation_loader_falls_back_for_rdf_shacl(
     Content equality, NOT object identity: the overlay merge always returns a
     fresh merged copy, even when the overlay is empty.
     """
-    from Trainforge.generators import schema_translation_generator as stg
+    from Trainforge.generators.deterministic import schema_translation_generator as stg
 
     # Force the YAML lookup to fail — even if a future commit lands a
     # rdf_shacl YAML catalog, this test verifies the fallback branch.
@@ -565,12 +565,12 @@ def test_schema_translation_returns_empty_for_unknown_family_with_warning(
     so warning here would double-report. Downstream behavior is empty dict ->
     zero pairs emitted with form-level warnings -> no crash.
     """
-    from Trainforge.generators import schema_translation_generator as stg
+    from Trainforge.generators.deterministic import schema_translation_generator as stg
 
     import logging
     caplog.set_level(
         logging.WARNING,
-        logger="Trainforge.generators.schema_translation_generator",
+        logger="Trainforge.generators.deterministic.schema_translation_generator",
     )
     stg._invalidate_form_data_cache()
     form_data = stg._load_form_data("unknown_test_family")
@@ -650,7 +650,7 @@ def test_form_data_covers_all_manifest_curies() -> None:
     The anchored force-injection path dispatches on that entry, so a CURIE
     with no entry leaves force-injection with nothing to inject.
     """
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         _RDF_SHACL_FALLBACK_FORM_DATA,
     )
 
@@ -666,7 +666,7 @@ def test_form_data_covers_all_manifest_curies() -> None:
 
 def test_every_form_data_entry_has_at_least_one_definition() -> None:
     """Structural — every entry must carry >=1 definition string."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         _RDF_SHACL_FALLBACK_FORM_DATA,
     )
 
@@ -683,7 +683,7 @@ def test_every_form_data_entry_has_at_least_one_definition() -> None:
 
 def test_every_form_data_entry_has_at_least_one_usage_example() -> None:
     """Structural — every entry must carry >=1 usage_example tuple."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         _RDF_SHACL_FALLBACK_FORM_DATA,
     )
 
@@ -701,7 +701,7 @@ def test_every_form_data_entry_has_at_least_one_usage_example() -> None:
 def test_anchored_status_is_valid_enum() -> None:
     """Every entry's ``anchored_status`` must be one of the two valid
     discriminator values: ``"complete"`` or ``"degraded_placeholder"``."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         _RDF_SHACL_FALLBACK_FORM_DATA,
     )
 
@@ -725,7 +725,7 @@ def test_existing_six_curies_remain_complete() -> None:
     the catalog below its pinned volume. Backfill flips degraded -> complete,
     never the reverse.
     """
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         _RDF_SHACL_FALLBACK_FORM_DATA,
     )
 
@@ -757,7 +757,7 @@ def test_thirty_four_new_curies_are_degraded_placeholder() -> None:
     "degraded_placeholder"`` so force-injection knows where to stub-fill and
     warn instead of injecting placeholder prose.
     """
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         _RDF_SHACL_FALLBACK_FORM_DATA,
     )
 
@@ -783,7 +783,7 @@ def test_validate_form_data_contract_passes_on_full_set() -> None:
     incomplete / invalid_status entries) still holds — only Rule 4 critical
     violations gate ``passed``.
     """
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         _RDF_SHACL_FALLBACK_FORM_DATA,
         validate_form_data_contract,
     )
@@ -823,7 +823,7 @@ def test_validate_form_data_contract_fails_on_missing_curie() -> None:
     """Negative case: drop one manifest CURIE from the form_data
     input; the validator must report ``passed=False`` with the
     dropped CURIE listed in ``missing_curies``."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         _RDF_SHACL_FALLBACK_FORM_DATA,
         validate_form_data_contract,
     )
@@ -863,8 +863,8 @@ def test_schema_translation_skips_degraded_placeholder_entries(
          the stub strings must never bleed into the emitted pair list
          that gets written to ``instruction_pairs.jsonl``.
     """
-    from Trainforge.generators import schema_translation_generator as stg
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic import schema_translation_generator as stg
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         SurfaceFormData,
         generate_schema_translation_pairs,
     )
@@ -982,7 +982,7 @@ def _patch_yaml_overlay(
     """Patch ``_load_yaml_catalog`` so the overlay test path uses an
     in-memory synthetic dict instead of the on-disk YAML. Returns a
     SurfaceFormData-shaped dict (NOT raw YAML) keyed by CURIE."""
-    from Trainforge.generators import schema_translation_generator as stg
+    from Trainforge.generators.deterministic import schema_translation_generator as stg
 
     monkeypatch.setattr(stg, "_load_yaml_catalog", lambda family: overlay)
     stg._invalidate_form_data_cache()
@@ -999,8 +999,8 @@ def test_overlay_loader_partial_yaml_does_not_erase_complete_entries(
     lands one CURIE at a time, so a YAML with only sh:minCount filled in must
     leave the existing 6 complete entries intact and complete.
     """
-    from Trainforge.generators import schema_translation_generator as stg
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic import schema_translation_generator as stg
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         SurfaceFormData,
     )
 
@@ -1050,8 +1050,8 @@ def test_overlay_loader_yaml_swaps_curie(
 ) -> None:
     """Per-CURIE swap: a YAML overlay entry replaces the
     Python entry for the same CURIE."""
-    from Trainforge.generators import schema_translation_generator as stg
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic import schema_translation_generator as stg
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         SurfaceFormData,
     )
 
@@ -1090,8 +1090,8 @@ def test_overlay_loader_extension_curie_added(
     """Per-CURIE add: a YAML overlay entry whose CURIE is
     NOT in the Python base is added to the merged dict, and the
     Python base entries remain unchanged."""
-    from Trainforge.generators import schema_translation_generator as stg
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic import schema_translation_generator as stg
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         SurfaceFormData,
     )
 
@@ -1148,8 +1148,8 @@ def test_overlay_loader_warns_on_complete_to_degraded_regression(
     """
     import logging
 
-    from Trainforge.generators import schema_translation_generator as stg
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic import schema_translation_generator as stg
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         SurfaceFormData,
     )
 
@@ -1170,7 +1170,7 @@ def test_overlay_loader_warns_on_complete_to_degraded_regression(
 
     caplog.set_level(
         logging.WARNING,
-        logger="Trainforge.generators.schema_translation_generator",
+        logger="Trainforge.generators.deterministic.schema_translation_generator",
     )
 
     merged = stg._load_form_data("rdf_shacl")
@@ -1200,8 +1200,8 @@ def test_overlay_loader_rejects_empty_definitions_when_complete(
     This is the overlay-level structural reject — content-quality rules cover
     stub-string quality separately.
     """
-    from Trainforge.generators import schema_translation_generator as stg
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic import schema_translation_generator as stg
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         SurfaceFormData,
     )
 
@@ -1238,7 +1238,7 @@ def test_overlay_loader_malformed_yaml_returns_base(
     """
     import logging
 
-    from Trainforge.generators import schema_translation_generator as stg
+    from Trainforge.generators.deterministic import schema_translation_generator as stg
 
     # Write garbage to a tmp YAML path and redirect PROJECT_ROOT so
     # _load_yaml_catalog reads from there.
@@ -1258,7 +1258,7 @@ def test_overlay_loader_malformed_yaml_returns_base(
 
     caplog.set_level(
         logging.ERROR,
-        logger="Trainforge.generators.schema_translation_generator",
+        logger="Trainforge.generators.deterministic.schema_translation_generator",
     )
 
     merged = stg._load_form_data("rdf_shacl")
@@ -1294,7 +1294,7 @@ def test_overlay_loader_byte_identical_when_no_yaml(
     Regression net confirming the YAML transcription path is bit-identical to
     the in-Python fallback for the rdf_shacl family.
     """
-    from Trainforge.generators import schema_translation_generator as stg
+    from Trainforge.generators.deterministic import schema_translation_generator as stg
 
     # Force the YAML lookup to fail so the merge sees an empty overlay.
     real_read_text = Path.read_text
@@ -1339,7 +1339,7 @@ def test_overlay_loader_caches() -> None:
     ``functools.lru_cache``. Two consecutive calls return the same
     object identity (cached). After ``_invalidate_form_data_cache()``,
     the next call returns a fresh dict object."""
-    from Trainforge.generators import schema_translation_generator as stg
+    from Trainforge.generators.deterministic import schema_translation_generator as stg
 
     stg._invalidate_form_data_cache()
 
@@ -1398,7 +1398,7 @@ def _synthetic_complete_entry(
     Includes a valid Provenance block so Rule 4 (MISSING_PROVENANCE) does not
     fire by default; Rule 4 tests drop or mutate ``provenance`` explicitly.
     """
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         Provenance,
         SurfaceFormData,
     )
@@ -1426,7 +1426,7 @@ def _violation_codes(result: Dict[str, Any]) -> List[str]:
 
 def test_validator_rejects_definition_without_verbatim_curie() -> None:
     """Rule: CURIE_NOT_VERBATIM_DEFINITION."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         validate_form_data_contract,
     )
 
@@ -1444,7 +1444,7 @@ def test_validator_rejects_definition_without_verbatim_curie() -> None:
 
 def test_validator_rejects_usage_answer_without_verbatim_curie() -> None:
     """Rule: CURIE_NOT_VERBATIM_USAGE_ANSWER."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         validate_form_data_contract,
     )
 
@@ -1470,7 +1470,7 @@ def test_validator_rejects_usage_answer_without_verbatim_curie() -> None:
 def test_validator_rejects_old_suffix_template_leak() -> None:
     """Rule: OLD_SUFFIX_TEMPLATE_LEAK — definition starting with one of
     the legacy token-stuffing template prefixes is rejected."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         validate_form_data_contract,
     )
 
@@ -1490,7 +1490,7 @@ def test_validator_rejects_placeholder_leakage() -> None:
     """Rule: PLACEHOLDER_LEAKAGE — definition containing the
     Wave 135a stub marker ``"[degraded:"`` is rejected on a complete
     entry."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         validate_form_data_contract,
     )
 
@@ -1508,7 +1508,7 @@ def test_validator_rejects_placeholder_leakage() -> None:
 
 def test_validator_rejects_definition_below_length_floor() -> None:
     """Rule: LENGTH_OUT_OF_BOUNDS_DEF — 49-char definition rejected."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         validate_form_data_contract,
     )
 
@@ -1526,7 +1526,7 @@ def test_validator_rejects_definition_below_length_floor() -> None:
 
 def test_validator_rejects_definition_above_length_ceiling() -> None:
     """Rule: LENGTH_OUT_OF_BOUNDS_DEF — 401-char definition rejected."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         validate_form_data_contract,
     )
 
@@ -1546,10 +1546,10 @@ def test_validator_rejects_definition_above_length_ceiling() -> None:
 def test_validator_rejects_usage_prompt_below_length_floor() -> None:
     """Rule: LENGTH_OUT_OF_BOUNDS_USAGE_PROMPT — usage prompt below the
     schema's PROMPT_MIN floor (40 chars) is rejected."""
-    from Trainforge.generators.providers._synthesis_common import PROMPT_MIN
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         validate_form_data_contract,
     )
+    from Trainforge.generators.providers._synthesis_common import PROMPT_MIN
 
     entry = _synthetic_complete_entry()
     short_prompt = "test:Foo prompt"  # well below 40 chars
@@ -1575,10 +1575,10 @@ def test_validator_rejects_usage_prompt_below_length_floor() -> None:
 def test_validator_rejects_usage_answer_above_length_ceiling() -> None:
     """Rule: LENGTH_OUT_OF_BOUNDS_USAGE_ANSWER — answer above the
     schema's COMPLETION_MAX ceiling (600 chars) is rejected."""
-    from Trainforge.generators.providers._synthesis_common import COMPLETION_MAX
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         validate_form_data_contract,
     )
+    from Trainforge.generators.providers._synthesis_common import COMPLETION_MAX
 
     entry = _synthetic_complete_entry()
     long_answer = "test:Foo " + ("padding-token " * 60)
@@ -1605,7 +1605,7 @@ def test_validator_rejects_wrong_curie_only_mention() -> None:
     mentioning only sibling sh:maxCount (not its own CURIE) is
     rejected. Uses synthetic-but-realistic SHACL CURIEs so the
     sibling-CURIE detection path exercises the manifest-set path."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         validate_form_data_contract,
     )
 
@@ -1632,7 +1632,7 @@ def test_validator_rejects_wrong_curie_only_mention() -> None:
 def test_validator_rejects_generic_definitions_no_usage() -> None:
     """Rule: GENERIC_DEFINITIONS_NO_USAGE — complete entry with at
     least one definition but ZERO usage_examples tuples is rejected."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         SurfaceFormData,
         validate_form_data_contract,
     )
@@ -1659,7 +1659,7 @@ def test_validator_emits_overlay_regression_warning() -> None:
     degraded_placeholder. The validator emits the warning, but
     ``passed`` reflects only critical content rules — the warning
     itself is non-blocking."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         SurfaceFormData,
         validate_form_data_contract,
     )
@@ -1714,7 +1714,7 @@ def test_validator_skips_content_rules_for_degraded_placeholder_entries() -> Non
     Without this skip, the 34 Wave 135a stub entries would
     trip every length / placeholder / CURIE rule and the structural
     contract would fail closed on the shipped FORM_DATA."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         SurfaceFormData,
         validate_form_data_contract,
     )
@@ -1762,7 +1762,7 @@ def test_provenance_dataclass_is_frozen() -> None:
     """``Provenance`` must be a frozen dataclass so an
     audit trail captured at backfill time cannot be mutated later by
     downstream code paths."""
-    from Trainforge.generators.schema_translation_generator import Provenance
+    from Trainforge.generators.deterministic.schema_translation_generator import Provenance
 
     assert Provenance.__dataclass_params__.frozen is True
 
@@ -1773,7 +1773,7 @@ def test_yaml_loader_round_trips_provenance(
 ) -> None:
     """a YAML overlay carrying a full provenance block must
     round-trip into the loaded ``SurfaceFormData.provenance`` field."""
-    from Trainforge.generators import schema_translation_generator as stg
+    from Trainforge.generators.deterministic import schema_translation_generator as stg
 
     fake_root = tmp_path
     schemas_dir = fake_root / "schemas" / "training"
@@ -1820,7 +1820,7 @@ def test_yaml_loader_returns_none_provenance_when_absent(
     """a YAML overlay entry that omits ``provenance``
     entirely must yield ``SurfaceFormData.provenance is None`` (no
     coercion failure, no implicit defaulting)."""
-    from Trainforge.generators import schema_translation_generator as stg
+    from Trainforge.generators.deterministic import schema_translation_generator as stg
 
     fake_root = tmp_path
     schemas_dir = fake_root / "schemas" / "training"
@@ -1863,7 +1863,7 @@ def test_yaml_loader_returns_none_provenance_when_keys_missing(
     deliberately lenient to preserve base-fallback safety."""
     import logging
 
-    from Trainforge.generators import schema_translation_generator as stg
+    from Trainforge.generators.deterministic import schema_translation_generator as stg
 
     fake_root = tmp_path
     schemas_dir = fake_root / "schemas" / "training"
@@ -1892,7 +1892,7 @@ def test_yaml_loader_returns_none_provenance_when_keys_missing(
 
     caplog.set_level(
         logging.ERROR,
-        logger="Trainforge.generators.schema_translation_generator",
+        logger="Trainforge.generators.deterministic.schema_translation_generator",
     )
 
     overlay = stg._load_yaml_catalog("rdf_shacl")
@@ -1932,7 +1932,7 @@ def _ground_truth_form_data() -> Dict[str, Any]:
     in-Python fallback. The gold-set YAML fixture is the canonical reference;
     the fallback dict carries identical content by the mechanical-transcription
     guarantee."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         _RDF_SHACL_FALLBACK_FORM_DATA,
     )
     return {c: _RDF_SHACL_FALLBACK_FORM_DATA[c] for c in _GROUND_TRUTH_CURIES}
@@ -1942,7 +1942,7 @@ def test_diversity_gate_passes_on_six_ground_truth() -> None:
     """Rule 1: the 6 pre-Wave-135a complete entries must all
     pass the pairwise-diversity Jaccard floor. Calibrated against this
     fixture — any future drift here is a calibration discovery."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         validate_form_data_contract,
     )
 
@@ -1963,7 +1963,7 @@ def test_diversity_gate_passes_on_six_ground_truth() -> None:
 def test_diversity_gate_fires_on_synthetic_thesaurus_clones() -> None:
     """Rule 1: 3 near-duplicate definitions trip the floor."""
     import dataclasses
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         _DIVERSITY_JACCARD_MAX,
         validate_form_data_contract,
     )
@@ -2009,7 +2009,7 @@ def test_diversity_gate_calibration_boundary_at_threshold() -> None:
     """Rule 1: an entry tuned to ~0.46 fires; one tuned to
     ~0.44 passes. Locks the boundary so a future _tokenize change can't
     drift the threshold."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         SurfaceFormData,
         validate_form_data_contract,
     )
@@ -2061,7 +2061,7 @@ def test_diversity_gate_calibration_boundary_at_threshold() -> None:
 
 def test_diversity_gate_skips_single_definition_entry() -> None:
     """Rule 1: only fires on len(definitions) >= 2."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         validate_form_data_contract,
     )
 
@@ -2077,7 +2077,7 @@ def test_diversity_gate_skips_single_definition_entry() -> None:
 def test_anchor_verb_capacity_passes_on_six_ground_truth() -> None:
     """Rule 3: every gold-set entry has >=1 anchor verb in
     its definitions AND >=1 action verb in its usage answers."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         validate_form_data_contract,
     )
 
@@ -2101,7 +2101,7 @@ def test_anchor_verb_capacity_passes_on_six_ground_truth() -> None:
 def test_missing_def_anchor_verb_fires() -> None:
     """Rule 3: definitions made of pure noun phrases (no
     verb from the anchor allowlist) trip MISSING_ANCHOR_VERB_DEFINITION."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         SurfaceFormData,
         validate_form_data_contract,
     )
@@ -2132,7 +2132,7 @@ def test_missing_def_anchor_verb_fires() -> None:
 def test_missing_usage_action_verb_fires() -> None:
     """Rule 3: usage answers made of nouns + CURIE only
     (no allowlisted action verb) trip MISSING_ANCHOR_VERB_USAGE."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         SurfaceFormData,
         validate_form_data_contract,
     )
@@ -2165,7 +2165,7 @@ def test_anchor_verb_does_not_fire_on_comparison_or_pitfall_only_gaps() -> None:
     usage_examples ONLY. Verb-rich defs/usage but verb-bare comparisons
     and pitfalls must pass — the gold truth uses ;-separated parallel
     constructions and rhetorical Q-side framing in those categories."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         SurfaceFormData,
         validate_form_data_contract,
     )
@@ -2223,7 +2223,7 @@ def test_style_consistency_passes_on_six_ground_truth() -> None:
     Rule 2 is warning-severity, so even a sub-threshold gold-set entry
     would not block; this test asserts the calibrated threshold leaves
     all 6 entries clean of the warning."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         validate_form_data_contract,
     )
 
@@ -2246,7 +2246,7 @@ def test_style_consistency_fires_on_conversational_definitions() -> None:
     + a hedging-heavy second def drops the entry below the threshold.
     Warning fires; passed remains True (warning-severity, non-blocking).
     """
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         Provenance,
         SurfaceFormData,
         validate_form_data_contract,
@@ -2306,7 +2306,7 @@ def test_style_consistency_calibration_boundary() -> None:
 
     Pins the boundary so a future signal-weight tweak can't drift the
     threshold silently."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         SurfaceFormData,
         _compute_style_score,
         _STYLE_CONSISTENCY_MIN,
@@ -2385,7 +2385,7 @@ def test_style_consistency_calibration_boundary() -> None:
 
 def _operator_provenance():
     """Build a valid operator-authored Provenance block for tests."""
-    from Trainforge.generators.schema_translation_generator import Provenance
+    from Trainforge.generators.deterministic.schema_translation_generator import Provenance
     return Provenance(
         provider="operator_hand_curated",
         generated_by="operator",
@@ -2398,7 +2398,7 @@ def _operator_provenance():
 def test_provenance_required_on_complete_entries() -> None:
     """Rule 4: complete entry with provenance=None triggers
     MISSING_PROVENANCE."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         validate_form_data_contract,
     )
 
@@ -2421,7 +2421,7 @@ def test_provenance_passes_on_complete_entries_with_full_dict() -> None:
     """Rule 4: synthetic complete entry with all 5 required
     provenance keys passes Rule 4 (no MISSING_PROVENANCE / INCOMPLETE
     _PROVENANCE)."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         validate_form_data_contract,
     )
 
@@ -2438,7 +2438,7 @@ def test_provenance_passes_on_complete_entries_with_full_dict() -> None:
 def test_provenance_incomplete_keys_fires() -> None:
     """Rule 4: provenance present but reviewed_by="" fires
     INCOMPLETE_PROVENANCE; the empty key name appears in the detail."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         Provenance,
         validate_form_data_contract,
     )
@@ -2467,7 +2467,7 @@ def test_provenance_pending_review_sentinel_fires() -> None:
     """Rule 4: reviewed_by="PENDING_REVIEW" (the drafting-CLI sentinel) fires
     INCOMPLETE_PROVENANCE — operators must replace the sentinel before
     commit."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         Provenance,
         validate_form_data_contract,
     )
@@ -2494,7 +2494,7 @@ def test_provenance_pending_review_sentinel_fires() -> None:
 def test_provenance_skipped_on_degraded_entries() -> None:
     """Rule 4: a degraded_placeholder entry without provenance must NOT fire
     Rule 4, because content rules skip degraded entries."""
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         SurfaceFormData,
         validate_form_data_contract,
     )
@@ -2526,7 +2526,7 @@ def test_six_gold_set_entries_pass_provenance() -> None:
     CURIE; this asserts the validator accepts the same pattern programmatically.
     """
     import dataclasses
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         _RDF_SHACL_FALLBACK_FORM_DATA,
         validate_form_data_contract,
     )

@@ -464,7 +464,7 @@ def _enforce_preserve_tokens_in_preference(
     """
     if not preserve_tokens:
         return pair
-    from Trainforge.generators.schema_translation_generator import (
+    from Trainforge.generators.deterministic.schema_translation_generator import (
         _RDF_SHACL_FALLBACK_FORM_DATA,
         resolve_anchor_text_for_curie,
     )

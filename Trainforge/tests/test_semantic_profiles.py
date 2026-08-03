@@ -31,7 +31,7 @@ from lib.ontology.semantic_profiles import (  # noqa: E402
     load_semantic_profile,
     load_semantic_profiles,
 )
-from Trainforge.generators.schema_translation_generator import (  # noqa: E402
+from Trainforge.generators.deterministic.schema_translation_generator import (  # noqa: E402
     SurfaceFormData,
     validate_form_data_contract,
 )

@@ -34,7 +34,7 @@ import json
 import random
 from typing import Any, Dict, List, Optional, Tuple
 
-from Trainforge.generators.schema_translation_generator import SurfaceFormData
+from Trainforge.generators.deterministic.schema_translation_generator import SurfaceFormData
 
 
 def _truncate(text: str, n: int = 80) -> str:

@@ -30,10 +30,10 @@ from Trainforge.synthesize_training import (  # noqa: E402
     _normalize_holdout_rel,
     _reduce_graph_by_holdout,
 )
-from Trainforge.generators.kg_metadata_generator import (  # noqa: E402
+from Trainforge.generators.deterministic.kg_metadata_generator import (  # noqa: E402
     generate_kg_metadata_pairs,
 )
-from Trainforge.generators.graph_sft_generator import (  # noqa: E402
+from Trainforge.generators.deterministic.graph_sft_generator import (  # noqa: E402
     generate_graph_sft_pairs,
 )
 

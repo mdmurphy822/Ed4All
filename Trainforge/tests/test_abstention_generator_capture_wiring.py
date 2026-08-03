@@ -1,7 +1,7 @@
 """Wave W-D1 T1.5 — ``abstention_generator`` capture-wiring regression test.
 
 Pins one ``abstention_generation`` event per emitted pair
-(``Trainforge/generators/abstention_generator.py:408-444``). Capture is
+(``Trainforge/generators/deterministic/abstention_generator.py:408-444``). Capture is
 **required** — ``capture=None`` raises ``ValueError`` per the
 ``abstention_generator requires a DecisionCapture`` contract at
 ``abstention_generator.py:329-334``.
@@ -29,7 +29,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.generators.abstention_generator import (  # noqa: E402
+from Trainforge.generators.deterministic.abstention_generator import (  # noqa: E402
     generate_abstention_pairs,
 )
 

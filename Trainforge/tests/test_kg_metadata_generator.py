@@ -24,7 +24,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.generators.kg_metadata_generator import (  # noqa: E402
+from Trainforge.generators.deterministic.kg_metadata_generator import (  # noqa: E402
     DEFAULT_NEGATIVES_PER_POSITIVE,
     KGMetadataStats,
     generate_kg_metadata_pairs,

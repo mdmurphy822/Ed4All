@@ -1,11 +1,11 @@
-"""Assessment -> SFT pair generator (SFT data program Phase 1).
+"""Deterministic assessment-to-SFT pair generator.
 
 Deterministic, LLM-free emitter that turns the W10 assessment product
 (``assessments.json`` + the instructor ``answer_key.json``) into
 rationale-augmented, open-book instruction-following training pairs for the
 course-pinned 1.5B LoRA adapter.
 
-Design contract (``runtime/scratchpad/sft_data_program.md`` §A / §D-Phase-1):
+Design contract:
 
 * **Format diversity, not volume, is the scaling axis at 1.5B.** Every item
   fans out into up to six *rationale-augmented* formats — the target teaches

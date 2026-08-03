@@ -19,6 +19,7 @@ Installation and dependency acquisition live in
 | Courseforge scripts and docs | Import paths, packaging commands, tests, and user journeys | Grouped by packaging, rendering, validation, guides, and reference material |
 | Trainforge synthesis modules | MCP dispatch, imports, CLIs, and compatibility tests | Canonical implementation moved to `Trainforge/synthesis/`; legacy import paths remain warning-emitting compatibility surfaces |
 | Trainforge evaluation modules | Imports, entry points, configuration, and evaluation tests | Grouped by metrics, retrieval checks, and runners; compatibility is retained only for documented external entry points |
+| Trainforge deterministic generators | Imports, package exports, synthesis wiring, operator scripts, tests, schemas, and documentation | Grouped under `Trainforge/generators/deterministic/`; all tracked callers use canonical paths and no legacy alias is required |
 | Validator registry | Registry loading and validator discovery | Retained as one cohesive registry; no cosmetic split |
 | Historical migrations | Git history, tests, and operator documentation | Retained in archive directories when replay or provenance value remains |
 | One-off SemantiK diagnostics | Imports, entry points, configuration, tests, docs, and history | Removed only where every reviewed surface showed no live or compatibility use |

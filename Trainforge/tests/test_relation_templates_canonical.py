@@ -1,6 +1,6 @@
 """Wave 132a regression: bytewise alignment of train + eval relation templates.
 
-The kg_metadata generator (`Trainforge/generators/kg_metadata_generator.py`)
+The kg_metadata generator (`Trainforge/generators/deterministic/kg_metadata_generator.py`)
 emits training pairs whose prompts mirror the eval-time probes the
 faithfulness evaluator (`Trainforge/eval/faithfulness.py`) asks. Drift
 between the two would desync the adapter's training signal from the
@@ -30,7 +30,7 @@ def test_kg_metadata_and_faithfulness_share_relation_template_text():
 def test_kg_metadata_generator_imports_canonical_map():
     """kg_metadata generator's _RELATION_TEMPLATES is the canonical map."""
     from lib.ontology.relation_templates import RELATION_TEMPLATES
-    from Trainforge.generators.kg_metadata_generator import (
+    from Trainforge.generators.deterministic.kg_metadata_generator import (
         _RELATION_TEMPLATES as kg,
     )
 

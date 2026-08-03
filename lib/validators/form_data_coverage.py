@@ -56,7 +56,7 @@ def compute_coverage_metrics(
             family has no declared family map.
     """
     if form_data is None:
-        from Trainforge.generators.schema_translation_generator import (
+        from Trainforge.generators.deterministic.schema_translation_generator import (
             _load_form_data,
         )
         form_data = _load_form_data(family)
