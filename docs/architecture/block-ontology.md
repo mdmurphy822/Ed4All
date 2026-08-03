@@ -1,190 +1,225 @@
-# Block ontology contract
+# Block ontology and authored-block contract
 
-Ed4All separates a block's structural identity from its genre-specific
-function and from the vocabulary used to recognize that function. The
-canonical data lives under `schemas/taxonomies/`; consumers load taxonomy JSON
-through `lib/ontology/taxonomy.py::load_taxonomy` where integration permits.
+Ed4All uses blocks at two connected boundaries:
 
-This ontology is a public contract, but adoption is partial. Read
-[Adoption status](#adoption-status) before treating a vocabulary as emitted by
-the current converter.
+- **Extraction labels** describe structure found in source material.
+- **Authored blocks** describe the learning components Courseforge plans,
+  validates, renders, and hands to Trainforge.
 
-## Layers and semantics
+They are related, but they are not interchangeable vocabularies. A converter
+label must pass through an explicit, tested projection before it becomes an
+authored block type. This separation keeps source structure honest while
+allowing Courseforge to add pedagogical meaning.
+
+```mermaid
+flowchart LR
+    A["Source document"] --> B["SemantiK extraction block"]
+    B --> C["Explicit projection"]
+    C --> D["Courseforge authored Block"]
+    D --> E["Accessible HTML + JSON-LD"]
+    E --> F["Trainforge consumption"]
+
+    B -. "structure and source provenance" .-> C
+    D -. "learning purpose and audit history" .-> E
+
+    classDef source fill:#E8F1FF,stroke:#1D4ED8,color:#172554,stroke-width:2px;
+    classDef boundary fill:#FFF7ED,stroke:#C2410C,color:#431407,stroke-width:2px;
+    classDef product fill:#ECFDF5,stroke:#047857,color:#052E2B,stroke-width:2px;
+    class A,B source;
+    class C boundary;
+    class D,E,F product;
+```
+
+The labels and arrows convey the flow; color is supplementary.
+
+## Extraction-label ontology
+
+The public extraction vocabulary lives under
+[`schemas/taxonomies/`](../../schemas/taxonomies/). Consumers load these JSON
+documents through
+[`lib/ontology/taxonomy.py`](../../lib/ontology/taxonomy.py) instead of copying
+their values into application code.
+
+The ontology has three layers:
+
+1. **Structural kind (L1)** — what a source block is, such as a heading,
+   paragraph, table, figure, caption, or code block. The closed vocabulary and
+   its DocLayNet mappings are defined by
+   [`block_kinds.json`](../../schemas/taxonomies/block_kinds.json).
+2. **Genre role (L2)** — what that structure does in a resolved document
+   profile. A block has at most one role, and each role declares the structural
+   kinds to which it may attach. The authoritative profiles are the
+   `genre_profile_*.json` files.
+3. **Recognition lexicon (L3)** — marker text that helps resolve a role for a
+   profile. Lexicons contain marker-to-role data; they do not create new block
+   kinds or embed corpus-specific branching in Python.
+
+[`block_relations.json`](../../schemas/taxonomies/block_relations.json)
+describes connections between source blocks. A relation does not change either
+endpoint's kind. For example, a caption remains a caption when connected to a
+figure.
+
+Not every extraction path emits this vocabulary directly. Converter-specific
+labels remain valid within their own contracts until a tested projection is
+implemented. Consumers must preserve the source label and provenance rather
+than guessing a canonical kind or role.
+
+## Authored blocks
+
+Courseforge's canonical intermediate record is the frozen `Block` dataclass in
+[`Courseforge/scripts/blocks.py`](../../Courseforge/scripts/blocks.py). It is
+the boundary between planning or generation and the HTML/JSON-LD renderers.
+Changes produce a new instance; they do not mutate a block in place.
 
 ```mermaid
 flowchart TD
-    SOURCE["Document block"] --> L1["L1: structural kind<br/>closed and required"]
-    PROFILE{"Genre profile resolved?"}
-    L1 --> PROFILE
-    PROFILE -->|Yes| L2["L2: functional role<br/>optional, at most one"]
-    PROFILE -->|No| L1ONLY["L1-only record"]
-    LEXICON["L3: marker lexicon<br/>data-driven recognition"] --> L2
-    L1 --> REL["Relations<br/>structure between blocks"]
-    L2 --> REL
+    P["Planner or generator"] --> I["Identity + type + content"]
+    I --> V["Validation"]
+    V -->|"passes"| R["Renderer"]
+    V -->|"retry or escalate"| U["New Block instance"]
+    U --> T["Append Touch event"]
+    T --> V
+    R --> H["Accessible HTML"]
+    R --> J["JSON-LD block metadata"]
 
-    classDef source fill:#E8F1FF,stroke:#2563EB,color:#172554,stroke-width:2px;
-    classDef structure fill:#ECFDF5,stroke:#047857,color:#052E2B,stroke-width:2px;
-    classDef function fill:#F3E8FF,stroke:#7E22CE,color:#3B0764,stroke-width:2px;
-    classDef relation fill:#FFF7ED,stroke:#C2410C,color:#431407,stroke-width:2px;
-    class SOURCE source;
-    class L1,PROFILE,L1ONLY structure;
-    class L2,LEXICON function;
-    class REL relation;
+    classDef author fill:#E8F1FF,stroke:#1D4ED8,color:#172554,stroke-width:2px;
+    classDef gate fill:#FFF7ED,stroke:#C2410C,color:#431407,stroke-width:2px;
+    classDef audit fill:#F3E8FF,stroke:#7E22CE,color:#3B0764,stroke-width:2px;
+    classDef output fill:#ECFDF5,stroke:#047857,color:#052E2B,stroke-width:2px;
+    class P,I author;
+    class V,U gate;
+    class T audit;
+    class R,H,J output;
 ```
 
-The labels and arrows carry the meaning; color only reinforces each layer.
+### Identity
 
-### L1: closed structural kinds
+A block is anchored by `block_id`, `page_id`, and a non-negative `sequence`.
+`Block.stable_id()` constructs the supported position-based identifier from
+the page, block type, stable slug, and position. Identity and ordering are
+separate from content hashing: moving a block can change its sequence without
+changing the hash of its learning content.
 
-L1 describes what a block *is*. For ontology-conforming records, every block
-has exactly one L1 kind. The closed vocabulary is defined by
-[`block_kinds.json`](../../schemas/taxonomies/block_kinds.json):
+### Type and catalog
 
-```text
-heading      paragraph    list_item    table        figure       chart
-caption      math_block   code_block   blockquote   aside        footnote
-form_field   title_block  separator    furniture
-```
+`BLOCK_TYPES` in `Courseforge/scripts/blocks.py` is the closed authored-block
+type set. The matching entry in
+[`Courseforge/config/block_catalog.yaml`](../../Courseforge/config/block_catalog.yaml)
+explains when the type is appropriate, what it conveys, its expected render
+shape, and its planning metadata. Tests require the catalog and the type set
+to cover each other exactly.
 
-The canonical file contains 16 detailed entries and an enum with the same 16
-values. Each entry declares a DocLayNet mapping key; an explicit `null` records
-that no direct parent exists. The mapping is useful for interoperability and
-weak supervision, but it is not a claim that every Ed4All kind has a distinct
-DocLayNet class.
+The catalog guides selection; it is not the renderer and does not override
+the dataclass. Optional planning fields remain authoritative only for the
+features that consume them.
 
-Changing L1 is a schema change. It affects validators, renderers, mappings,
-stored data, and any component that assumes exhaustive kinds.
+### Content and content hash
 
-### L2: optional genre roles
+`content` is the canonical body and may be text or a structured mapping. There
+is no second `body` field. Supporting metadata can connect the body to learning
+objectives, Bloom information, key terms, source references, accessibility
+features, and block-specific interaction data.
 
-L2 describes what a block *does* within one resolved genre. A conforming block
-has at most one role, and the role's `attaches_to` list limits the valid L1
-kinds. No resolved profile means honest L1-only output; there is no fabricated
-`unknown` role.
+`compute_content_hash()` hashes an explicit payload consisting of the content,
+block type, key terms, declared Bloom level, and objective identifiers. Audit,
+ordering, retry, escalation, and derived metadata are excluded. This makes the
+hash useful for detecting a change in the authored learning payload without
+treating later validation or provenance annotations as new content.
 
-The eight canonical profiles are:
+### Source provenance and touch history
 
-| Profile | Roles |
-|---|---:|
-| `encyclopedic` | 3 |
-| `forms` | 4 |
-| `instructional` | 10 |
-| `legal_regulatory` | 7 |
-| `literary` | 7 |
-| `scholarly` | 7 |
-| `statistical` | 5 |
-| `technical_manual` | 5 |
+Source provenance answers **which source material supports the block**:
+`source_ids`, `source_primary`, and structured `source_references` carry those
+links into supported HTML attributes and JSON-LD shapes.
 
-Exact role names, attachment rules, and optional mappings are authoritative in
-the matching `schemas/taxonomies/genre_profile_*.json` file.
+Touch history answers **which authoring or validation step changed the
+block**. Each immutable `Touch` records a model, provider provenance value,
+tier, timestamp, decision-capture reference, and purpose. `with_touch()`
+returns a new block with the event appended. Provider values come from the
+shared endpoint registry; the JSON-LD and SHACL copies are kept synchronized
+by the provenance code-generation contract.
 
-### L3: data-driven recognition
+These histories solve different audit questions and must not substitute for
+one another. A model touch is not a source citation, and a source citation is
+not evidence that a particular validator or authoring tier ran.
 
-L3 lexicons map marker text to an L2 role. Marker vocabulary belongs in data,
-not general-purpose Python branches. The ontology test inventory contains:
+### Validation and escalation
 
-| Lexicon | Profile | Markers |
-|---|---|---:|
-| `ansi_z535_lexicon.json` | `technical_manual` | 9 |
-| `federal_register_lexicon.json` | `legal_regulatory` | 4 |
-| `generic_instructional_lexicon.json` | `instructional` | 10 |
-| `openstax_lexicon.json` | `instructional` | 6 |
+`validation_attempts` records failed validation attempts. An
+`escalation_marker` records a recognized reason that ordinary regeneration
+could not finish the block safely. Both are audit state, not authored content,
+and neither changes the content hash.
 
-Every marker row may contain only `marker`, `role`, and `notes`; its role must
-exist in the declared profile.
+Escalation must remain visible. A failed or undispatchable block is marked and
+handled by downstream gates; it must not disappear silently from a course
+package. The authoritative marker vocabulary and routing behavior live beside
+the `Block` implementation and Courseforge router tests.
 
-## Relations
+## Rendering and consumption
 
-[`block_relations.json`](../../schemas/taxonomies/block_relations.json) defines
-14 relations. Structural relations do not require a genre role:
+Courseforge projects blocks into accessible HTML attributes and page JSON-LD.
+The wire shape varies where older objective, section, and misconception shapes
+must remain compatible; other authored types use the common block metadata
+shape. Consumers should validate the emitted shape rather than infer it from a
+catalog description.
 
-```text
-same_unit  continues  caption_of  adjacent  same_section  footnote_of
-refers_to  same_story
-```
+Trainforge parses the rendered page and its metadata. Round-trip and consumer
+tests protect stable emission, provenance, and the fields Trainforge relies
+on. A new field is not part of the public wire contract merely because it was
+added to the Python dataclass; it becomes a wire field only when its renderer,
+schema, and consumer behavior are defined and tested.
 
-Profile relations require an L2 role on at least one endpoint:
+## Extending the system
 
-```text
-solution_of  practice_of  answers  cites  defines  references
-```
+Choose the boundary being changed before editing anything.
 
-A relation expresses structure between blocks; it is not a second block kind.
-For example, a caption remains a `caption` block connected to its target by
-`caption_of`. Direction, endpoint shape, derivation, and current implementation
-status are defined per relation in the canonical JSON.
+### Add an extraction kind, role, marker, or relation
 
-## Governance
+1. Update the appropriate JSON file under `schemas/taxonomies/`.
+2. Keep kinds closed, role attachments valid, lexicons marker-only, and
+   relation endpoints resolvable.
+3. Add or update an explicit converter projection if runtime output should use
+   the new value.
+4. Run the ontology consistency tests and the affected converter tests.
 
-| Change | Required review |
-|---|---|
-| Add, remove, or rename an L1 kind | Maintainer-approved schema change and downstream impact review |
-| Add or change an L2 role/profile | Maintainer review; every role must attach to at least one valid L1 kind |
-| Add or change an L3 marker | Maintainer data review; marker must resolve to a role in its profile |
-| Add or rename a relation | Maintainer review; schema-change review when consumers or trained contracts are affected |
+### Add an authored block type
 
-Model or rule output does not gain authority merely by using an ontology label.
-Consumers must still enforce conservation, provenance, and validation at their
-own boundary.
+1. Add the token to `BLOCK_TYPES` and a matching catalog entry.
+2. Define its accessible HTML semantics and JSON-LD projection.
+3. Update the applicable schemas and Trainforge consumer behavior.
+4. Add focused renderer, accessibility, provenance, round-trip, and catalog
+   coverage tests.
+5. Add validation or routing behavior only where the new type requires it;
+   keep policy in its owning validator or catalog rather than duplicating it
+   here.
 
-## Invariants any change must preserve
+### Add provenance or escalation vocabulary
 
-`schemas/tests/test_block_ontology.py` mechanically enforces:
+Change the owning registry or block contract, then update generated schema
+copies and focused audit tests. Do not add a provider, tier, or marker only to
+documentation: runtime validation is the authority.
 
-1. every inventoried taxonomy file loads successfully;
-2. the L1 enum equals the detailed-entry set and the closed 16-kind snapshot;
-3. every L1 entry declares a DocLayNet key, including explicit gaps;
-4. every L2 role attaches to one or more valid L1 kinds;
-5. L3 entries contain only marker-to-role data and target real profile roles;
-6. every profile relation names at least one declared L2 role endpoint; and
-7. relation enums exactly match relation entries within each family.
+## Verification
 
-The “one kind, at most one role” rule applies to records claiming conformance
-with this ontology. Legacy converter records use separate vocabularies and must
-not be described as violating a contract they do not yet implement.
-
-Validate ontology changes with:
+The focused contract suites are:
 
 ```bash
 pytest schemas/tests/test_block_ontology.py
+pytest Courseforge/scripts/tests/block_contracts
+pytest Courseforge/generators/tests/test_block_library_additions.py
+pytest lib/generation/tests/test_framework_block_map_consistency.py
+pytest schemas/tests/test_touch_provider_enum_sync.py
 ```
 
-## Adoption status
+Additional renderer, validator, and Trainforge tests should be selected for
+the fields or block types changed. Repository-wide validation remains the
+final gate for a cross-boundary change.
 
-| Surface | Current adoption |
-|---|---|
-| L1 `block_kinds.json` | Canonical and test-enforced; not yet read by a production converter |
-| L2 genre profiles | Canonical and test-enforced; not yet read by a production converter |
-| L3 `openstax_lexicon.json` | Read by the GLM region mapper for apparatus recognition, with an internal fallback for isolated SemantiK environments |
-| Other three L3 lexicons | Canonical and test-enforced; no production reader currently found |
-| `block_relations.json` | Canonical and test-enforced; not a single production emission contract |
-
-Schema presence does not prove runtime emission. New consumers should use the
-canonical data rather than copying enums into another module.
-
-## Extraction vocabulary gaps
-
-The preferred GLM-OCR route currently emits its own `region_kind` vocabulary
-from `SemantiK/semantik_structure/glmocr/region_map.py`. It includes shapes such
-as `heading`, `paragraph`, `figure`, `table`, `math`, `list`, and
-`metadata_drop`; these are not yet a direct L1 projection. In particular,
-`math`/`list` naming and dropped metadata need an explicit contract mapping
-before GLM output can claim L1 conformance.
-
-The optional page arranger also retains a versioned nine-value `TYPE_ENUM` in
-`SemantiK/semantik_structure/page_arranger_contract.py`. Some values combine
-structure and instructional function, while this ontology separates L1 kind
-from L2 role. That arranger contract remains valid for its own version; it is
-not the canonical L1 inventory.
-
-These mismatches are adapter boundaries, not permission to guess. Until an
-implemented, tested projection exists, preserve the source vocabulary and state
-its adoption level explicitly.
-
-## Related contracts
+## Related architecture
 
 - [SemantiK architecture](../../SemantiK/architecture.md)
-- [Vision extraction architecture](hybrid-vision-extraction.md)
+- [Courseforge architecture](../../Courseforge/architecture.md)
+- [Trainforge architecture](../../Trainforge/architecture.md)
+- [Hybrid vision extraction](hybrid-vision-extraction.md)
 - [Canonical Ed4All ontology](../../schemas/ONTOLOGY.md)
-- [L1 block kinds](../../schemas/taxonomies/block_kinds.json)
-- [Block relations](../../schemas/taxonomies/block_relations.json)
+- [Decision capture](decision-capture.md)
