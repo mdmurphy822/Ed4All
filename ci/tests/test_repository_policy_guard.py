@@ -1,0 +1,132 @@
+"""Regression tests for the recursive repository/source-release policy."""
+
+from __future__ import annotations
+
+import subprocess
+
+import pytest
+
+from ci.repository_policy_guard import (
+    check_layout,
+    check_privacy,
+    check_release,
+    classify,
+    git_paths,
+    load_private_tokens,
+)
+
+
+def policy() -> dict:
+    return {
+        "root_files": ["README.md"],
+        "roots": {"src": "package", "var": "external-var", "tests": "tests"},
+        "overrides": [],
+        "allowed_children": {
+            "package": ["package", "tests"],
+            "tests": ["tests", "fixtures"],
+            "fixtures": ["fixtures"],
+            "external-var": ["external-var"],
+        },
+        "source_roles": ["package", "tests", "fixtures"],
+        "sentinel_names": [".gitkeep"],
+        "max_source_bytes": 64,
+        "forbidden_generated_segments": ["build", "generated"],
+    }
+
+
+def checks(findings) -> set[str]:
+    return {finding.check for finding in findings}
+
+
+def test_classifies_root_files_and_descendants_recursively() -> None:
+    cfg = policy()
+    assert classify("README.md", cfg)[0] == "root-metadata"
+    assert classify("src/deep/module.py", cfg)[0] == "package"
+    assert classify("unknown/file.py", cfg)[0] is None
+
+
+def test_reports_unclassified_and_ambiguous_roles() -> None:
+    cfg = policy()
+    cfg["overrides"] = [
+        {"pattern": "src/*", "role": "package"},
+        {"pattern": "src/*", "role": "tests"},
+    ]
+    result = check_layout(["unknown/file.py", "src/x"], cfg)
+    assert {"unclassified", "ambiguous_role"} <= checks(result)
+
+
+def test_reports_illegal_child_role() -> None:
+    cfg = policy()
+    cfg["overrides"] = [{"pattern": "src/spec", "role": "tests"}]
+    cfg["allowed_children"]["package"] = ["package"]
+    result = check_layout(["src/spec/test_one.py"], cfg)
+    assert "illegal_child_role" in checks(result)
+
+
+def test_external_var_allows_only_sentinels_and_generated_source_fails() -> None:
+    result = check_layout(["var/.gitkeep", "var/private.json", "src/build/result.bin"], policy())
+    assert "external_var_content" in checks(result)
+    assert "generated_artifact" in checks(result)
+
+
+def test_privacy_checks_path_shapes_and_operator_tokens_in_content() -> None:
+    shaped = check_privacy("src/TTC_private_20260101/result.py", b"safe", [])
+    private = check_privacy("src/module.py", b"comment mentions Private Course", ["Private Course"])
+    assert "privacy_shape" in checks(shaped)
+    assert "private_token" in checks(private)
+    assert all("Private Course" not in finding.message for finding in private)
+
+
+def _init_git(path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+
+
+def test_private_token_file_inside_checkout_must_be_ignored(tmp_path) -> None:
+    _init_git(tmp_path)
+    token_file = tmp_path / "private-tokens.txt"
+    token_file.write_text("private-value\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="non-ignored"):
+        load_private_tokens(tmp_path, {"ED4ALL_PRIVATE_TOKEN_FILE": str(token_file)})
+    (tmp_path / ".gitignore").write_text("private-tokens.txt\n", encoding="utf-8")
+    assert load_private_tokens(
+        tmp_path, {"ED4ALL_PRIVATE_TOKEN_FILE": str(token_file)}
+    ) == ["private-value"]
+
+
+def test_git_candidates_include_untracked_nonignored_but_not_ignored(tmp_path) -> None:
+    _init_git(tmp_path)
+    (tmp_path / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
+    (tmp_path / "tracked.txt").write_text("tracked", encoding="utf-8")
+    (tmp_path / "candidate.txt").write_text("candidate", encoding="utf-8")
+    (tmp_path / "ignored.txt").write_text("ignored", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt", ".gitignore"], cwd=tmp_path, check=True)
+    paths = git_paths(tmp_path, candidates=True)
+    assert "candidate.txt" in paths
+    assert "tracked.txt" in paths
+    assert "ignored.txt" not in paths
+
+
+def test_release_checks_secret_oversize_and_nested_repository(tmp_path) -> None:
+    _init_git(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "secret.py").write_text(
+        "token='ghp_abcdefghijklmnopqrstuvwxyz'", encoding="utf-8"
+    )
+    (tmp_path / "src" / "large.py").write_bytes(b"x" * 65)
+    nested = tmp_path / "src" / "vendor" / ".git"
+    nested.mkdir(parents=True)
+    nested_source = tmp_path / "src" / "vendor" / "module.py"
+    nested_source.write_text("safe", encoding="utf-8")
+    result = check_release(
+        tmp_path, ["src/secret.py", "src/large.py", "src/vendor/module.py"], policy(), []
+    )
+    assert {"secret", "oversized", "nested_repository"} <= checks(result)
+
+
+def test_test_fixtures_do_not_raise_on_planted_secret_examples(tmp_path) -> None:
+    _init_git(tmp_path)
+    target = tmp_path / "tests" / "example.py"
+    target.parent.mkdir()
+    target.write_text("value='ghp_abcdefghijklmnopqrstuvwxyz'", encoding="utf-8")
+    result = check_release(tmp_path, ["tests/example.py"], policy(), [])
+    assert "secret" not in checks(result)

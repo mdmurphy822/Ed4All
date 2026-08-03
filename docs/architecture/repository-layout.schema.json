@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.example/schemas/repository-layout.schema.json",
+  "title": "Ed4All recursive repository layout policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["root_files", "roots", "overrides", "allowed_children", "source_roles", "sentinel_names", "max_source_bytes", "forbidden_generated_segments"],
+  "properties": {
+    "$schema": {"type": "string"},
+    "root_files": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "roots": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string", "minLength": 1}},
+    "overrides": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["pattern", "role"], "properties": {"pattern": {"type": "string", "minLength": 1}, "role": {"type": "string", "minLength": 1}}}},
+    "allowed_children": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}},
+    "source_roles": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "sentinel_names": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "max_source_bytes": {"type": "integer", "minimum": 1},
+    "forbidden_generated_segments": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+  }
+}

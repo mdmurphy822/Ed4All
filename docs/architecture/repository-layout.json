@@ -1,0 +1,58 @@
+{
+  "$schema": "repository-layout.schema.json",
+  "root_files": [
+    ".dockerignore", ".gitignore", "AGENTS.md", "ARCHITECTURE.md", "CLAUDE.md",
+    "CONTRIBUTING.md", "Dockerfile", "Dockerfile.gui", "LICENSE", "Makefile",
+    "NOTICE", "README.md", "VERSIONING.md", "conftest.py", "docker-compose.yml",
+    "pyproject.toml", "pytest.ini", "run-gui.bat", "run-gui.sh"
+  ],
+  "roots": {
+    ".claude": "agent-tooling", ".github": "ci", "ci": "ci", "cli": "surface",
+    "config": "contracts", "Courseforge": "subsystem", "docs": "docs", "gui": "surface",
+    "inputs": "external-var", "lib": "package", "LibV2": "subsystem", "MCP": "package",
+    "runtime": "external-var", "schemas": "contracts", "scripts": "tools",
+    "SemantiK": "subsystem", "tests": "tests", "Trainforge": "subsystem"
+  },
+  "overrides": [
+    {"pattern": "**/tests", "role": "tests"},
+    {"pattern": "**/tests/**", "role": "tests"},
+    {"pattern": "**/fixtures", "role": "fixtures"},
+    {"pattern": "**/fixtures/**", "role": "fixtures"},
+    {"pattern": "Courseforge/templates", "role": "templates"},
+    {"pattern": "Courseforge/templates/**", "role": "templates"},
+    {"pattern": "Courseforge/inputs", "role": "external-var"},
+    {"pattern": "Courseforge/inputs/**", "role": "external-var"},
+    {"pattern": "Courseforge/exports", "role": "external-var"},
+    {"pattern": "Courseforge/exports/**", "role": "external-var"},
+    {"pattern": "SemantiK/inputs", "role": "external-var"},
+    {"pattern": "SemantiK/inputs/**", "role": "external-var"},
+    {"pattern": "SemantiK/output", "role": "external-var"},
+    {"pattern": "SemantiK/output/**", "role": "external-var"},
+    {"pattern": "SemantiK/batch_output", "role": "external-var"},
+    {"pattern": "SemantiK/batch_output/**", "role": "external-var"},
+    {"pattern": "Trainforge/output", "role": "external-var"},
+    {"pattern": "Trainforge/output/**", "role": "external-var"},
+    {"pattern": "LibV2/courses", "role": "external-var"},
+    {"pattern": "LibV2/courses/**", "role": "external-var"},
+    {"pattern": "LibV2/catalog", "role": "external-var"},
+    {"pattern": "LibV2/catalog/**", "role": "external-var"}
+  ],
+  "allowed_children": {
+    "agent-tooling": ["agent-tooling", "tests", "fixtures"],
+    "ci": ["ci", "tests", "fixtures"],
+    "surface": ["surface", "package", "tests", "fixtures", "templates"],
+    "contracts": ["contracts", "tests", "fixtures"],
+    "docs": ["docs"],
+    "package": ["package", "tests", "fixtures", "templates"],
+    "subsystem": ["subsystem", "package", "tools", "docs", "contracts", "tests", "fixtures", "templates", "external-var"],
+    "tools": ["tools", "package", "tests", "fixtures", "templates"],
+    "tests": ["tests", "fixtures", "templates"],
+    "fixtures": ["fixtures", "templates"],
+    "templates": ["templates"],
+    "external-var": ["external-var"]
+  },
+  "source_roles": ["agent-tooling", "ci", "surface", "contracts", "docs", "package", "subsystem", "tools", "tests", "fixtures", "templates"],
+  "sentinel_names": [".gitkeep"],
+  "max_source_bytes": 50000000,
+  "forbidden_generated_segments": ["build", "dist", "generated", "artifacts", "checkpoints", "weights"]
+}

@@ -22,6 +22,8 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
+import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass, field
@@ -1088,6 +1090,58 @@ def check_layout(verbose: bool = False) -> CheckResult:
     return result
 
 
+def check_repository_policy(verbose: bool = False) -> CheckResult:
+    """Validate recursive placement and every publishable source candidate.
+
+    Unlike the historical tracked-tree ratchets in :func:`check_layout`, this
+    check applies the machine-readable role policy at every directory depth
+    and includes untracked, non-ignored files that could otherwise evade a
+    pre-stage release audit. Ignored inputs and runtime outputs are never
+    traversed.
+    """
+    start_time = time.time()
+    result = CheckResult(name="repository_policy", passed=False, message="")
+
+    try:
+        from ci import repository_policy_guard
+
+        policy = repository_policy_guard.load_policy()
+        private_tokens = repository_policy_guard.load_private_tokens(
+            PROJECT_ROOT, os.environ
+        )
+        candidates = repository_policy_guard.git_paths(
+            PROJECT_ROOT, candidates=True
+        )
+        findings = repository_policy_guard.check_release(
+            PROJECT_ROOT, candidates, policy, private_tokens
+        )
+    except (OSError, ValueError, subprocess.CalledProcessError) as e:
+        result.errors.append(str(e))
+        result.message = "Recursive repository policy scan failed"
+        result.duration_seconds = time.time() - start_time
+        return result
+
+    result.details["candidate_count"] = len(candidates)
+    result.details["finding_count"] = len(findings)
+    if findings:
+        result.errors.extend(finding.format() for finding in findings)
+        result.message = f"{len(findings)} recursive repository policy finding(s)"
+    else:
+        result.passed = True
+        result.message = (
+            f"{len(candidates)} tracked/untracked release candidates match "
+            "the recursive repository policy"
+        )
+
+    if verbose:
+        logger.info(f"  {result.message}")
+        for finding in findings:
+            logger.warning(f"    {finding.format()}")
+
+    result.duration_seconds = time.time() - start_time
+    return result
+
+
 def check_provenance_enum_sync(verbose: bool = False) -> CheckResult:
     """Verify the closed Touch.provider enum is in sync across all sites.
 
@@ -1194,6 +1248,7 @@ def run_integrity_checks(
         ("Legacy Token Leak", lambda: check_legacy_token_leak(verbose)),
         ("Foreign Repo Leak", lambda: check_foreign_repo_leak(verbose)),
         ("Repo Layout", lambda: check_layout(verbose)),
+        ("Recursive Repository Policy", lambda: check_repository_policy(verbose)),
         ("Provenance Enum Sync", lambda: check_provenance_enum_sync(verbose)),
         (
             "Validator Test Coverage",

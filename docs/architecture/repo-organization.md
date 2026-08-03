@@ -173,15 +173,37 @@ Revisit any of these only on a repo split or a 2.0 packaging change.
      the §3 taxonomy in Phase 2).
 3. **Ratchet semantics**: allowlists may only shrink; adding a line requires
    the same PR to justify it.
+4. **Recursive source-release policy** —
+   [`repository-layout.json`](repository-layout.json) classifies every root,
+   directory, and publishable file by role. Its companion
+   [`repository-layout.schema.json`](repository-layout.schema.json) validates
+   the policy shape without duplicating policy values. The standalone
+   `ci/repository_policy_guard.py` applies it to tracked files plus untracked,
+   non-ignored release candidates; ignored input and runtime trees are never
+   traversed. It rejects unclassified or ambiguous paths, illegal parent/child
+   role combinations, non-sentinel tracked content in external-data roots,
+   generated or oversized artifacts, common secret shapes, and nested source
+   repositories. It also scans path segments for private run/export shapes.
+   An operator can provide additional private course names and slugs through
+   `ED4ALL_PRIVATE_TOKEN_FILE`; that vocabulary remains local, and an in-repo
+   token file must itself be gitignored. The check is registered in
+   `ci/integrity_check.py` as `repository_policy`.
+
+The JSON policy is the executable classification contract; this document is
+the placement and migration rationale. A path that does not resolve to exactly
+one policy role is a design failure. Tests and fixtures remain exempt from the
+flat-file *count* heuristic, but not from recursive role, privacy, or release
+classification.
 
 ## 7. Subsystem interior schema (Phase 4)
 
-**Status: ratchet ADOPTED 2026-08-01; reorgs pending.** §§ 2–4 govern the top
-level and stop at depth 1. Below that, ~600 loose files across the
-CODE-PLATFORM and CODE-SUBSYSTEM trees were governed by nothing. This section
-extends the same doctrine inward. The subsystem roots keep their names and
-positions — `SemantiK/ Courseforge/ Trainforge/ LibV2/ MCP/` are unchanged;
-what changes is that their *interiors* now have a declared shape.
+**Status: ratchet ADOPTED 2026-08-01; recursive policy adopted 2026-08-02;
+reorgs in progress.** The original §§ 2–4 checks stopped at depth 1. The
+machine-readable policy in § 6 now classifies every depth, while the flat-file
+caps below remain migration ratchets for the largest existing containers.
+The subsystem roots keep their names and positions —
+`SemantiK/ Courseforge/ Trainforge/ LibV2/ MCP/` are unchanged; their interiors
+must now resolve to declared roles as well as respect the caps.
 
 ### 7.1 The interior rule
 
