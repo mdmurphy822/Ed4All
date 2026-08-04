@@ -58,7 +58,7 @@ Accessible HTML · Digital course + IMSCC · Grounded training data · Hybrid re
 <div align="center">
 <table>
 <thead>
-<tr bgcolor="#1F6FEB"><th align="center" colspan="4"><font color="#FFFFFF">🎓 Development Token Tracking</font></th></tr>
+<tr bgcolor="#1F6FEB"><th align="center" colspan="4"><font color="#FFFFFF">Token Tracking</font></th></tr>
 <tr>
 <td align="center" width="25%" bgcolor="#EDE9FE"><font color="#111827"><strong>12,886,474,014</strong><br><sub>🧠 DEVELOPMENT TOKENS</sub></font></td>
 <td align="center" width="25%" bgcolor="#DBEAFE"><font color="#111827"><strong>53</strong><br><sub>🧭 SESSIONS</sub></font></td>
@@ -239,6 +239,9 @@ ed4all run trainforge_train \
 Model licenses and provider terms determine whether generated pairs and trained
 derivatives are distributable. Read [Licensing and ToS posture](docs/LICENSING.md)
 first. Full training runs and promotion decisions remain operator-driven.
+
+Generated SFT and DPO pairs, retrieval indexes, and course artifacts always
+remain private local data; they are not published from this repository.
 
 ## Why Ed4All
 

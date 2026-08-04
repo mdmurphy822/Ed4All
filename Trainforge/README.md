@@ -36,7 +36,7 @@ Adapter training is an explicit, operator-controlled stage.
 - **Learning-aware artifacts.** Assessments, objectives, concept relationships,
   and pedagogy metadata stay connected to the course they came from.
 - **Grounded training pairs.** SFT instructions and DPO preferences are
-  synthesized from course artifacts and validated before publication.
+  synthesized from private course artifacts and validated for local use.
 - **Optional adapter training.** A separate post-import stage can fit and
   evaluate a course-pinned LoRA adapter, with provenance recorded in LibV2.
 

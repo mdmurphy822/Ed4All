@@ -37,10 +37,11 @@ anchors before presenting a response.
 
 ### SemantiK: source material to accessible HTML
 
-SemantiK converts document content into structured HTML designed for accessible
-delivery and validated against the project's configured accessibility gates. It
-combines narrow learned classifiers and generation specialists with deterministic
-composition, hierarchy, ARIA, and validation logic.
+SemantiK's preferred path renders source pages, extracts their regions through
+the GLM-OCR SDK, normalizes and enriches those regions with deterministic code,
+and applies the Super heading judge before producing accessibility-oriented
+HTML and provenance. Compatibility conversion paths remain isolated behind the
+same downstream contract and are not the production-qualified default.
 
 Its most important output is not just HTML. Every emitted content block carries
 a stable source identity and page/region provenance. Downstream stages preserve

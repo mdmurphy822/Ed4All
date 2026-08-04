@@ -236,22 +236,15 @@ flowchart LR
     class STAGE,CHUNK,COURSE downstream;
 ```
 
-## Live compatibility route
+## Compatibility route
 
-When `SEMANTIK_GLMOCR_LANE` is not enabled, `run_pipeline_v2` enters the older
-multi-stage conversion cascade. That route remains callable for compatibility
-with existing deployments and artifacts, but it is not qualified for
-production conversion: the previous BERT classifier was unreliable, and the
-staged multi-head training configuration still requires retraining and
-evaluation. Its retained callability is a code-compatibility fact, not a model-
-quality claim. It still converges on the same chapter IR and Ed4All adapter
-contract, which keeps downstream consumers independent of the selected
-converter.
-
-This public architecture intentionally does not present compatibility-model
-internals as the direction of travel. Their implementation remains isolated
-behind the converter boundary; new architecture work should target the
-GLM-OCR SDK, deterministic transform, enrichment, and Super judge path.
+When `SEMANTIK_GLMOCR_LANE` is not enabled, `run_pipeline_v2` enters the
+multi-stage compatibility cascade. The implementation remains callable for
+existing integrations, but its model weights are not qualified for production
+conversion and require retraining and evaluation. It emits the same chapter IR
+and Ed4All adapter contract, keeping downstream consumers independent of the
+selected converter. New architecture work targets the preferred GLM-OCR SDK,
+deterministic normalization and enrichment, and Super judge path.
 
 ## Change checklist
 

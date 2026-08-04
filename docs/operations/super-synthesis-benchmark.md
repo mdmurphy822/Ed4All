@@ -74,7 +74,7 @@ Replay the same manifest and request order for every candidate. Do not compare
 cells built from different prompts or acceptance requirements.
 
 For a small preflight of the real synthesis path, use the documented pilot
-command in [`full-run-playbook.md`](full-run-playbook.md#7-training-pair-pilot).
+command in [`full-run-playbook.md`](full-run-playbook.md#8-opt-into-training-deliberately).
 The pilot is a quality and integration check; it is not by itself a concurrency
 benchmark.
 
@@ -147,5 +147,5 @@ Store the selected value in ignored deployment configuration. Keep the public
 default unchanged. The concurrency flag's checkpoint-identity rules remain in
 [`behavior-flags-trainforge.md`](behavior-flags-trainforge.md); use the public
 [`pipeline invocation guide`](pipeline-invocation.md#7-graceful-stop-resume-and-checkpoints)
-and [`full-run playbook`](full-run-playbook.md#8-stop-and-resume-safely) for
+and [`full-run playbook`](full-run-playbook.md#7-stop-and-resume-safely) for
 fresh-start decisions, checkpoints, and stop/resume recovery.

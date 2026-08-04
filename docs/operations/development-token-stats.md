@@ -1,6 +1,6 @@
 # Development-token statistics
 
-The README's development-token footer is generated from local Claude and Codex
+The README's Token Tracking section is generated from local Claude and Codex
 session logs that were run from the Ed4All repository. It is a fun measure of
 development collaboration, not a measure of code quality, cost, authorship, or
 model efficiency.
