@@ -1,7 +1,7 @@
-"""Unit tests for ``_BaseLLMProvider`` (Phase 3 Subtask 11).
+"""Unit tests for ``_BaseLLMProvider``.
 
 The base class is abstract — subclasses (``ContentGeneratorProvider``,
-the upcoming ``OutlineProvider`` / ``RewriteProvider``) compose it via
+``OutlineProvider`` and ``RewriteProvider``) compose it via
 ``super().__init__(...)`` and override the page-authoring surface.
 This suite exercises the dispatch / decision-capture plumbing the base
 owns, independent of any specific tier's task semantics.
@@ -17,7 +17,7 @@ Coverage:
   bricks an LLM call.
 - ``_last_capture_id`` returns ``in-memory:{id(self)}`` when no
   capture is wired and ``{file_basename}:{event_index}`` when a
-  streaming capture is present (Wave 112 audit-trail format).
+  streaming capture is present.
 - Unknown provider raises ``ValueError`` with the subclass's name in
   the message.
 
@@ -41,7 +41,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from Courseforge.generators._base import _BaseLLMProvider  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -103,7 +102,7 @@ class _FakeCapture:
 
 class _StreamingFakeCapture(_FakeCapture):
     """Adds a ``_stream_path`` so ``_last_capture_id`` returns the
-    Wave 112 ``{file_basename}:{event_index}`` form."""
+    ``{file_basename}:{event_index}`` form."""
 
     def __init__(self, stream_path: Path) -> None:
         super().__init__()
@@ -217,7 +216,7 @@ def test_dispatch_call_routes_to_oa_client_for_local_provider(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# W9.2 — unified endpoint-registry migration
+# Unified endpoint-registry behavior
 # ---------------------------------------------------------------------------
 
 
@@ -369,8 +368,7 @@ def test_emit_decision_includes_required_fields(monkeypatch):
 def test_emit_decision_swallows_capture_exceptions(monkeypatch):
     """A flaky capture must NEVER brick an LLM call — the base's
     ``_emit_decision`` catches exceptions and logs them. This
-    matches the pre-Phase-3 behaviour of ``ContentGeneratorProvider``
-    that the Wave 112 audit-trail contract relies on."""
+    preserves the non-blocking audit-trail contract."""
     monkeypatch.delenv("COURSEFORGE_PROVIDER", raising=False)
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
 
@@ -400,7 +398,7 @@ def test_last_capture_id_falls_back_to_in_memory_when_capture_none(
     monkeypatch,
 ):
     """When no capture is wired, ``_last_capture_id`` returns
-    ``in-memory:{id(self)}`` so the Wave 112 invariant
+    ``in-memory:{id(self)}`` so the capture-ID invariant
     (``decision_capture_id`` ≥ 1 char) holds without forcing tests to
     wire up a full capture surface."""
     monkeypatch.delenv("COURSEFORGE_PROVIDER", raising=False)
@@ -425,7 +423,7 @@ def test_last_capture_id_format_when_streaming_capture_present(
     """When a streaming capture's ``_stream_path`` is set, the base
     formats the ID as ``{file_basename}:{event_index}`` so a
     ``Touch.decision_capture_id`` can resolve to the exact JSONL line
-    that explained the LLM call (Wave 112 audit-trail format)."""
+    that explained the LLM call."""
     monkeypatch.delenv("COURSEFORGE_PROVIDER", raising=False)
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
 

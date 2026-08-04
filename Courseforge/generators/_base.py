@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 """Courseforge generators — shared LLM-agnostic base class.
 
-Phase 3 Subtask 9: extract the HTTP / dispatch / decision-capture
-skeleton out of :class:`Courseforge.generators._provider.ContentGeneratorProvider`
-into a reusable abstract base. Phase 1's ``ContentGeneratorProvider``
-becomes a thin subclass that overrides only ``_render_user_prompt``
-(page-authoring) and the public ``generate_page`` entry point.
-Phase 3's :class:`OutlineProvider` and :class:`RewriteProvider`
-sibling subclasses share this base so the per-tier env-var contract
+This reusable abstract base owns HTTP dispatch and decision capture.
+``ContentGeneratorProvider`` overrides the page-authoring prompt and public
+``generate_page`` entry point; :class:`OutlineProvider` and
+:class:`RewriteProvider` share the same transport so the per-tier env-var contract
 (``COURSEFORGE_PROVIDER`` / ``COURSEFORGE_OUTLINE_*`` /
 ``COURSEFORGE_REWRITE_*``) plugs in via constructor kwargs without
 duplicating the dispatch plumbing.
@@ -20,7 +17,7 @@ Constructor surface:
 - ``max_tokens`` / ``temperature`` — sampling.
 - ``client`` / ``anthropic_client`` — test injection seams.
 - ``env_provider_var`` — name of the env var the subclass reads to
-  resolve the provider (e.g. ``COURSEFORGE_PROVIDER`` for Phase 1,
+  resolve the provider (e.g. ``COURSEFORGE_PROVIDER`` for page authoring,
   ``COURSEFORGE_OUTLINE_PROVIDER`` for the outline tier).
 - ``default_provider`` — the default when the env var is unset.
 - ``default_model_anthropic`` / ``default_model_together`` /
@@ -49,7 +46,7 @@ The base owns:
   Anthropic SDK or the OpenAI-compatible client.
 - ``_call_anthropic(user_prompt) -> Tuple[str, int]`` — Anthropic
   SDK lazy-import + text extraction.
-- ``_last_capture_id() -> str`` — Wave 112 audit-trail
+- ``_last_capture_id() -> str`` — decision-capture
   ``{file_basename}:{event_index}`` resolution.
 - ``_emit_decision(*, decision_type, decision, rationale)`` —
   generic capture-emit helper subclasses call from their
@@ -323,7 +320,7 @@ class _BaseLLMProvider(ABC):
             self._base_url = (
                 base_url or TOGETHER_DEFAULT_BASE_URL
             ).rstrip("/")
-            # W9.2: build the client via the unified endpoint registry
+            # Build the client through the unified endpoint registry.
             # (``build_openai_compatible_client``) instead of a direct
             # ``OpenAICompatibleClient(...)`` construction. The identity
             # (base_url / model / api_key) is PRE-RESOLVED above on the same
@@ -371,8 +368,8 @@ class _BaseLLMProvider(ABC):
             self._base_url = (
                 base_url or env_base_url or NVIDIA_DEFAULT_BASE_URL
             ).rstrip("/")
-            # W9.2: registry-built client (pre-resolved identity passed as
-            # explicit overrides → byte-identical) + row ``extra_body``.
+            # Build from the endpoint registry while passing the pre-resolved
+            # identity explicitly to preserve precedence and ``extra_body``.
             self._oa_client, self._extra_body = self._build_registry_oa_client(
                 "nvidia",
                 model=self._model,
@@ -399,7 +396,7 @@ class _BaseLLMProvider(ABC):
             self._base_url = (
                 base_url or env_base_url or local_base_url_baseline
             ).rstrip("/")
-            # W9.2: registry-built client. Identity is pre-resolved on the
+            # Build from the registry. Identity is pre-resolved from the
             # SAME ``LOCAL_SYNTHESIS_*`` env vars + registry defaults (incl.
             # the ``default_base_url_local`` / ``default_model_local``
             # subclass baselines) and passed as explicit overrides, so the
@@ -416,7 +413,7 @@ class _BaseLLMProvider(ABC):
             self._anthropic_client = None
 
         else:
-            # W9.2 generic openai-compatible seat: any OTHER registry
+            # Generic OpenAI-compatible seat: any other registry
             # endpoint the legacy hardcoded branches never reached
             # (``nvidia-deepseek``, ``together-vision``, ``groq``,
             # ``fireworks``, ``deepseek``, …). Identity (base_url / model /
@@ -441,7 +438,7 @@ class _BaseLLMProvider(ABC):
             self._anthropic_client = None
 
     # ------------------------------------------------------------------
-    # Registry-driven client construction (W9.2)
+    # Registry-driven client construction
     # ------------------------------------------------------------------
 
     def _build_registry_oa_client(
@@ -519,7 +516,7 @@ class _BaseLLMProvider(ABC):
         """Emit one decision-capture event per LLM call.
 
         Subclasses pick the canonical ``decision_type`` (e.g.
-        ``content_generator_call`` for Phase 1, ``block_outline_call``
+        ``content_generator_call`` for page authoring, ``block_outline_call``
         for the outline tier) and interpolate the per-call rationale
         per the project's LLM call-site instrumentation contract
         (≥20 chars, dynamic signals interpolated).
@@ -544,9 +541,9 @@ class _BaseLLMProvider(ABC):
         the retry count surfaces on the decision-capture rationale.
         Anthropic routes through the SDK via :meth:`_call_anthropic`.
 
-        Phase 3 Subtask 21: ``extra_payload`` is an optional dict whose
+        ``extra_payload`` is an optional dict whose
         keys are merged into the OpenAI-compatible request body before
-        the POST. The Phase 3 router uses this to plumb per-block-type
+        the POST. The router uses this to carry per-block-type
         grammar / JSON-Schema payloads (``grammar``, ``guided_json``,
         ``guided_grammar``, ``guided_regex``, ``format`` as a JSON-Schema
         dict for Ollama 0.5+, ``response_format`` for json_schema mode)
@@ -598,7 +595,7 @@ class _BaseLLMProvider(ABC):
             "temperature": self._temperature,
             "max_tokens": self._max_tokens,
         }
-        # W9.2: thread the resolved endpoint row's ``extra_body`` request-
+        # Thread the resolved endpoint row's ``extra_body`` request-
         # body extras (e.g. a reasoning model's
         # ``chat_template_kwargs:{thinking:false}``) at the top level of the
         # body. ``None`` for every legacy seat → byte-stable no-op. Applied
@@ -716,13 +713,13 @@ class _BaseLLMProvider(ABC):
         """Return ``{file_basename}:{event_index}`` for the most recent
         decision-capture event emitted via :meth:`_emit_decision`.
 
-        Format mirrors the Wave 112 audit-trail convention so a
+        The format ensures a
         ``Touch.decision_capture_id`` always resolves to the exact
         JSONL line that explained the LLM call. When the capture handle
         isn't a real :class:`DecisionCapture` (test injection of a
         ``_FakeCapture`` shape, ``capture=None``, or a streaming-disabled
         capture missing a stream path), falls back to
-        ``in-memory:{id(self)}`` so the Wave 112 invariant
+        ``in-memory:{id(self)}`` so the invariant
         (``decision_capture_id`` must be ≥1 char) is preserved without
         forcing tests to wire up a full capture surface.
         """
