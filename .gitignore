@@ -359,8 +359,8 @@ SemantiK/**/training_args.bin
 # Migration policy: only inference/cascade pipeline CODE ships. Scripts that
 # fetch corpora over the network or generate training-data pairs are part of
 # the local data-acquisition surface (alongside models/ + data/) and never
-# land on GitHub. Inference/codegen scripts (e.g. gen_wcag_coverage_doc.py,
-# infer_pdf.py, run_cascade_json.py) stay tracked.
+# land on GitHub. Supported inference/codegen entry points stay tracked;
+# retired utilities belong in the ignored recursive regression shelf above.
 SemantiK/scripts/fetch_*.py
 SemantiK/scripts/crawl_*.py
 SemantiK/scripts/pair_from_*.py

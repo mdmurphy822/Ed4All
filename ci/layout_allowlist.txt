@@ -110,7 +110,7 @@ libflat:write_facade.py
 flatcap:Courseforge/generators=2
 flatcap:LibV2/tools/libv2=24
 flatcap:MCP/tools=11
-flatcap:SemantiK/scripts=3
+flatcap:SemantiK/scripts=2
 flatcap:SemantiK/semantik_structure=46
 flatcap:SemantiK/semantik_structure/assembler=15
 flatcap:SemantiK/semantik_structure/council=14
