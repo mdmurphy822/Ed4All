@@ -50,8 +50,8 @@ flowchart LR
         direction LR
         parse["Parse content,<br/>objectives + assessments"]
         chunks["Canonical v4 chunks<br/>metadata + provenance"]
-        graph["Concept + pedagogy<br/>artifacts"]
-        parse --> chunks --> graph
+        knowledge["Concept + pedagogy<br/>artifacts"]
+        parse --> chunks --> knowledge
     end
 
     subgraph synthesize["Create grounded learning data"]
@@ -75,10 +75,10 @@ flowchart LR
     package --> parse
     chunks --> sft
     chunks --> dpo
-    graph --> archive
+    knowledge --> archive
     chunks --> archive
     gates --> archive
-    gates -. explicit opt-in .-> lora
+    gates -.->|Explicit opt-in| lora
     evaluation --> archive
 
     classDef input fill:#eef6ff,stroke:#2563eb,color:#172554,stroke-width:2px;
@@ -87,7 +87,7 @@ flowchart LR
     classDef train fill:#faf5ff,stroke:#9333ea,color:#581c87;
 
     class package input;
-    class parse,chunks,graph,archive corpus;
+    class parse,chunks,knowledge,archive corpus;
     class sft,dpo,gates data;
     class lora,evaluation train;
 ```
