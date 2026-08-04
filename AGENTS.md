@@ -116,9 +116,8 @@ review agents.
 
 Non-negotiable. CI and the validation gates enforce most of them.
 
-**Branching.** Work happens on the current development branch (currently
-`dev-v0.3.1`). Do **not** merge to `main`, `git push`, or open a PR without
-explicit operator authorization.
+**Branching.** Work happens on the current development branch. Do **not** merge
+to `main`, `git push`, or open a PR without explicit operator authorization.
 
 **Validation gates.** Source of truth is
 `config/workflows.yaml::validation_gates`; per-gate detail in
