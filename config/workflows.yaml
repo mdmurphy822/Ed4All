@@ -5699,7 +5699,7 @@ workflows:
         max_concurrent: 1
         depends_on: []
         timeout_minutes: 720
-        description: Dispatch one training run via Trainforge.train_course
+        description: Dispatch one adapter-training run through the Trainforge TrainingRunner
 
       # Wave 108 / Phase B: gate adapter promotion behind eval thresholds.
       # Reads <model_dir>/eval/eval_report.json and fails closed on

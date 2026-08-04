@@ -2542,7 +2542,7 @@ def models_eval_cmd(ctx, slug: str, model_id: str, output: str,
     if report is None:
         print_warning(
             f"No eval_report.json found for {model_id}. Evaluation has not "
-            f"run for this model — invoke `python -m Trainforge.train_course "
+            f"run for this model — invoke `python -m Trainforge.cli.train_course "
             f"--course-code {slug}` to train and score together, or run a "
             f"fresh eval from the saved adapter with "
             f"`libv2 models eval {slug} {model_id} --fresh`."

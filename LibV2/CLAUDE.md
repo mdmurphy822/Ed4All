@@ -13,7 +13,7 @@ SemantiK ───> Courseforge ───> Trainforge ────────�
                                 │                          │
                                 └─── training_specs/ ────> models/<model_id>/
                                           ↓                       ↑
-                                    [Trainforge.train_course] ────┘
+                                    [Trainforge.cli.train_course] ────┘
                                           ↓
                                     (eval harness — Trainforge/eval/)
 ```

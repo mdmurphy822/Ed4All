@@ -260,7 +260,7 @@ def run_fresh_eval(
                     },
                     {
                         "option": "retrain to re-score"
-                        " (Trainforge.train_course)",
+                        " (Trainforge.cli.train_course)",
                         "reason_rejected": "full retraining is not needed"
                         " to re-evaluate an existing adapter",
                     },

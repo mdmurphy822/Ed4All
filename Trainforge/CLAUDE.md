@@ -352,7 +352,8 @@ Trainforge/
 │   ├── outcomes.py              # Objective vocabulary matching + parent rollup
 │   └── tests/                   # Alignment contracts
 ├── synthesize_training.py       # Legacy CLI/import compatibility shim
-├── train_course.py              # SLM adapter training entry point
+├── cli/                         # Product-local command modules
+│   └── train_course.py          # SLM adapter training entry point
 ├── rag/                       # Retrieval and typed graph construction
 ├── synthesis/                   # Canonical SFT/DPO synthesis implementation
 │   ├── synthesize_training.py   # Chunk → instruction/preference pair synthesis
@@ -847,11 +848,11 @@ Twelve fail-loud invariants close the surfaces where the synthesis pipeline coul
 
 ```bash
 # Direct entry point (works today end-to-end via Python module):
-python -m Trainforge.train_course --course-code <slug> --base-model <name> [--dry-run]
+python -m Trainforge.cli.train_course --course-code <slug> --base-model <name> [--dry-run]
 
 # Examples
-python -m Trainforge.train_course --course-code <course-slug> --base-model qwen2.5-1.5b --dry-run
-python -m Trainforge.train_course --course-code <course-slug> --base-model llama-3.2-3b
+python -m Trainforge.cli.train_course --course-code <course-slug> --base-model qwen2.5-1.5b --dry-run
+python -m Trainforge.cli.train_course --course-code <course-slug> --base-model llama-3.2-3b
 
 # Via the unified CLI (workflow registered in config/workflows.yaml):
 ed4all run trainforge_train --course-name <course-slug> --base-model qwen2.5-1.5b
@@ -913,7 +914,7 @@ Pin source of truth is `pyproject.toml::[project.optional-dependencies].training
 
 `Trainforge/training/configs/__init__.py::TrainingConfig` is the canonical surface. Per-base YAML (`Trainforge/training/configs/<short-name>.yaml`) materializes the production defaults; the model card persists every populated field for audit.
 
-**Per-run overrides.** `--config-overrides <path-or-inline>` (on both `ed4all run` and `python -m Trainforge.train_course`) merges an operator-supplied override set over the per-base YAML for one run, without editing the checked-in file. Accepted shapes: a YAML/JSON file path, an inline JSON object, or inline `key=value[,key=value]` pairs (list fields use `|` between items, e.g. `target_modules=q_proj|k_proj`). All shapes normalize through the single canonical parser `Trainforge/training/configs/__init__.py::parse_config_overrides` — the CLI validates through it at parse time, `MCP/tools/pipeline_tools.py::_run_training` re-normalizes through it at dispatch, and `TrainingRunner` re-coerces through that parser's shared core `coerce_config_overrides` (which takes an already-parsed mapping, not a spec string), so the three can never disagree. Every key must name a real `TrainingConfig` field (an unknown key raises `ConfigOverrideError` naming the supported set — never dropped, never a new attribute), every value is cast to the field's declared type, and ranges are checked at parse time (positive rates/counts, `[0.0, 1.0]` for `lora_dropout` / `warmup_ratio`, enum membership for `dpo_preference_filter` / `checkpoint_selection_metric`). `base_model` is locked out — it is `--base-model`'s, and letting an override rewrite it would desync the model card from the weights actually loaded. Unset → `load_config` is byte-identical to before the route existed. **This is the only pipeline route to `dpo_learning_rate`**: `nemotron3-nano-30b.yaml` ships it `null` on purpose and `peft_trainer.py` raises rather than reusing the SFT rate, so `--config-overrides dpo_learning_rate=<canary value>` is what makes Nemotron Nano DPO startable. The supplied set is recorded verbatim on `model_card.json::config_overrides`, and the effective rate lands in `training_config.dpo_learning_rate` (both omitted when no override was supplied, so legacy cards are unchanged). YAML currently ships for a SUBSET of the six registered bases (`qwen2.5-1.5b`, `llama-3.2-1b`, `smollm2-1.7b`, `nemotron3-nano-30b`) — a base without a YAML resolves to the `TrainingConfig` dataclass defaults, which differ from the table below in at least `save_total_limit` (dataclass default `None` vs YAML `3`). Schema mirrored in `schemas/models/model_card.schema.json::training_config`.
+**Per-run overrides.** `--config-overrides <path-or-inline>` (on both `ed4all run` and `python -m Trainforge.cli.train_course`) merges an operator-supplied override set over the per-base YAML for one run, without editing the checked-in file. Accepted shapes: a YAML/JSON file path, an inline JSON object, or inline `key=value[,key=value]` pairs (list fields use `|` between items, e.g. `target_modules=q_proj|k_proj`). All shapes normalize through the single canonical parser `Trainforge/training/configs/__init__.py::parse_config_overrides` — the CLI validates through it at parse time, `MCP/tools/pipeline_tools.py::_run_training` re-normalizes through it at dispatch, and `TrainingRunner` re-coerces through that parser's shared core `coerce_config_overrides` (which takes an already-parsed mapping, not a spec string), so the three can never disagree. Every key must name a real `TrainingConfig` field (an unknown key raises `ConfigOverrideError` naming the supported set — never dropped, never a new attribute), every value is cast to the field's declared type, and ranges are checked at parse time (positive rates/counts, `[0.0, 1.0]` for `lora_dropout` / `warmup_ratio`, enum membership for `dpo_preference_filter` / `checkpoint_selection_metric`). `base_model` is locked out — it is `--base-model`'s, and letting an override rewrite it would desync the model card from the weights actually loaded. Unset → `load_config` is byte-identical to before the route existed. **This is the only pipeline route to `dpo_learning_rate`**: `nemotron3-nano-30b.yaml` ships it `null` on purpose and `peft_trainer.py` raises rather than reusing the SFT rate, so `--config-overrides dpo_learning_rate=<canary value>` is what makes Nemotron Nano DPO startable. The supplied set is recorded verbatim on `model_card.json::config_overrides`, and the effective rate lands in `training_config.dpo_learning_rate` (both omitted when no override was supplied, so legacy cards are unchanged). YAML currently ships for a SUBSET of the six registered bases (`qwen2.5-1.5b`, `llama-3.2-1b`, `smollm2-1.7b`, `nemotron3-nano-30b`) — a base without a YAML resolves to the `TrainingConfig` dataclass defaults, which differ from the table below in at least `save_total_limit` (dataclass default `None` vs YAML `3`). Schema mirrored in `schemas/models/model_card.schema.json::training_config`.
 
 | Field | Default (qwen2.5-1.5b) | Purpose |
 |-------|------------------------|---------|
@@ -1163,7 +1164,7 @@ All training captures land at `runtime/training-captures/trainforge/<COURSE_CODE
 libv2 info <course-slug>
 
 # 2. (Optional) plan-only sanity check.
-python -m Trainforge.train_course --course-code <course-slug> \
+python -m Trainforge.cli.train_course --course-code <course-slug> \
   --base-model qwen2.5-1.5b --dry-run
 
 # 3. Real training run. The trainer reads the existing training_specs/ —
@@ -1171,7 +1172,7 @@ python -m Trainforge.train_course --course-code <course-slug> \
 #    synthesis first, use a license-clean provider (`local` / `together`);
 #    see § Provider configuration and docs/LICENSING.md.
 pip install ed4all[training]
-python -m Trainforge.train_course --course-code <course-slug> \
+python -m Trainforge.cli.train_course --course-code <course-slug> \
   --base-model qwen2.5-1.5b
 
 # 4. Import + promote the adapter.
@@ -1211,7 +1212,7 @@ Options:
 | `--json` | off | Emit the export stats as JSON instead of the human table. |
 | `--verbose` / `-v` | off | Verbose output. |
 
-This surface exports **decision-capture** data keyed by run. It is distinct from the SLM training corpus in `LibV2/courses/<slug>/training_specs/` (`instruction_pairs.jsonl` / `preference_pairs.jsonl`), which is produced by `Trainforge/synthesize_training.py` and consumed directly by `Trainforge.train_course` — see § Provider configuration (synthesis) and § Training Pipeline.
+This surface exports **decision-capture** data keyed by run. It is distinct from the SLM training corpus in `LibV2/courses/<slug>/training_specs/` (`instruction_pairs.jsonl` / `preference_pairs.jsonl`), which is produced by `Trainforge/synthesize_training.py` and consumed directly by `Trainforge.cli.train_course` — see § Provider configuration (synthesis) and § Training Pipeline.
 
 ---
 

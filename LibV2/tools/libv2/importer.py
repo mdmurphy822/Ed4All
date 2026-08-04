@@ -65,12 +65,8 @@ _COPIED_SUBDIRS: list[str] = [
 def slugify(title: str, max_length: int = 50) -> str:
     """Convert a title to a URL-safe slug.
 
-    Thin delegation to ``lib.ontology.slugs.libv2_course_slug`` — the single
-    source of truth for the LibV2 archive-directory slug. The behaviour here
-    is the contract (``gui/services/course_service.py`` and
-    ``Trainforge/train_course.py`` both resolve archive dirs against it), so
-    the canonical implementation was lifted out verbatim and both call sites
-    now share it. Output is byte-identical to the prior inline implementation.
+    Delegates to ``lib.ontology.slugs.libv2_course_slug`` so import, training,
+    and course-service callers resolve the same archive directory.
     """
     return libv2_course_slug(title, max_length=max_length)
 

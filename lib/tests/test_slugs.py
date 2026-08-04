@@ -557,7 +557,7 @@ def test_deslugify_concept_false_positive_guards():
 # libv2_course_slug — single source of truth for the LibV2 archive-dir slug.
 #
 # Consolidates the previously-independent ``gui/services/course_service.py::
-# _slugify`` and ``Trainforge/train_course.py::_slugify`` guesses, both of
+# _slugify`` and ``Trainforge/cli/train_course.py::_slugify`` guesses, both of
 # which drifted from ``LibV2/tools/libv2/importer.py::slugify`` (the contract).
 # ---------------------------------------------------------------------------
 
@@ -614,9 +614,9 @@ def test_importer_slugify_delegates_to_canonical(text):
 
 @pytest.mark.parametrize("text", _LIBV2_SLUG_INPUTS)
 def test_train_course_slug_equals_importer(text):
-    """``Trainforge/train_course.py::_slugify`` resolves the importer's slug."""
+    """``Trainforge/cli/train_course.py::_slugify`` resolves the importer's slug."""
     from LibV2.tools.libv2.importer import slugify
-    from Trainforge.train_course import _slugify as train_slugify
+    from Trainforge.cli.train_course import _slugify as train_slugify
 
     assert train_slugify(text) == slugify(text), (
         f"train_course._slugify diverged from the importer on {text!r}"

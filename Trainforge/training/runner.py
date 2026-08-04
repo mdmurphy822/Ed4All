@@ -366,7 +366,7 @@ class TrainingRunner:
                 )
 
                 # A2 — invoke EvalGatingValidator inline. Both
-                # `python -m Trainforge.train_course` and `ed4all run
+                # `python -m Trainforge.cli.train_course` and `ed4all run
                 # trainforge_train` now enforce the gate; previously
                 # only the workflow-orchestrator path fired it.
                 self._enforce_eval_gate(run_dir=run_dir, capture=capture)

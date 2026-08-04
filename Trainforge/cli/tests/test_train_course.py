@@ -1,4 +1,4 @@
-"""Trainforge.train_course CLI contract tests.
+"""Trainforge adapter-training command contracts.
 
 Drives the click command via :class:`click.testing.CliRunner` against a
 synthetic LibV2 course in tmp_path. The CLI test exercises the full
@@ -14,11 +14,11 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge import train_course  # noqa: E402
+from Trainforge.cli import train_course  # noqa: E402
 
 
 def _build_libv2_course(tmp_path: Path, slug: str = "tst-101") -> Path:

@@ -1,20 +1,16 @@
-#!/usr/bin/env python3
 """Trainforge command-line entry point for adapter training.
 
-Top-level entry point for one training run, sibling of
-``Trainforge/synthesize_training.py`` and ``Trainforge/process_course.py``.
-The training stage is post-import: it consumes an already-imported
-LibV2 course and writes ``models/<model_id>/`` back into the same slug.
+The training stage consumes an imported LibV2 course and writes
+``models/<model_id>/`` back into the same course archive.
 
 Wired through the canonical CLI as::
 
     ed4all run trainforge_train --course-name <COURSE_NAME> \\
         --base-model qwen2.5-1.5b
 
-…via :mod:`cli.commands.run`. This module also functions as a direct
-script::
+…via :mod:`cli.commands.run`. The product-local command is also available as::
 
-    python -m Trainforge.train_course --course-code <COURSE_CODE> \\
+    python -m Trainforge.cli.train_course --course-code <COURSE_CODE> \\
         --base-model qwen2.5-1.5b --dry-run
 
 Training runs in-process through ``LocalBackend``. HF-gated bases require
@@ -29,14 +25,9 @@ from typing import Optional
 
 import click
 
-# Make project root importable when run as a script.
-_PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
-
-from lib.generation.stop_control import GracefulStopRequested  # noqa: E402
-from lib.ontology.slugs import libv2_course_slug  # noqa: E402
-from Trainforge.training import (  # noqa: E402
+from lib.generation.stop_control import GracefulStopRequested
+from lib.ontology.slugs import libv2_course_slug
+from Trainforge.training import (
     BaseModelRegistry,
     ConfigOverrideError,
     LocalBackend,
@@ -120,7 +111,7 @@ def train_course_command(
     Example:
 
     \b
-        python -m Trainforge.train_course --course-code <COURSE_CODE> \\
+        python -m Trainforge.cli.train_course --course-code <COURSE_CODE> \\
             --base-model qwen2.5-1.5b --dry-run
 
     Real training runs in-process and requires a CUDA-capable GPU.
@@ -144,12 +135,8 @@ def train_course_command(
         dry_run=dry_run,
         config_overrides=overrides or None,
     )
-    # NB: a graceful stop (``ed4all stop`` sentinel tripping mid-training) makes
-    # ``runner.run()`` raise ``GracefulStopRequested``. It is deliberately NOT
-    # caught here: on the in-process ``ed4all run trainforge_train`` path the
-    # executor catches it and marks the phase ``paused``.
-    # The standalone ``python -m Trainforge.train_course`` path converts it to
-    # the canonical paused exit code 3 in :func:`main`.
+    # Let the caller translate a graceful stop into its own paused-state
+    # contract. The standalone command maps it to exit code 3 in ``main``.
     result = runner.run()
 
     click.secho("Training run complete.", fg="green" if not dry_run else "cyan")

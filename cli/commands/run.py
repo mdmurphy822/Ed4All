@@ -55,15 +55,13 @@ SUPPORTED_WORKFLOWS = {
     "textbook-to-course",  # hyphenated alias
     "course_generation",
     "rag_training",
-    # Wave 90 — post-import SLM adapter training stage, run STANDALONE
-    # against an already-archived LibV2 course. Generic workflow path:
+    # Post-import adapter training against an archived LibV2 course:
     # ``ed4all run trainforge_train --course-name <COURSE_NAME>`` creates the
     # workflow state via create_workflow_impl, then the ``training`` phase
-    # routes by phase NAME through ``_PHASE_TOOL_MAPPING`` to the
-    # ``run_training`` registry handler, which drives the Trainforge
-    # train_course entry point (``Trainforge/train_course.py``).
+    # routes by phase name through ``_PHASE_TOOL_MAPPING`` to the
+    # ``run_training`` handler, which constructs the Trainforge TrainingRunner.
     #
-    # The SAME ``training`` phase (plus ``post_training_validation`` and
+    # The same ``training`` phase (plus ``post_training_validation`` and
     # ``evaluation``) is also declared in ``textbook_to_course`` between
     # ``vector_indexing`` and ``finalization``, so a single build can run
     # straight through to a trained + evaluated adapter with

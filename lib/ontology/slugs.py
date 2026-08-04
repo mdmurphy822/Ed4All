@@ -52,16 +52,9 @@ _SLUG_STRIP_DISALLOWED = re.compile(r"[^a-z0-9\s-]")
 _SLUG_WS_COLLAPSE = re.compile(r"\s+")
 
 # LibV2 course-slug helper. The single source of truth for converting a
-# course name / title to the hyphen slug that ``LibV2/tools/libv2/importer.py``
-# uses to name an archive directory. Previously ``importer.slugify``,
-# ``gui/services/course_service.py::_slugify``, and
-# ``Trainforge/train_course.py::_slugify`` each reimplemented this
-# independently and drifted (the GUI kept leading articles + skipped
-# truncation; the trainer only swapped ``_``→``-`` and left spaces /
-# punctuation intact). Consolidated here so all three resolve the same
-# archive directory the importer created. ``importer.slugify`` now delegates
-# to this function (it stays the contract — byte-identical outputs for its
-# existing inputs).
+# course name or title to the archive-directory slug used by import, training,
+# and course-service callers. ``importer.slugify`` delegates to this function
+# and preserves its established output contract.
 _LIBV2_LEADING_ARTICLE_RE = re.compile(r"^(a|an|the)\s+")
 _LIBV2_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 
@@ -69,8 +62,7 @@ _LIBV2_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 def libv2_course_slug(title: str, max_length: int = 50) -> str:
     """Convert a course name / title to its LibV2 archive-directory slug.
 
-    Byte-for-byte equivalent to the historical
-    ``LibV2.tools.libv2.importer.slugify`` (which now delegates here):
+    The archive slug follows these rules:
 
         1. Lowercase the input.
         2. Strip a single leading article (``a`` / ``an`` / ``the``).

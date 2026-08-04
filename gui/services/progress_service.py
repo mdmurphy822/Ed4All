@@ -1417,12 +1417,9 @@ def _resolve_unit_anchor(
             return _runs_dir() / run_id.strip()
         return None
     if kind == "libv2_course_slug":
-        # The LibV2 course dir, resolved with the WRITER's own recipe
-        # (TrainingRunner._resolve_course_dir: lib.paths.LIBV2_COURSES /
-        # Trainforge/train_course.py::_slugify → the canonical
-        # lib.ontology.slugs.libv2_course_slug) — a mirror of the trainer's
-        # resolution, never an invented pattern. Root precedence follows the
-        # GUI-wide convention: params.libv2_root → ED4ALL_LIBV2_ROOT →
+        # Resolve the LibV2 course directory with the same canonical slug
+        # function and root precedence used by the training runner:
+        # params.libv2_root → ED4ALL_LIBV2_ROOT →
         # lib.paths.LIBV2_COURSES.
         code = params.get("course_code") or params.get("course_name")
         if not (isinstance(code, str) and code.strip()):

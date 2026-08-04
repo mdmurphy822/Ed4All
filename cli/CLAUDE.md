@@ -175,7 +175,7 @@ staleness heuristic and the resume path see the truth.
   registry warns on stderr and lets the handler fail the run closed. The course
   itself is `--course-name`; `--course-code` is *not* an `ed4all run` option
   (it is the handler-side `inputs_from` param alias, and a real flag only on
-  the separate `python -m Trainforge.train_course` CLI).
+  the separate `python -m Trainforge.cli.train_course` CLI).
 - **`--config-overrides`** carries PER-RUN `TrainingConfig` fields into the
   `training` phase — a YAML/JSON file path, an inline JSON object, or inline
   `key=value[,key=value]` pairs (list fields use `|` between items). It
