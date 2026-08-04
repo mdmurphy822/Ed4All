@@ -47,19 +47,11 @@ class TeachingRoleAlignmentEvaluator:
     # Operators override via the ``expected_modes`` constructor kwarg
     # or via the workflow gate's ``inputs.expected_modes`` block.
     #
-    # Wave 138b: ``procedure`` was added per the plan's Decision Point
-    # Q2 (operator-recommended). The RDF/SHACL calibration corpus shows
-    # ``procedure`` chunks split as elaborate=11, introduce=3,
-    # reinforce=3, transfer=1 — elaborate is the dominant role at
-    # 11/18 (~0.61). The 0.70 floor is intentionally aspirational
-    # rather than empirical: a corpus that drops below it surfaces
-    # via the warning-severity gate, so the operator sees the
-    # alignment drift before it becomes structural.
+    # Procedures are expected to elaborate actionable knowledge. The 0.70
+    # floor is a warning contract that surfaces alignment drift for review.
     #
-    # ``example`` is intentionally absent. Decision Point Q3:
-    # the RDF/SHACL calibration corpus distribution is bimodal (elaborate=11,
-    # reinforce=10) with no confident expected mode. Re-evaluate when
-    # a second corpus carries a confident mode.
+    # ``example`` is intentionally absent because examples can legitimately
+    # elaborate or reinforce; operators may define a domain-specific mode.
     DEFAULT_EXPECTED_MODES: Dict[str, Dict[str, Any]] = {
         "real_world_scenario": {"expected_role": "transfer",   "min_share": 0.70},
         "scenario":            {"expected_role": "transfer",   "min_share": 0.70},

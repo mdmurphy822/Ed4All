@@ -221,8 +221,8 @@ class AdapterCallable:
                 **model_kwargs,
             )
         except AttributeError as exc:
-            # Audit 2026-04-30 / Phase B remediation hint: catch the
-            # known accelerate>=1.0 × transformers<4.49 incompatibility
+            # Translate the known accelerate>=1.0 × transformers<4.49
+            # incompatibility
             # (frozenset.discard) and translate it into an actionable
             # error so the operator sees the fix command instead of a
             # cryptic stack trace.

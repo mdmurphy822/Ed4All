@@ -39,8 +39,8 @@ from Trainforge.eval.retrieval.chunk_ids import (
 logger = logging.getLogger(__name__)
 
 
-# Wave 105: the default citation regex now accepts the four
-# citation forms observed in trained-model output. A course corpus
+# The default citation regex accepts four citation forms emitted by trained
+# models. A course corpus
 # uses ``<course-slug>_chunk_NNNNN`` IDs; we accept multiple
 # citation formats and normalize back to the canonical ``chunk_NNNNN``
 # form before comparison.
@@ -132,8 +132,8 @@ class SourceMatchEvaluator:
 
         for edge in chunk_anchored:
             probe = _format_probe(edge)
-            # Wave 108 / Phase B: multi-chunk ground truth. Prefer the
-            # explicit set; fall back to edge.source for legacy splits.
+            # Prefer explicit multi-chunk ground truth; fall back to
+            # edge.source for legacy splits.
             gt_ids_raw = edge.get("ground_truth_chunk_ids")
             if isinstance(gt_ids_raw, list) and gt_ids_raw:
                 ground_truth_ids = [str(g) for g in gt_ids_raw]
@@ -164,8 +164,8 @@ class SourceMatchEvaluator:
                 })
                 continue
 
-            # Wave 105: regex carries multiple alternation groups; pick
-            # whichever group fired for each match, then normalize to
+            # Pick the populated alternation group for each match, then
+            # normalize to
             # strip optional corpus prefix.
             raw_matches = self.citation_re.findall(str(response))
             cited_raw: List[str] = []
@@ -180,7 +180,7 @@ class SourceMatchEvaluator:
             cited_set = list(dict.fromkeys(
                 _normalize_citation(c) for c in cited_raw
             ))  # de-dupe, preserve order
-            # Wave 108: credit the model when ANY ground-truth chunk is cited.
+            # Credit the model when any ground-truth chunk is cited.
             score = 1.0 if any(
                 chunk_ids_match(gt, cited)
                 for gt in ground_truth_ids

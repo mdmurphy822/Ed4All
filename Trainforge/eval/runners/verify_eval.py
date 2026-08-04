@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 
 # Default tolerances when ``model_card.eval_scores.tolerance_band``
-# is missing. Mirrors the bands recommended in Wave 102's spec.
+# is missing. These values are the compatibility defaults for older cards.
 _DEFAULT_TOLERANCE = {
     "accuracy": 0.0,
     "faithfulness": 0.05,

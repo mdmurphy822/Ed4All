@@ -66,8 +66,8 @@ class PerPropertyEvaluator:
                 "course_slug": self.course_slug,
             }
 
-        # Audit 2026-04-30 fix: prefer the new `property_probes` array
-        # emitted by HoldoutBuilder._build_property_probes. The legacy
+        # Prefer the canonical `property_probes` array emitted by
+        # HoldoutBuilder._build_property_probes. The legacy
         # `withheld_edges` filter remains for backward compat with
         # holdout splits built before the fix landed.
         property_probes = payload.get("property_probes") or []

@@ -111,8 +111,8 @@ class RAGCallable:
         cli_runner: Optional[Callable[[List[str]], Dict[str, Any]]] = None,
         eval_config: Optional[Any] = None,
     ) -> None:
-        # Wave 103: when an eval_config (LoadedEvalConfig) is supplied,
-        # its top_k, snippet_chars, and prompt_template override
+        # A loaded evaluation config is the lockfile: its top_k,
+        # snippet_chars, and prompt_template override
         # constructor args. The config is the lockfile - the
         # constructor args are advisory.
         if eval_config is not None:
@@ -143,8 +143,8 @@ class RAGCallable:
         self._cli_runner = cli_runner or _default_cli_runner
         self._last_latency_ms: Optional[float] = None
         self._latencies: List[float] = []
-        # Wave 105: surface the chunks retrieved for the most recent
-        # __call__ so the AblationRunner trace writer can attach them
+        # Surface the most recently retrieved chunks so the AblationRunner
+        # trace writer can attach them
         # to per-probe EvidenceTrace rows. Mirrors the
         # _last_latency_ms pattern. Empty when retrieval failed or
         # returned nothing. Each entry is a compact dict with
@@ -166,23 +166,16 @@ class RAGCallable:
 
     @property
     def last_retrieved_chunks(self) -> List[Dict[str, Any]]:
-        """Chunks returned by the most recent retrieval (Wave 105).
-
-        Wave 104 left ``retrieved_chunks=[]`` in every trace because
-        the metadata never bubbled out of this callable. The
-        AblationRunner now reads this attribute after each call and
-        copies the entries into the EvidenceTrace.
-        """
+        """Return compact chunks from the most recent retrieval for traces."""
         return list(self._last_retrieved_chunks)
 
     def __call__(self, prompt: str) -> str:
         """Retrieve, format prelude, dispatch to the wrapped callable."""
-        # Wave 104: use ``sys.executable`` so the LibV2 CLI runs under
-        # the same interpreter that loaded this module. Bare ``python``
+        # Use ``sys.executable`` so the LibV2 CLI runs under the interpreter
+        # that loaded this module. Bare ``python``
         # is not always on PATH when the venv is invoked by absolute
         # path (instead of activated), and the resulting silent CLI
-        # failure was the root cause of all-zero RAG accuracy in the
-        # Wave 103 eval re-run.
+        # failure would otherwise produce an empty retrieval arm.
         import sys as _sys
         args = [
             _sys.executable, "-m", "LibV2.tools.libv2.cli", "ask", prompt,
@@ -201,8 +194,8 @@ class RAGCallable:
         self._latencies.append(latency_ms)
 
         chunks = record.get("retrieved_chunks") or []
-        # Wave 105: stash a compacted view of the retrieved chunks so
-        # the trace writer can attach them to the EvidenceTrace for
+        # Stash a compacted view so the trace writer can attach retrieved
+        # chunks to the EvidenceTrace for
         # this probe. Snippets are clipped to ~200 chars so traces
         # don't explode on a 50-chunk run.
         self._last_retrieved_chunks = _summarize_chunks_for_trace(chunks)
@@ -252,7 +245,7 @@ class BaseOnlyCallable:
             BaseModelSpec,
         )
 
-        # Wave 103: eval_config wins when supplied; constructor args
+        # The evaluation lockfile wins when supplied; constructor arguments
         # are advisory.
         if eval_config is not None:
             cfg = eval_config.config or {}
@@ -311,8 +304,8 @@ class BaseOnlyCallable:
                 device_map=device,
             )
         except AttributeError as exc:
-            # Audit 2026-04-30 / Phase B remediation hint — same
-            # accelerate>=1.0 × transformers<4.49 incompatibility as
+            # Translate the same accelerate>=1.0 × transformers<4.49
+            # incompatibility handled by
             # AdapterCallable. See that helper for details.
             if "frozenset" in str(exc) and "discard" in str(exc):
                 raise RuntimeError(

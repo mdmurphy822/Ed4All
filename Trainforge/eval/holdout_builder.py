@@ -141,18 +141,16 @@ class HoldoutBuilder:
 
         bloom_strata = self._compute_bloom_strata(edges, withheld, bloom_by_chunk)
 
-        # Wave 105: emit a `probes` array alongside `withheld_edges`
-        # so downstream eval consumers (slm_eval_harness, evaluators)
+        # Emit a stable prompt-shaped `probes` array alongside
+        # `withheld_edges` so downstream evaluation consumers
         # have a stable, prompt-shaped surface even when the edge
         # carries no chunk anchor. Each probe carries the
-        # canonical fields required by the Wave 105 contract:
+        # canonical fields required by the probe contract:
         # ``probe_id`` / ``prompt`` / ``ground_truth_chunk_id`` /
         # ``edge_type``. ``ground_truth_chunk_id`` is null when the
         # edge isn't chunk-anchored (concept->concept edges).
-        # Wave 108 / Phase B: thread the full edge list so each probe
-        # gets the multi-citation ground_truth_chunk_ids set.
-        # Audit 2026-04-30: thread a chunk-label resolver so probe text
-        # carries human-readable labels instead of chunk-ID literals.
+        # Thread the full edge list for multi-citation ground-truth IDs and a
+        # label resolver for human-readable probe subjects.
         from Trainforge.eval.retrieval.chunk_labels import ChunkLabelResolver
         label_resolver = ChunkLabelResolver.from_course(self.course_path)
         probes = self._build_probes(
@@ -190,19 +188,16 @@ class HoldoutBuilder:
                 entry["ground_truth_chunk_ids"] = gt_ids
             return entry
 
-        # Wave 108 / Phase B: sample negative probes — (source, relation,
+        # Sample negative (source, relation,
         # target) tuples that DON'T exist in the graph. The correct
         # ground-truth response is "no", which catches the yes-bias
         # regression class (template-recognizer adapters trained on
         # all-positive corpora answer "yes" to everything).
         negative_probes = self._sample_negative_probes(edges, per_relation_summary)
 
-        # Audit 2026-04-30: emit property-aware probes when a property
-        # manifest exists for this course. The pre-fix holdout produced
-        # zero probes carrying any of the 6 declared RDF/SHACL surface
-        # forms (`sh:datatype`, `sh:NodeShape`, etc.), so the
-        # `min_per_property_accuracy` critical gate silently SKIPped on
-        # every run. Per-property probes are positive ("Does the chunk
+        # Emit property-aware probes when the course has a property manifest
+        # so the minimum-per-property gate receives declared RDF/SHACL surface
+        # forms. Per-property probes are positive ("Does the chunk
         # use <surface_form>?"), constructed from chunks that actually
         # contain each form so ground truth is "yes" by construction.
         property_probes = self._build_property_probes(label_resolver)

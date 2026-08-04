@@ -213,8 +213,8 @@ class BloomLevelInvariant:
             level = target.split(":", 1)[1] if target.startswith("bloom:") else target
             bloom_buckets.setdefault(level, []).append(e.get("source", ""))
 
-        # Audit 2026-04-30 fix: substitute the chunk's human-readable
-        # label into the prompt instead of the raw chunk-ID literal,
+        # Substitute the chunk's human-readable label into the prompt instead
+        # of the raw chunk-ID literal,
         # which the model can otherwise echo verbatim into prose and thereby
         # confound the classifier.
         self.label_resolver = (

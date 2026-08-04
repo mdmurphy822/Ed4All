@@ -357,7 +357,7 @@ def evaluate_owl_entailment(
 
 
 # ---------------------------------------------------------------------- #
-# Strict-mode predicate-usage check (Wave 108 / Phase B)                  #
+# Strict-mode predicate-usage check                                      #
 # ---------------------------------------------------------------------- #
 
 

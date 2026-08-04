@@ -48,15 +48,9 @@ _NEGATIVE = re.compile(
 )
 
 
-# Wave 132a: imported from the canonical map so the wording stays
-# bytewise-aligned with `kg_metadata_generator._RELATION_TEMPLATES`
-# (training-time emit). Drift between train + eval would desync the
-# adapter's training signal from the eval probe.
-#
-# Wave 108 / Phase B: chunk_at_difficulty was dropped from the canonical
-# map — every chunk has a difficulty level so the probe was trivially-
-# true and only padded faithfulness scores. Held-out edges of that type
-# fall through to the generic template now.
+# Import the canonical training-time relation wording so evaluation probes
+# cannot drift from the adapter's training signal. Relations absent from the
+# canonical map use the generic template.
 from lib.ontology.relation_templates import RELATION_TEMPLATES as _CANONICAL
 
 _RELATION_TEMPLATES: Dict[str, str] = {
@@ -70,15 +64,9 @@ def _format_probe(
 ) -> str:
     """Render a probe prompt for one held-out edge.
 
-    Audit 2026-04-30: when ``edge["source"]`` is a chunk-ID literal
-    (e.g. ``<course-slug>_chunk_00270``), substituting it raw produces
-    semantically incoherent probes ("Does the assessment
-    '<course-slug>_chunk_00270' assess the concept 'CO-18'?") that the
-    model can't answer — it echoes the ID back, the classifier scores
-    ambiguous, and faithfulness collapses to 0. The label_resolver
-    swaps the ID for the chunk's human-readable summary so the probe
-    reads "Does the assessment about <summary> assess the concept
-    'CO-18'?".
+    A raw chunk ID is not a meaningful probe subject. ``label_resolver``
+    replaces chunk-ID literals with human-readable summaries so the model is
+    evaluated on the underlying claim rather than identifier recognition.
 
     When ``label_resolver`` is None, falls back to the legacy raw
     substitution for callers that haven't migrated yet (tests, etc.).
@@ -150,8 +138,8 @@ class FaithfulnessEvaluator:
         per_question: List[Dict[str, Any]] = []
         correct = 0
         ambiguous = 0
-        # Wave 108 / Phase B: count affirmative classifications regardless
-        # of correctness so a 'yes always' model surfaces yes_rate=1.0.
+        # Count every affirmative classification so an always-yes model
+        # surfaces yes_rate=1.0 regardless of correctness.
         affirm_count = 0
         errors: List[str] = []
 
