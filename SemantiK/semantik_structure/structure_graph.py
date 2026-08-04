@@ -1720,7 +1720,7 @@ def build_structure_graph(
         # prose passes (1-FB paragraph fallback) — no FB is lost.
         if not _plausible_heading(text):
             continue
-        # MergeOrSplit override (2026-06-16): a block MergeOrSplit ties to
+        # MergeOrSplit override: a block tied to
         # the PREVIOUS prose block as the same logical block cannot be a
         # heading — headings are structural breaks, not paragraph
         # continuations. This corrects is_heading false-positives on
@@ -1736,7 +1736,7 @@ def build_structure_graph(
             and _merge_present_same(state, i - 1, same_logical_block_threshold)
         ):
             continue
-        # Plain-heading FP guard (2026-06-16): the is_heading head fires on
+        # Plain-heading false-positive guard: the is_heading head fires on
         # mid-paragraph BODY lines that look title-ish ("…procedural due
         # process claim. Following"). A GENUINE heading is set off
         # stylistically (bold / enlarged) OR numbered ("A.", "II."), AND
@@ -1766,7 +1766,7 @@ def build_structure_graph(
             and _fb_text(feature_blocks, i + 1)[:1].islower()
         ):
             continue
-        # Forward-merge demotion (2026-06-17): a LONG heading candidate that
+        # Forward-merge demotion: a long heading candidate that
         # MergeOrSplit ties to the NEXT block as a strong "same", AND whose
         # next block starts lowercase, is a sentence-like paragraph LEAD-IN
         # flowing into body — not a standalone heading. Claiming it splits the
@@ -1791,7 +1791,7 @@ def build_structure_graph(
             and _fb_text(feature_blocks, i + 1)[:1].islower()
         ):
             continue
-        # Multi-line heading absorption (2026-06-16): a heading that WRAPS
+        # Multi-line heading absorption: a heading that wraps
         # across visual lines (legal "A. Historically, the Eighth Amendment
         # banned / intentional sentences, not prison conditions") fires
         # is_heading only on its FIRST line; the 2nd+ lines (is_heading low,
@@ -1825,7 +1825,7 @@ def build_structure_graph(
             cand_fb = feature_blocks[j]
             cand_bold = bool(getattr(getattr(cand_fb, "raw", None), "is_bold", False))
             cand_fr = float(getattr(cand_fb, "relative_font_ratio", 1.0) or 1.0)
-            # Centered multi-line TITLE exception (2026-06-17): a stacked title
+            # Centered multi-line title exception: a stacked title
             # often sets only its first line bold ("Shades of Accessibility" /
             # "Why ADA Sunglasses Accommodations" / "Do Not Require Disability
             # Disclosure"), so the bold/font style-match below would refuse to
@@ -1882,7 +1882,7 @@ def build_structure_graph(
         )
         claimed.update(head_idx)
 
-    # Structural heading promotion (2026-06-17): recover NUMBERED-section
+    # Structural heading promotion: recover numbered-section
     # headings whose binary is_heading dipped below the claim threshold but
     # whose role head still says "heading" and whose structure is unambiguous.
     # A block that is numbered ("4.1", "II.", "A."), role=heading (confident),
@@ -2283,7 +2283,7 @@ def build_structure_graph(
     def _is_paragraph(idx: int) -> bool:
         if _is_paragraph_role(state, idx):
             return True
-        # Bridge (2026-06-16): MergeOrSplit ties this block to an adjacent
+        # MergeOrSplit ties this block to an adjacent
         # block as the same logical block → treat it as prose even when
         # Structure mislabeled the line-fragment's role. MergeOrSplit is the
         # AUTHORITY on logical-block continuity, so it overrules a spurious
@@ -2313,7 +2313,7 @@ def build_structure_graph(
                 _is_heading_shaped(state, idx, is_heading_threshold) and _plausible_heading(txt)
             ):
                 return True
-        # Blockquote-FP flow-through override (2026-06-16): the head sometimes
+        # Blockquote false-positive flow-through override: the head sometimes
         # labels a mid-paragraph BODY line "blockquote" ("…she did not identify
         # much, if / any, speech protected by the First Amendment to which the /
         # curriculum limitation applies."). If prose clearly flows THROUGH this

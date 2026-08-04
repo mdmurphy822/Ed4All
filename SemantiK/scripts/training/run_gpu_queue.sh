@@ -20,7 +20,7 @@
 #   3. math — math v2 resume from checkpoint-1000 (LONGEST: ~61-80h at
 #      max_len 2048). Touch models/qwen_specialists/math/v2/.checkpoint_now
 #      for an on-demand save; .checkpoint_and_stop to stop cleanly.
-#      Keep the host awake — the 2026-06-09 run died to a WSL reboot.
+#      Keep the host awake so an unattended queue is not interrupted.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

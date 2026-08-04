@@ -218,7 +218,7 @@ def apply_alt_text(
     generated = 0
 
     # Dead-seat circuit breaker: a WEDGED seat (accepts connections, never
-    # answers — seen live 2026-07-17) makes every figure eat the full HTTP
+    # answers) makes every figure consume the full HTTP
     # timeout; at 250 figures that is ~an hour per document of pure timeouts.
     # After _BREAKER_THRESHOLD consecutive describe() failures the remaining
     # figures short-circuit to an escalation without touching the socket. A

@@ -107,11 +107,8 @@ ADAPTER_CONFIGS: dict[str, AdapterTrainConfig] = {
         lora_dropout=0.10,
         eval_steps=100,
         save_steps=200,
-        # ~12.4K train rows (V2 all-5-kinds build, 2026-06-10) @ bs=1 ×
-        # grad_accum=8 → ~1,547 steps/epoch, so 3 epochs ≈ 4,640 steps.
-        # Cap=5500 clears 3 full epochs with headroom while still
-        # catching a runaway (the previous cap=4000 was sized for the
-        # 8.9K-row 3-kind build and would stop at ~86% of epoch 3).
+        # Allow three full epochs with headroom while retaining a hard runaway
+        # bound for the configured batch and gradient-accumulation settings.
         total_step_cap=5500,
     ),
 }

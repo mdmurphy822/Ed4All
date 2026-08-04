@@ -129,7 +129,7 @@ def run_standalone(
         # ``applied`` counts VERDICTS RECORDED, not headings re-levelled — a
         # verdict that re-confirms the level already on the region is applied
         # but render-invisible. ``changed``/``agreed``/``transitions`` are the
-        # ADDITIVE (2026-07-22) split that makes the two impossible to confuse:
+        # Additive split that keeps the two outcomes distinct:
         # ``applied == changed + agreed``, and only ``changed`` can move an
         # emitted <hN>. An idempotent re-judge of an already-judged conversion
         # legitimately reports applied>0 with changed==0 against the prior
@@ -146,7 +146,7 @@ def run_standalone(
         # heading) that the old report silently folded into ``kept``.
         "kept_judged": getattr(result, "kept_judged", 0),
         "unjudged": getattr(result, "unjudged", 0),
-        # Failure MECHANISM (2026-07-22 incident): a chapter that ends
+        # Failure mechanism: a chapter that ends
         # unjudged must carry WHY at the TOP level of the report, so the
         # pipeline seam can name it in its operator warning instead of the
         # anonymous "truncation hole" phrasing that hid a killed seat.

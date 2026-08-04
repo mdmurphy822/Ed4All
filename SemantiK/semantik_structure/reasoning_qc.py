@@ -356,7 +356,7 @@ def harvest_declared_toc_spine(
 
 
 # ---------------------------------------------------------------------------
-# Document-sequence QC unit (2026-07-12 pivot — document-level, not per-page).
+# Document-sequence QC unit (document-level, not per-page).
 # The WHOLE document's ordered block list is one sequence; _plan_page_units
 # partitions THAT into windows + junction seams (seams now span page boundaries).
 # ---------------------------------------------------------------------------

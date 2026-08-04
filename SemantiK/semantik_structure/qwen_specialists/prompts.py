@@ -182,17 +182,10 @@ _SYSTEM_GAP_FILL = (
 )
 
 
-# Plans/06 §7 / task #15. Cheap char-count proxy for "too long for the TABLE
-# adapter to generate without truncation": runtime n_ctx=4096 minus table
-# max_new_tokens=1024 leaves ~3000 input tokens. Original limit assumed
-# ~4 chars/Qwen-token (→ 12k chars) — but bn34glowl (2026-05-30 smoke) crashed
-# at "Requested tokens (4529) exceed context window of 4096" with a prompt that
-# was ≤ 12k chars yet tokenized to 3505 input tokens (i.e. 2.92 chars/token,
-# denser than assumed because tabular numeric content fragments into many
-# short tokens). Tightened to 8.5k chars → ~2900 tokens at the worst observed
-# density, leaving safety headroom inside n_ctx=4096−1024. The runner
-# (runner.py) also enforces an authoritative token-count check using the real
-# tokenizer as a second layer — this char proxy is the cheap first cut.
+# Cheap character-count proxy for table prompts that risk truncation. Tabular
+# numeric content tokenizes densely, so the 8.5K-character limit leaves
+# completion headroom inside the configured context window. The runner also
+# performs the authoritative check with the real tokenizer.
 _LONG_TABLE_CHAR_LIMIT = 8_500
 
 

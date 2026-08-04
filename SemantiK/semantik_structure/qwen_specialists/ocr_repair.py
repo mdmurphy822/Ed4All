@@ -148,7 +148,7 @@ _OCR_REPAIR_MAX_TOKENS = 1024
 
 
 # ---------------------------------------------------------------------------
-# Lexicon-confusable merge (Wave #22 quick-wins).
+# Lexicon-confusable merge.
 #
 # The SemantiK pedagogical lexicon (schemas/taxonomies/semantik_lexicon.json)
 # now OWNS the label-level OCR confusables (e.g. ``tr[vy]it`` -> ``TRY IT`` the
@@ -353,7 +353,7 @@ def _token_is_garbled(token: str) -> bool:
     conf_digits = sum(1 for c in token if c in _CONFUSABLE_DIGITS)
     if letters >= 2 and conf_digits >= 1:
         return True
-    # Wave #22: a whole-token label confusable from the merged lexicon
+    # A whole-token label confusable from the merged lexicon
     # (e.g. ``trvit`` -> ``TRY IT``). Additive garble signal; empty lexicon
     # (no schema / lib not importable) -> no-op, byte-identical to today.
     if _token_matches_lexicon_confusable(token):
@@ -492,7 +492,7 @@ def evaluate_edit(region_text: str, before: str, after: str) -> EditDecision:
     # (v) non-identity.
     if before == after:
         return EditDecision(False, "identity")
-    # Wave #22 — lexicon-confusable arm. A whole-token label normalization
+    # Lexicon-confusable arm: a whole-token label normalization
     # (``trvit`` -> ``TRY IT``) from the merged SemantiK lexicon is a
     # deterministic, auditable substitution (the lexicon IS the vocabulary), so
     # it BYPASSES the char-level within-token / Levenshtein / map-reachability

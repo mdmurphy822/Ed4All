@@ -1788,7 +1788,7 @@ def _make_default_post_fn(
                 if exc.timeout or not exc.transient or i == attempts - 1:
                     raise
                 # LOUD bounded retry: an ABORT means the seat died under us, so
-                # say so (an anonymous silent retry is what let the incident
+                # say so; an anonymous silent retry would let the failure
                 # look like a model failure) and back off a little longer — a
                 # seat mid-`docker stop` needs more than 0.5s to be honestly
                 # re-probed. Still bounded by _TRANSIENT_RETRIES (never a stall).

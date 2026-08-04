@@ -777,7 +777,7 @@ def check_region(
     # all(c.passed for c in checks), so if a cheap check already failed
     # the axe outcome can't change the result — skip it. Under mock
     # runtime every candidate fails text_preserve, which is what made
-    # Stage 7 51x slower than baseline (eval 2026-05-12).
+    # Reusing the shared browser avoids a per-region browser startup penalty.
     if validator is not None and all(c.passed for c in checks):
         shell = _MAIN_SHELL.format(region_html)
         checks.append(_check_axe(shell, validator))

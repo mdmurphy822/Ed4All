@@ -672,7 +672,7 @@ def _augment_html_for_render(output_html: str, pair_stem: str) -> tuple[str, str
 
 
 # ---------------------------------------------------------------------------
-# Worker — process one pair file
+# Process one pair file
 # ---------------------------------------------------------------------------
 
 

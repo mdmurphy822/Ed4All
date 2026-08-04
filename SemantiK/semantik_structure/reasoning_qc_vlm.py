@@ -89,7 +89,7 @@ class QCTimeoutError(VlmExtractError):
 # DISTINCT model here is the only condition that adds a docs/LICENSING.md row.
 _QC_MODEL_ENV = "SEMANTIK_REASONING_QC_MODEL"
 
-# Own reasoning-QC seat envs (2026-07-12 pivot — decoupled from SEMANTIK_VLM_*).
+# Reasoning-QC seat settings are independent of SEMANTIK_VLM_*.
 _QC_BASE_URL_ENV = "SEMANTIK_REASONING_QC_BASE_URL"
 _QC_API_KEY_ENV = "SEMANTIK_REASONING_QC_API_KEY"
 
@@ -347,7 +347,7 @@ def resolve_reasoning_qc_sampling() -> dict[str, Any]:
 # _QC_SYSTEM_DIRECTIVE or the _build_qc_user_text render shape changes in a way
 # that would change the model's judgment, so a stale sidecar written under the
 # old prompt is never served for the new prompt.
-# v2 (2026-07-12): terse directive replacing the long defect-taxonomy prose —
+# Terse directive replacing the long defect-taxonomy prose:
 # a controlled A/B on the SAME real exercise window showed the v1 directive
 # ("strong reasoning ability" framing + elaborate (a)/(b) taxonomy + "reason
 # step by step … under 1000 words") drove rumination (still generating at
