@@ -92,60 +92,42 @@ Accessible HTML · Digital course + IMSCC · Grounded training data · Hybrid re
 
 ```mermaid
 flowchart LR
-    source["Books · PDFs · HTML<br/>Learning materials"]
+    materials["Books, PDFs, HTML, and learning materials"]
+    semantik["SemantiK: structure and accessibility"]
+    accessible["Accessible HTML with source provenance"]
+    courseforge["Courseforge: modules, activities, and assessments"]
+    course["Modular digital course"]
+    imscc["LMS-ready IMS Common Cartridge"]
+    trainforge["Trainforge: course-grounded data synthesis"]
+    pairs["SFT instructions and DPO preferences"]
+    library["LibV2 searchable course archive"]
+    retrieval["BM25 and dense retrieval"]
+    fusion["Custom rank-domain RRF"]
+    confidence["Evidence threshold and weak-query refusal"]
+    answers["Citation-grounded answers"]
+    adapter["Optional LoRA adapter"]
 
-    subgraph build["Build an accessible digital course"]
-        direction LR
-        semantik["SemantiK<br/>Structure + accessibility"]
-        html["Accessible HTML<br/>with source provenance"]
-        courseforge["Courseforge<br/>Modules + activities + assessments"]
-        course["Modular digital course"]
-
-        semantik --> html --> courseforge --> course
-    end
-
-    subgraph deliver["Deliver and reuse"]
-        direction TB
-        imscc["LMS-ready<br/>IMS Common Cartridge"]
-        library["LibV2 course archive<br/>Searchable local library"]
-    end
-
-    subgraph intelligence["Grounded course intelligence"]
-        direction TB
-        retrieval["BM25 + dense retrieval"]
-        rrf["Custom rank-domain RRF"]
-        confidence["Evidence threshold<br/>refuse when weak"]
-        answers["Citation-grounded answers"]
-        pairs["Trainforge<br/>SFT instructions + DPO preferences"]
-        lora["Optional LoRA adapter"]
-
-        retrieval --> rrf --> confidence --> answers
-        pairs -. operator opt-in .-> lora
-    end
-
-    source --> semantik
-    course --> imscc
-    course --> library
-    library --> retrieval
-    course --> pairs
+    materials --> semantik --> accessible --> courseforge --> course --> imscc
+    imscc --> trainforge --> pairs --> library
+    library --> retrieval --> fusion --> confidence --> answers
+    pairs -.-> adapter
 
     classDef sourceNode fill:#eef6ff,stroke:#2563eb,color:#172554,stroke-width:2px;
     classDef buildNode fill:#f0fdf4,stroke:#16a34a,color:#14532d;
     classDef deliveryNode fill:#fff7ed,stroke:#ea580c,color:#7c2d12;
     classDef intelligenceNode fill:#faf5ff,stroke:#9333ea,color:#581c87;
 
-    class source sourceNode;
-    class semantik,html,courseforge,course buildNode;
+    class materials sourceNode;
+    class semantik,accessible,courseforge,course buildNode;
     class imscc,library deliveryNode;
-    class retrieval,rrf,confidence,answers,pairs,lora intelligenceNode;
+    class trainforge,pairs,retrieval,fusion,confidence,answers,adapter intelligenceNode;
 ```
 
-The flow has three layers: Ed4All first converts source material into accessible
-HTML and a modular course; it then packages and archives that course; finally,
-the archive supports hybrid retrieval while the grounded course content can
-supply training pairs. LoRA training is a separate operator opt-in. The LMS
-package, course archive, and retrieval system remain useful without training an
-adapter.
+One continuous workflow carries the source through accessible HTML, course
+design, LMS packaging, grounded-data synthesis, archival, retrieval, and
+citation validation. LoRA training branches from the generated training pairs
+as a separate operator opt-in; the course package, archive, and retrieval
+system remain complete deliverables without an adapter.
 
 ## Retrieval that earns trust
 
