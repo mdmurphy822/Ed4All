@@ -4833,7 +4833,7 @@ workflows:
         # post-packaging IMSCC chunkset is the canonical chunks
         # source; trainforge_assessment is preserved as a sibling
         # input until the in-process chunker invocation in
-        # ``Trainforge/process_course.py`` is fully retired.
+        # ``Trainforge/pipeline/process_course.py`` is fully retired.
         depends_on: [trainforge_assessment, imscc_chunking]
         # Full local-teacher synthesis is intentionally a multi-day phase for
         # large textbooks.  The old 30-minute deadline repeatedly paused the

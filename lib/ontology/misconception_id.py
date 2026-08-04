@@ -3,7 +3,7 @@
 Single source of truth for the ``mc_<16-hex>`` content-hash misconception ID
 used across Trainforge:
 
-* ``Trainforge/process_course.py::_build_misconceptions_for_graph``
+* ``Trainforge/pipeline/process_course.py::_build_misconceptions_for_graph``
 * ``Trainforge/generators/pairs/preference.py::_misconception_id``
 * ``Trainforge/rag/graphs/pedagogy_graph_builder.py::_mc_id``
 

@@ -258,7 +258,7 @@ class SemanticGraphRuleOutputValidator:
                 location=str(current_path),
                 suggestion=(
                     "Verify the file exists and contains valid JSON; check the "
-                    "concept-graph emit step in Trainforge.process_course."
+                    "concept-graph emit step in Trainforge.pipeline.process_course."
                 ),
             ))
             _emit_semantic_graph_rule_output_decision(

@@ -155,7 +155,7 @@ def _mc_id(statement: str, correction: str = "", bloom_level: str = "") -> str:
     Routes through ``lib.ontology.misconception_id.canonical_mc_id`` so the
     builder's hash matches byte-for-byte the IDs minted by:
 
-    * ``Trainforge/process_course.py::_build_misconceptions_for_graph``
+    * ``Trainforge/pipeline/process_course.py::_build_misconceptions_for_graph``
     * ``Trainforge/generators/pairs/preference.py::_misconception_id``
 
     Call sites in this builder must supply ``correction`` and

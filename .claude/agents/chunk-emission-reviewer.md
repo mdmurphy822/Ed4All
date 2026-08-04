@@ -1,6 +1,6 @@
 ---
 name: chunk-emission-reviewer
-description: Review changes to Trainforge chunk emission code. Use when touching Trainforge/process_course.py chunk-emission helpers, lib/ontology/ canonical helpers, or schemas/knowledge/chunk_v4.schema.json. Verifies emitted chunks conform to schema, canonical helpers are reused (not duplicated), and behavior flags are honored consistently.
+description: Review changes to Trainforge chunk emission code. Use when touching Trainforge/pipeline/process_course.py chunk-emission helpers, lib/ontology/ canonical helpers, or schemas/knowledge/chunk_v4.schema.json. Verifies emitted chunks conform to schema, canonical helpers are reused (not duplicated), and behavior flags are honored consistently.
 tools: Bash, Read, Grep, Glob
 ---
 
@@ -17,7 +17,7 @@ You produce a punch list; you do **not** write code or commit anything.
 ## Surfaces watched
 
 - **Schema**: `schemas/knowledge/chunk_v4.schema.json` (canonical chunk shape).
-- **Emission code**: `Trainforge/process_course.py` and any helper it imports
+- **Emission code**: `Trainforge/pipeline/process_course.py` and any helper it imports
   for chunk minting.
 - **Canonical helpers** (single-source-of-truth, must be reused not inlined):
   - `lib/ontology/learning_objectives.py` → `mint_lo_id`, `validate_lo_id`,
@@ -120,7 +120,7 @@ failures — surface them in the report.
 ## Chunk emission audit — branch <name>
 
 ### Files touched
-- Trainforge/process_course.py (+42 / -8)
+- Trainforge/pipeline/process_course.py (+42 / -8)
 - lib/ontology/learning_objectives.py (+5 / -0)
 - schemas/knowledge/chunk_v4.schema.json (+3 / -0)
 

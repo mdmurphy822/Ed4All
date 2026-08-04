@@ -112,7 +112,7 @@ def _derive_misconceptions(
     """Mirror _run_concept_extraction._derive_misconceptions."""
     try:
         from Trainforge.rag.typed_edge_inference import _make_concept_id
-        from Trainforge.process_course import _route_misconception_to_tag
+        from Trainforge.pipeline.process_course import _route_misconception_to_tag
         from lib.ontology.misconception_id import canonical_mc_id
     except Exception:  # noqa: BLE001 — rule self-skips on []
         return []

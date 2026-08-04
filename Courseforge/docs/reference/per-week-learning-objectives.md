@@ -26,7 +26,7 @@ For a page generated under `week_<N>/`:
 2. Add the chapter objectives whose `chapter` field names a week range that
    includes week N. The range is parsed with the regex
    `r"[Ww]eek\s+(\d+)(?:\s*-\s*(\d+))?"` — the same regex used in
-   `Trainforge.process_course.load_objectives`, so emit and resolve stay in
+   `Trainforge.pipeline.process_course.load_objectives`, so emit and resolve stay in
    lockstep.
 
 Concretely for a sample 12-week course (`<COURSE_CODE>`):
@@ -95,7 +95,7 @@ Before the fix, a typical `<COURSE>_course_data.json` declared week-local
 IDs like `W01-CO-01..W12-CO-04` on each week's `objectives`. Each week
 independently numbered its COs `01..04`. Trainforge normalizes by
 stripping the `W0N-` prefix (see
-`Trainforge.process_course._extract_objective_refs`), so every week's
+`Trainforge.pipeline.process_course._extract_objective_refs`), so every week's
 chunks reduced to `co-01..co-04`. On a twelve-week course whose
 `course.json` declares `CO-01..CO-24` plus `TO-01..TO-04` (28 outcomes
 total), that meant:

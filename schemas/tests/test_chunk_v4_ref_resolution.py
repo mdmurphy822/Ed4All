@@ -1,7 +1,7 @@
 """Wave 74 Session 3 — chunk_v4 $ref resolution regression.
 
 Guards against a production bug that killed the Trainforge assessment
-phase today: ``Trainforge/process_course.py::_validate_chunk`` crashed
+phase today: ``Trainforge/pipeline/process_course.py::_validate_chunk`` crashed
 on the first chunk with
 ``jsonschema.exceptions._RefResolutionError: Unresolvable JSON pointer:
 '$defs/Source'`` because the legacy ``RefResolver`` wiring in
@@ -189,7 +189,7 @@ def test_source_defs_ref_is_present_and_inline():
 
 
 def test_process_course_validate_chunk_does_not_raise_on_real_chunk():
-    """Calls ``Trainforge.process_course._validate_chunk`` on a real
+    """Calls ``Trainforge.pipeline.process_course._validate_chunk`` on a real
     chunk payload. Must NOT raise ``_RefResolutionError`` (the symptom
     from a production Trainforge assessment run).
     """
@@ -197,7 +197,7 @@ def test_process_course_validate_chunk_does_not_raise_on_real_chunk():
     # Defer import so the test is robust when process_course's imports
     # fail on a stripped-down sandbox.
     try:
-        from Trainforge.process_course import _validate_chunk
+        from Trainforge.pipeline.process_course import _validate_chunk
     except ImportError as exc:  # pragma: no cover
         pytest.skip(f"process_course not importable: {exc}")
 
@@ -217,7 +217,7 @@ def test_process_course_validator_resolves_all_refs():
     """
     _require_jsonschema()
     try:
-        from Trainforge.process_course import _load_chunk_validator
+        from Trainforge.pipeline.process_course import _load_chunk_validator
     except ImportError as exc:  # pragma: no cover
         pytest.skip(f"process_course not importable: {exc}")
 
@@ -243,7 +243,7 @@ def test_process_course_validates_neutral_chunk_batch():
     """Repeated neutral chunks validate without reference-resolution errors."""
     _require_jsonschema()
     try:
-        from Trainforge.process_course import _validate_chunk
+        from Trainforge.pipeline.process_course import _validate_chunk
     except ImportError as exc:  # pragma: no cover
         pytest.skip(f"process_course not importable: {exc}")
 

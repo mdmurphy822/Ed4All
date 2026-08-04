@@ -1,0 +1,454 @@
+"""Worker I — chunk_v4 + courseforge_jsonld_v1 schema validation tests.
+
+Regression tests for the two knowledge-layer schemas authored in Wave 1.2 of
+the KG-quality review (plans/kg-quality-review-2026-04):
+
+  - schemas/knowledge/chunk_v4.schema.json — formalizes the Trainforge chunk
+    node shape. Validation hook is wired into Trainforge/pipeline/process_course.py
+    ::_write_chunks and gated by TRAINFORGE_VALIDATE_CHUNKS=true (fail-closed)
+    with a warn-log default.
+  - schemas/knowledge/courseforge_jsonld_v1.schema.json — formalizes the
+    Courseforge JSON-LD contract. Not hooked into runtime validation yet;
+    this file tests the schema with hermetic page fixtures.
+
+Both schemas $ref Worker F's taxonomy files (merged in PR #20) for enum
+safety. Tests build a local schema store so $id URIs resolve offline.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+import sys
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import pytest
+
+# Project root (Ed4All/). This file lives at
+# Ed4All/Trainforge/pipeline/tests/test_chunk_validation.py → parents[3].
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+SCHEMAS_DIR = PROJECT_ROOT / "schemas"
+CHUNK_SCHEMA_PATH = SCHEMAS_DIR / "knowledge" / "chunk_v4.schema.json"
+JSONLD_SCHEMA_PATH = SCHEMAS_DIR / "knowledge" / "courseforge_jsonld_v1.schema.json"
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _require_jsonschema():
+    """Skip the test if jsonschema isn't installed."""
+    try:
+        import jsonschema  # noqa: F401
+        return jsonschema
+    except ImportError:  # pragma: no cover — test-env bootstrap
+        pytest.skip("jsonschema not installed")
+
+
+def _build_validator(schema_path: Path):
+    """Build a Draft202012Validator with offline ref resolution against every
+    $id in schemas/ so Worker F taxonomy references resolve offline.
+
+    Mirrors ``Trainforge/pipeline/process_course.py::_load_chunk_validator``: prefers
+    the modern ``referencing`` library; falls back to the deprecated
+    ``RefResolver`` only when ``referencing`` is missing. Without this, the
+    deprecated resolver hits ``_RefResolutionError: Unresolvable JSON
+    pointer: '$defs/Source'`` after descending into an external $ref.
+    """
+    jsonschema = _require_jsonschema()
+    from jsonschema import Draft202012Validator
+
+    with open(schema_path) as f:
+        schema = json.load(f)
+    id_to_schema: Dict[str, Any] = {}
+    for p in SCHEMAS_DIR.rglob("*.json"):
+        try:
+            with open(p) as f:
+                s = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        sid = s.get("$id")
+        if sid:
+            id_to_schema[sid] = s
+    try:
+        from referencing import Registry, Resource
+        from referencing.jsonschema import DRAFT202012
+
+        resources = [
+            (sid, Resource.from_contents(s, default_specification=DRAFT202012))
+            for sid, s in id_to_schema.items()
+        ]
+        registry = Registry().with_resources(resources)
+        return schema, Draft202012Validator(schema, registry=registry)
+    except ImportError:
+        from jsonschema import RefResolver  # type: ignore
+
+        resolver = RefResolver.from_schema(schema, store=dict(id_to_schema))
+        return schema, Draft202012Validator(schema, resolver=resolver)
+
+
+_JSONLD_RE = re.compile(
+    r'<script type="application/ld\+json">\s*(\{.*?\})\s*</script>',
+    re.S,
+)
+
+
+def _extract_jsonld(html: str) -> Optional[Dict[str, Any]]:
+    """Extract and parse the first JSON-LD block from a page."""
+    m = _JSONLD_RE.search(html)
+    if not m:
+        return None
+    try:
+        return json.loads(m.group(1))
+    except json.JSONDecodeError:
+        return None
+
+
+def _make_valid_chunk() -> Dict[str, Any]:
+    """Construct a minimal chunk_v4-compliant record for positive tests."""
+    return {
+        "id": "test_course_chunk_00001",
+        "schema_version": "v4",
+        "chunk_type": "explanation",
+        "text": "Sample chunk text.",
+        "html": "<p>Sample chunk text.</p>",
+        "follows_chunk": None,
+        "source": {
+            "course_id": "TEST_101",
+            "module_id": "m1",
+            "lesson_id": "l1",
+        },
+        "concept_tags": ["sample"],
+        "learning_outcome_refs": [],
+        "difficulty": "foundational",
+        "tokens_estimate": 3,
+        "word_count": 3,
+        "bloom_level": "understand",
+    }
+
+
+def _make_valid_jsonld(page_id: str = "week_01_content") -> Dict[str, Any]:
+    """Construct a minimal Courseforge JSON-LD page contract."""
+    return {
+        "@context": "https://ed4all.dev/ns/courseforge/v1",
+        "@type": "CourseModule",
+        "courseCode": "SAMPLE101",
+        "weekNumber": 1,
+        "moduleType": "content",
+        "pageId": page_id,
+    }
+
+
+def _write_jsonld_pages(tmp_path: Path, count: int = 20) -> List[Path]:
+    """Write deterministic HTML pages carrying valid embedded JSON-LD."""
+    pages = []
+    for index in range(count):
+        page = tmp_path / f"page_{index:02d}.html"
+        payload = json.dumps(_make_valid_jsonld(f"page-{index:02d}"))
+        page.write_text(
+            f'<script type="application/ld+json">{payload}</script>',
+            encoding="utf-8",
+        )
+        pages.append(page)
+    return pages
+
+
+# ---------------------------------------------------------------------------
+# Schema self-validation (sanity: the schema itself parses as a valid JSON
+# Schema Draft 2020-12 document).
+# ---------------------------------------------------------------------------
+
+
+def test_chunk_schema_self_valid():
+    jsonschema = _require_jsonschema()
+    with open(CHUNK_SCHEMA_PATH) as f:
+        schema = json.load(f)
+    jsonschema.Draft202012Validator.check_schema(schema)
+
+
+def test_jsonld_schema_self_valid():
+    jsonschema = _require_jsonschema()
+    with open(JSONLD_SCHEMA_PATH) as f:
+        schema = json.load(f)
+    jsonschema.Draft202012Validator.check_schema(schema)
+
+
+# ---------------------------------------------------------------------------
+# Regression: representative chunk/JSON-LD batches validate against the new
+# schemas at or above the master-plan's 95% threshold.
+# ---------------------------------------------------------------------------
+
+
+def test_representative_chunk_batch_validates():
+    _require_jsonschema()
+    _, validator = _build_validator(CHUNK_SCHEMA_PATH)
+    chunks = []
+    for index in range(20):
+        chunk = _make_valid_chunk()
+        chunk["id"] = f"sample_chunk_{index:05d}"
+        chunk["follows_chunk"] = (
+            None if index == 0 else f"sample_chunk_{index - 1:05d}"
+        )
+        chunks.append(chunk)
+
+    valid = 0
+    failures: List[Tuple[str, str]] = []
+    for c in chunks:
+        errs = list(validator.iter_errors(c))
+        if not errs:
+            valid += 1
+        else:
+            path = ".".join(str(p) for p in errs[0].absolute_path) or "root"
+            failures.append((c.get("id", "?"), f"{path}: {errs[0].message}"))
+
+    ratio = valid / len(chunks)
+    # Per master plan: "Expected: ≥95% valid; remaining failures documented
+    # as known gaps for later waves."
+    assert ratio >= 0.95, (
+        f"chunk_v4 regression: {valid}/{len(chunks)} valid ({ratio:.1%}); "
+        f"first failures: {failures[:3]}"
+    )
+
+
+def test_representative_courseforge_jsonld_validates(tmp_path: Path):
+    _require_jsonschema()
+    pages = _write_jsonld_pages(tmp_path)
+
+    _, validator = _build_validator(JSONLD_SCHEMA_PATH)
+    total = 0
+    valid = 0
+    failures: List[Tuple[str, str]] = []
+    for page in pages:
+        data = _extract_jsonld(page.read_text())
+        if data is None:
+            continue
+        total += 1
+        errs = list(validator.iter_errors(data))
+        if not errs:
+            valid += 1
+        elif len(failures) < 3:
+            path = ".".join(str(p) for p in errs[0].absolute_path) or "root"
+            failures.append((page.name, f"{path}: {errs[0].message}"))
+
+    assert total > 0, "Expected at least one page with embedded JSON-LD"
+    ratio = valid / total
+    # JSON-LD is the emit-only contract; we expect 100% on a clean run.
+    # Tolerate the same 95% threshold as chunks for parity.
+    assert ratio >= 0.95, (
+        f"JSON-LD regression: {valid}/{total} valid ({ratio:.1%}); "
+        f"first failures: {failures[:3]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Production hook behaviour: _validate_chunk + _write_chunks env-var gate.
+# ---------------------------------------------------------------------------
+
+
+def test_validate_chunk_passes_on_valid_sample():
+    _require_jsonschema()
+    from Trainforge.pipeline.process_course import _validate_chunk
+
+    chunk = _make_valid_chunk()
+    assert _validate_chunk(chunk) is None
+
+
+def test_validate_chunk_catches_missing_source_course_id():
+    _require_jsonschema()
+    from Trainforge.pipeline.process_course import _validate_chunk
+
+    chunk = _make_valid_chunk()
+    del chunk["source"]["course_id"]
+    err = _validate_chunk(chunk)
+    assert err is not None
+    assert "course_id" in err
+
+
+def test_validate_chunk_catches_wrong_schema_version():
+    _require_jsonschema()
+    from Trainforge.pipeline.process_course import _validate_chunk
+
+    chunk = _make_valid_chunk()
+    chunk["schema_version"] = "v3"
+    err = _validate_chunk(chunk)
+    assert err is not None
+
+
+def test_write_chunks_strict_mode_raises(monkeypatch, tmp_path):
+    """TRAINFORGE_VALIDATE_CHUNKS=true + malformed chunk → ValueError."""
+    _require_jsonschema()
+    import Trainforge.pipeline.process_course as pc
+
+    # Build a minimal processor-like shim that exposes only what
+    # _write_chunks touches: corpus_dir and capture.log_decision.
+    class _StubCapture:
+        def log_decision(self, **kwargs):
+            pass
+
+    class _Stub:
+        pass
+
+    stub = _Stub()
+    stub.corpus_dir = tmp_path
+    stub.capture = _StubCapture()
+
+    bad = _make_valid_chunk()
+    del bad["source"]["course_id"]
+
+    monkeypatch.setenv("TRAINFORGE_VALIDATE_CHUNKS", "true")
+    with pytest.raises(ValueError, match="chunk_v4 validation failed"):
+        pc.CourseProcessor._write_chunks(stub, [bad])
+
+
+def test_write_chunks_default_warns(monkeypatch, tmp_path, caplog):
+    """Env unset → warn-only; chunks still written; no raise."""
+    _require_jsonschema()
+    import Trainforge.pipeline.process_course as pc
+
+    class _StubCapture:
+        def __init__(self):
+            self.decisions = []
+
+        def log_decision(self, **kwargs):
+            self.decisions.append(kwargs)
+
+    class _Stub:
+        pass
+
+    stub = _Stub()
+    stub.corpus_dir = tmp_path
+    stub.capture = _StubCapture()
+
+    bad = _make_valid_chunk()
+    del bad["source"]["course_id"]
+
+    monkeypatch.delenv("TRAINFORGE_VALIDATE_CHUNKS", raising=False)
+    with caplog.at_level(logging.WARNING, logger="Trainforge.pipeline.process_course"):
+        # Should NOT raise
+        pc.CourseProcessor._write_chunks(stub, [bad])
+
+    # Warning was emitted
+    assert any(
+        "chunk_v4 validation" in rec.message for rec in caplog.records
+    ), f"Expected chunk_v4 validation warning; got {[r.message for r in caplog.records]}"
+
+    # Files were still written
+    assert (tmp_path / "chunks.jsonl").exists()
+    assert (tmp_path / "chunks.json").exists()
+
+
+def test_write_chunks_valid_chunks_pass_strict(monkeypatch, tmp_path):
+    """Valid chunks under strict mode → no raise, files written."""
+    _require_jsonschema()
+    import Trainforge.pipeline.process_course as pc
+
+    class _StubCapture:
+        def log_decision(self, **kwargs):
+            pass
+
+    class _Stub:
+        pass
+
+    stub = _Stub()
+    stub.corpus_dir = tmp_path
+    stub.capture = _StubCapture()
+
+    monkeypatch.setenv("TRAINFORGE_VALIDATE_CHUNKS", "true")
+    pc.CourseProcessor._write_chunks(stub, [_make_valid_chunk()])
+    assert (tmp_path / "chunks.jsonl").exists()
+    assert (tmp_path / "chunks.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Wave 3 / Worker M — Case preservation for learning_outcome_refs (A3)
+# ---------------------------------------------------------------------------
+#
+# The opt-in env var ``TRAINFORGE_PRESERVE_LO_CASE=true`` stops
+# ``CourseProcessor._extract_objective_refs`` from lowercasing
+# structured LO ids at ingest. Default stays lowercase for backward-
+# compat with existing LibV2 chunks; the default flips in Wave 4's
+# structural migration. See plans/kg-quality-review-2026-04/
+# worker-m-subplan.md §2.
+# ---------------------------------------------------------------------------
+
+
+class _LOStub:
+    """Minimal LearningObjective look-alike for _extract_objective_refs.
+
+    The production code reads ``lo.id`` via ``hasattr`` (see
+    ``process_course.py::_extract_objective_refs``); we only need that
+    attribute to exercise the case-normalisation branch.
+    """
+
+    def __init__(self, obj_id: str):
+        self.id = obj_id
+
+
+def _call_extract_objective_refs(obj_ids):
+    """Run ``CourseProcessor._extract_objective_refs`` on a synthetic item.
+
+    Uses a SimpleNamespace shim so we don't need a full processor
+    instance — the method only touches ``self.WEEK_PREFIX_RE`` and
+    ``self.OBJECTIVE_CODE_RE`` (both class attrs on CourseProcessor).
+    """
+    from types import SimpleNamespace
+
+    import Trainforge.pipeline.process_course as pc
+
+    item = {
+        "learning_objectives": [_LOStub(x) for x in obj_ids],
+        "key_concepts": [],
+        "sections": [],
+        "objective_refs": [],
+    }
+    stub = SimpleNamespace(
+        WEEK_PREFIX_RE=pc.CourseProcessor.WEEK_PREFIX_RE,
+        OBJECTIVE_CODE_RE=pc.CourseProcessor.OBJECTIVE_CODE_RE,
+    )
+    return pc.CourseProcessor._extract_objective_refs(stub, item)
+
+
+def test_preserve_case_flag_off_lowercases(monkeypatch):
+    """Default env (unset) → refs lowercased for backward-compat."""
+    monkeypatch.delenv("TRAINFORGE_PRESERVE_LO_CASE", raising=False)
+    refs = _call_extract_objective_refs(["TO-01"])
+    assert refs == ["to-01"], (
+        f"default env must lowercase LO refs; got {refs}"
+    )
+
+
+def test_preserve_case_flag_on_preserves(monkeypatch):
+    """TRAINFORGE_PRESERVE_LO_CASE=true → refs preserve source casing."""
+    monkeypatch.setenv("TRAINFORGE_PRESERVE_LO_CASE", "true")
+    refs = _call_extract_objective_refs(["TO-01"])
+    assert refs == ["TO-01"], (
+        f"flag=true must preserve case; got {refs}"
+    )
+
+
+def test_preserve_case_flag_non_true_values_lowercase(monkeypatch):
+    """Only the literal string 'true' enables preservation (case-insensitive)."""
+    for val in ("false", "0", "", "1", "yes"):
+        monkeypatch.setenv("TRAINFORGE_PRESERVE_LO_CASE", val)
+        refs = _call_extract_objective_refs(["TO-01"])
+        assert refs == ["to-01"], (
+            f"TRAINFORGE_PRESERVE_LO_CASE={val!r} should NOT enable "
+            f"preservation; got {refs}"
+        )
+
+
+def test_preserve_case_flag_on_still_strips_week_prefix(monkeypatch):
+    """Week prefix (W01-, w01-) still stripped regardless of case flag."""
+    monkeypatch.setenv("TRAINFORGE_PRESERVE_LO_CASE", "true")
+    refs = _call_extract_objective_refs(["W03-CO-05"])
+    # WEEK_PREFIX_RE is case-insensitive → W03- stripped; CO-05 stays
+    # uppercase because preserve_case is on.
+    assert refs == ["CO-05"], (
+        f"week prefix should strip; casing should preserve; got {refs}"
+    )

@@ -30,7 +30,7 @@ the same records.
 
 SemantiK supplies accessible structure and block metadata; Trainforge owns the
 chunk boundary and materializes the final record. The live emission path is
-[`Trainforge/process_course.py`](../../Trainforge/process_course.py), with
+[`Trainforge/pipeline/process_course.py`](../../Trainforge/pipeline/process_course.py), with
 boundary logic under [`Trainforge/chunker`](../../Trainforge/chunker).
 
 ## Identity and sequence

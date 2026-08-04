@@ -109,7 +109,7 @@ Produce a punch list grouped by check, e.g.
 - Phase 2.5 "shipped" — NO MATCH in git log (search terms tried: "phase 2.5", "wave-85"). Investigate.
 
 ### 3. Missing critical-file paths
-- `Trainforge/old_chunker.py` referenced in Phase 1 body, no longer exists. Path likely refactored to `Trainforge/process_course.py`.
+- `Trainforge/old_chunker.py` referenced in Phase 1 body, no longer exists. Path likely refactored to `Trainforge/pipeline/process_course.py`.
 
 ### 4. Phase-number collisions
 - (none) | or: `Phase 2.5` appears twice (lines 142, 207).

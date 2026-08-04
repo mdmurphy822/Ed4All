@@ -1,7 +1,7 @@
 """Honest IRT difficulty-calibration scaffold (response-data-gated).
 
 The chunk/assessment ``difficulty`` band is, today, purely heuristic
-(``Trainforge/process_course.py::_determine_difficulty`` Bloom→difficulty
+(``Trainforge/pipeline/process_course.py::_determine_difficulty`` Bloom→difficulty
 cascade + keyword fallback, mirrored at
 ``MCP/tools/pipeline_tools.py::_resolve_chunk_difficulty``). This module
 adds an HONEST scaffold around that heuristic, behind

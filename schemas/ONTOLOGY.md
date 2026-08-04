@@ -108,7 +108,7 @@ Per-class subsections follow a fixed template (definition path, production site,
 
 **Definition:** Courseforge HTML output; structure encoded in JSON-LD emitted at `Courseforge/scripts/rendering/generate_course.py:571-595` (`_build_page_metadata`). No standalone schema file.
 **Instance production:** `Courseforge/scripts/rendering/generate_course.py::generate_week()` emits five pages per week: overview, content_XX, application, self_check, summary.
-**Instance consumption:** `Trainforge/process_course.py::_chunk_content()` (line 787) parses these pages during IMSCC ingestion.
+**Instance consumption:** `Trainforge/pipeline/process_course.py::_chunk_content()` (line 787) parses these pages during IMSCC ingestion.
 
 **Required fields** (JSON-LD emit):
 | field | type | notes |
@@ -187,7 +187,7 @@ Each describes an inline HTML component produced by Courseforge (accordions for 
 - SelfCheck: `_render_self_check()` (lines 355-385), `data-cf-component="self-check"`, `data-cf-purpose="formative-assessment"`, carries `data-cf-bloom-level` and optional `data-cf-objective-ref`.
 - ActivityCard: `_render_activities()` (lines 480-497), `data-cf-component="activity"`, `data-cf-purpose="practice"`, carries `data-cf-bloom-level` and optional `data-cf-objective-ref`.
 
-**Instance consumption:** `Trainforge/parsers/html_content_parser.py` (component detection); `Trainforge/process_course.py` (interactive-components coverage metric).
+**Instance consumption:** `Trainforge/parsers/html_content_parser.py` (component detection); `Trainforge/pipeline/process_course.py` (interactive-components coverage metric).
 
 ### LearningObjective
 
@@ -211,7 +211,7 @@ Each describes an inline HTML component produced by Courseforge (accordions for 
 
 ### Chunk
 
-**Definition:** No standalone JSON Schema; produced as a Python dict by `Trainforge/process_course.py::_create_chunk()` (line 1038). Schema-versioned via `CHUNK_SCHEMA_VERSION = "v4"` (line 86).
+**Definition:** No standalone JSON Schema; produced as a Python dict by `Trainforge/pipeline/process_course.py::_create_chunk()` (line 1038). Schema-versioned via `CHUNK_SCHEMA_VERSION = "v4"` (line 86).
 **Instance production:** `_chunk_content` + `_chunk_text_block` + `_create_chunk` in `process_course.py`.
 **Instance consumption:** `Trainforge/rag/typed_edge_inference.py`, `Trainforge/generators/*.py`, instruction/preference pair synthesis, LibV2 corpus.
 
@@ -529,7 +529,7 @@ Single table of directed/undirected relations that cross class boundaries. Cardi
 | `hasSectionObjective` | Section → LearningObjective | 0..* | yes | `sections[].sectionObjectives[]` | same |
 | `prerequisiteOf` (LO) | LearningObjective → LearningObjective | 0..* | yes | LO `prerequisiteObjectives[]` | same |
 | `targetsObjective` | Page / Question → LearningObjective | 0..* | yes | `data-cf-objective-ref`, `objective_id` | `generate_course.py:378,491`; `question_factory.py:42` |
-| `follows` (chunk order) | Chunk → Chunk | 0..1 | yes | `follows_chunk` field | `Trainforge/process_course.py:1085` |
+| `follows` (chunk order) | Chunk → Chunk | 0..1 | yes | `follows_chunk` field | `Trainforge/pipeline/process_course.py:1085` |
 | `hasConceptTag` | Chunk → Concept | 0..* | yes | `concept_tags[]` | `process_course.py:1087` |
 | `hasLORef` | Chunk → LearningObjective | 1..* | yes | `learning_outcome_refs[]` (required for pair generation) | `process_course.py:1088` |
 | `typedEdge:is-a` | Concept → Concept | 0..* | yes | TypedEdge type=`is-a` | `Trainforge/rag/inference_rules/is_a_from_key_terms.py` |
@@ -871,7 +871,7 @@ Document-level `rule_versions` object maps rule name → integer version (`conce
 ### 5.3 Chunk source provenance
 
 **Surface:** `chunk.source` sub-object (see § 2 Chunk).
-**Producer:** `Trainforge/process_course.py::_create_chunk()` lines 1057-1077.
+**Producer:** `Trainforge/pipeline/process_course.py::_create_chunk()` lines 1057-1077.
 **Key fields:** `course_id`, `module_id`, `lesson_id`, `section_heading`, `position_in_module`, optional `html_xpath` + `char_span` (Section 508 / ADA Title II round-trip: Worker E's audit trail), `item_path` (IMSCC-relative).
 
 A downstream diagnostic field `chunk._metadata_trace` (added by Worker M1 at `process_course.py:1219`) records where each enrichment field came from (JSON-LD / data-cf-* / heuristic). This is flagged as a temporary diagnostic in the referenced ADR.
@@ -942,7 +942,7 @@ Shape (trimmed):
 }
 ```
 
-Consumer: `Trainforge/process_course.py::_extract_section_metadata` (priority chain documented in `Trainforge/CLAUDE.md` metadata-extraction section: JSON-LD > `data-cf-*` > regex heuristic).
+Consumer: `Trainforge/pipeline/process_course.py::_extract_section_metadata` (priority chain documented in `Trainforge/CLAUDE.md` metadata-extraction section: JSON-LD > `data-cf-*` > regex heuristic).
 
 See § JSON-LD round-trip for the four `@context` files that wrap this and the other JSON artifacts as RDF (Phase 1.1–1.2 of the RDF/SHACL plan).
 
@@ -978,7 +978,7 @@ Sizes (file count + total lines per subfolder, regenerated 2026-05-07):
 
 | Dataclass | Location | Purpose |
 |---|---|---|
-| `Chunk` (dict shape; no dataclass yet) | `Trainforge/process_course.py:1079-1092` | unit of retrieval |
+| `Chunk` (dict shape; no dataclass yet) | `Trainforge/pipeline/process_course.py:1079-1092` | unit of retrieval |
 | `Question` | `Trainforge/generators/assessment/question_factory.py:36` | factory-side question |
 | `QuestionChoice` | `question_factory.py:28` | choice option |
 | `QuestionData` | `Trainforge/generators/assessment/generator.py:81` | generator-side question |
@@ -1014,7 +1014,7 @@ Every identifier scheme currently in use.
 | LO ID — chapter | `CO-NN` | `CO-03` | Objective-synthesizer |
 | LO ID — week-scoped (legacy) | `WNN-CO-NN` | `W03-CO-01` | Deprecated in favor of canonical CO-NN; week-prefix normalization at `generate_course.py:605-613` |
 | Module ID | `^[A-Z]{2,8}_[0-9]{3}_W[0-9]{2}_M[0-9]{2}$` | `<COURSE_CODE>_W01_M02` | Course-outliner |
-| Chunk ID | `^<course>_chunk_\d{5}$` | `<course>_chunk_00001` | `Trainforge/process_course.py` |
+| Chunk ID | `^<course>_chunk_\d{5}$` | `<course>_chunk_00001` | `Trainforge/pipeline/process_course.py` |
 | Concept tag | kebab-case normalized slug | `cognitive-load-theory` | `process_course.py::normalize_tag` |
 | Misconception ID | `<chunk_id>_mc_<NN>_<hash>` | `<chunk_id>_mc_01_<hash>` | `Trainforge/generators/pairs/preference.py` |
 | Event ID | `^EVT_[a-f0-9]{16}$` | `EVT_a3f8c1d2e4b5f6a7` | `lib/decision_capture.py:46-59` (fallback); `lib/sequence_manager.py` (primary) |
@@ -1111,8 +1111,8 @@ Every version counter currently in use:
 
 | Counter | Current value | Location |
 |---|---|---|
-| `CHUNK_SCHEMA_VERSION` | `"v4"` | `Trainforge/process_course.py:86`; written to every chunk `schema_version` field (line 1081) and quality report (lines 1749, 1779) |
-| `METRICS_SEMANTIC_VERSION` | `5` | `Trainforge/process_course.py:74` (Worker P bumped 4→5 for `package_completeness`) |
+| `CHUNK_SCHEMA_VERSION` | `"v4"` | `Trainforge/pipeline/process_course.py:86`; written to every chunk `schema_version` field (line 1081) and quality report (lines 1749, 1779) |
+| `METRICS_SEMANTIC_VERSION` | `5` | `Trainforge/pipeline/process_course.py:74` (Worker P bumped 4→5 for `package_completeness`) |
 | Inference `RULE_VERSION` | `1` (each) | `Trainforge/rag/inference_rules/*.py` — per-rule integer; on each edge as `provenance.rule_version` |
 | `rule_versions` object | `{rule_name: int ≥1}` | `schemas/knowledge/concept_graph_semantic.schema.json:17-21` — document-level map |
 | `schema_version` (decision event) | free string; defaults vary | `lib/decision_capture.py` sets `decision_event` default |
@@ -1147,7 +1147,7 @@ Every version counter currently in use:
 | `schemas/knowledge/concept_graph_semantic.schema.json` | Concept, TypedEdge, rule_versions | Typed-edge concept graph (8 edge types, per-rule evidence discriminator) |
 | `schemas/knowledge/course.schema.json` | Course (course.json) | Canonical shape for Trainforge-emitted `course.json`, consumed by LibV2 retrieval |
 | `schemas/knowledge/courseforge_jsonld_v1.schema.json` | CourseforgePage | JSON-LD block emit shape (Block dataclass; Wave 1.5 + 1.7 fields wired) |
-| `schemas/knowledge/course_metadata.schema.json` | CourseMetadata (Trainforge-emitted) | Course-level metadata produced by `Trainforge/process_course.py` |
+| `schemas/knowledge/course_metadata.schema.json` | CourseMetadata (Trainforge-emitted) | Course-level metadata produced by `Trainforge/pipeline/process_course.py` |
 | `schemas/knowledge/instruction_pair.schema.json` | InstructionPair | SFT training pair (prompt/completion) |
 | `schemas/knowledge/instruction_pair.strict.schema.json` | InstructionPair (strict) | Opt-in strict variant of the SFT pair schema |
 | `schemas/knowledge/misconception.schema.json` | Misconception | First-class misconception entity (content-hash IDs) |
@@ -1232,13 +1232,13 @@ Exact file:line anchors to key emit/consume sites. Grep-verified against the tre
 
 ### Consume — Trainforge
 
-- **`_chunk_content`:** `Trainforge/process_course.py:787` — builds prefix, iterates parsed items.
-- **`_chunk_text_block`:** `Trainforge/process_course.py:932`.
-- **`_create_chunk`:** `Trainforge/process_course.py:1038` — full chunk shape (lines 1079-1092) + audit-trail source (1067-1077).
-- **`CHUNK_SCHEMA_VERSION`:** `Trainforge/process_course.py:86`.
-- **`METRICS_SEMANTIC_VERSION`:** `Trainforge/process_course.py:74`.
-- **`_metadata_trace` (Worker M1 diagnostic):** `Trainforge/process_course.py:1219`.
-- **Metadata extraction priority chain (JSON-LD → data-cf-* → heuristic):** `Trainforge/process_course.py:1099-1130` (`_extract_section_metadata`).
+- **`_chunk_content`:** `Trainforge/pipeline/process_course.py:787` — builds prefix, iterates parsed items.
+- **`_chunk_text_block`:** `Trainforge/pipeline/process_course.py:932`.
+- **`_create_chunk`:** `Trainforge/pipeline/process_course.py:1038` — full chunk shape (lines 1079-1092) + audit-trail source (1067-1077).
+- **`CHUNK_SCHEMA_VERSION`:** `Trainforge/pipeline/process_course.py:86`.
+- **`METRICS_SEMANTIC_VERSION`:** `Trainforge/pipeline/process_course.py:74`.
+- **`_metadata_trace` (Worker M1 diagnostic):** `Trainforge/pipeline/process_course.py:1219`.
+- **Metadata extraction priority chain (JSON-LD → data-cf-* → heuristic):** `Trainforge/pipeline/process_course.py:1099-1130` (`_extract_section_metadata`).
 - **Typed-edge orchestrator:** `Trainforge/rag/typed_edge_inference.py:1-24` (module docstring), precedence at lines 48-52, collision dedupe at 71-100.
 - **Inference rule: is-a from key terms:** `Trainforge/rag/inference_rules/is_a_from_key_terms.py:26-27` (name + version), emit at lines 155-165.
 - **Inference rule: prerequisite from LO order:** `Trainforge/rag/inference_rules/prerequisite_from_lo_order.py:19-20`, emit at 140-150.
@@ -1433,7 +1433,7 @@ The table below mirrors the v0.2.0 / Wave 82-85 subset for historical context; t
 
 Three artifacts unconditionally carry `run_id` + `created_at` (REC-PRV-01, Wave 4.1 Worker P):
 
-- Chunks (`Trainforge/process_course.py::_create_chunk`).
+- Chunks (`Trainforge/pipeline/process_course.py::_create_chunk`).
 - Concept nodes (`Trainforge/rag/typed_edge_inference.py`).
 - Concept edges (same).
 
@@ -1496,7 +1496,7 @@ Wave 10 threads Courseforge's `sourceReferences` + `data-cf-source-ids` through 
 - **`chunk_v4.schema.json`** `$defs/Source` gains optional `source_references[]` (items `$ref` the canonical `source_reference.schema.json`). Strict `additionalProperties: false` preserved — the field is declared explicitly. Legacy chunks without the field continue to validate under `TRAINFORGE_VALIDATE_CHUNKS=true`.
 - **`concept_graph_semantic.schema.json`** node gains optional `source_refs[]` (same `$ref`). Populated from the chunk at `occurrences[0]` (Wave 5 sorted-ID ordering) at `_build_tag_graph` emit time. Evidence arm shapes (IsA, Prerequisite, Related, Assesses, Exemplifies, MisconceptionOf, DerivedFromObjective, DefinedBy) are **NOT** touched in Wave 10 — that work lives in Wave 11 behind `TRAINFORGE_SOURCE_PROVENANCE`.
 - **`Trainforge/parsers/html_content_parser.py`** — `ContentSection` gains `source_references: List[str]` (raw `data-cf-source-ids` strings); `ParsedHTMLModule` gains `source_references: List[Dict]` (full SourceReference dicts aggregated via precedence: page-level JSON-LD > section-level JSON-LD > HTML `data-cf-source-ids` auto-roled as `contributing`). First-seen wins on sourceId collision so JSON-LD's authoritative role survives.
-- **`Trainforge/process_course.py`** — `_chunk_content` threads parser aggregations into the per-item dict; `_merge_small_sections` now returns 4-tuples `(heading, text, chunk_type, merged_source_ids)` and unions sourceIds across every collapsed section (dedupe + insertion-order preserved); `_create_chunk` folds the resolved refs into `source["source_references"]` via new `_resolve_chunk_source_references` helper (full precedence chain); `_build_tag_graph` copies `source.source_references[]` from each concept's first-occurrence chunk onto `node["source_refs"]`.
+- **`Trainforge/pipeline/process_course.py`** — `_chunk_content` threads parser aggregations into the per-item dict; `_merge_small_sections` now returns 4-tuples `(heading, text, chunk_type, merged_source_ids)` and unions sourceIds across every collapsed section (dedupe + insertion-order preserved); `_create_chunk` folds the resolved refs into `source["source_references"]` via new `_resolve_chunk_source_references` helper (full precedence chain); `_build_tag_graph` copies `source.source_references[]` from each concept's first-occurrence chunk onto `node["source_refs"]`.
 - **`MCP/tools/pipeline_tools.py::archive_to_libv2`** — LibV2 archive manifest gains `features.source_provenance` advisory flag. Scans the archived `chunks.jsonl` once at manifest-build time; true when at least one chunk carries `source.source_references[]` with at least one entry; false otherwise (missing file, read errors, legacy corpus). Lets LibV2 retrieval callers fast-skip source-grounded queries on pre-Wave-10 corpora.
 - **No new env flag.** All fields are optional; absence = "unknown". Evidence arm enrichment (the only mandatory-via-flag work) waits for Wave 11.
 
@@ -1613,7 +1613,7 @@ companion: `Courseforge/scripts/blocks.py::Block`.
 - Wave 4 pair-validator entrypoints: `lib/validators/pair_claim_support.py`
   (W4.A + Wave 9 TIGHT), `lib/validators/pair_lo_refs.py` (W4.B),
   `lib/validators/pair_objective_delivery.py` (W4.C MEDIUM).
-- Wave 5 W5.C / W5.G chunk-emit propagation: `Trainforge/process_course.py::_create_chunk`.
+- Wave 5 W5.C / W5.G chunk-emit propagation: `Trainforge/pipeline/process_course.py::_create_chunk`.
 - Wave 9 TIGHT dual-source cross-check rule: see `pair_claim_support.py`
   dual-source path (1461 LOC; W-D7 P2.3 splits this file).
 - Block phase 3 regen-budget primitive: `Courseforge/router/router.py::CourseforgeRouter`.

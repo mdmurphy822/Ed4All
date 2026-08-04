@@ -1,7 +1,7 @@
 """Rule: derive ``related-to`` edges from co-occurrence weight.
 
 The existing ``concept_graph.json`` (built by
-``Trainforge.process_course._build_tag_graph``) already stores every
+``Trainforge.pipeline.process_course._build_tag_graph``) already stores every
 concept-tag pair that co-occurs in at least one chunk, with a ``weight``
 count. This rule does NOT recompute co-occurrence — it consumes
 ``concept_graph["edges"]`` and re-emits the high-weight pairs as typed

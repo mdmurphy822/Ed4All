@@ -1,6 +1,6 @@
 """HTML + resource helpers used by the Trainforge chunker.
 
-Lifted from ``Trainforge/process_course.py``::CourseProcessor as
+Lifted from ``Trainforge/pipeline/process_course.py``::CourseProcessor as
 standalone module functions so the chunker proper can call them
 without a ``CourseProcessor`` instance.
 
@@ -19,7 +19,7 @@ sibling ``ed4all-chunker`` package (Phase 7a) to dodge a hypothetical
 module-load cycle. Now that the chunker lives inside Trainforge the
 import-cycle risk is gone — ``Trainforge.parsers.html_content_parser``
 imports stdlib + bs4 + ``lib.ontology`` only (no
-``Trainforge.process_course`` reach-through).
+``Trainforge.pipeline.process_course`` reach-through).
 """
 
 from __future__ import annotations

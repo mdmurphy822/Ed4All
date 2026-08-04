@@ -301,7 +301,7 @@ def test_chunk_size_constants_match_trainforge_baseline() -> None:
 
 
 def test_canonical_chunk_types_is_frozenset_with_expected_members() -> None:
-    """Mirror ``Trainforge/process_course.py:103`` byte-for-byte."""
+    """Mirror ``Trainforge/pipeline/process_course.py:103`` byte-for-byte."""
 
     assert isinstance(CANONICAL_CHUNK_TYPES, frozenset)
     expected = {

@@ -1,4 +1,4 @@
-"""Canonical chunker logic lifted out of ``Trainforge/process_course.py``.
+"""Canonical chunker logic lifted out of ``Trainforge/pipeline/process_course.py``.
 
 The canonical implementation lives in ``Trainforge.chunker`` and is shared by
 the pipeline's conversion and course-package paths. Public names and the
@@ -74,7 +74,7 @@ the chunker lives inside ``Trainforge``. Pre-Phase-7a-revert this was
 a lazy import (the chunker was a sibling package and the lazy form
 dodged a hypothetical module-load cycle); the import-cycle risk no
 longer applies because ``xpath_walker`` is stdlib-only and never
-reaches ``Trainforge.process_course``.
+reaches ``Trainforge.pipeline.process_course``.
 """
 
 from __future__ import annotations
@@ -934,7 +934,7 @@ class ChunkerContext:
     ``create_chunk`` receives the chunker's resolved arguments and
     returns the materialised chunk dict. The signature mirrors
     ``CourseProcessor._create_chunk`` at
-    ``Trainforge/process_course.py:1823`` so the Subtask 6 wrapper
+    ``Trainforge/pipeline/process_course.py:1823`` so the Subtask 6 wrapper
     can pass the bound method straight through.
 
     ``type_from_heading_fn`` overrides the package's default
@@ -2091,7 +2091,7 @@ def _generate_chunk_id(
 ) -> str:
     """Generate a chunk ID — package-local mirror of the Trainforge helper.
 
-    Mirrors ``Trainforge/process_course.py::_generate_chunk_id`` at
+    Mirrors ``Trainforge/pipeline/process_course.py::_generate_chunk_id`` at
     ``:156``. Default position-based; opt-in content-hash mode via
     ``TRAINFORGE_CONTENT_HASH_IDS=true``. The env-var name is preserved
     for backward compatibility with already-ingested LibV2 corpora.

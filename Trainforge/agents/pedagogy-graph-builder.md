@@ -112,7 +112,7 @@ Works downstream with:
   `keyConcepts[]` get populated by the deterministic
   `concept_objective_linker.py` pass between objective synthesis and
   content generation.
-- `Trainforge/process_course.py` — Subtask 13 refactors the
+- `Trainforge/pipeline/process_course.py` — Subtask 13 refactors the
   `build_pedagogy_graph` call site there to load
   `concept_graph_semantic.json` from this phase's output instead of
   re-building. Legacy corpora without a Phase 6 concept-extraction

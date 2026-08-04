@@ -79,7 +79,7 @@ def derive_course_slug(
 ) -> str:
     """Derive a LibV2 course slug from ``course_code`` + ``course_title``.
 
-    Bug observed (2026-04-24): ``python -m Trainforge.process_course
+    Bug observed (2026-04-24): ``python -m Trainforge.pipeline.process_course
     --import-to-libv2`` produced a doubled ``<code>-<code>`` slug because
     Courseforge writes the IMSCC manifest title as ``f"{course_code}:
     {course_title}"`` and Trainforge's IMSCC parser falls back to

@@ -4,7 +4,7 @@ Replaces 2 independently-built validator paths:
 
 - :mod:`Courseforge.scripts.rendering.generate_course._build_jsonld_validator` --
   curated sibling schemas + 5 taxonomy files.
-- :mod:`Trainforge.process_course._load_chunk_validator` --
+- :mod:`Trainforge.pipeline.process_course._load_chunk_validator` --
   rglob over a schemas root.
 
 Both followed identical Draft 2020-12 + ``referencing.Registry``

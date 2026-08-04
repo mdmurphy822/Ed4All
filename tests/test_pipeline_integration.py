@@ -148,7 +148,7 @@ def test_full_pipeline(tmp_path):
         assert len(html_in_zip) >= 5, f"Expected >= 5 HTML files in IMSCC, got {len(html_in_zip)}: {html_in_zip}"
 
     # Step 4: Process through Trainforge
-    from Trainforge.process_course import CourseProcessor
+    from Trainforge.pipeline.process_course import CourseProcessor
 
     tf_output = tmp_path / "trainforge_output"
     processor = CourseProcessor(

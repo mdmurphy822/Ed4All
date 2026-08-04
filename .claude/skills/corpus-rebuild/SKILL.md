@@ -43,7 +43,7 @@ real entry point first:
 
 ```bash
 grep -nE 'def main|argparse|--imscc|--output-dir|--reuse-objectives' \
-  Trainforge/process_course.py | head -n 30
+  Trainforge/pipeline/process_course.py | head -n 30
 grep -rnE 'process_course\.py' MCP/ cli/ | head -n 20
 # Cross-check the canonical CLI path
 grep -nE 'rag_training|trainforge_assessment' cli/commands/run.py config/workflows.yaml | head -n 30
@@ -62,7 +62,7 @@ and the source IMSCC filename discovered above):
 ```bash
 TMP=$(mktemp -d)
 IMSCC=$(ls "$COURSE_DIR"/source/imscc/*.imscc | head -n 1)
-python3 Trainforge/process_course.py \
+python3 -m Trainforge.pipeline.process_course \
   --imscc "$IMSCC" \
   --output-dir "$TMP" \
   # [--reuse-objectives <path-to-prior-synthesized_objectives.json>] if stable LO regen is needed

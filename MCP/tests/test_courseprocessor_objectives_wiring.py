@@ -60,7 +60,7 @@ def _make_objectives(tmp_path: Path) -> Path:
 
 def test_courseprocessor_accepts_objectives_path(tmp_path):
     """CourseProcessor with objectives_path loads them and exposes outcomes."""
-    from Trainforge.process_course import CourseProcessor
+    from Trainforge.pipeline.process_course import CourseProcessor
 
     imscc = _make_imscc(tmp_path)
     objectives = _make_objectives(tmp_path)
@@ -78,7 +78,7 @@ def test_courseprocessor_accepts_objectives_path(tmp_path):
 
 def test_valid_outcome_ids_populated_from_objectives(tmp_path):
     """_build_valid_outcome_ids returns lowercased TO/CO IDs."""
-    from Trainforge.process_course import CourseProcessor
+    from Trainforge.pipeline.process_course import CourseProcessor
 
     imscc = _make_imscc(tmp_path)
     objectives = _make_objectives(tmp_path)
@@ -100,7 +100,7 @@ def test_valid_outcome_ids_populated_from_objectives(tmp_path):
 
 def test_build_course_json_shape(tmp_path):
     """_build_course_json produces the canonical schema shape."""
-    from Trainforge.process_course import CourseProcessor
+    from Trainforge.pipeline.process_course import CourseProcessor
 
     imscc = _make_imscc(tmp_path)
     objectives = _make_objectives(tmp_path)
@@ -128,7 +128,7 @@ def test_build_course_json_shape(tmp_path):
 
 def test_empty_objectives_path_falls_back(tmp_path):
     """No objectives_path → self.objectives is None, valid_ids empty, no crash."""
-    from Trainforge.process_course import CourseProcessor
+    from Trainforge.pipeline.process_course import CourseProcessor
 
     imscc = _make_imscc(tmp_path)
     output = tmp_path / "out"

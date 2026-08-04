@@ -82,7 +82,7 @@ The synthetic floor proves the code paths work; the real-domain floor proves the
 
 The investigation MUST complete before any fallback helper (`derive_bloom_from_verbs`, `extract_key_terms_from_html`, `extract_misconceptions_from_text`) is wired into `_create_chunk`. If the root cause is structural (H1/H3/H4/H5), the fix is at the source or in the parser, not in fallback regex. If the root cause is H2, fallbacks are appropriate.
 
-The helpers exist in `Trainforge/process_course.py` at module scope and are unit-tested. They will be deleted if unused after the investigation concludes — dead code masking a fixable bug is worse than a known gap.
+The helpers exist in `Trainforge/pipeline/process_course.py` at module scope and are unit-tested. They will be deleted if unused after the investigation concludes — dead code masking a fixable bug is worse than a known gap.
 
 ---
 
@@ -101,7 +101,7 @@ This branch ships **only the Trainforge half of both decisions.** The Courseforg
 
 - The "ownership: both" entry in the v0 plan's decision table is *partially fulfilled*, not retracted.
 - The Trainforge defensive layer is **load-bearing**: on a small corpus or against novel template chrome, the n-gram threshold may not fire and footer contamination will leak through. The metric will surface the leak; nothing will refuse to write it. This is acceptable for v0.1.x but is the principal reason `strict_mode=True` is not on by default.
-- Selector-based skip for `[data-cf-role="template-chrome"]` is **not present** in this PR. When Courseforge starts emitting the role attribute, this skip must land in `Trainforge/process_course.py` (in or alongside `_detect_corpus_boilerplate`) in the same PR as the Courseforge template change.
+- Selector-based skip for `[data-cf-role="template-chrome"]` is **not present** in this PR. When Courseforge starts emitting the role attribute, this skip must land in `Trainforge/pipeline/process_course.py` (in or alongside `_detect_corpus_boilerplate`) in the same PR as the Courseforge template change.
 
 ### What this means for the severity flip
 
@@ -131,7 +131,7 @@ Concrete shape on `dev-v0.2.0`:
 
 - Strict mode is not default-on. The Courseforge template-chrome separation (§4b) is still deferred; the defensive n-gram boilerplate stripper in Trainforge remains load-bearing.
 - Severity flip for `outcome_ref_integrity` and `content_fact_check` is still pending both the synthetic floor and the real-domain floor (§3 Severity flip trigger).
-- The §4.4a enrichment-coverage investigation has not concluded; the fallback helpers in `Trainforge/process_course.py` remain unwired.
+- The §4.4a enrichment-coverage investigation has not concluded; the fallback helpers in `Trainforge/pipeline/process_course.py` remain unwired.
 - Domain-agnostic validation (§6(b)) — "run against ≥3 distinct domain corpora with no new defect classes" — has not been completed.
 - SC canonicalisation still covers the variant table, not every WCAG 2.2 SC (§5 item 8).
 
@@ -205,7 +205,7 @@ The chunk object carries a `schema_version` string; `manifest.json` carries a ma
 
 ### §8.2 `METRICS_SEMANTIC_VERSION` ownership
 
-`METRICS_SEMANTIC_VERSION` lives at `Trainforge/process_course.py:58`. It is owned by the **base pass** and governs the `metrics` block in `quality_report.json`.
+`METRICS_SEMANTIC_VERSION` lives at `Trainforge/pipeline/process_course.py:58`. It is owned by the **base pass** and governs the `metrics` block in `quality_report.json`.
 
 - Worker B owns the v3 → v4 bump (adds five flow metrics).
 - Subsequent bumps are coordinated through the append-only decision log at the bottom of ADR-001.

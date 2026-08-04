@@ -142,7 +142,7 @@ def _make_processor(
     semantic_preservation_score: float | None = None,
     certification_status: str | None = None,
 ):
-    from Trainforge.process_course import CourseProcessor
+    from Trainforge.pipeline.process_course import CourseProcessor
 
     proc = CourseProcessor.__new__(CourseProcessor)
     proc.course_code = "SEMANTIK_TEST"

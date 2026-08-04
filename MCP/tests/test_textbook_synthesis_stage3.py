@@ -562,7 +562,7 @@ def test_stage3_seed_compilation_emits_deslugged_alias() -> None:
     yields a seed whose compiled pattern matches the spaced surface form,
     and a single-word slug does NOT add a redundant duplicate alias.
     """
-    from Trainforge.process_course import compile_domain_concept_seeds
+    from Trainforge.pipeline.process_course import compile_domain_concept_seeds
 
     # Mirror the post-Fix-1 seed-spec construction in
     # ``_run_stage3_concept_synthesis``.

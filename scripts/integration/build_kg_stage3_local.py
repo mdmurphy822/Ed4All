@@ -31,7 +31,7 @@ the same production helpers (no divergent re-implementation):
            isolation — one bad chapter degrades, doesn't abort);
        (c) merge per-chapter concepts → course vocabulary, de-dup on
            ``canonical_slug``;
-       (d) compile via ``Trainforge.process_course.compile_domain_concept_seeds``
+       (d) compile via ``Trainforge.pipeline.process_course.compile_domain_concept_seeds``
            (with the same de-slug surface-form alias the handler appends);
        (e) re-tag each chunk via
            ``lib.ontology.concept_tagging.extract_concept_tags(..., domain_concept_seeds=seeds)``,
@@ -308,7 +308,7 @@ def run_stage3_concept_synthesis(
         return vocabulary
 
     # --- compile into (canonical, [regex]) seed pairs ----------------------
-    from Trainforge.process_course import compile_domain_concept_seeds
+    from Trainforge.pipeline.process_course import compile_domain_concept_seeds
 
     _stage3_seed_specs: List[Dict[str, Any]] = []
     for c in concepts_out:
@@ -361,7 +361,7 @@ def _derive_misconceptions(
     """Mirror _run_concept_extraction._derive_misconceptions."""
     try:
         from Trainforge.rag.typed_edge_inference import _make_concept_id
-        from Trainforge.process_course import _route_misconception_to_tag
+        from Trainforge.pipeline.process_course import _route_misconception_to_tag
         from lib.ontology.misconception_id import canonical_mc_id
     except Exception:  # noqa: BLE001 — rule self-skips on []
         return []

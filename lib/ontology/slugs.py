@@ -3,7 +3,7 @@
 Consolidates per-REC-ID-03 what were previously three independent implementations:
 
 - ``Courseforge/scripts/rendering/generate_course.py::_slugify`` (the canonical reference)
-- ``Trainforge/process_course.py::normalize_tag`` (wrapped; display-truncation
+- ``Trainforge/pipeline/process_course.py::normalize_tag`` (wrapped; display-truncation
   + LibV2 alpha-first rule layered on top)
 - ``Trainforge/rag/inference_rules/is_a_from_key_terms.py::_slugify`` (wrapped;
   SC-reference canonicalization + punctuation-to-space preprocessing layered on

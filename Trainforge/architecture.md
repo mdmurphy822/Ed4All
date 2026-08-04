@@ -44,7 +44,7 @@ course was parsed or archived.
 flowchart TB
     full["ed4all run textbook-to-course"] --> phases["Chunking · concept extraction<br/>assessment · synthesis · archival"]
     rag["ed4all run rag_training"] --> phases
-    direct["python -m Trainforge.process_course"] --> processor["Direct CourseProcessor output"]
+    direct["python -m Trainforge.pipeline.process_course"] --> processor["Direct CourseProcessor output"]
     train["ed4all run trainforge_train"] --> imported["Existing LibV2 course"]
     imported --> fit["TrainingRunner"]
 ```

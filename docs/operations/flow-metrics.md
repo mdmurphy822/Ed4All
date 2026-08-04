@@ -7,7 +7,7 @@ repairing records, or relaxing validation.
 
 Trainforge writes these values to `quality_report.json`. The current contract is
 `metrics_semantic_version: 5`; the implementation and emitted methodology live
-in [`Trainforge/process_course.py`](../../Trainforge/process_course.py).
+in [`Trainforge/pipeline/process_course.py`](../../Trainforge/pipeline/process_course.py).
 
 ## Report shape
 

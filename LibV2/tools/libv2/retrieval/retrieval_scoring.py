@@ -110,7 +110,7 @@ def extract_query_concepts(query: str, graph_node_ids: Set[str]) -> Set[str]:
     for i in range(len(words) - 1):
         q_tokens.add(f"{words[i]}-{words[i + 1]}")
     # Optional alias canonicalization: mirrors the emit-side normalization in
-    # ``Trainforge.process_course._extract_concept_tags``. Soft import keeps
+    # ``Trainforge.pipeline.process_course._extract_concept_tags``. Soft import keeps
     # the retriever usable in repos that don't ship the lib/ontology layer.
     try:
         from lib.ontology.concept_classifier import canonicalize_alias

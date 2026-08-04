@@ -156,7 +156,7 @@ def _course_dir(slug: str) -> Path:
     """Resolve a course slug to a LibV2 course directory.
 
     Tries the slug directly first, then ``{slug}-{slug}`` (the doubled
-    form that ``Trainforge/process_course.py`` emits when course_id ==
+    form that ``Trainforge/pipeline/process_course.py`` emits when course_id ==
     course_slug, e.g. ``<slug>-<slug>``).
 
     Preference rule: a candidate is "good" only if it actually carries

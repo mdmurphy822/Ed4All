@@ -69,7 +69,7 @@ def courseforge_slugify():
 @pytest.fixture(scope="module")
 def trainforge_normalize_tag():
     """Load the migrated `normalize_tag` from process_course.py."""
-    from Trainforge.process_course import normalize_tag
+    from Trainforge.pipeline.process_course import normalize_tag
     return normalize_tag
 
 
@@ -653,7 +653,7 @@ def test_canonical_slug_is_single_source_of_truth():
     )
 
     # Trainforge process_course.py imports canonical_slug (used by normalize_tag).
-    import Trainforge.process_course as pc
+    import Trainforge.pipeline.process_course as pc
     assert pc.canonical_slug is _canon
 
     # is_a_from_key_terms imports canonical_slug.

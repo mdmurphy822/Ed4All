@@ -215,7 +215,7 @@ def slug_to_label(slug: str) -> str:
 
     Replaces hyphens with spaces and applies acronym-aware title-case.
     Drop-in replacement for ``slug.replace("-", " ").title()`` at the
-    label-emit sites in ``Trainforge/process_course.py`` and
+    label-emit sites in ``Trainforge/pipeline/process_course.py`` and
     ``Trainforge/rag/graphs/pedagogy_graph_builder.py``.
 
     Compound-acronym slugs (``json-ld``, ``n-triples``) consult

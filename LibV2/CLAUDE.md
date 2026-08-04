@@ -496,7 +496,7 @@ Gated by `lib/validators/libv2/manifest.py::LibV2ManifestValidator` as the `libv
 
 ### Course Metadata (`course.json`)
 
-Canonical shape: `schemas/knowledge/course.schema.json`. Produced by `Trainforge/process_course.py::_build_course_json`. Validated before write.
+Canonical shape: `schemas/knowledge/course.schema.json`. Produced by `Trainforge/pipeline/process_course.py::_build_course_json`. Validated before write.
 
 Required fields:
 

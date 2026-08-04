@@ -525,7 +525,7 @@ DROPPABLE_CLASSES: Set[str] = frozenset({
 def is_droppable_class(klass: str) -> bool:
     """Return True iff ``klass`` is a class the extractor should drop.
 
-    Used by ``Trainforge.process_course.CourseProcessor._extract_concept_tags``
+    Used by ``Trainforge.pipeline.process_course.CourseProcessor._extract_concept_tags``
     to filter at emit time. Domain concepts and misconceptions are kept.
     """
     return klass in DROPPABLE_CLASSES

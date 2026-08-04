@@ -5,7 +5,7 @@ locks the algorithm + fallback semantics so future call sites stay
 byte-equivalent. The three current call sites are:
 
 * ``Trainforge/rag/graphs/pedagogy_graph_builder.py::_mc_id``
-* ``Trainforge/process_course.py::_build_misconceptions_for_graph``
+* ``Trainforge/pipeline/process_course.py::_build_misconceptions_for_graph``
 * ``Trainforge/generators/pairs/preference.py::_misconception_id``
 
 Schema: ``schemas/knowledge/misconception.schema.json``

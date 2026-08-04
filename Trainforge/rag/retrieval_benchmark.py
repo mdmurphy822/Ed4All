@@ -22,7 +22,7 @@ what we want for cross-commit delta measurement.
 
 CLI / flag
 ----------
-``Trainforge/process_course.py`` gains a ``--benchmark-retrieval`` flag
+``Trainforge/pipeline/process_course.py`` gains a ``--benchmark-retrieval`` flag
 that, after processing, calls :func:`run_benchmark` against the freshly
 written ``chunks.jsonl`` + ``course.json``. The result lands at
 ``<output>/quality/retrieval_benchmark.json``. See

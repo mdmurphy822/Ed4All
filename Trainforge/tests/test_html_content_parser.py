@@ -2,7 +2,7 @@
 ``objective_alignment`` from JSON-LD ``blocks[]`` projections.
 
 The parser-side half of the chunker ingestion mirror. Without this,
-every downstream consumer (``Trainforge/process_course.py``, the
+every downstream consumer (``Trainforge/pipeline/process_course.py``, the
 NLI claim-support gate, the ``BlockObjectiveDeliveryValidator``
 tri-axis check) silently drops the audit signals emitted by the
 Phase-2 ``Block`` dataclass on the wire.

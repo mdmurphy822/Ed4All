@@ -1,6 +1,6 @@
 """LibV2 slug-deduplication regression tests.
 
-``python -m Trainforge.process_course --import-to-libv2`` derives a slug from
+``python -m Trainforge.pipeline.process_course --import-to-libv2`` derives a slug from
 ``course_code`` and ``course_title``. The import contract must avoid a doubled
 ``<code>-<code>`` slug when:
 
@@ -8,7 +8,7 @@
     ``f"{course_code}: {course_title}"`` (Courseforge/scripts/
     package_multifile_imscc.py:145), and Trainforge's IMSCC parser
     falls back to ``course_code`` when the manifest carries no other
-    usable title (Trainforge/process_course.py:974). So the title round-
+    usable title (Trainforge/pipeline/process_course.py:974). So the title round-
     tripped as ``"<COURSE_CODE>: <COURSE_CODE>"`` and the LibV2 importer's
     ``slugify(title)`` doubled the code into the slug.
 

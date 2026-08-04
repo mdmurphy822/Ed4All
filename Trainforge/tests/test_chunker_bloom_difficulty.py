@@ -131,7 +131,7 @@ def test_bloom_level_falls_through_to_understand_default() -> None:
 def test_difficulty_from_jsonld_bloom_maps_via_bloom_to_difficulty() -> None:
     """JSON-LD bloomLevel ``apply`` maps to ``intermediate`` difficulty.
 
-    Mirrors ``Trainforge/process_course.py::BLOOM_TO_DIFFICULTY``:
+    Mirrors ``Trainforge/pipeline/process_course.py::BLOOM_TO_DIFFICULTY``:
     remember/understand→foundational; apply/analyze→intermediate;
     evaluate/create→advanced.
     """
@@ -176,7 +176,7 @@ def test_difficulty_keyword_heuristic_on_default_bloom() -> None:
     When the bloom cascade lands on the default and the difficulty
     helper's keyword heuristic finds an introductory keyword like
     ``define`` (case-insensitive), difficulty drops to ``foundational``
-    — mirroring ``Trainforge/process_course.py::_determine_difficulty``'s
+    — mirroring ``Trainforge/pipeline/process_course.py::_determine_difficulty``'s
     fourth fallback. Note: this scenario uses ``"What is"`` (one of the
     helper's introductory keywords) but no canonical Bloom verb, so the
     bloom heuristic still falls through to ``understand``.

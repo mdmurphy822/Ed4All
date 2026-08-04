@@ -3,7 +3,7 @@
 Courseforge Wave 79 C content-generator emits ``<section
 data-cf-template-type="...">`` on every page root. The parser must surface
 that value as ``ContentSection.template_type`` so the chunker
-(``Trainforge.process_course._merge_small_sections``) can carry it through
+(``Trainforge.pipeline.process_course._merge_small_sections``) can carry it through
 to ``chunk.chunk_type`` instead of falling back to the heading-keyword
 heuristic. Falls back to ``None`` when the attribute is absent (legacy
 Courseforge corpora and non-Courseforge IMSCC packages) so the existing
@@ -182,7 +182,7 @@ def test_chunker_honors_template_type_over_heading_heuristic():
     ``_type_from_heading``. With ``data-cf-template-type="procedure"`` on the
     enclosing section, the chunk must instead carry chunk_type=procedure.
     """
-    from Trainforge.process_course import CourseProcessor
+    from Trainforge.pipeline.process_course import CourseProcessor
     from Trainforge.parsers.html_content_parser import ContentSection
 
     proc = CourseProcessor.__new__(CourseProcessor)
@@ -206,7 +206,7 @@ def test_chunker_honors_template_type_over_heading_heuristic():
 
 
 def test_chunker_falls_back_to_heading_heuristic_when_template_type_absent():
-    from Trainforge.process_course import CourseProcessor
+    from Trainforge.pipeline.process_course import CourseProcessor
     from Trainforge.parsers.html_content_parser import ContentSection
 
     proc = CourseProcessor.__new__(CourseProcessor)
@@ -232,7 +232,7 @@ def test_chunker_falls_back_to_heading_heuristic_when_template_type_absent():
 
 def test_chunker_rejects_non_canonical_template_type():
     """Off-spec template_type values fall back to the heading heuristic."""
-    from Trainforge.process_course import CourseProcessor
+    from Trainforge.pipeline.process_course import CourseProcessor
     from Trainforge.parsers.html_content_parser import ContentSection
 
     proc = CourseProcessor.__new__(CourseProcessor)
@@ -253,7 +253,7 @@ def test_chunker_rejects_non_canonical_template_type():
 
 
 def test_chunker_first_section_template_type_wins_in_merge_group():
-    from Trainforge.process_course import CourseProcessor
+    from Trainforge.pipeline.process_course import CourseProcessor
     from Trainforge.parsers.html_content_parser import ContentSection
 
     proc = CourseProcessor.__new__(CourseProcessor)

@@ -25,7 +25,7 @@ Downstream consumers:
     Courseforge/scripts/rendering/generate_course.py ``generate_course`` — validates
         the course-level classification dict before writing
         ``course_metadata.json`` or any per-page JSON-LD. Fail-closed.
-    Trainforge/process_course.py — loads the stub and merges it with CLI
+    Trainforge/pipeline/process_course.py — loads the stub and merges it with CLI
         flag overrides. CLI flags, when present, override individual fields
         of the stub (not the whole block).
 """

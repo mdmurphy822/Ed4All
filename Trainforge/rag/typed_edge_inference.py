@@ -92,7 +92,7 @@ def _make_concept_id(slug: str, course_id: Optional[str]) -> str:
     When ``SCOPE_CONCEPT_IDS`` is True and ``course_id`` is truthy, returns
     ``f"{course_id}:{slug}"``. Otherwise returns ``slug`` unchanged. Exposed
     as a module-level helper so rule modules (and the co-occurrence graph
-    builder in ``Trainforge.process_course``) can produce node IDs that
+    builder in ``Trainforge.pipeline.process_course``) can produce node IDs that
     match the graph's scoped namespace.
 
     Cross-course behaviour: two courses carrying the same concept slug

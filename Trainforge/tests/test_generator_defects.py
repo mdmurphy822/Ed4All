@@ -104,7 +104,7 @@ class TestBoilerplateDetector:
 
 class TestOutcomeReferentialIntegrity:
     def test_broken_ref_listed_in_report(self):
-        from Trainforge.process_course import CourseProcessor
+        from Trainforge.pipeline.process_course import CourseProcessor
 
         chunks = [
             _chunk(id="c1", learning_outcome_refs=["co-01"]),
@@ -121,7 +121,7 @@ class TestOutcomeReferentialIntegrity:
         }
 
     def test_lo_coverage_counts_only_resolving_refs(self):
-        from Trainforge.process_course import CourseProcessor
+        from Trainforge.pipeline.process_course import CourseProcessor
 
         chunks = [
             _chunk(id="c1", learning_outcome_refs=["co-01"]),            # resolves
@@ -181,7 +181,7 @@ class TestOrphanWeekScopedRefs:
 
 class TestFollowsChunkBoundaries:
     def test_violations_detected(self):
-        from Trainforge.process_course import CourseProcessor
+        from Trainforge.pipeline.process_course import CourseProcessor
 
         chunks = [
             _chunk(id="a", source={**_chunk()["source"], "lesson_id": "w01"}),
@@ -196,7 +196,7 @@ class TestFollowsChunkBoundaries:
         assert violations[0]["reason"] == "cross_lesson"
 
     def test_no_violations_for_in_lesson_chain(self):
-        from Trainforge.process_course import CourseProcessor
+        from Trainforge.pipeline.process_course import CourseProcessor
 
         chunks = [
             _chunk(id="a", source={**_chunk()["source"], "lesson_id": "w01"}),
@@ -212,7 +212,7 @@ class TestFollowsChunkBoundaries:
 
 class TestConceptGraphPartition:
     def test_pedagogy_tags_excluded_from_concept_graph(self):
-        from Trainforge.process_course import CourseProcessor
+        from Trainforge.pipeline.process_course import CourseProcessor
 
         proc = CourseProcessor.__new__(CourseProcessor)
         chunks = [
@@ -244,7 +244,7 @@ class TestConceptGraphPartition:
         typed nodes always emit (the builder seeds them
         unconditionally).
         """
-        from Trainforge.process_course import CourseProcessor
+        from Trainforge.pipeline.process_course import CourseProcessor
 
         proc = CourseProcessor.__new__(CourseProcessor)
         chunks = [
@@ -279,7 +279,7 @@ class TestConceptGraphPartition:
 
 class TestQualityReportHonesty:
     def test_html_balance_check_catches_unclosed_div(self):
-        from Trainforge.process_course import CourseProcessor
+        from Trainforge.pipeline.process_course import CourseProcessor
 
         assert CourseProcessor._html_is_well_formed("<p>hi</p>") is True
         assert CourseProcessor._html_is_well_formed("<div><p>hi</p>") is False
@@ -294,7 +294,7 @@ class TestQualityReportHonesty:
         assert CourseProcessor._html_is_well_formed("<br/><hr>plain") is True
 
     def test_metrics_semantic_version_is_written(self):
-        from Trainforge.process_course import METRICS_SEMANTIC_VERSION, CourseProcessor
+        from Trainforge.pipeline.process_course import METRICS_SEMANTIC_VERSION, CourseProcessor
 
         proc = CourseProcessor.__new__(CourseProcessor)
         proc.stats = {"total_words": 100, "total_chunks": 1}
@@ -330,7 +330,7 @@ def _bare_processor(*, pages_with_misconceptions=None):
     """
     from collections import defaultdict
 
-    from Trainforge.process_course import CourseProcessor
+    from Trainforge.pipeline.process_course import CourseProcessor
 
     proc = CourseProcessor.__new__(CourseProcessor)
     proc.course_code = "MINI_101"
@@ -465,7 +465,7 @@ class TestFlowMetrics:
         assert report["metrics"]["interactive_components_rate"] == pytest.approx(0.0)
 
     def test_metrics_semantic_version_is_five(self):
-        from Trainforge.process_course import METRICS_SEMANTIC_VERSION
+        from Trainforge.pipeline.process_course import METRICS_SEMANTIC_VERSION
 
         assert METRICS_SEMANTIC_VERSION == 5
 
@@ -490,7 +490,7 @@ class TestFlowMetrics:
 
 class TestStrictMode:
     def _build_processor(self, *, strict_mode: bool):
-        from Trainforge.process_course import CourseProcessor
+        from Trainforge.pipeline.process_course import CourseProcessor
 
         proc = CourseProcessor.__new__(CourseProcessor)
         proc.strict_mode = strict_mode
@@ -498,7 +498,7 @@ class TestStrictMode:
         return proc
 
     def test_strict_mode_raises_on_broken_refs(self):
-        from Trainforge.process_course import PipelineIntegrityError
+        from Trainforge.pipeline.process_course import PipelineIntegrityError
 
         proc = self._build_processor(strict_mode=True)
         report = {
@@ -540,18 +540,18 @@ class TestStrictMode:
 
 class TestEnrichmentHelpers:
     def test_bloom_derived_from_verbs(self):
-        from Trainforge.process_course import derive_bloom_from_verbs
+        from Trainforge.pipeline.process_course import derive_bloom_from_verbs
 
         text = "Evaluate, critique, and justify the design choices made in this lesson."
         assert derive_bloom_from_verbs(text) == "evaluate"
 
     def test_bloom_returns_none_on_empty_text(self):
-        from Trainforge.process_course import derive_bloom_from_verbs
+        from Trainforge.pipeline.process_course import derive_bloom_from_verbs
 
         assert derive_bloom_from_verbs("") is None
 
     def test_key_terms_from_bold_tags(self):
-        from Trainforge.process_course import extract_key_terms_from_html
+        from Trainforge.pipeline.process_course import extract_key_terms_from_html
 
         html = ("<p>The term <strong>scaffolding</strong> refers to structured learning support. "
                 "A <dfn>rubric</dfn> is a scoring guide.</p>")
@@ -560,7 +560,7 @@ class TestEnrichmentHelpers:
         assert any(t["term"].lower() == "rubric" for t in terms)
 
     def test_misconception_patterns_detected(self):
-        from Trainforge.process_course import extract_misconceptions_from_text
+        from Trainforge.pipeline.process_course import extract_misconceptions_from_text
 
         text = (
             "Common mistake: assuming Bloom's levels are strictly hierarchical. "
@@ -786,7 +786,7 @@ class TestConceptTagPollutionFilter:
 
 class TestDomainConceptSeeds:
     def test_compile_builds_word_boundary_patterns(self):
-        from Trainforge.process_course import compile_domain_concept_seeds
+        from Trainforge.pipeline.process_course import compile_domain_concept_seeds
 
         seeds = compile_domain_concept_seeds([
             {"id": "pour", "aliases": ["POUR", "perceivable operable"]},
@@ -799,7 +799,7 @@ class TestDomainConceptSeeds:
         assert not any(p.search("downpour") for p in patterns)
 
     def test_seed_matched_in_text(self):
-        from Trainforge.process_course import compile_domain_concept_seeds
+        from Trainforge.pipeline.process_course import compile_domain_concept_seeds
 
         proc = _bare_processor()
         proc.domain_concept_seeds = compile_domain_concept_seeds([
@@ -813,7 +813,7 @@ class TestDomainConceptSeeds:
         assert "pour" in tags
 
     def test_seed_ignored_when_not_present(self):
-        from Trainforge.process_course import compile_domain_concept_seeds
+        from Trainforge.pipeline.process_course import compile_domain_concept_seeds
 
         proc = _bare_processor()
         proc.domain_concept_seeds = compile_domain_concept_seeds([
@@ -1049,7 +1049,7 @@ class TestMetadataTraceDiagnostic:
         return base
 
     def test_jsonld_section_match_populates_and_traces(self):
-        from Trainforge.process_course import CourseProcessor
+        from Trainforge.pipeline.process_course import CourseProcessor
 
         proc = CourseProcessor.__new__(CourseProcessor)
         item = self._item(
@@ -1070,7 +1070,7 @@ class TestMetadataTraceDiagnostic:
 
     def test_h2_no_jsonld_sections(self):
         """Pages where JSON-LD has no `sections` array trace as H2."""
-        from Trainforge.process_course import CourseProcessor
+        from Trainforge.pipeline.process_course import CourseProcessor
 
         proc = CourseProcessor.__new__(CourseProcessor)
         item = self._item(courseforge_metadata={"sections": []})
@@ -1082,7 +1082,7 @@ class TestMetadataTraceDiagnostic:
 
     def test_h1_heading_mismatch(self):
         """JSON-LD sections present but heading drift causes no match."""
-        from Trainforge.process_course import CourseProcessor
+        from Trainforge.pipeline.process_course import CourseProcessor
 
         proc = CourseProcessor.__new__(CourseProcessor)
         item = self._item(
@@ -1098,7 +1098,7 @@ class TestMetadataTraceDiagnostic:
     def test_h4_no_sections_path(self):
         """When chunk heading equals page title and no JSON-LD section has
         that heading, the trace attributes to the no-sections code path (H4)."""
-        from Trainforge.process_course import CourseProcessor
+        from Trainforge.pipeline.process_course import CourseProcessor
 
         proc = CourseProcessor.__new__(CourseProcessor)
         item = self._item(
@@ -1113,7 +1113,7 @@ class TestMetadataTraceDiagnostic:
 
     def test_h5_jsonld_parse_failed(self):
         """When the parser flagged a JSON-LD parse failure, trace wins over H2."""
-        from Trainforge.process_course import CourseProcessor
+        from Trainforge.pipeline.process_course import CourseProcessor
 
         proc = CourseProcessor.__new__(CourseProcessor)
         item = self._item(
@@ -1129,7 +1129,7 @@ class TestMetadataTraceDiagnostic:
         """Section matched, contentType set, but keyTerms empty — H3 signature
         on key_terms (the short-circuit at ``if not content_type_label:`` means
         the data-cf-* fallback that could have filled key_terms never runs)."""
-        from Trainforge.process_course import CourseProcessor
+        from Trainforge.pipeline.process_course import CourseProcessor
 
         proc = CourseProcessor.__new__(CourseProcessor)
         item = self._item(
@@ -1150,7 +1150,7 @@ class TestMetadataTraceDiagnostic:
         """When JSON-LD sections have no match but data-cf-* sections do,
         the fallback populates + traces as ``data_cf_fallback``."""
         from Trainforge.parsers.html_content_parser import ContentSection
-        from Trainforge.process_course import CourseProcessor
+        from Trainforge.pipeline.process_course import CourseProcessor
 
         proc = CourseProcessor.__new__(CourseProcessor)
         item = self._item(
@@ -1172,7 +1172,7 @@ class TestMetadataTraceDiagnostic:
 
     def test_generate_enrichment_trace_report_shape(self):
         """The report groups chunks by _metadata_trace values per field."""
-        from Trainforge.process_course import CourseProcessor
+        from Trainforge.pipeline.process_course import CourseProcessor
 
         proc = CourseProcessor.__new__(CourseProcessor)
         proc.course_code = "MINI_101"

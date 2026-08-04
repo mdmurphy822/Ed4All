@@ -6,7 +6,7 @@ short-lived ``ed4all-chunker`` workspace package). This module re-exports
 the same public surface (``BoilerplateConfig``, ``detect_repeated_ngrams``,
 ``strip_boilerplate``, ``contamination_rate`` and the public constants)
 from ``Trainforge.chunker.boilerplate`` so every existing call site
-(``Trainforge.process_course``, ``lib.leak_checker``, the
+(``Trainforge.pipeline.process_course``, ``lib.leak_checker``, the
 ``test_generator_defects`` regression suite) keeps importing from this
 path without modification.
 

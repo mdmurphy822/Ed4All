@@ -23,7 +23,7 @@ deterministic n-gram + frequency analysis and stays well inside that line.
 
 The single public entry point is :func:`derive_lexical_concept_seeds`. It
 returns a ranked list of canonical slug strings suitable for feeding to
-``Trainforge.process_course.compile_domain_concept_seeds`` (each slug is also
+``Trainforge.pipeline.process_course.compile_domain_concept_seeds`` (each slug is also
 its own alias once de-hyphenated). The caller then re-tags chunks in memory
 via ``extract_concept_tags`` and rebuilds the graph with the real builders.
 

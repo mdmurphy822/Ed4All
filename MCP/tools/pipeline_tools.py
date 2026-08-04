@@ -3336,9 +3336,9 @@ def _stage_tree(src_dir: Path, dest_dir: Path, mode: str) -> None:
 def _course_chunk_id_prefix(course_name: str) -> str:
     """Return the ``{course_code}_chunk_`` prefix Trainforge writes.
 
-    Mirrors ``Trainforge.process_course.CourseProcessor`` — the chunk
+    Mirrors ``Trainforge.pipeline.process_course.CourseProcessor`` — the chunk
     prefix is ``f"{self.course_code.lower()}_chunk_"`` (see
-    ``Trainforge/process_course.py:1106``). We lowercase here too so the
+    ``Trainforge/pipeline/process_course.py:1106``). We lowercase here too so the
     archival gate matches the on-disk IDs exactly. Spaces / dashes get
     normalised to underscores so values that have already been slugified
     (e.g. ``"demo-101"``) still produce the right prefix
@@ -3496,7 +3496,7 @@ def _check_chunks_freshness(
     # archival path's runtime.
     #
     # Decision rule: chunks landing in a LibV2 archive are produced by
-    # ``Trainforge.process_course`` which writes IDs as
+    # ``Trainforge.pipeline.process_course`` which writes IDs as
     # ``{course_code.lower()}_chunk_{N}`` (process_course.py:1106). The
     # ``_chunk_`` substring is the recognizable production signature.
     # When at least one chunk on disk has a recognizable course prefix
@@ -5061,7 +5061,7 @@ _BLOOM_TO_DIFFICULTY: Dict[str, str] = {
 
 # Resource types that cap difficulty at "foundational" (overviews / summaries
 # never sit at advanced). Mirrors
-# ``Trainforge/process_course.py::INTRODUCTORY_RESOURCE_TYPES``.
+# ``Trainforge/pipeline/process_course.py::INTRODUCTORY_RESOURCE_TYPES``.
 _INTRODUCTORY_RESOURCE_TYPES = {"overview", "summary"}
 
 
@@ -5130,7 +5130,7 @@ def _resolve_chunk_difficulty(
 ) -> str:
     """Resolve ``difficulty`` for a chunk via the canonical cascade.
 
-    Mirrors ``Trainforge/process_course.py::_determine_difficulty``. Returns
+    Mirrors ``Trainforge/pipeline/process_course.py::_determine_difficulty``. Returns
     one of the chunk_v4 enum values: ``foundational`` / ``intermediate`` /
     ``advanced``.
 
@@ -5236,7 +5236,7 @@ def _emit_irt_difficulty_calibration_event(
     IRT-scaffold chunk-emit run (the DART ``_run_dart_chunking`` + IMSCC
     ``_run_imscc_chunking`` paths).
 
-    Mirrors the canonical ``Trainforge.process_course.CourseProcessor.
+    Mirrors the canonical ``Trainforge.pipeline.process_course.CourseProcessor.
     _maybe_add_difficulty_descriptor`` emit so the
     ``TRAINFORGE_IRT_DIFFICULTY_SCAFFOLD`` flag-row claim ("emitted ... by the
     chunk-emit path") is TRUE for the pipeline_tools chunk emitters too. The
@@ -5294,7 +5294,7 @@ def _recover_figure_alt(html: str) -> Optional[str]:
     Prefers a ``<figcaption>`` text, falling back to an ``<img alt="...">``
     value. Returns ``None`` when neither resolves (anti-fabrication — never
     invents alt text). Pure regex; no bs4 dependency added. Byte-identical to
-    ``Trainforge.process_course.CourseProcessor._recover_figure_alt``.
+    ``Trainforge.pipeline.process_course.CourseProcessor._recover_figure_alt``.
     """
     if not html:
         return None
@@ -15105,7 +15105,7 @@ def _build_outline_curie_minter(
         minted_curie_by_canonical,
     )
     from lib.ontology.concept_tagging import extract_concept_tags
-    from Trainforge.process_course import compile_domain_concept_seeds
+    from Trainforge.pipeline.process_course import compile_domain_concept_seeds
     # Lazy import (inter_tier_gates lazily imports pipeline_tools, so keep
     # this off the module top level). This is the EXACT anchoring predicate
     # the inter-tier BlockCurieAnchoringValidator uses — the minter verifies
@@ -15658,7 +15658,7 @@ def restamp_blocks_final_jsonl(
                 build_minted_curie_map as _build_map_fn,
                 minted_curie_by_canonical as _by_canon_fn,
             )
-            from Trainforge.process_course import (
+            from Trainforge.pipeline.process_course import (
                 compile_domain_concept_seeds as _compile_seeds_fn,
             )
             _minted_map = _build_map_fn(_vocabulary, course_id=course_code) or {}
@@ -20370,7 +20370,7 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
                 build_minted_curie_map as _build_minted_curie_map_fn,
                 minted_curie_by_canonical as _minted_by_canonical_fn,
             )
-            from Trainforge.process_course import (
+            from Trainforge.pipeline.process_course import (
                 compile_domain_concept_seeds as _compile_seeds_fn,
             )
             _rewrite_minted_map = _build_minted_curie_map_fn(
@@ -26855,7 +26855,7 @@ def _build_tool_registry() -> dict:
             Concrete steps:
 
             1. Invoke Trainforge's :class:`CourseProcessor` (the same code
-               path ``python -m Trainforge.process_course`` uses) against
+               path ``python -m Trainforge.pipeline.process_course`` uses) against
                the packaged IMSCC. Produces ``corpus/chunks.jsonl``,
                ``graph/concept_graph_semantic.json``, ``manifest.json``,
                and a ``quality/`` report, validating under chunk_v4 /
@@ -26997,7 +26997,7 @@ def _build_tool_registry() -> dict:
             #   <trainforge_dir>/manifest.json
             #   <trainforge_dir>/quality/quality_report.json
             try:
-                from Trainforge.process_course import CourseProcessor
+                from Trainforge.pipeline.process_course import CourseProcessor
             except Exception as e:
                 logger.error(
                     "generate_assessments: FAILING LOUD — CourseProcessor "
@@ -27193,7 +27193,7 @@ def _build_tool_registry() -> dict:
             # misconceptions.
             if not mc_entities and loaded_chunks:
                 try:
-                    from Trainforge.process_course import extract_misconceptions_from_text
+                    from Trainforge.pipeline.process_course import extract_misconceptions_from_text
                     for _c in loaded_chunks:
                         text = str(_c.get("text", ""))
                         for _mc in extract_misconceptions_from_text(text):
@@ -30040,7 +30040,7 @@ def _build_tool_registry() -> dict:
 
             # --- (d) compile into (canonical, [regex]) seed pairs ----------
             try:
-                from Trainforge.process_course import (
+                from Trainforge.pipeline.process_course import (
                     compile_domain_concept_seeds,
                 )
             except Exception as exc:  # noqa: BLE001 — import failure → skip
@@ -30216,7 +30216,7 @@ def _build_tool_registry() -> dict:
                 from lib.ontology.lexical_concept_seeds import (
                     derive_lexical_concept_seeds,
                 )
-                from Trainforge.process_course import (
+                from Trainforge.pipeline.process_course import (
                     compile_domain_concept_seeds,
                 )
                 from lib.ontology.concept_tagging import extract_concept_tags
@@ -30364,7 +30364,7 @@ def _build_tool_registry() -> dict:
             """
             try:
                 from Trainforge.rag.typed_edge_inference import _make_concept_id
-                from Trainforge.process_course import _route_misconception_to_tag
+                from Trainforge.pipeline.process_course import _route_misconception_to_tag
                 from lib.ontology.misconception_id import canonical_mc_id
             except Exception:  # noqa: BLE001 — best-effort; rule self-skips on []
                 return []
@@ -30555,7 +30555,7 @@ def _build_tool_registry() -> dict:
         lo_key_concept_chunks_retagged = 0
         if course_for_graph is not None:
             try:
-                from Trainforge.process_course import (
+                from Trainforge.pipeline.process_course import (
                     compile_domain_concept_seeds as _compile_lo_seeds,
                 )
                 from lib.ontology.concept_tagging import (
@@ -33637,7 +33637,7 @@ def _build_tool_registry() -> dict:
     # Per Phase 7c ST 15 (commit ``090d286``), the directory was renamed
     # from ``corpus/`` to ``imscc_chunks/`` symmetrically with the new
     # ``dart_chunks/`` directory. Trainforge's in-process chunker
-    # invocation in ``Trainforge/process_course.py`` is preserved for
+    # invocation in ``Trainforge/pipeline/process_course.py`` is preserved for
     # legacy callers (no churn this subtask) — this phase provides a
     # workflow-level entry point that downstream orchestrator runs use
     # in lieu of re-running the in-process chunker.
@@ -33888,7 +33888,7 @@ def _build_tool_registry() -> dict:
 
         # Parse each HTML payload via Trainforge's HTMLContentParser
         # into ContentSection-bearing parsed_items shaped exactly like
-        # the IMSCC consumer in ``Trainforge/process_course.py``.
+        # the IMSCC consumer in ``Trainforge/pipeline/process_course.py``.
         parsed_items: List[Dict[str, Any]] = []
         try:
             from Trainforge.parsers.html_content_parser import HTMLContentParser

@@ -101,7 +101,7 @@ def assert_chunk_type(value: str, context: str = "") -> None:
 
     No-op when flag off or value is valid. Convenience wrapper for call-sites
     that want fail-closed semantics matching Worker I's chunk validation
-    pattern (Trainforge/process_course.py:1987-2009).
+    pattern (Trainforge/pipeline/process_course.py:1987-2009).
 
     Args:
         value: the content_type label to validate.

@@ -248,7 +248,7 @@ def _bare_processor():
     code paths under test).
     """
     from collections import defaultdict
-    from Trainforge.process_course import CourseProcessor
+    from Trainforge.pipeline.process_course import CourseProcessor
 
     proc = CourseProcessor.__new__(CourseProcessor)
     proc.course_code = "TEST"

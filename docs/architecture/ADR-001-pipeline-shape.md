@@ -10,7 +10,7 @@ current-state warning below.
 
 Trainforge has two independently useful processing stages:
 
-1. `Trainforge.process_course` parses content, emits chunks, and creates the
+1. `Trainforge.pipeline.process_course` parses content, emits chunks, and creates the
    base `quality_report.json`.
 2. `Trainforge.alignment.align_chunks` enriches existing chunks with prerequisite,
    teaching-role, and learning-outcome relationships. Its standalone command
@@ -89,14 +89,14 @@ readers reject stale or ambiguous alignment results.
 
 ### Chunk schema
 
-`Trainforge.process_course.CHUNK_SCHEMA_VERSION` is the single chunk-shape
+`Trainforge.pipeline.process_course.CHUNK_SCHEMA_VERSION` is the single chunk-shape
 version. The current value is `v4`. It is emitted on each chunk and in the
 chunkset manifest. The durable shape is documented in
 [Chunk schema v4](chunk-schema-v4.md).
 
 ### Quality metrics
 
-`Trainforge.process_course.METRICS_SEMANTIC_VERSION` is owned by the base pass.
+`Trainforge.pipeline.process_course.METRICS_SEMANTIC_VERSION` is owned by the base pass.
 The current value is `5`. Alignment must not bump it or write inside `metrics`.
 After the decision is implemented, alignment will record the base version it
 observed under `alignment.base_metrics_semantic_version`.

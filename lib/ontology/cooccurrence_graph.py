@@ -1,6 +1,6 @@
 """Instance-free co-occurrence concept-graph builder.
 
-Extracted from ``Trainforge/process_course.py::CourseProcessor._build_tag_graph``
+Extracted from ``Trainforge/pipeline/process_course.py::CourseProcessor._build_tag_graph``
 so the co-occurrence graph can be built without a ``CourseProcessor``
 instance — specifically by the ``textbook_to_course::concept_extraction``
 workflow phase (``MCP/tools/pipeline_tools.py::_run_concept_extraction``),

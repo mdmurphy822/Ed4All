@@ -102,7 +102,7 @@ def regenerated_output(tmp_path_factory):
     import shutil
     import zipfile
 
-    from Trainforge.process_course import CHUNK_SCHEMA_VERSION, CourseProcessor
+    from Trainforge.pipeline.process_course import CHUNK_SCHEMA_VERSION, CourseProcessor
 
     fixture = PROJECT_ROOT / "Trainforge" / "tests" / "fixtures" / "mini_course_clean"
     source_html = fixture / "source_html"
@@ -196,7 +196,7 @@ class TestDirectStamping:
     """Fallback coverage when the IMSCC regen path can't run."""
 
     def test_constant_exists_and_is_v4(self):
-        from Trainforge.process_course import CHUNK_SCHEMA_VERSION
+        from Trainforge.pipeline.process_course import CHUNK_SCHEMA_VERSION
         assert CHUNK_SCHEMA_VERSION == "v4"
 
     def test_summary_field_populated_on_real_chunk(self):

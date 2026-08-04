@@ -1,7 +1,7 @@
 """Instance-free concept-tag extraction.
 
 This module owns the canonical concept-tag extraction logic, lifted
-out of ``Trainforge/process_course.py::CourseProcessor._extract_concept_tags``
+out of ``Trainforge/pipeline/process_course.py::CourseProcessor._extract_concept_tags``
 so the same logic can run on BOTH chunk-emit surfaces:
 
   * the IMSCC chunk path (``CourseProcessor`` delegates here);
@@ -156,7 +156,7 @@ def extract_concept_tags(
     Instance-free reimplementation of the logic that previously lived on
     ``CourseProcessor._extract_concept_tags``. Threads the per-course
     ``domain_concept_seeds`` (compiled ``(canonical, [regex])`` pairs;
-    see ``Trainforge.process_course.compile_domain_concept_seeds``) as a
+    see ``Trainforge.pipeline.process_course.compile_domain_concept_seeds``) as a
     parameter so callers without a ``CourseProcessor`` instance — notably
     the SemantiK chunkset ``_create_chunk`` callback — can pass ``()``.
 
@@ -183,7 +183,7 @@ def extract_concept_tags(
     )
     # ``normalize_tag`` is a module-level function in process_course;
     # imported here to avoid a circular import at module load time.
-    from Trainforge.process_course import normalize_tag
+    from Trainforge.pipeline.process_course import normalize_tag
 
     # Change B: default-OFF scaffolding-noise prune. When ON, tags that
     # ``is_scaffolding_noise`` flags are treated as droppable in

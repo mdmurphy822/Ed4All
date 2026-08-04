@@ -9,7 +9,7 @@ display heading — polluting retrieval display + starving definition queries.
 This module is a CONSERVATIVE, defensive hardening pass (SemantiK retraining
 is the upstream root fix). It is gated behind ``TRAINFORGE_HEADING_SANITY_FILTER``
 (default OFF for byte-stable back-compat) and wired into both chunk-emit sites
-(``Trainforge/process_course.py::CourseProcessor._create_chunk`` and the inline
+(``Trainforge/pipeline/process_course.py::CourseProcessor._create_chunk`` and the inline
 ``_create_chunk`` in ``MCP/tools/pipeline_tools.py::_run_semantik_chunking``).
 
 Design contract (NEVER demote a real heading):

@@ -15,7 +15,7 @@ load and emit roundtrips:
 
 * ``MCP/tools/_content_gen_helpers.py::_normalize_objective_entry``
   passes ``source_refs`` through verbatim (pre-Wave-1.6 it was dropped).
-* ``Trainforge/process_course.py::_build_objectives_json`` per-entry
+* ``Trainforge/pipeline/process_course.py::_build_objectives_json`` per-entry
   shape-preserving copy (pre-Wave-1.6 a flat ``list(obj["source_refs"])``
   call destroyed structured-shape entries on emit).
 
@@ -240,7 +240,7 @@ def _processor_with_objectives(tmp_path, synthesized: Dict[str, Any]):
     Mirrors ``Trainforge/tests/test_objectives_emit.py``'s pattern of
     bypassing ``__init__``'s IMSCC-zip path via ``object.__new__``.
     """
-    from Trainforge.process_course import CourseProcessor  # type: ignore
+    from Trainforge.pipeline.process_course import CourseProcessor  # type: ignore
 
     proc = object.__new__(CourseProcessor)
     proc.course_code = synthesized.get("course_name", "TEST_W1_6_A")

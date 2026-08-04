@@ -188,7 +188,7 @@ def test_decision_event_fires(scaffold_on, tmp_path, monkeypatch):
     from collections import defaultdict
     from types import SimpleNamespace
 
-    from Trainforge.process_course import CourseProcessor
+    from Trainforge.pipeline.process_course import CourseProcessor
     from lib.decision_capture import DecisionCapture
 
     capture = DecisionCapture(course_code="UNIT-IRT", phase="trainforge-content-analysis",
