@@ -33,7 +33,7 @@ course was parsed or archived.
 | Parse | `parsers/imscc_parser.py`, `qti_parser.py`, `html_content_parser.py` | Extract structured course content and provenance. |
 | Chunk | `chunker/` | One chunk-v4 implementation shared by staged HTML and IMSCC paths. |
 | Process | `process_course.py::CourseProcessor` | Emit course, assessment, graph, pedagogy, and quality artifacts. |
-| Align | `align_chunks.py` | Add learning-outcome and teaching-role alignment. |
+| Align | `alignment/align_chunks.py` | Add learning-outcome and teaching-role alignment. |
 | Synthesize | `synthesis/synthesize_training.py` | Emit validated instruction and preference JSONL plus resume state. |
 | Train | `training/runner.py::TrainingRunner` | Read an imported LibV2 course; fit/evaluate an optional adapter. |
 | Evaluate | `eval/` | Deterministic metrics, retrieval checks, runners, and promotion gates. |

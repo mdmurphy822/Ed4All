@@ -2,7 +2,7 @@
 """Curriculum alignment provider — LLM-agnostic teaching-role classifier.
 
 Replaces the Anthropic-pinned LLM call inside
-:func:`Trainforge.align_chunks._classify_with_llm` with a task-specific
+:func:`Trainforge.alignment.align_chunks._classify_with_llm` with a task-specific
 provider that can route through Anthropic, Together AI, or a local
 OpenAI-compatible server (Ollama / vLLM / llama.cpp / LM Studio /
 Fireworks / Groq / etc.). The HTTP machinery for the OpenAI-compatible
@@ -38,9 +38,6 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
-from Trainforge.generators.providers._synthesis_common import (
-    SynthesisProviderError,
-)
 from Trainforge.generators.providers._anthropic_provider import (
     DEFAULT_SYNTHESIS_MODEL as ANTHROPIC_DEFAULT_MODEL,
 )
@@ -64,6 +61,9 @@ from Trainforge.generators.providers._local_provider import (
 )
 from Trainforge.generators.providers._openai_compatible_client import (
     OpenAICompatibleClient,
+)
+from Trainforge.generators.providers._synthesis_common import (
+    SynthesisProviderError,
 )
 from Trainforge.generators.providers._together_provider import (
     DEFAULT_BASE_URL as TOGETHER_DEFAULT_BASE_URL,
@@ -90,7 +90,7 @@ DEFAULT_PROVIDER = "anthropic"
 SUPPORTED_PROVIDERS = ("anthropic", "together", "local")
 
 # Four allowed teaching roles for the curriculum-alignment classifier.
-# Mirrored against ``Trainforge.align_chunks.VALID_ROLES`` — but the
+# Mirrored against ``Trainforge.alignment.align_chunks.VALID_ROLES`` — but the
 # four LLM-routable roles are a subset (``assess`` / ``transfer`` are
 # heuristic-only, never LLM-classified).
 VALID_ROLES = ("introduce", "elaborate", "reinforce", "synthesize")

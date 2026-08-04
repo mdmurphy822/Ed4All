@@ -347,7 +347,7 @@ Trainforge/
 ├── README.md
 ├── architecture.md
 ├── process_course.py            # IMSCC → RAG corpus pipeline (CourseProcessor)
-├── align_chunks.py              # Chunk teaching-role alignment
+├── alignment/                   # Learning-outcome and teaching-role alignment
 ├── alignment/                   # Runtime-derived outcome alignment
 │   └── outcomes.py             # Objective vocabulary matching + parent rollup
 ├── curriculum.py                # Curriculum/teaching-role surface

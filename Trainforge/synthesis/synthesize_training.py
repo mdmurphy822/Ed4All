@@ -3,7 +3,7 @@
 Trainforge — Training Pair Synthesis Stage
 
 Reads the enriched ``corpus/chunks.jsonl`` produced by the base pass (and,
-when present, refined by ``align_chunks.py``), and emits two artifacts under
+when present, refined by ``alignment/align_chunks.py``), and emits two artifacts under
 ``training_specs/`` inside the same output directory:
 
     training_specs/instruction_pairs.jsonl   # SFT format
@@ -1777,7 +1777,7 @@ def _resolve_pedagogy_graph_path(
 # cache and the chunk loop short-circuits past every cached key, never
 # dispatching to the LLM for it.
 #
-# Mirrors the ``align_chunks.py::_load_teaching_role_checkpoint`` /
+# Mirrors the ``alignment/align_chunks.py::_load_teaching_role_checkpoint`` /
 # ``_append_teaching_role_checkpoint`` pattern: tolerant load (malformed
 # lines / schema-version mismatches drop without poisoning the run),
 # append + flush per emit, unlink on clean exit, preserve on every

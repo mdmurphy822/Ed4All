@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Callable, Dict, IO, Iterable, List, Optional, Union
+from typing import IO, Any, Callable, Dict, Iterable, List, Optional, Union
 
 __all__ = ["read_jsonl", "write_jsonl", "append_jsonl"]
 
@@ -135,7 +135,7 @@ def append_jsonl(
         ensure_ascii: Default False.
         sort_keys: Default True. Set False to preserve key order
             (matches inline ``json.dumps(record)`` behavior at
-            :mod:`Trainforge.align_chunks` line 937 -- emit-order can be
+            :mod:`Trainforge.alignment.align_chunks` -- emit-order can be
             load-bearing for some checkpoint formats).
         flush: When True (default), flush after write so a tail-f reader
             sees the line immediately.

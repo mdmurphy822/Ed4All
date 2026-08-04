@@ -1,15 +1,6 @@
-"""Regression: teaching_role_source labels failed-LLM chunks as llm_failed.
+"""Verify teaching-role provenance distinguishes failed LLM calls.
 
-Pre-fix bug: ``classify_teaching_roles`` blanket-set
-``teaching_role_source = "llm"`` on every ambiguous chunk after the
-LLM helper returned, even though
-``_classify_with_curriculum_provider`` (and the legacy
-``_classify_with_llm``) silently fell back to ``_mock_role`` on any
-exception. Result: chunks whose LLM call raised got heuristic roles
-wearing an "llm" badge, with no corresponding decision-capture event
-— a silent-fallback-masquerading-as-LLM provenance hole.
-
-These tests pin both helpers to the post-fix contract: success path
+Both classification helpers follow this contract: the success path
 labels "llm"; exception path labels "llm_failed" and attaches a
 ``teaching_role_failure`` dict with ``error_class`` +
 ``error_message`` so audits can find these without grepping
@@ -26,11 +17,11 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge import align_chunks  # noqa: E402
+from Trainforge.alignment import align_chunks  # noqa: E402
 
 
 def _chunk(idx: int, text: str = "x" * 50) -> dict:
@@ -117,11 +108,11 @@ def test_curriculum_helper_handles_invalid_role_response():
 
 
 # ---------------------------------------------------------------------------
-# _classify_with_llm (legacy batch path)
+# Direct batch classifier
 # ---------------------------------------------------------------------------
 
 
-def test_legacy_llm_helper_labels_success_as_llm():
+def test_direct_llm_helper_labels_success_as_llm():
     chunks = [_chunk(1), _chunk(2)]
     llm = MagicMock()
     llm.complete_sync.return_value = (
@@ -138,7 +129,7 @@ def test_legacy_llm_helper_labels_success_as_llm():
     assert chunks[1]["teaching_role_source"] == "llm"
 
 
-def test_legacy_llm_helper_labels_exception_as_llm_failed():
+def test_direct_llm_helper_labels_exception_as_llm_failed():
     chunks = [_chunk(1), _chunk(2)]
     llm = MagicMock()
     llm.complete_sync.side_effect = RuntimeError("simulated batch failure")
@@ -152,7 +143,7 @@ def test_legacy_llm_helper_labels_exception_as_llm_failed():
     assert chunks[1]["teaching_role_source"] == "llm_failed"
 
 
-def test_legacy_llm_helper_labels_no_json_match_as_llm_failed():
+def test_direct_llm_helper_labels_no_json_match_as_llm_failed():
     """When the model returns text without a JSON array, the helper's
     ``else: # Fallback`` branch fires. That's still a failed-LLM
     outcome, so the source must be mock_fallback, not llm."""

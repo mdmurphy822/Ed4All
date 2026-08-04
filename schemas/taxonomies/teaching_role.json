@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ed4all.dev/ns/taxonomies/v1/teaching_role.schema.json",
   "title": "Teaching Role",
-  "description": "Pedagogical function played by a chunk within a course: introduce, elaborate, reinforce, assess, transfer, synthesize. Emitted on Trainforge chunks after alignment (align_chunks.py), and intended to be emitted directly by Courseforge in Wave 2 via a deterministic mapping from data-cf-component + data-cf-purpose tuples.",
-  "$comment": "Values lifted from Trainforge/align_chunks.py:33 (VALID_ROLES set: introduce, elaborate, reinforce, assess, transfer, synthesize). The x-component-mapping array encodes the deterministic mapping from Courseforge data-cf-component + data-cf-purpose values (observed in Courseforge/scripts/rendering/generate_course.py:345, :374, :487) to teaching_role values. This mapping will be consumed by Worker H in Wave 2 when teaching_role emission is wired into the Courseforge generator.",
+  "description": "Pedagogical function played by a chunk within a course: introduce, elaborate, reinforce, assess, transfer, synthesize. Emitted on Trainforge chunks after alignment and by Courseforge through a deterministic component-and-purpose mapping.",
+  "$comment": "Values match Trainforge/alignment/align_chunks.py::VALID_ROLES. The x-component-mapping array is the deterministic mapping from Courseforge data-cf-component and data-cf-purpose values to teaching_role values.",
   "$defs": {
     "TeachingRole": {
       "type": "string",

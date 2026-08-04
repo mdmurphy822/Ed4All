@@ -12,7 +12,7 @@ Trainforge has two independently useful processing stages:
 
 1. `Trainforge.process_course` parses content, emits chunks, and creates the
    base `quality_report.json`.
-2. `Trainforge.align_chunks` enriches existing chunks with prerequisite,
+2. `Trainforge.alignment.align_chunks` enriches existing chunks with prerequisite,
    teaching-role, and learning-outcome relationships. Its standalone command
    lets contributors iterate on alignment without repeating conversion and
    chunking.
@@ -111,7 +111,7 @@ land with its schema entry, production call site, and regression test. See
 
 ## Compatibility requirements
 
-- Preserve `python -m Trainforge.align_chunks` as a supported standalone
+- Preserve `python -m Trainforge.alignment.align_chunks` as the supported standalone
   interface.
 - Preserve the base report's existing fields while adding the alignment-owned
   fields.

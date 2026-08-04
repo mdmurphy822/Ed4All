@@ -165,7 +165,7 @@ def get_valid_roles() -> Set[str]:
 
         if role in get_valid_roles(): ...
 
-    Verified identical to `Trainforge.align_chunks.VALID_ROLES`.
+    Verified identical to `Trainforge.alignment.align_chunks.VALID_ROLES`.
     """
     return set(_canonical_role_enum())
 

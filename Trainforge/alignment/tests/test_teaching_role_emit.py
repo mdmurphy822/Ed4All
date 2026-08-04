@@ -1,4 +1,4 @@
-"""Regression tests for REC-VOC-02 (Wave 2, Worker K).
+"""Verify deterministic teaching-role emission and consumption.
 
 Covers the Courseforge emit side and the Trainforge consume precedence:
 
@@ -7,7 +7,7 @@ Covers the Courseforge emit side and the Trainforge consume precedence:
   activity components.
 * ``_build_sections_metadata`` emits a ``teachingRole`` array on section
   JSON-LD entries when tagged components are present.
-* ``Trainforge/align_chunks.classify_teaching_roles`` PREFERS the
+* ``Trainforge.alignment.align_chunks.classify_teaching_roles`` prefers the
   deterministic signal (``data-cf-teaching-role`` → chunk
   ``teaching_role_attr``; JSON-LD ``section_teaching_roles``) over the
   existing heuristic / LLM classifier, and records provenance via
@@ -21,7 +21,7 @@ import re
 import sys
 from pathlib import Path
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
@@ -168,7 +168,7 @@ def test_section_jsonld_multi_role_sorted():
 
 def test_align_chunks_prefers_deterministic():
     """An explicit ``teaching_role_attr`` bypasses heuristic and LLM paths."""
-    from Trainforge.align_chunks import classify_teaching_roles
+    from Trainforge.alignment.align_chunks import classify_teaching_roles
 
     chunks = [
         {
@@ -190,7 +190,7 @@ def test_align_chunks_prefers_deterministic():
 
 def test_align_chunks_jsonld_precedence():
     """An unambiguous JSON-LD section role resolves without the LLM."""
-    from Trainforge.align_chunks import classify_teaching_roles
+    from Trainforge.alignment.align_chunks import classify_teaching_roles
 
     chunks = [
         {
@@ -213,7 +213,7 @@ def test_align_chunks_jsonld_precedence():
 
 def test_align_chunks_ambiguous_jsonld_falls_through():
     """Multi-value JSON-LD section roles fall through to heuristic/LLM."""
-    from Trainforge.align_chunks import classify_teaching_roles
+    from Trainforge.alignment.align_chunks import classify_teaching_roles
 
     chunks = [
         {
@@ -236,8 +236,8 @@ def test_align_chunks_ambiguous_jsonld_falls_through():
 
 
 def test_align_chunks_heuristic_still_works_without_attrs():
-    """Chunks without deterministic metadata still use the legacy heuristic."""
-    from Trainforge.align_chunks import classify_teaching_roles
+    """Chunks without deterministic metadata use the fallback heuristic."""
+    from Trainforge.alignment.align_chunks import classify_teaching_roles
 
     chunks = [
         {
@@ -255,7 +255,7 @@ def test_align_chunks_heuristic_still_works_without_attrs():
 
 def test_align_chunks_mock_fallback_preserved():
     """Chunks with no metadata and no heuristic hit get the mock fallback."""
-    from Trainforge.align_chunks import classify_teaching_roles
+    from Trainforge.alignment.align_chunks import classify_teaching_roles
 
     chunks = [
         {

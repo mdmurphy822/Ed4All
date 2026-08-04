@@ -1,6 +1,6 @@
 """Tests that the refactored LLM call sites route through LLMBackend.
 
-Covers ``classify_teaching_roles`` (Trainforge/align_chunks.py) — it
+Covers ``classify_teaching_roles`` (Trainforge/alignment/align_chunks.py) — it
 should accept an injected backend and avoid the direct
 ``anthropic.Anthropic()`` path.
 
@@ -15,7 +15,7 @@ import json
 from MCP.orchestrator.llm_backend import MockBackend
 
 # ============================================================================
-# classify_teaching_roles (Trainforge/align_chunks.py)
+# classify_teaching_roles (Trainforge/alignment/align_chunks.py)
 # ============================================================================
 
 
@@ -44,7 +44,7 @@ class TestAlignChunksWithBackend:
         ]
 
     def test_classify_accepts_llm_backend(self):
-        from Trainforge.align_chunks import classify_teaching_roles
+        from Trainforge.alignment.align_chunks import classify_teaching_roles
 
         response = json.dumps(
             [{"id": "c1", "role": "introduce"}, {"id": "c2", "role": "elaborate"}]
@@ -58,7 +58,7 @@ class TestAlignChunksWithBackend:
         assert len(backend.calls) >= 1
 
     def test_classify_fallback_when_backend_fails(self):
-        from Trainforge.align_chunks import classify_teaching_roles
+        from Trainforge.alignment.align_chunks import classify_teaching_roles
 
         def crashy(system, user):
             raise RuntimeError("network dead")
@@ -72,7 +72,7 @@ class TestAlignChunksWithBackend:
 
     def test_classify_mock_provider_unchanged(self):
         """llm_provider='mock' without an injected backend uses heuristic only."""
-        from Trainforge.align_chunks import classify_teaching_roles
+        from Trainforge.alignment.align_chunks import classify_teaching_roles
 
         chunks = self._chunks()
         # No backend, mock provider

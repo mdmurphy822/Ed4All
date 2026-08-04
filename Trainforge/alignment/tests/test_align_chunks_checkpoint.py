@@ -1,12 +1,6 @@
-"""Regression: incremental teaching-role checkpoint preserves progress on crash.
+"""Verify incremental teaching-role checkpoints preserve resumable progress.
 
-Pre-fix bug: a 10-hour curriculum-alignment run on a 295-chunk corpus
-that crashed at chunk 290 lost ALL classifications because chunks
-were mutated in-memory and only flushed by ``write_corpus`` at the
-end. Operators had no on-disk visibility while the run was alive
-either.
-
-These tests pin the post-fix contract:
+The checkpoint contract is:
 
   1. Each chunk's classification is written to a JSONL sidecar with
      ``flush()`` immediately after it lands. ``tail -f`` is live.
@@ -24,11 +18,11 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge import align_chunks  # noqa: E402
+from Trainforge.alignment import align_chunks  # noqa: E402
 
 
 def _chunk(idx: int, text: str = "x" * 50) -> dict:
@@ -200,7 +194,7 @@ def test_malformed_checkpoint_lines_are_tolerated(tmp_path):
 
 def test_no_checkpoint_path_is_a_noop(tmp_path):
     """Backward-compat: callers that don't pass checkpoint_path get
-    the legacy behavior — no sidecar file created."""
+    the no-checkpoint behavior — no sidecar file is created."""
     chunks = [_chunk(1)]
     provider = MagicMock()
     provider.classify_teaching_role.return_value = "introduce"

@@ -435,7 +435,8 @@ class MailboxBrokeredBackend(_CaptureMixin):
     Wave 73: in ``--mode local`` runs the orchestrator is a Python subprocess
     that has no direct access to an LLM API. Without this backend every
     in-process LLM call site (``SemantiK.converter.llm_classifier``,
-    ``SemantiK.converter.alt_text_generator``, ``Trainforge.align_chunks``)
+    ``SemantiK.converter.alt_text_generator``,
+    ``Trainforge.alignment.align_chunks``)
     either refused to start (``LocalBackend`` throws) or silently fell back
     to a heuristic / no-op path — so "local mode" shipped real grounded
     templated content but no real Claude-generated enrichment anywhere.

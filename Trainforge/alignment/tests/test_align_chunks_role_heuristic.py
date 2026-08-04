@@ -1,20 +1,17 @@
-"""Wave 138b — _heuristic_role content_type_label-aware extension.
+"""Verify content-type-aware teaching-role heuristics.
 
-The Wave 138a TeachingRoleAlignmentEvaluator surfaced a systematic
-underlabeling of ``content_type_label="real_world_scenario"`` /
-``"scenario"`` chunks: 0/8 transfer rate on the RDF/SHACL calibration corpus vs an
-expected ≥70% share. The 4-role LLM curriculum-alignment enum
+The 4-role LLM curriculum-alignment enum
 (``introduce`` / ``elaborate`` / ``reinforce`` / ``synthesize``) cannot
 emit ``transfer`` or ``assess`` by design — those are heuristic-only.
-Without the new branch in ``align_chunks._heuristic_role``, scenario
+Without the deterministic branch in ``align_chunks._heuristic_role``, scenario
 chunks fall through to the LLM and never get ``transfer``.
 
-These tests pin the extension's behavior:
+These tests pin the heuristic contract:
 
 - New ``content_type_label`` rules return the right deterministic role.
-- Ordering preserves the legacy ``chunk_type=assessment_item`` precedence.
-- Chunks without a recognized signal still fall through to legacy
-  ``resource_type`` checks (no behavioral regression).
+- Ordering preserves ``chunk_type=assessment_item`` precedence.
+- Chunks without a recognized signal still fall through to compatible
+  ``resource_type`` checks.
 - Decision capture fires once per heuristic-extension fire with the
   expected ``decision_type="teaching_role_heuristic_extended"`` value
   and the chunk_id / role / rule interpolated into the rationale.
@@ -25,12 +22,11 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.align_chunks import _heuristic_role  # noqa: E402
-
+from Trainforge.alignment.align_chunks import _heuristic_role  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -68,7 +64,7 @@ def _chunk(
 
 
 # ---------------------------------------------------------------------------
-# Wave 138b — content_type_label-aware rules
+# Content-type-aware rules
 # ---------------------------------------------------------------------------
 
 
@@ -84,8 +80,7 @@ def test_heuristic_classifies_real_world_scenario_as_transfer() -> None:
 
 def test_heuristic_classifies_scenario_content_type_as_transfer() -> None:
     """``content_type_label="scenario"`` → ``transfer`` (the
-    RDF/SHACL calibration corpus chunker emits ``"scenario"`` not the longer
-    ``"real_world_scenario"`` form for these chunks)."""
+    shorter ``"scenario"`` form is also a supported input)."""
     chunk = _chunk(
         "chunk_scen_001",
         chunk_type="explanation",
@@ -119,7 +114,7 @@ def test_heuristic_classifies_assessment_content_type_as_assess() -> None:
 
 def test_heuristic_classifies_summary_content_type_as_synthesize() -> None:
     """``content_type_label="summary"`` → ``synthesize``. Mirrors the
-    legacy ``resource_type="summary"`` branch but fires earlier on the
+    ``resource_type="summary"`` branch but fires earlier on the
     content_type_label signal so chunker-emitted summary content
     routes correctly even without the wrapper page metadata."""
     chunk = _chunk(
@@ -131,14 +126,14 @@ def test_heuristic_classifies_summary_content_type_as_synthesize() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Ordering — legacy chunk_type=assessment_item must still win
+# Ordering: explicit assessment items must still win
 # ---------------------------------------------------------------------------
 
 
 def test_heuristic_assessment_item_chunk_type_still_takes_precedence() -> None:
     """``chunk_type="assessment_item"`` returns ``assess`` regardless of
-    ``content_type_label``. The Wave 138b branches are inserted AFTER
-    the legacy ``assessment_item`` check, so a contradictory
+    ``content_type_label``. The label branches run after
+    the ``assessment_item`` check, so a contradictory
     ``content_type_label="summary"`` annotation cannot flip an
     assessment item to ``synthesize``."""
     chunk = _chunk(
@@ -152,8 +147,7 @@ def test_heuristic_assessment_item_chunk_type_still_takes_precedence() -> None:
 def test_heuristic_returns_none_for_chunks_without_recognized_signal() -> None:
     """A chunk with no ``chunk_type``, no relevant ``content_type_label``,
     and no ``resource_type`` signal must still fall through to ``None``
-    so the LLM / mock path can classify it. Regression-protects the
-    pre-Wave-138b legacy path."""
+    so the LLM or mock path can classify it."""
     chunk = _chunk(
         "chunk_unknown",
         chunk_type="explanation",
@@ -163,12 +157,10 @@ def test_heuristic_returns_none_for_chunks_without_recognized_signal() -> None:
     assert _heuristic_role(chunk) is None
 
 
-def test_heuristic_legacy_resource_type_summary_still_works() -> None:
-    """The legacy ``resource_type="summary"`` branch fires when there's
-    no ``content_type_label`` signal — regression-protects pre-Wave-138b
-    callers that don't carry a content_type_label."""
+def test_heuristic_resource_type_summary_still_works() -> None:
+    """The ``resource_type="summary"`` branch handles absent labels."""
     chunk = _chunk(
-        "chunk_legacy",
+        "chunk_summary",
         chunk_type="explanation",
         content_type_label="",
         resource_type="summary",
@@ -176,11 +168,11 @@ def test_heuristic_legacy_resource_type_summary_still_works() -> None:
     assert _heuristic_role(chunk) == "synthesize"
 
 
-def test_heuristic_legacy_application_resource_type_still_returns_transfer() -> None:
-    """The legacy ``resource_type="application"`` branch returns
+def test_heuristic_application_resource_type_still_returns_transfer() -> None:
+    """The ``resource_type="application"`` branch returns
     ``transfer`` for chunks without a content_type_label hint."""
     chunk = _chunk(
-        "chunk_legacy_app",
+        "chunk_application",
         chunk_type="explanation",
         content_type_label="",
         resource_type="application",
@@ -219,7 +211,7 @@ def test_heuristic_extended_emits_decision_capture_for_scenario() -> None:
     assert metadata.get("chunk_id") == "chunk_scen_001"
 
 
-def test_heuristic_extended_does_not_capture_when_legacy_path_fires() -> None:
+def test_content_type_decision_does_not_capture_for_fallback_rules() -> None:
     """The capture only fires on the new content_type_label-aware
     branches. Legacy ``chunk_type=assessment_item`` /
     ``resource_type=summary`` fires must NOT emit the new event —
@@ -240,7 +232,7 @@ def test_heuristic_extended_does_not_capture_when_legacy_path_fires() -> None:
         resource_type="summary",
     )
     assert _heuristic_role(chunk_s, capture=capture) == "synthesize"
-    # Neither legacy path emitted a decision event.
+    # Fallback rules do not emit a content-type decision event.
     assert capture.events == []
 
 

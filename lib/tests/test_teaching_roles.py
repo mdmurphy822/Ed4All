@@ -5,7 +5,7 @@ Covers REC-VOC-02 (Wave 2, Worker K):
   * `map_role` returns the expected role for every declared
     (component, purpose) pair in `x-component-mapping`.
   * `map_role` returns None for unmapped, partial, or empty inputs.
-  * `get_valid_roles()` matches `Trainforge.align_chunks.VALID_ROLES`
+  * `get_valid_roles()` matches `Trainforge.alignment.align_chunks.VALID_ROLES`
     byte-for-byte — pins the schema ↔ consumer canonical set.
 """
 
@@ -39,7 +39,7 @@ def test_constants_are_six_values():
 def test_valid_roles_is_six_values():
     """get_valid_roles() returns the canonical six roles as a Set[str].
 
-    Pins alignment with Trainforge/align_chunks.py:33 VALID_ROLES — if
+    Pins alignment with Trainforge/alignment/align_chunks.py::VALID_ROLES — if
     this assertion fails, one side has drifted and the schema is no
     longer authoritative.
     """
@@ -57,10 +57,10 @@ def test_valid_roles_is_six_values():
     }
 
     # Cross-check against the Trainforge consumer constant.
-    from Trainforge.align_chunks import VALID_ROLES as _VALID_ROLES
+    from Trainforge.alignment.align_chunks import VALID_ROLES as _VALID_ROLES
 
     assert roles == _VALID_ROLES, (
-        "teaching_role schema drift vs Trainforge/align_chunks.py:33 VALID_ROLES"
+        "teaching_role schema drift vs alignment/align_chunks.py::VALID_ROLES"
     )
 
 

@@ -2885,7 +2885,8 @@ class CourseProcessor:
         week-prefix-folded — ``WEEK_PREFIX_RE`` has ``re.IGNORECASE``).
 
         Enabling case preservation does NOT make the corpus case-consistent:
-        the downstream ``valid_outcome_ids`` sites and ``align_chunks.py``
+        the downstream ``valid_outcome_ids`` sites and
+        ``alignment/align_chunks.py``
         still lowercase, so cross-artifact joins must compare case-folded.
         """
         preserve_case = (
@@ -5303,7 +5304,8 @@ def build_parser() -> argparse.ArgumentParser:
                        "LLM provider for the legacy --align direct-classification path "
                        "(default: mock). For the license-clean teaching-role surface, "
                        "prefer setting CURRICULUM_ALIGNMENT_PROVIDER=local instead — "
-                       "that route is wired through Trainforge.align_chunks.main() "
+                       "that route is wired through "
+                       "Trainforge.alignment.align_chunks.main() "
                        "and honours the same LOCAL_SYNTHESIS_* / TOGETHER_* env vars "
                        "as synthesis."
                    ))
@@ -5438,11 +5440,11 @@ def main():
     if args.align:
         print("\n[Alignment] Running alignment stage...")
         # env-var-first model resolution; mirrors
-        # Trainforge/align_chunks.py::_resolve_align_model
+        # Trainforge/alignment/align_chunks.py::_resolve_align_model
         # so a single TRAINFORGE_ALIGN_CHUNKS_MODEL env var controls
         # both the standalone CLI and the embedded process_course path.
-        from Trainforge.align_chunks import _resolve_align_model
-        from Trainforge.align_chunks import main as align_main
+        from Trainforge.alignment.align_chunks import _resolve_align_model
+        from Trainforge.alignment.align_chunks import main as align_main
         align_args = argparse.Namespace(
             corpus=args.output,
             objectives=args.objectives,

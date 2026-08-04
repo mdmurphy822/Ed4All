@@ -7,7 +7,7 @@ Read-modify-write pass that enriches chunks with relational metadata:
 - learning_outcome_refs: semantic matching of chunks to learning outcomes via TF-IDF
 
 Usage:
-    python -m Trainforge.align_chunks \
+    python -m Trainforge.alignment.align_chunks \
         --corpus <CORPUS_DIR> \
         --objectives <OBJECTIVES_JSON> \
         --llm-provider mock
@@ -45,10 +45,8 @@ TFIDF_SIMILARITY_THRESHOLD = 0.15
 VALID_ROLES = {"introduce", "elaborate", "reinforce", "assess", "transfer", "synthesize"}
 WEEK_RE = re.compile(r"Week\s+(\d+)", re.IGNORECASE)
 
-# Phase 4 Subtask 35: env-var-first model resolution for the legacy
-# direct-classification LLM path. The default preserves the previous
-# hardcoded `claude-haiku-4-5-20251001` behavior; operators retraining
-# under a different teacher set TRAINFORGE_ALIGN_CHUNKS_MODEL.
+# Model selection for the direct-classification path. Operators can select a
+# different teacher through TRAINFORGE_ALIGN_CHUNKS_MODEL.
 ALIGN_CHUNKS_MODEL_ENV = "TRAINFORGE_ALIGN_CHUNKS_MODEL"
 ALIGN_CHUNKS_MODEL_DEFAULT = "claude-haiku-4-5-20251001"
 
@@ -59,7 +57,7 @@ def _resolve_align_model(explicit: Optional[str] = None) -> str:
     Priority order:
       1. ``explicit`` argument (CLI flag value, kwarg) when truthy.
       2. ``TRAINFORGE_ALIGN_CHUNKS_MODEL`` env var when set.
-      3. ``ALIGN_CHUNKS_MODEL_DEFAULT`` (preserves legacy behavior).
+      3. ``ALIGN_CHUNKS_MODEL_DEFAULT``.
     """
     if explicit:
         return explicit
@@ -145,11 +143,11 @@ class SimpleTFIDF:
 # ---------------------------------------------------------------------------
 
 def _resolve_imscc_chunkset_dir(corpus_dir: Path) -> Path:
-    """Phase 7c shim: prefer ``imscc_chunks/``, fall back to ``corpus/``.
+    """Prefer ``imscc_chunks/`` while accepting ``corpus/`` archives.
 
     align_chunks reads + writes to the same directory in one pass, so we
     resolve once and use the same path for both legs (avoids splitting
-    data across imscc_chunks/ and corpus/ on legacy archives).
+    data across the two compatible layouts).
     """
     from lib.libv2_storage import resolve_imscc_chunks_dir
 
@@ -178,16 +176,15 @@ def load_corpus(corpus_dir: Path) -> Tuple[List[Dict], Dict]:
 def write_corpus(corpus_dir: Path, chunks: List[Dict]) -> None:
     """Write enriched chunks back to chunks.jsonl and chunks.json.
 
-    Phase 7c: writes go to whichever directory load_corpus read from
-    (imscc_chunks/ for new archives, corpus/ for legacy until migrated).
+    Writes return to the directory selected by :func:`load_corpus` so a
+    compatible archive remains internally consistent.
     """
     chunkset_dir = _resolve_imscc_chunkset_dir(corpus_dir)
     jsonl_path = chunkset_dir / "chunks.jsonl"
     json_path = chunkset_dir / "chunks.json"
 
-    # W-D6: legacy non-atomic streaming write preserved (atomic=False);
-    # sort_keys=False preserves emit-order semantics of the original
-    # ``json.dumps(chunk)`` call.
+    # Direct streaming writes and insertion-order keys are part of this
+    # single-process command's output contract.
     _utils_write_jsonl(jsonl_path, chunks, sort_keys=False, atomic=False)
 
     with open(json_path, "w") as f:
@@ -461,29 +458,27 @@ def _heuristic_role(
 ) -> Optional[str]:
     """Try to classify teaching role by deterministic rules. Returns None if ambiguous.
 
-    Wave 138b extension: ``content_type_label``-aware branches catch
-    the systematic underlabeling of ``real_world_scenario`` /
-    ``scenario`` chunks the Wave 138a TeachingRoleAlignmentEvaluator
-    surfaced: scenario chunks were never assigned the ``transfer`` role.
+    ``content_type_label``-aware branches route ``real_world_scenario`` and
+    ``scenario`` chunks to the ``transfer`` role.
     The 4-role LLM curriculum-alignment enum
     (introduce / elaborate / reinforce / synthesize) cannot return
     ``transfer`` or ``assess`` by design — those are heuristic-only.
-    Without the new branch, scenario chunks fall through to the LLM
-    and never get ``transfer``.
+    Without this branch, scenario chunks fall through to an LLM whose role
+    vocabulary cannot express ``transfer``.
 
-    The ordering preserves the legacy ``assessment_item`` /
-    ``overview`` / ``summary`` / ``application`` checks. The new
+    The ordering preserves the ``assessment_item`` / ``overview`` /
+    ``summary`` / ``application`` checks. The
     ``content_type_label`` branch fires AFTER the ``chunk_type``
     check (so an explicit ``assessment_item`` chunk_type still wins
     over a ``content_type_label="summary"`` annotation) but BEFORE
     the ``resource_type`` checks (so ``content_type_label`` signal
     beats container-derived heuristics).
 
-    When ``capture`` is set and one of the new ``content_type_label``
+    When ``capture`` is set and one of the ``content_type_label``
     rules fires, a ``teaching_role_heuristic_extended`` decision event
     is emitted with the chunk_id, chosen role, and triggering label
     interpolated into the rationale. The capture is optional so
-    legacy callers that don't thread one through still work.
+    callers that do not thread one through still work.
     """
     chunk_type = chunk.get("chunk_type", "")
     source = chunk.get("source", {})
@@ -496,10 +491,7 @@ def _heuristic_role(
     if chunk_type == "assessment_item":
         return "assess"
 
-    # Wave 138b: content_type_label-aware rules. The Wave 138a
-    # TeachingRoleAlignmentEvaluator surfaced systematic
-    # underlabeling of real_world_scenario / scenario chunks: the affected
-    # chunks never received ``transfer``. The 4-role LLM
+    # Content-type-aware rules cover roles that the 4-role LLM
     # enum (introduce / elaborate / reinforce / synthesize) cannot
     # return ``transfer`` or ``assess`` — those are heuristic-only by
     # design. Without this branch, scenario chunks fall through to
@@ -565,7 +557,7 @@ def _log_heuristic_extended_decision(
     label = str(chunk.get("content_type_label") or "")
     chunk_type = str(chunk.get("chunk_type") or "")
     rationale = (
-        f"Wave 138b heuristic extension: chunk={chunk_id} routed to "
+        f"Content-type heuristic: chunk={chunk_id} routed to "
         f"role={role} via rule={rule} (content_type_label={label!r}, "
         f"chunk_type={chunk_type!r}). The 4-role LLM enum cannot "
         f"emit transfer/assess; without this branch the chunk would "
@@ -665,13 +657,13 @@ def classify_teaching_roles(
 ) -> None:
     """Mutate chunks in-place to add teaching_role field.
 
-    Precedence (REC-VOC-02, Wave 2):
+    Precedence:
       1. Deterministic signal from Courseforge-emitted metadata
          (``data-cf-teaching-role`` / JSON-LD ``teachingRole``). Skip all
          downstream classifiers.
       2. Existing deterministic heuristic (``_heuristic_role``).
       3. LLM classifier (anthropic) or mock fallback.
-    The LLM path is preserved as-is for legacy IMSCCs that don't carry
+    The LLM path remains available for compatible IMSCCs that do not carry
     the deterministic attribute.
 
     Args:
@@ -690,14 +682,12 @@ def classify_teaching_roles(
             :class:`CurriculumAlignmentProvider`. When provided, the
             ambiguous-chunk fallback path routes through this LLM-agnostic
             provider (Anthropic / Together / Local selectable) instead of
-            the legacy ``LLMBackend``-driven Anthropic path. Additive —
+            the direct ``LLMBackend``-driven Anthropic path. Additive —
             when both ``llm`` and ``curriculum_provider`` are passed,
             ``curriculum_provider`` wins; when neither is passed, the
-            existing legacy path is unchanged.
+            the direct path is unchanged.
     """
-    # Phase 4 Subtask 35: env-var-first model resolution. ``None`` from
-    # the caller (incl. CLI default) triggers TRAINFORGE_ALIGN_CHUNKS_MODEL
-    # lookup; an explicit value still wins.
+    # An explicit model wins over the environment and default selections.
     llm_model = _resolve_align_model(llm_model)
 
     # Belt-and-suspenders: catch schema drift against the canonical
@@ -738,7 +728,7 @@ def classify_teaching_roles(
                 print(f"  {chunk['id']}: role={det_role} (deterministic:{det_source})")
             continue
 
-        # 2. Existing heuristic (Wave 138b: content_type_label-aware)
+        # 2. Deterministic content-type and resource heuristics.
         role = _heuristic_role(chunk, capture=heuristic_capture)
         if role:
             chunk["teaching_role"] = role
@@ -753,7 +743,7 @@ def classify_teaching_roles(
     # Precedence:
     #   - injected ``curriculum_provider`` (LLM-agnostic — Anthropic /
     #     Together / Local selectable) wins when present;
-    #   - else the legacy ``LLMBackend`` path (anthropic-pinned) fires
+    #   - otherwise the direct ``LLMBackend`` path fires
     #     when ``llm`` is injected or ``llm_provider == "anthropic"``;
     #   - else the deterministic mock fallback runs.
     use_curriculum = curriculum_provider is not None
@@ -946,8 +936,7 @@ def _classify_with_curriculum_provider(
 ) -> None:
     """Classify ambiguous chunks via the LLM-agnostic curriculum provider.
 
-    Per-chunk dispatch (rather than the batch-of-12 the legacy
-    ``_classify_with_llm`` uses) because the curriculum provider's
+    Per-chunk dispatch is used because the curriculum provider's
     role classification is a single-token output per call — batching
     via a JSON array prompt loses the four-class accuracy guarantee
     that the provider's invalid-role validation enforces. On any per-
@@ -1279,7 +1268,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Comma-separated fields to compute (default: all)")
     p.add_argument("--llm-provider", default="mock", choices=["mock", "anthropic", "together", "local"],
                    help=(
-                       "LLM provider for the legacy direct-classification path "
+                       "LLM provider for the direct-classification path "
                        "(default: mock). For the license-clean teaching-role surface, "
                        "prefer --curriculum-provider local (or "
                        "CURRICULUM_ALIGNMENT_PROVIDER=local) — that route reuses the "
@@ -1289,8 +1278,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help=(
                        "Model for LLM calls. When unset, falls back to "
                        "the TRAINFORGE_ALIGN_CHUNKS_MODEL env var, then "
-                       f"to {ALIGN_CHUNKS_MODEL_DEFAULT!r} (Phase 4 "
-                       "Subtask 35)."
+                       f"to {ALIGN_CHUNKS_MODEL_DEFAULT!r}."
                    ))
     p.add_argument(
         "--curriculum-provider",
@@ -1302,7 +1290,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Trainforge.generators.providers._curriculum_provider."
             "CurriculumAlignmentProvider. "
             "When unset, falls back to the CURRICULUM_ALIGNMENT_PROVIDER env "
-            "var; when env is also unset, the legacy / mock path runs (no "
+            "var; when env is also unset, the mock path runs (no "
             "curriculum provider injected). Recommended setting for "
             "ToS-clean training corpora is 'local'."
         ),
@@ -1315,7 +1303,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 # ---------------------------------------------------------------------------
-# Curriculum provider env-var resolution (Wave 137 followup)
+# Curriculum provider resolution
 # ---------------------------------------------------------------------------
 
 CURRICULUM_PROVIDER_ENV = "CURRICULUM_ALIGNMENT_PROVIDER"
@@ -1327,14 +1315,10 @@ def _resolve_curriculum_provider_choice(args: argparse.Namespace) -> Optional[st
     Priority order:
       1. Explicit ``--curriculum-provider`` CLI flag if passed.
       2. ``CURRICULUM_ALIGNMENT_PROVIDER`` env var if set.
-      3. ``None`` — no provider injected; legacy / mock path runs.
+      3. ``None`` — no provider injected; the mock path runs.
 
-    The ``CurriculumAlignmentProvider`` class also reads the same env
-    var inside its constructor, but only when its constructor is
-    actually invoked. Pre-Wave-137-followup, ``align_chunks.main()``
-    never instantiated a provider, which made the env var dead from
-    the ``process_course.py`` invocation path. This helper closes that
-    gap by reading the env var at the CLI surface.
+    Resolving at the CLI boundary ensures the selected provider is constructed
+    before classification begins.
     """
     cli_value = getattr(args, "curriculum_provider", None)
     if cli_value:
@@ -1373,9 +1357,7 @@ def main(args: Optional[argparse.Namespace] = None) -> Dict[str, Any]:
     corpus_dir = Path(args.corpus)
     fields = [f.strip() for f in args.fields.split(",")]
 
-    # --- Wave 137 followup: resolve curriculum provider from CLI / env ---
-    # Priority: --curriculum-provider CLI flag > CURRICULUM_ALIGNMENT_PROVIDER
-    # env var > None (no provider injected; legacy / mock path runs).
+    # Priority: explicit flag, environment value, then the mock path.
     # The CurriculumAlignmentProvider constructor itself accepts
     # ``provider=None`` and falls back to the env, but it's never
     # instantiated unless this CLI surface fires it. The default of
@@ -1436,14 +1418,12 @@ def main(args: Optional[argparse.Namespace] = None) -> Dict[str, Any]:
         # crashes can resume without re-paying for already-classified
         # chunks. Only the curriculum-provider path consults this — the
         # deterministic + heuristic + mock paths run in milliseconds.
-        # Phase 7c: write next to the resolved chunkset dir
-        # (imscc_chunks/ on new archives, corpus/ on legacy).
+        # Write beside the resolved chunkset to preserve its storage layout.
         teaching_role_checkpoint = (
             _resolve_imscc_chunkset_dir(corpus_dir) / ".teaching_role_checkpoint.jsonl"
         )
-        # Wave 138b: emit a `teaching_role_heuristic_extended` decision
-        # event each time the new content_type_label-aware heuristic
-        # branch fires. Soft-import so a standalone Trainforge install
+        # Emit a decision event each time the content-type-aware heuristic
+        # fires. Soft-import so a standalone Trainforge install
         # (without lib/ on sys.path) degrades to capture=None instead
         # of failing.
         heuristic_capture: Optional[Any] = None

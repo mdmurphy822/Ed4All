@@ -137,7 +137,7 @@ class TestOutcomeReferentialIntegrity:
 
 class TestOrphanWeekScopedRefs:
     def test_orphan_week_scoped_id_preserved_with_null_parent(self):
-        from Trainforge.align_chunks import partition_outcome_refs
+        from Trainforge.alignment.align_chunks import partition_outcome_refs
 
         chunks = [
             _chunk(id="c1", learning_outcome_refs=["w05-co-99", "co-01"]),
@@ -157,7 +157,7 @@ class TestOrphanWeekScopedRefs:
         assert "co-01" in chunks[0]["learning_outcome_refs"]
 
     def test_resolved_week_scoped_id_carries_parent(self):
-        from Trainforge.align_chunks import partition_outcome_refs
+        from Trainforge.alignment.align_chunks import partition_outcome_refs
 
         chunks = [
             _chunk(id="c1", learning_outcome_refs=["w01-co-01"]),

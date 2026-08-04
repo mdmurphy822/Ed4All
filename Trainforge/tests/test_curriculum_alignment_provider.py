@@ -1,7 +1,7 @@
 """Tests for CurriculumAlignmentProvider.
 
 Exercises the LLM-agnostic teaching-role classifier that replaces the
-Anthropic-pinned LLM call inside ``Trainforge.align_chunks``. Coverage:
+provider-neutral LLM call inside ``Trainforge.alignment.align_chunks``. Coverage:
 
 - Together-backed happy path (httpx.MockTransport).
 - Local-backed happy path (different base URL, no API key required).
@@ -322,7 +322,7 @@ def test_decision_capture_fires_with_chunk_id_and_chosen_role(monkeypatch):
 
 def test_align_chunks_without_curriculum_provider_keeps_legacy_path():
     """Backward compat: no curriculum_provider → existing mock path runs."""
-    from Trainforge.align_chunks import classify_teaching_roles
+    from Trainforge.alignment.align_chunks import classify_teaching_roles
 
     chunks = [
         {
@@ -343,7 +343,7 @@ def test_align_chunks_without_curriculum_provider_keeps_legacy_path():
 
 def test_align_chunks_with_curriculum_provider_injection():
     """Injection: ambiguous chunks route through the curriculum provider."""
-    from Trainforge.align_chunks import classify_teaching_roles
+    from Trainforge.alignment.align_chunks import classify_teaching_roles
 
     class _FakeCurriculumProvider:
         """Stand-in: just returns a fixed role without any HTTP."""
@@ -381,7 +381,7 @@ def test_align_chunks_with_curriculum_provider_injection():
 
 def test_align_chunks_curriculum_provider_failure_falls_back_to_mock():
     """Provider error → mock fallback (pipeline keeps moving)."""
-    from Trainforge.align_chunks import classify_teaching_roles
+    from Trainforge.alignment.align_chunks import classify_teaching_roles
 
     class _FailingProvider:
         def classify_teaching_role(self, *_a, **_k):

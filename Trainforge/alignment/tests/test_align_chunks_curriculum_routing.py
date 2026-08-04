@@ -1,17 +1,12 @@
-"""Wave 137 followup — align_chunks CLI honors CURRICULUM_ALIGNMENT_PROVIDER.
+"""Verify the alignment CLI honors CURRICULUM_ALIGNMENT_PROVIDER.
 
-Pre-Wave-137-followup the env var was wired in
-``CurriculumAlignmentProvider.__init__``, but
-``Trainforge/align_chunks.py::main()`` never instantiated the class —
-which meant the env var was dead from the
-``Trainforge/process_course.py`` invocation path. These tests pin the
-behavior contract: the CLI now reads the env var (and the explicit
+The CLI reads the environment value, while the explicit
 ``--curriculum-provider`` flag overrides it), instantiates the
 provider when set, and threads it into ``classify_teaching_roles``.
 
-Backward-compat regression: env unset + no flag → no provider
+When the environment and flag are unset, no provider is
 instantiated, ``curriculum_provider=None`` passed to
-``classify_teaching_roles``. The existing legacy / mock path runs.
+``classify_teaching_roles``, and the mock path runs.
 """
 
 from __future__ import annotations
@@ -23,15 +18,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge import align_chunks  # noqa: E402
+from Trainforge.alignment import align_chunks  # noqa: E402
 from Trainforge.generators.providers._curriculum_provider import (  # noqa: E402
     CurriculumAlignmentProvider,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -161,7 +155,7 @@ def test_align_chunks_main_no_env_no_cli_skips_provider(
     """env unset + no CLI flag → curriculum_provider=None passed through.
 
     Regression-protects existing behavior — silent fallback to
-    legacy / mock path when neither env nor CLI flag is set.
+    mock path when neither env nor CLI flag is set.
     """
     corpus_dir = _stub_corpus_dir(tmp_path)
     args = _make_args(corpus_dir)
@@ -186,7 +180,7 @@ def test_align_chunks_main_no_env_no_cli_skips_provider(
     # No provider should have been built.
     build_mock.assert_not_called()
     # And classify_teaching_roles should have been called with
-    # curriculum_provider=None — preserves the legacy / mock path.
+    # curriculum_provider=None selects the mock path.
     assert "curriculum_provider" in classify_seen
     assert classify_seen["curriculum_provider"] is None
 
