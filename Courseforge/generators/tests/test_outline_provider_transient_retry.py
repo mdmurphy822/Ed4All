@@ -1,4 +1,4 @@
-"""Worker W6 — transient-retry budget tests for ``OutlineProvider``.
+"""Transient-retry budget tests for ``OutlineProvider``.
 
 A transient Ollama 503 / connection reset / read timeout MUST NOT burn
 the parse-retry budget (``MAX_PARSE_RETRIES``); a permanent error
@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict
 
 import httpx
 import pytest
@@ -26,13 +26,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Courseforge.generators.outline._outline_provider import (  # noqa: E402
-    MAX_PARSE_RETRIES,
+from Courseforge.generators.outline._outline_provider import (  # noqa: E402, I001
     OutlineProvider,
     OutlineProviderError,
     _OUTLINE_KIND_BOUNDS,
     _TRANSIENT_RETRY_BUDGET,
 )
+# Importing the provider installs the supported Courseforge/scripts bridge.
 from blocks import Block  # noqa: E402
 
 
@@ -109,7 +109,7 @@ def _valid_outline_payload(
 
 
 # ---------------------------------------------------------------------------
-# Worker W6 contract — transient retries do NOT burn the parse budget.
+# Transient retries do not consume the parse budget.
 # ---------------------------------------------------------------------------
 
 
@@ -222,7 +222,5 @@ def test_transient_budget_exhaustion_yields_distinct_code(monkeypatch):
 
 
 def test_transient_budget_constant_is_three():
-    """Sanity check: the per-block transient-retry budget is the
-    Worker-W6-specified value (3). If the constant changes the test
-    above must follow."""
+    """The per-block transient-retry budget remains three attempts."""
     assert _TRANSIENT_RETRY_BUDGET == 3
