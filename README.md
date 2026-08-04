@@ -92,25 +92,15 @@ Accessible HTML · Digital course + IMSCC · Grounded training data · Hybrid re
 
 ```mermaid
 flowchart LR
-    materials["Books, PDFs, HTML, and learning materials"]
-    semantik["SemantiK: structure and accessibility"]
-    accessible["Accessible HTML with source provenance"]
-    courseforge["Courseforge: modules, activities, and assessments"]
-    course["Modular digital course"]
-    imscc["LMS-ready IMS Common Cartridge"]
-    trainforge["Trainforge: course-grounded data synthesis"]
-    pairs["SFT instructions and DPO preferences"]
-    library["LibV2 searchable course archive"]
-    retrieval["BM25 and dense retrieval"]
-    fusion["Custom rank-domain RRF"]
-    confidence["Evidence threshold and weak-query refusal"]
-    answers["Citation-grounded answers"]
-    adapter["Optional LoRA adapter"]
+    materials["Books, PDFs, HTML,<br/>and learning materials"]
+    semantik["SemantiK<br/>Accessible, structured HTML<br/>with source provenance"]
+    courseforge["Courseforge<br/>Modular course content<br/>and an LMS-ready IMSCC"]
+    trainforge["Trainforge<br/>Retrieval corpus plus<br/>SFT and DPO pairs"]
+    libv2["LibV2<br/>Private course archive<br/>and optional LoRA training"]
+    retrieval["Hybrid retrieval<br/>BM25 + dense search<br/>with rank-domain RRF"]
+    answers["Course-grounded AI<br/>Evidence thresholds,<br/>refusal, and cited answers"]
 
-    materials --> semantik --> accessible --> courseforge --> course --> imscc
-    imscc --> trainforge --> pairs --> library
-    library --> retrieval --> fusion --> confidence --> answers
-    pairs -.-> adapter
+    materials --> semantik --> courseforge --> trainforge --> libv2 --> retrieval --> answers
 
     classDef sourceNode fill:#eef6ff,stroke:#2563eb,color:#172554,stroke-width:2px;
     classDef buildNode fill:#f0fdf4,stroke:#16a34a,color:#14532d;
@@ -118,14 +108,14 @@ flowchart LR
     classDef intelligenceNode fill:#faf5ff,stroke:#9333ea,color:#581c87;
 
     class materials sourceNode;
-    class semantik,accessible,courseforge,course buildNode;
-    class imscc,library deliveryNode;
-    class trainforge,pairs,retrieval,fusion,confidence,answers,adapter intelligenceNode;
+    class semantik,courseforge buildNode;
+    class libv2 deliveryNode;
+    class trainforge,retrieval,answers intelligenceNode;
 ```
 
 One continuous workflow carries the source through accessible HTML, course
 design, LMS packaging, grounded-data synthesis, archival, retrieval, and
-citation validation. LoRA training branches from the generated training pairs
+citation validation. Optional LoRA training uses the generated training pairs
 as a separate operator opt-in; the course package, archive, and retrieval
 system remain complete deliverables without an adapter.
 
