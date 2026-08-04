@@ -222,7 +222,7 @@ misconception node deterministically.
 </section>
 ```
 
-### Required JSON-LD `misconceptions[]` entry
+### Required dual-emit JSON-LD `misconceptions[]` entry
 
 Every `common_pitfall` chunk MUST emit BOTH the
 `data-cf-misconception="true"` HTML attribute on the misconception
@@ -262,7 +262,8 @@ Field contract:
 Validation: a `common_pitfall` section that emits the
 `data-cf-misconception="true"` attribute without a corresponding
 JSON-LD `misconceptions[]` entry is treated as a generation defect.
-Future strict-mode validators will fail closed on this mismatch.
+Contract tests verify the documented JSON-LD shape and its Trainforge parser
+compatibility. No standalone fail-closed dual-emit gate is currently shipped.
 
 ---
 
@@ -364,7 +365,7 @@ summary coverage.
 - [ ] `data-cf-template-type` is one of the four canonical values
       above.
 - [ ] All template-specific required attributes are present.
-- [ ] The section also carries the existing wave-stable attributes:
+- [ ] The section also carries the shared block attributes:
       `data-cf-objective-id`, `data-cf-bloom-level`,
       `data-cf-content-type`, and (when SemantiK source material is
       available) `data-cf-source-ids` per `Courseforge/CLAUDE.md` §

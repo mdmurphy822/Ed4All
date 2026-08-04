@@ -1,13 +1,8 @@
-"""Wave4-W27 — content-generator.md prompt-contract tests.
+"""Validate the content-generator's mandatory page-authoring directives.
 
-Asserts that the three mandatory Wave4-W27 directives are present in
-``Courseforge/agents/content-generator.md`` so CI catches future prompt
-regressions before a subagent dispatch can reintroduce HEADING_SKIP or
-EMPTY_SOURCE_REFS violations.
-
-Finding references:
-  - Finding 4(b) of dispatch-7-execution-inspection-2026-05.md
-  - Finding F4  of dispatch-7-final-product-audit-2026-05.md
+The agent spec must retain heading hierarchy, source attribution, and
+objective attribution requirements so emitted pages remain compatible with
+the validators and downstream chunker.
 """
 from __future__ import annotations
 
@@ -15,10 +10,7 @@ from pathlib import Path
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Resolve the prompt file relative to this test's location.
-# Layout: Courseforge/scripts/tests/ -> Courseforge/agents/
-# ---------------------------------------------------------------------------
+# Resolve the agent specification from the supported Courseforge layout.
 _AGENTS_DIR = Path(__file__).resolve().parents[3] / "agents"
 _PROMPT_PATH = _AGENTS_DIR / "content-generator.md"
 
@@ -32,16 +24,14 @@ def prompt_text() -> str:
     return _PROMPT_PATH.read_text(encoding="utf-8")
 
 
-# ---------------------------------------------------------------------------
-# Directive 1: Heading hierarchy
-# ---------------------------------------------------------------------------
+# Heading hierarchy contract.
 
 
 def test_heading_hierarchy_directive_present(prompt_text: str) -> None:
     """Prompt must contain a MANDATORY heading-hierarchy section."""
     assert "MANDATORY: Heading Hierarchy" in prompt_text, (
-        "Missing 'MANDATORY: Heading Hierarchy' section in content-generator.md. "
-        "Wave4-W27 requires this directive to prevent HEADING_SKIP violations."
+        "Missing 'MANDATORY: Heading Hierarchy' section in content-generator.md; "
+        "the directive prevents HEADING_SKIP violations."
     )
 
 
@@ -61,16 +51,14 @@ def test_heading_hierarchy_references_heading_skip_error(prompt_text: str) -> No
     )
 
 
-# ---------------------------------------------------------------------------
-# Directive 2: data-cf-source-ids stamping
-# ---------------------------------------------------------------------------
+# Source-attribution contract.
 
 
 def test_source_ids_attribute_directive_present(prompt_text: str) -> None:
     """Prompt must contain a MANDATORY source-id stamping section."""
     assert "MANDATORY: Source-ID Stamping" in prompt_text, (
-        "Missing 'MANDATORY: Source-ID Stamping' section in content-generator.md. "
-        "Wave4-W27 requires this directive to prevent EMPTY_SOURCE_REFS violations."
+        "Missing 'MANDATORY: Source-ID Stamping' section in content-generator.md; "
+        "the directive prevents EMPTY_SOURCE_REFS violations."
     )
 
 
@@ -97,16 +85,14 @@ def test_source_ids_empty_string_allowed(prompt_text: str) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Directive 3: data-cf-objective-id stamping
-# ---------------------------------------------------------------------------
+# Objective-attribution contract.
 
 
 def test_objective_id_attribute_directive_present(prompt_text: str) -> None:
     """Prompt must contain a MANDATORY objective-id stamping section."""
     assert "MANDATORY: Objective-ID Stamping" in prompt_text, (
-        "Missing 'MANDATORY: Objective-ID Stamping' section in content-generator.md. "
-        "Wave4-W27 requires this directive to populate learning_outcome_refs correctly."
+        "Missing 'MANDATORY: Objective-ID Stamping' section in content-generator.md; "
+        "the directive populates learning_outcome_refs correctly."
     )
 
 

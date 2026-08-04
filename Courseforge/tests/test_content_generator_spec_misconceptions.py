@@ -1,22 +1,21 @@
-"""
-Wave 81 Worker C — content-generator spec misconception dual-emit tests.
+"""Validate the content-generator misconception dual-emit contract.
 
-These tests pin the **forward-looking** dual-emit contract documented in
-``Courseforge/templates/chunk_templates.md`` Template 3 and the Wave 79
-Template Catalog section of ``Courseforge/agents/content-generator.md``.
+These tests pin the current dual-emit contract documented in
+``Courseforge/templates/chunk_templates.md`` Template 3 and the Chunk Template
+Catalog section of ``Courseforge/agents/content-generator.md``.
 
 The contract: every ``common_pitfall`` chunk MUST emit BOTH the
 ``data-cf-misconception="true"`` HTML attribute AND a corresponding
 JSON-LD ``misconceptions[]`` entry. The two arms are equivalent
 semantics; both are required.
 
-We can't test the live content-generator subagent here (that requires a
-real Anthropic dispatch and is out of scope). What we CAN test is that:
+The tests validate the stable specification boundary without invoking a live
+content-generation provider:
 
   1. The spec text in ``chunk_templates.md`` documents the dual-emit
      requirement and includes a canonical JSON-LD example.
   2. The spec text in ``content-generator.md`` repeats the requirement
-     under the Wave 79 Template Catalog section.
+     under the Chunk Template Catalog section.
   3. The example JSON-LD in the spec parses cleanly and matches the
      misconceptions[] shape consumed by Trainforge's HTMLContentParser.
 """
@@ -147,12 +146,11 @@ class TestChunkTemplatesSpec:
 
 class TestContentGeneratorSpec:
     """The content-generator.md spec must repeat the dual-emit
-    requirement under the Wave 79 Template Catalog section."""
+    requirement under the Chunk Template Catalog section."""
 
     def test_content_generator_md_mentions_dual_emit(self):
         text = CONTENT_GENERATOR_MD.read_text(encoding="utf-8")
-        # Find the Common Pitfall bullet under Wave 79 Template Catalog
-        # (numbered list item 3 in the catalog).
+        # Find the Common Pitfall bullet in the numbered template catalog.
         assert "Common Pitfall" in text
         assert "dual-emit" in text.lower()
         # Both arms must be referenced explicitly.
