@@ -2328,7 +2328,7 @@ def run_full_cascade(
 
     # Per-document conformance audit (Plan 12 A1) — the verifiability
     # artifact. Built for EVERY exit mode from the winning lane's gate
-    # state; scripts/pdf_to_html.py persists it next to the product.
+    # state; scripts/ops/pdf_to_html.py persists it next to the product.
     from .conformance_audit import build_conformance_audit
     from .gates.wcag_coverage import coverage_map as _coverage_map
 

@@ -23,7 +23,7 @@ Design constraints:
 
 The dict is embedded in the ``run_full_cascade`` result under
 ``"conformance_audit"`` and persisted as ``*.conformance_audit.json``
-next to the HTML product by ``scripts/pdf_to_html.py``.
+next to the HTML product by ``scripts/ops/pdf_to_html.py``.
 """
 
 from __future__ import annotations

@@ -87,8 +87,7 @@ def main() -> None:
         "--engine",
         choices=("council", "v1"),
         default="council",
-        help="council = the unqualified compatibility cascade (Stage 1..13: "
-        "BERT council + Qwen GGUF specialists + theta v8) via "
+        help="council = the unqualified compatibility cascade via "
         "run_full_cascade; use it to evaluate retrained weights, not as a "
         "production claim. v1 = the legacy "
         "classify+reason pipeline (distilbert classifier + Qwen "
@@ -256,19 +255,16 @@ def _structure_text(audit: dict, n_pages) -> str:
 
 
 def _run_council(args) -> tuple[str, dict]:
-    """Real v2 cascade (Stage 1..13): council BERTs + Qwen GGUFs + theta v8.
+    """Run the unqualified compatibility cascade for evaluation.
 
-    Mirrors scripts/pdf_to_html.py — runs run_full_cascade with
+    Mirrors scripts/ops/pdf_to_html.py — runs run_full_cascade with
     runtime_mode='real' and a Chromium-backed axe validator, so the
     verdict here is a genuine WCAG-2.2-AA pass, not a mock.
     """
     from semantik_structure.cascade import run_full_cascade
     from semantik_structure.validate import HtmlValidator
 
-    print(
-        f"[council] real runtime: loading council BERTs + 4 Qwen GGUFs + theta v8 "
-        f"serially on the 8GB card — minutes/PDF. pdf={args.pdf.name}"
-    )
+    print(f"[council] loading configured compatibility models; pdf={args.pdf.name}")
     with HtmlValidator() as validator:
         result = run_full_cascade(
             args.pdf,

@@ -1,10 +1,8 @@
 """Cascade-level eval driver — Stage 1..13 over a held-out arXiv slice.
 
-Single process, single GPU. NO PDF-level parallelism: the smoke
-harness drives one PDF at a time through the shared validator and
-shared (mock) Qwen runtime. Spawning workers would (a) fight the
-single 8GB GPU and (b) thrash the Chromium context — both already
-known foot-guns for this stack.
+The harness processes one PDF at a time so accelerator allocations and the
+shared Chromium validator remain bounded. Per-PDF isolation is available when
+the selected runtime retains device memory between documents.
 
 Usage::
 
@@ -54,11 +52,9 @@ from typing import Any
 # Make the package importable when invoked as a script.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from semantik_structure.cascade import run_full_cascade  # noqa: E402
 from semantik_structure.theta import StageThirteenStubRequired  # noqa: E402
 from semantik_structure.validate import HtmlValidator  # noqa: E402
-
-from semantik_structure.cascade import run_full_cascade  # noqa: E402
-
 
 # Pair-id stem regex: "0704_1551__00_quantum_zeno_effect..." -> the
 # stem is the file's basename minus .json. We compare stems verbatim
@@ -462,15 +458,13 @@ def _run_cascade_isolated(
 ) -> dict[str, Any]:
     """Run one PDF's cascade in a FRESH subprocess (per-PDF process isolation).
 
-    On the 8GB card a single long-running process accumulates VRAM across PDFs
-    (cached council BERTs + theta + figure captioner + a per-PDF Qwen GGUF; the
-    llama.cpp CUDA allocator also pools), so the 2nd+ PDF OOMs on GGUF load.
-    Isolating each PDF in its own process makes the OS reclaim ALL VRAM on exit
-    — the canonical pattern for batch GPU inference under a hard VRAM budget.
-    Reuses scripts/pdf_to_html.py in report-only mode (--report, no --out;
+    Some model runtimes retain accelerator allocations across documents.
+    Isolating each PDF lets the operating system reclaim process-owned device
+    memory before the next document begins.
+    Reuses scripts/ops/pdf_to_html.py in report-only mode (--report, no --out;
     same run_full_cascade result dict).
     """
-    script = repo_root / "scripts" / "pdf_to_html.py"
+    script = repo_root / "scripts" / "ops" / "pdf_to_html.py"
     with tempfile.NamedTemporaryFile(
         suffix=".json",
         prefix="r10_isolated_",
@@ -505,7 +499,7 @@ def _run_cascade_isolated(
         raise RuntimeError(
             f"isolated cascade subprocess produced no parseable report "
             f"(rc={proc.returncode}): {exc}\n--- tail ---\n{tail}"
-        )
+        ) from exc
     finally:
         try:
             out_path.unlink()
