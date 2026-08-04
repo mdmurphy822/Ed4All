@@ -11,7 +11,7 @@ surface reads from ``<course>/graph/``:
   absence fails a training run closed.
 * ``Trainforge.eval.holdout_builder.HoldoutBuilder`` loads the pedagogy graph
   from ``graph/pedagogy_graph.json`` to build the Tier-2 edge holdout.
-* ``LibV2`` retrieval (``retrieval_scoring`` / ``cross_package_indexer``) and
+* ``LibV2`` retrieval scoring and cross-package indexing, and
   ``rdf_export`` read ``graph/concept_graph_semantic.json``.
 
 So a fresh pipeline course is un-trainable (missing pedagogy graph) and its

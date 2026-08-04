@@ -2113,7 +2113,7 @@ def ask(ctx, query: str, course: Optional[str], method: str, limit: int,
         libv2 ask "compare UDL vs differentiated instruction" --method hybrid
         libv2 ask "How does owl:sameAs entail?" --course <course-slug> --force
     """
-    from .query_log import (
+    from .retrieval.query_log import (
         attach_answer,
         compact_retrieval_result,
         find_answered_query,
@@ -2228,7 +2228,7 @@ def ask(ctx, query: str, course: Optional[str], method: str, limit: int,
 @click.pass_context
 def answer_cmd(ctx, query_id: str, answer_text: str, course: Optional[str]):
     """Attach Claude's synthesized answer to a previously-asked query."""
-    from .query_log import attach_answer
+    from .retrieval.query_log import attach_answer
 
     repo_root: Path = ctx.obj["repo_root"]
     try:
@@ -2253,7 +2253,7 @@ def queries_group():
 @click.pass_context
 def queries_list(ctx, course: Optional[str], status: str):
     """List queries asked against a corpus (sorted by asked_at)."""
-    from .query_log import list_queries
+    from .retrieval.query_log import list_queries
 
     repo_root: Path = ctx.obj["repo_root"]
     items = list_queries(repo_root, course)
@@ -2278,7 +2278,7 @@ def queries_list(ctx, course: Optional[str], status: str):
 @click.pass_context
 def queries_show(ctx, query_id: str, course: Optional[str], output: str):
     """Show a stored Q&A record."""
-    from .query_log import load_record
+    from .retrieval.query_log import load_record
 
     repo_root: Path = ctx.obj["repo_root"]
     try:
@@ -3570,7 +3570,7 @@ def answer_grounded(ctx, query: str, course: str, engine: str, limit: int,
     # answer or a refusal is not an "answer" to persist as content).
     if do_log and result.status.startswith("answered"):
         try:
-            from .query_log import attach_answer, write_query_record
+            from .retrieval.query_log import attach_answer, write_query_record
 
             record_path = write_query_record(
                 repo_root, course, query,

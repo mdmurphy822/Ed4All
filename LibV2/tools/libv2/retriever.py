@@ -16,7 +16,7 @@ from typing import Any, Iterator, Optional
 
 from .catalog import load_master_catalog, search_catalog
 from .models.catalog import CatalogEntry
-from .retrieval_scoring import (
+from .retrieval.retrieval_scoring import (
     BoostContributions,
     chunk_type_intent_prior,
     combine_bm25_with_boosts,
@@ -24,11 +24,11 @@ from .retrieval_scoring import (
     concept_graph_overlap_boost,
     detect_query_intent,
     extract_query_concepts,
+    lo_match_boost,
     load_concept_graph_node_ids,
     load_course_outcomes,
     load_pedagogy_model,
     load_targets_concept_edges,
-    lo_match_boost,
     prereq_coverage_boost,
     resolve_method_preset,
     tag_idf_overlap_score,

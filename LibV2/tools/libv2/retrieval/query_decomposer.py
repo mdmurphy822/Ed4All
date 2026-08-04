@@ -8,7 +8,7 @@ for improved retrieval coverage.
 import re
 from typing import Optional
 
-from ._bloom_verbs import detect_bloom_level as _vendored_detect_bloom_level
+from .._bloom_verbs import detect_bloom_level as _vendored_detect_bloom_level
 from .query_decomposition import (
     INTENT_ASPECT_RULES,
     INTENT_CHUNK_TYPES,

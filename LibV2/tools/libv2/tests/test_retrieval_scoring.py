@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from LibV2.tools.libv2.retrieval_scoring import (
+from LibV2.tools.libv2.retrieval.retrieval_scoring import (
     MAX_TOTAL_BOOST,
     BoostContributions,
     combine_bm25_with_boosts,
@@ -17,6 +17,14 @@ from LibV2.tools.libv2.retrieval_scoring import (
     load_pedagogy_model,
     prereq_coverage_boost,
 )
+
+
+def test_legacy_scoring_module_reuses_canonical_objects():
+    from LibV2.tools.libv2 import retrieval_scoring as legacy
+    from LibV2.tools.libv2.retrieval import retrieval_scoring as canonical
+
+    assert legacy.BoostContributions is canonical.BoostContributions
+    assert legacy.combine_bm25_with_boosts is canonical.combine_bm25_with_boosts
 
 # ---------------------------------------------------------------------------
 # concept_graph_overlap_boost

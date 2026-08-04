@@ -249,7 +249,7 @@ class TrainforgeRAG:
 
         try:
             from libv2.multi_retriever import MultiQueryRetriever
-            from libv2.query_decomposer import QueryDecomposer
+            from libv2.retrieval.query_decomposer import QueryDecomposer
         except ImportError as e:
             logger.warning(f"Multi-retriever not available: {e}, falling back to single query")
             return self.retrieve(query, top_k, chunk_type, difficulty)

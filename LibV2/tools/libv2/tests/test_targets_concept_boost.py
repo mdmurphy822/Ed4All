@@ -29,7 +29,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[4]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from LibV2.tools.libv2.retrieval_scoring import (  # noqa: E402
+from LibV2.tools.libv2.retrieval.retrieval_scoring import (  # noqa: E402
     DEFAULT_BOOST_WEIGHTS,
     BoostContributions,
     combine_bm25_with_boosts,

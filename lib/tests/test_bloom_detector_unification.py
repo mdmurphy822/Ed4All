@@ -6,7 +6,7 @@ Pre-Wave-55 there were four divergent detectors across the repo:
   2. ``Trainforge/parsers/html_content_parser.py::HTMLContentParser._detect_bloom_level``
   3. ``lib/validators/bloom.py::detect_bloom_level`` (re-implemented higher-level
      tie-breaking locally)
-  4. ``LibV2/tools/libv2/query_decomposer.py::QueryDecomposer._detect_bloom_level``
+  4. ``LibV2/tools/libv2/retrieval/query_decomposer.py::QueryDecomposer._detect_bloom_level``
      (used whole-word set intersection; missed longest-verb-first ties)
 
 Sites 1-3 used ``text_lower.startswith(verb) or f" {verb} " in text_lower``
@@ -34,7 +34,6 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from lib.ontology.bloom import detect_bloom_level as canonical_detect  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # Inputs that exercise the specific bugs Wave 55 closes
@@ -129,7 +128,7 @@ def test_libv2_query_decomposer_delegates_to_package_matcher():
     the canonical must agree on behavior,
     which this test enforces.
     """
-    from LibV2.tools.libv2.query_decomposer import QueryDecomposer
+    from LibV2.tools.libv2.retrieval.query_decomposer import QueryDecomposer
 
     decomposer = QueryDecomposer()
     for text, expected_level in REGRESSION_INPUTS:

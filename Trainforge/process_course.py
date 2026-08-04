@@ -4786,7 +4786,7 @@ class CourseProcessor:
              "learning_outcomes": [], "note": "..."}
 
         so LibV2 archival always lands a file + downstream joins
-        (``LibV2/tools/libv2/retrieval_scoring.py::load_course_outcomes``)
+        (``LibV2/tools/libv2/retrieval/retrieval_scoring.py::load_course_outcomes``)
         have something to look at instead of a ``FileNotFoundError``.
         The ``note`` field is optional per the course schema
         (``additionalProperties: true``) so validation still passes.

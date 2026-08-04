@@ -1,4 +1,4 @@
-"""Persist Claude's queries + synthesized answers alongside the queried corpus.
+"""Persist assistant queries and synthesized answers with the queried corpus.
 
 Each query/answer pair becomes a JSON artifact under
 ``LibV2/courses/<slug>/queries/<query_id>.json`` (per-course query) or
@@ -7,7 +7,7 @@ companion ``queries_index.json`` in the same directory lets callers
 list past queries without globbing.
 
 Two-step flow: ``libv2 ask`` writes the query record with retrieved
-chunks and ``status='open'``; after Claude reads the chunks and
+chunks and ``status='open'``; after an assistant reads the chunks and
 synthesizes an answer, ``libv2 answer <query_id> <text>`` flips the
 record to ``status='answered'``. A one-shot ``ask --answer`` path is
 also supported for cases where the answer is already in hand.
@@ -21,7 +21,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
 
 _QUERIES_SUBDIR = "queries"
 _INDEX_FILE = "queries_index.json"
@@ -228,9 +227,8 @@ def find_answered_query(
     only ``status='answered'`` qualifies. When multiple answered records
     match (re-asks over time), the most recent ``answered_at`` wins.
 
-    Why a cache: queries against the corpus are cheap, but Claude's
-    synthesis of an answer is expensive. The Q&A log already persists
-    both; without a cache the answers would be invisible to future asks.
+    Answer synthesis is the expensive step, so completed records are reused
+    until a caller explicitly requests fresh retrieval.
     """
     storage_dir = resolve_storage_dir(repo_root, course_slug)
     idx_file = index_path(storage_dir)

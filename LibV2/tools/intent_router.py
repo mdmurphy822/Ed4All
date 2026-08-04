@@ -786,7 +786,7 @@ def _dispatch_concept(
     """Route ``concept_query`` to a chunk-text BM25 over the residual text.
 
     True concept-graph similarity is out of scope here; the heavy
-    lifting lives in ``LibV2/tools/libv2/retrieval_scoring.py`` and is
+    lifting lives in ``LibV2/tools/libv2/retrieval/retrieval_scoring.py`` and is
     architecturally too large for an intent-router fallback. The
     BM25-over-chunk-text path covers the common case (open-ended
     concept question) at low cost and parallels the "hybrid" envelope

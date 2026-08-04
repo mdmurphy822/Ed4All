@@ -15,7 +15,7 @@ import math
 
 import pytest
 
-from LibV2.tools.libv2.retrieval_scoring import (
+from LibV2.tools.libv2.retrieval.retrieval_scoring import (
     RETRIEVAL_METHOD_PRESETS,
     BoostContributions,
     chunk_type_intent_prior,

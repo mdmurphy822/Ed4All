@@ -9,9 +9,9 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
-from .query_decomposer import QueryDecomposer
-from .query_decomposition import DecomposedQuery, SubQuery
 from .result_fusion import FusedResult, FusionResult, ResultFuser
+from .retrieval.query_decomposer import QueryDecomposer
+from .retrieval.query_decomposition import DecomposedQuery, SubQuery
 from .retriever import (
     RetrievalResult,
     retrieve_chunks,

@@ -517,7 +517,7 @@ Each `LearningOutcome`:
 | `bloom_verb` | string (optional) | Primary verb detected in the statement. |
 | `key_concepts[]` | string (optional) | Slugified concept tags. |
 
-Consumed by `LibV2/tools/libv2/retrieval_scoring.py::load_course_outcomes` and `LibV2/tools/libv2/validator.py::validate_learning_outcomes`.
+Consumed by `LibV2/tools/libv2/retrieval/retrieval_scoring.py::load_course_outcomes` and `LibV2/tools/libv2/validator.py::validate_learning_outcomes`.
 
 ### Catalog Files
 - `master_catalog.json`: All courses with full metadata
@@ -554,8 +554,8 @@ These are stored in `<project-root>/schemas/taxonomies/` and referenced in cours
 - Import / removal: `importer.py`, `remove.py`, `backup.py`
 - Validation: `validator.py`; SHACL shapes: `_shacl_validator.py`
 - Catalog + indexes: `catalog.py`, `indexer.py`, `models/catalog.py`, `models/course.py`
-- Retrieval: `retriever.py`, `semantic_retriever.py`, `multi_retriever.py`, `result_fusion.py`, `retrieval_scoring.py`, `vector_index.py`
-- Query decomposition: `query_decomposer.py`, `query_decomposition.py`; Q&A log: `query_log.py`
+- Retrieval entry modules: `retriever.py`, `semantic_retriever.py`, `multi_retriever.py`, `result_fusion.py`, `vector_index.py`
+- Retrieval internals: `retrieval/retrieval_scoring.py`, `retrieval/query_decomposer.py`, `retrieval/query_decomposition.py`, and `retrieval/query_log.py`
 - Eval: `evaluation/generator.py`, `evaluation/harness.py`, `evaluation/model_bridge.py` (legacy module shims remain during the deprecation window)
 - Concepts / outcomes: `concept_vocabulary.py`, `outcome_linker.py`, `_bloom_verbs.py`
 - Cross-package: `cross_package/indexer.py` (writer), `cross_package/discovery.py` (reader)

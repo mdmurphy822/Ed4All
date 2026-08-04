@@ -19,10 +19,11 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Optional
 
 import pytest
 
-from LibV2.tools.libv2.query_log import (
+from LibV2.tools.libv2.retrieval.query_log import (
     CompactChunk,
     attach_answer,
     compact_retrieval_result,
@@ -31,11 +32,9 @@ from LibV2.tools.libv2.query_log import (
     list_queries,
     load_record,
     mint_query_id,
-    query_path,
     resolve_storage_dir,
     write_query_record,
 )
-
 
 # ---------------------------------------------------------------------------
 # Storage directory resolution

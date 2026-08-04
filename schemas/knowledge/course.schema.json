@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://ed4all.org/schemas/knowledge/course.schema.json",
   "title": "Course (LibV2 course.json)",
-  "description": "Canonical shape for Trainforge-emitted course.json. Mirrors the on-disk artifact consumed by LibV2 retrieval (LibV2/tools/libv2/retrieval_scoring.py::load_course_outcomes) and the LibV2 scaffold validator (LibV2/tools/libv2/validator.py::validate_learning_outcomes). Wave 24 canonical source of truth — wired into Trainforge/process_course.py::_build_course_json for validation before write.",
+  "description": "Canonical shape for Trainforge-emitted course.json. Mirrors the on-disk artifact consumed by LibV2 retrieval (LibV2/tools/libv2/retrieval/retrieval_scoring.py::load_course_outcomes) and the LibV2 scaffold validator (LibV2/tools/libv2/validator.py::validate_learning_outcomes). Trainforge/process_course.py::_build_course_json validates this contract before writing.",
   "type": "object",
   "required": [
     "course_code",
