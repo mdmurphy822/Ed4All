@@ -1,6 +1,6 @@
 """Eligibility must apply the production evidence-window contract pre-dispatch."""
 
-from Trainforge.synthesis_eligibility import pair_eligibility
+from Trainforge.synthesis.synthesis_eligibility import pair_eligibility
 
 
 def _focused_chunk(

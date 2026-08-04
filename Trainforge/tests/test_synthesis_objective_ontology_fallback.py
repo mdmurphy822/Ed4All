@@ -1,6 +1,6 @@
 """Bounded ontology fallback regressions for synthesis objective focus."""
 
-from Trainforge.synthesis_eligibility import (
+from Trainforge.synthesis.synthesis_eligibility import (
     focus_chunk_on_canonical_objective,
     pair_eligibility,
 )

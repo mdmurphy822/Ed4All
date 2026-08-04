@@ -18,7 +18,7 @@ import pytest
 
 from Trainforge.eval.expanded_suite import _source_family_closure
 from Trainforge.eval.qualification.manual_review import evaluate_manual_review_gate
-from Trainforge.synthesis_holdout import (
+from Trainforge.synthesis.synthesis_holdout import (
     ENV_ENABLED,
     ENV_MANIFEST,
     ENV_REGISTRY,

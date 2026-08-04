@@ -9,7 +9,7 @@ from Trainforge.synthesize_training import (
     _checkpoint_pair_matches_focus,
     _focus_chunk_on_objective,
 )
-from Trainforge.synthesis_eligibility import pair_eligibility
+from Trainforge.synthesis.synthesis_eligibility import pair_eligibility
 from lib.validators.pair.claim_support import (
     PairClaimSupportValidator,
     _decompose_sentences,

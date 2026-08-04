@@ -24,16 +24,16 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from Trainforge.synthesis_fresh_start import (  # noqa: E402
+from Trainforge.synthesis.synthesis_fresh_start import (  # noqa: E402
     SYNTHESIS_ARTIFACT_NAMES,
 )
-from Trainforge.synthesis_reject_mining import (  # noqa: E402
+from Trainforge.synthesis.synthesis_reject_mining import (  # noqa: E402
     MINE_MODE_OFF,
     MINE_MODE_ON,
     RejectPool,
     build_capture_payload,
 )
-from Trainforge.synthesis_reject_mining import (  # noqa: E402
+from Trainforge.synthesis.synthesis_reject_mining import (  # noqa: E402
     MINE_REJECTS_ENV,
 )
 from Trainforge.synthesize_training import (  # noqa: E402
@@ -605,7 +605,7 @@ def _mine_rows(count: int):
     downstream assertions are about the emit seam and not about a fixture that
     happens to look like a mined row.
     """
-    from Trainforge.synthesis_reject_mining import (
+    from Trainforge.synthesis.synthesis_reject_mining import (
         RejectCandidate,
         select_mined_pairs,
     )
@@ -680,7 +680,7 @@ class _NullCapture:
 def _install_mined_rows(monkeypatch, rows) -> dict:
     """Substitute the selector's RESULT; leave the emit path untouched."""
     import Trainforge.synthesize_training as st
-    from Trainforge.synthesis_reject_mining import MinedFunnel
+    from Trainforge.synthesis.synthesis_reject_mining import MinedFunnel
 
     seen = {"calls": 0}
 
@@ -901,9 +901,9 @@ def test_reject_mining_module_is_registered_as_verdict_policy() -> None:
     fingerprint on every edit and force every paused fresh-start-bound run to
     archive and restart from zero.
     """
-    assert "Trainforge/synthesis_reject_mining.py" in _VERDICT_POLICY_FILES
+    assert "Trainforge/synthesis/synthesis_reject_mining.py" in _VERDICT_POLICY_FILES
     assert (
-        "Trainforge/synthesis_reject_mining.py"
+        "Trainforge/synthesis/synthesis_reject_mining.py"
         not in _GENERATION_CONTRACT_FILES
     )
 

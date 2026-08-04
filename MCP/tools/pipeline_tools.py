@@ -1599,7 +1599,7 @@ def _harvest_qti_assessment_chunks(
                 chunk["practice_bank"] = True
                 # Stamp the recovered QTI answer key. ``correct_answer`` is the
                 # field name chosen from the four
-                # ``Trainforge/synthesis_eligibility.py::pair_eligibility``
+                # ``Trainforge/synthesis/synthesis_eligibility.py::pair_eligibility``
                 # accepts, because it is the name the rest of the project
                 # already uses for "the correct answer text of ONE item" (the
                 # assessment generator's own field, the QTI emitter's input,
@@ -9292,7 +9292,7 @@ def register_pipeline_tools(mcp):
             instruction_variants_per_chunk: Instruction units synthesized
                 per chunk (default 1 = byte-identical legacy behavior).
                 Reject-mined DPO negatives
-                (``Trainforge/synthesis_reject_mining.py``) have
+                (``Trainforge/synthesis/synthesis_reject_mining.py``) have
                 structurally zero yield below 2, since one unit per chunk
                 cannot hold both an accepted anchor and a rejected unit.
 
@@ -27625,7 +27625,7 @@ def _build_tool_registry() -> dict:
         # byte-identical to every run before this kwarg was plumbed. It is
         # routed here (not only through the standalone
         # ``Trainforge/synthesize_training.py`` argparse flag) because
-        # reject-mined DPO negatives (``Trainforge/synthesis_reject_mining.py``)
+        # reject-mined DPO negatives (``Trainforge/synthesis/synthesis_reject_mining.py``)
         # have STRUCTURALLY ZERO yield below 2: a chunk with one instruction
         # unit can never hold both an accepted anchor and a rejected unit, so
         # the documented shadow-measurement path was unreachable from

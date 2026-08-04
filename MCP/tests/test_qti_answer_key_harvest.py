@@ -4,7 +4,7 @@ Before this landed, ``_parse_qti_assessment_items`` collected only the
 ``response_label`` MATTEXT strings and threw away each label's ``@ident``; it
 never looked at ``resprocessing`` / ``respcondition`` / ``varequal`` at all. The
 harvested ``assessment_item`` chunks therefore carried none of the four fields
-``Trainforge/synthesis_eligibility.py::pair_eligibility`` accepts
+``Trainforge/synthesis/synthesis_eligibility.py::pair_eligibility`` accepts
 (``correct_answer`` / ``answer_key`` / ``reference_answer`` /
 ``assessment_answer``), so EVERY harvested assessment chunk hard-failed with
 ``assessment_answer_key_missing`` — on a real course that was 43% of the whole
@@ -338,7 +338,7 @@ def test_harvested_chunk_clears_the_pair_eligibility_answer_key_check() -> None:
     Asserted through the production ``pair_eligibility`` entry point (not a leaf
     predicate), on a chunk carrying the rest of the shape that gate needs.
     """
-    from Trainforge.synthesis_eligibility import pair_eligibility
+    from Trainforge.synthesis.synthesis_eligibility import pair_eligibility
 
     xml = _quiz([{
         "question_id": "q-1",

@@ -1,6 +1,6 @@
 """Regression — ``instruction_variants_per_chunk`` reaches ``run_synthesis``.
 
-Reject-mined DPO negatives (``Trainforge/synthesis_reject_mining.py``) have
+Reject-mined DPO negatives (``Trainforge/synthesis/synthesis_reject_mining.py``) have
 STRUCTURALLY ZERO yield unless a chunk holds at least two instruction units:
 one unit can never hold both an accepted anchor and a rejected unit to pair it
 against. The knob that controls that count was settable ONLY through the

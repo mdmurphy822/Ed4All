@@ -7,24 +7,8 @@ import subprocess
 import sys
 import warnings
 
-import pytest
-
-
-_MOVED_MODULES = (
-    "synthesis_concurrency",
-    "synthesis_contract_guard",
-    "synthesis_eligibility",
-    "synthesis_fresh_start",
-    "synthesis_holdout",
-    "synthesis_journal",
-    "synthesis_progress",
-    "synthesis_reject_mining",
-    "synthesize_training",
-)
-
-
-@pytest.mark.parametrize("module_name", _MOVED_MODULES)
-def test_legacy_module_aliases_canonical_implementation(module_name: str) -> None:
+def test_legacy_command_module_aliases_canonical_implementation() -> None:
+    module_name = "synthesize_training"
     legacy_name = f"Trainforge.{module_name}"
     canonical_name = f"Trainforge.synthesis.{module_name}"
     canonical = importlib.import_module(canonical_name)

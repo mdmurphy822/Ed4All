@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from Trainforge.synthesis_progress import (
+from Trainforge.synthesis.synthesis_progress import (
     SynthesisProgressWriter,
     resolve_progress_path,
 )

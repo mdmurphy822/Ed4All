@@ -67,7 +67,7 @@ __version__ = CHUNKER_SCHEMA_VERSION
 # markup extracts as ``The result is 79.``. Corpora chunked under contract 1
 # carry that fabricated whitespace in their ``text`` field; it also tripped
 # the ``degenerate_source_stem`` arm of the training-synthesis content gate
-# (``Trainforge/synthesis_eligibility.py::_STEM_SLOT_GAP_RE``), so re-chunking
+# (``Trainforge/synthesis/synthesis_eligibility.py::_STEM_SLOT_GAP_RE``), so re-chunking
 # under contract 2 makes previously-excluded chunks eligible again.
 #
 # ``CHUNKER_SCHEMA_VERSION`` deliberately stays ``"v4"`` across extraction-text

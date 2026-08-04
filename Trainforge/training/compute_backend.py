@@ -212,7 +212,7 @@ def _read_jsonl(path: Path) -> list:
 #: ``editorial_or_misconception`` DPO filter admits.
 #:
 #: ``mined_rejection`` rows come from
-#: ``Trainforge/synthesis_reject_mining.py::select_mined_pairs`` — an accepted
+#: ``Trainforge/synthesis/synthesis_reject_mining.py::select_mined_pairs`` — an accepted
 #: instruction completion as ``chosen`` against a near-miss REJECTED completion
 #: for the same chunk / objectives / base prompt / citation contract / teacher.
 #:

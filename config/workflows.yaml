@@ -4873,7 +4873,7 @@ workflows:
           # workflow_params -> the handler's own default of 1, i.e.
           # byte-identical to every run before this route existed. It exists
           # because reject-mined DPO negatives
-          # (Trainforge/synthesis_reject_mining.py) have STRUCTURALLY ZERO
+          # (Trainforge/synthesis/synthesis_reject_mining.py) have STRUCTURALLY ZERO
           # yield below 2 -- one instruction unit per chunk can never hold both
           # an accepted anchor and a rejected unit -- so the documented
           # shadow-measurement path was previously reachable only from the

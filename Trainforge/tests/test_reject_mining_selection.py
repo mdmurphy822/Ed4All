@@ -27,7 +27,7 @@ from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
 
-from Trainforge.synthesis_reject_mining import (
+from Trainforge.synthesis.synthesis_reject_mining import (
     DEFAULT_MAX_FRACTION,
     DEFAULT_MAX_SKELETON_FREQ,
     DEFAULT_MIN_FAIL_ENTAILMENT,
@@ -616,7 +616,7 @@ def test_confirmed_resume_cache_candidate_is_admitted():
 
 def test_pool_confirm_contract_marks_only_resume_cache_rows():
     """``RejectPool.confirm_contract`` is safe to call unconditionally."""
-    from Trainforge.synthesis_reject_mining import RejectPool, build_capture_payload
+    from Trainforge.synthesis.synthesis_reject_mining import RejectPool, build_capture_payload
 
     payload = build_capture_payload(
         {

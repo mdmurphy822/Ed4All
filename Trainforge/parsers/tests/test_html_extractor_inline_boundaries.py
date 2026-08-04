@@ -25,7 +25,7 @@ import pytest
 from Trainforge.chunker import EXTRACTION_TEXT_CONTRACT_VERSION
 from Trainforge.parsers.html_content_parser import HTMLTextExtractor
 from Trainforge.parsers.xpath_walker import find_body_xpath, resolve_xpath
-from Trainforge.synthesis_eligibility import content_gate_eligibility
+from Trainforge.synthesis.synthesis_eligibility import content_gate_eligibility
 
 
 def _extract(html: str) -> str:

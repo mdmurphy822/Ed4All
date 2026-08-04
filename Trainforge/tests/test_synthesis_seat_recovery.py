@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from Trainforge.synthesis_journal import (
+from Trainforge.synthesis.synthesis_journal import (
     GenerationJournal,
     load_generation_journal,
 )

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from scripts.ops.prepare_fresh_training_synthesis import apply_plan, build_plan
-from Trainforge.synthesis_fresh_start import (
+from Trainforge.synthesis.synthesis_fresh_start import (
     MARKER_NAME,
     SYNTHESIS_ARTIFACT_NAMES,
     FreshStartError,

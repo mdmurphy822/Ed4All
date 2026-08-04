@@ -24,7 +24,7 @@ from Trainforge.generators.pairs.instruction import (
     synthesize_instruction_pair,
 )
 from Trainforge.generators.pairs import preference as preference_factory
-from Trainforge.synthesis_eligibility import (
+from Trainforge.synthesis.synthesis_eligibility import (
     CONTENT_GATE_ENV,
     MIN_PROSE_WORDS_ENV,
     MIN_STEM_CONTENT_WORDS_ENV,

@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 import Trainforge.synthesize_training as synthesis_module
-from Trainforge.synthesis_concurrency import (
+from Trainforge.synthesis.synthesis_concurrency import (
     BoundedOrderedMap,
     resolve_synthesis_max_concurrent,
 )
@@ -22,7 +22,7 @@ from Trainforge.synthesize_training import (
     _synthesis_runtime_policy_identity,
     run_synthesis,
 )
-from Trainforge.synthesis_journal import (
+from Trainforge.synthesis.synthesis_journal import (
     GenerationJournal,
     load_generation_journal,
     summarize_generation_journal,

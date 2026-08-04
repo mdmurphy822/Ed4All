@@ -1855,7 +1855,7 @@ _VERDICT_POLICY_FILES = (
     "lib/utils/objective_delivery_axes/nli.py",
     "lib/utils/objective_delivery_axes/bloom_gap.py",
     "lib/utils/objective_delivery_axes/verb_cooccurrence.py",
-    "Trainforge/synthesis_reject_mining.py",
+    "Trainforge/synthesis/synthesis_reject_mining.py",
 )
 
 # Legacy alias for backward compatibility; used for digest recording only.

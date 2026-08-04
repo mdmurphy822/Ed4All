@@ -23,7 +23,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from Trainforge.synthesis_reject_mining import (  # noqa: E402
+from Trainforge.synthesis.synthesis_reject_mining import (  # noqa: E402
     MAX_CAPTURED_COMPLETION_CHARS,
     MAX_CAPTURED_PROMPT_CHARS,
     MINE_MODE_OFF,

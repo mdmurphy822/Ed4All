@@ -14,7 +14,7 @@ from typing import Any, Dict, List
 
 import pytest
 
-from Trainforge.synthesis_reject_mining import MINED_PAIR_SOURCE
+from Trainforge.synthesis.synthesis_reject_mining import MINED_PAIR_SOURCE
 from Trainforge.training.compute_backend import (
     DPO_EDITORIAL_SOURCES,
     _filter_dpo_pairs,

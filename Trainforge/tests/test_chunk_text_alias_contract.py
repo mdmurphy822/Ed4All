@@ -1,6 +1,6 @@
 """Regression net: the chunk text-field alias contract.
 
-``Trainforge/synthesis_eligibility.py`` used to read a chunk's prose as
+``Trainforge/synthesis/synthesis_eligibility.py`` used to read a chunk's prose as
 ``chunk.get("text") or ""``. That single expression collapsed two facts that
 are not the same:
 
@@ -35,7 +35,7 @@ from typing import Any, Dict
 
 import pytest
 
-from Trainforge.synthesis_eligibility import (
+from Trainforge.synthesis.synthesis_eligibility import (
     CHUNK_TEXT_FIELDS,
     ChunkTextContractError,
     resolve_chunk_text,

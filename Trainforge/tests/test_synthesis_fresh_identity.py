@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from Trainforge.synthesis_journal import (
+from Trainforge.synthesis.synthesis_journal import (
     GenerationJournal,
     load_generation_journal,
 )
-from Trainforge.synthesis_fresh_start import (
+from Trainforge.synthesis.synthesis_fresh_start import (
     MARKER_NAME,
     FreshStartError,
     bind_fresh_start_run_contract,

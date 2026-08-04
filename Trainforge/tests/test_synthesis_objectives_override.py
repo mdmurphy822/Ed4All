@@ -41,7 +41,7 @@ def _observe_holdout_objectives(
 
     monkeypatch.setenv("TRAINFORGE_SYNTHESIS_HOLDOUT_EXCLUSION", "true")
     monkeypatch.setattr(
-        "Trainforge.synthesis_holdout.load_synthesis_holdout_registry",
+        "Trainforge.synthesis.synthesis_holdout.load_synthesis_holdout_registry",
         fake_loader,
     )
     return observed
