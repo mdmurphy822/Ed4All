@@ -579,7 +579,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help=(
-            "Backfill exactly this slug (e.g. demo-course-1). When "
+            "Backfill exactly the supplied course slug. When "
             "omitted, scan every directory under --libv2-root."
         ),
     )

@@ -14,7 +14,7 @@
     "course_slug": {
       "type": "string",
       "minLength": 1,
-      "description": "LibV2 course slug these probes are authored for (e.g. 'sample-course'). Matches the directory under LibV2/courses/."
+      "description": "LibV2 course slug these probes are authored for. Matches the private directory under LibV2/courses/."
     },
     "authored_at": {
       "type": "string",
