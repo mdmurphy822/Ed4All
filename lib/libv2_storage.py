@@ -914,9 +914,9 @@ def project_objectives_for_archive(synthesized: Dict[str, Any]) -> Dict[str, Any
 def _validate_libv2_paths():
     """Validate LibV2 paths at module load."""
     if not LIBV2_ROOT.exists():
-        logger.warning(f"LibV2 root not found: {LIBV2_ROOT}")
+        logger.warning("LibV2 root is unavailable")
     else:
-        logger.debug(f"LibV2 root found: {LIBV2_ROOT}")
+        logger.debug("LibV2 root is available")
 
 _validate_libv2_paths()
 

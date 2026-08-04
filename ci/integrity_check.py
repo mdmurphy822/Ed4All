@@ -53,6 +53,34 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _public_repo_path(path: Path) -> str:
+    """Return a repository-relative path without exposing the checkout root."""
+    try:
+        return path.resolve().relative_to(PROJECT_ROOT.resolve()).as_posix()
+    except ValueError:
+        return "<external-path>"
+
+
+def _redact_run_text(text: str, run_path: Path) -> str:
+    """Remove the selected private run's name and path from diagnostics."""
+    marker = "__ED4ALL_PRIVATE_RUN__"
+    redacted = str(text).replace(str(run_path), marker)
+    redacted = redacted.replace(run_path.name, marker)
+    return redacted.replace(marker, "<private-run>")
+
+
+def _integrity_environment(
+    runs_path: Path, schemas_path: Path, config_path: Path
+) -> Dict[str, str]:
+    """Describe check inputs without publishing checkout-local paths."""
+    return {
+        "python_version": sys.version,
+        "runs_path": _public_repo_path(runs_path),
+        "schemas_path": _public_repo_path(schemas_path),
+        "config_path": _public_repo_path(config_path),
+    }
+
+
 # ============================================================================
 # DATA CLASSES
 # ============================================================================
@@ -224,13 +252,14 @@ def check_hash_chains(runs_path: Path, verbose: bool = False) -> CheckResult:
 
     verified_count = 0
     chain_count = 0
-    for run_dir in run_dirs:
+    for run_index, run_dir in enumerate(run_dirs, start=1):
         run_id = run_dir.name
+        run_ref = f"run #{run_index}"
         chain_path = run_dir / "hash_chain.jsonl"
 
         if not chain_path.exists():
             if verbose:
-                logger.info(f"  {run_id}: No hash chain (skipped)")
+                logger.info(f"  {run_ref}: No hash chain (skipped)")
             continue
 
         chain_count += 1
@@ -245,14 +274,15 @@ def check_hash_chains(runs_path: Path, verbose: bool = False) -> CheckResult:
             if valid:
                 verified_count += 1
                 if verbose:
-                    logger.info(f"  {run_id}: Valid")
+                    logger.info(f"  {run_ref}: Valid")
             else:
-                result.errors.append(f"{run_id}: Hash chain integrity failed")
+                result.errors.append(f"{run_ref}: Hash chain integrity failed")
                 if verbose:
-                    logger.warning(f"  {run_id}: INVALID")
+                    logger.warning(f"  {run_ref}: INVALID")
 
         except Exception as e:
-            result.errors.append(f"{run_id}: Error - {e}")
+            error = _redact_run_text(str(e), run_dir)
+            result.errors.append(f"{run_ref}: Error - {error}")
 
     result.details["chain_count"] = chain_count
     result.details["verified_count"] = verified_count
@@ -471,7 +501,7 @@ def check_sample_finalization(runs_path: Path, verbose: bool = False) -> CheckRe
 
     # Pick the most recent run
     test_run = sorted(run_dirs, key=lambda d: d.stat().st_mtime, reverse=True)[0]
-    result.details["test_run"] = test_run.name
+    result.details["test_run_selected"] = True
 
     try:
         from lib.run_finalizer import RunFinalizer
@@ -484,13 +514,18 @@ def check_sample_finalization(runs_path: Path, verbose: bool = False) -> CheckRe
         result.details["artifact_count"] = report.artifact_count
 
         if not report.success:
-            result.errors.extend(report.errors)
+            result.errors.extend(
+                _redact_run_text(error, test_run) for error in report.errors
+            )
 
         result.passed = report.success
-        result.message = f"Finalization test on {test_run.name}: {'PASSED' if report.success else 'FAILED'}"
+        result.message = (
+            "Finalization test on selected run: "
+            f"{'PASSED' if report.success else 'FAILED'}"
+        )
 
         if verbose:
-            logger.info(f"  Test run: {test_run.name}")
+            logger.info("  Test run selected")
             logger.info(f"  Hash chains valid: {report.all_chains_valid}")
             logger.info(f"  Artifacts: {report.artifact_count}")
 
@@ -499,8 +534,9 @@ def check_sample_finalization(runs_path: Path, verbose: bool = False) -> CheckRe
         result.errors.append(result.message)
 
     except Exception as e:
-        result.errors.append(f"Finalization error: {e}")
-        result.message = f"Finalization test failed: {e}"
+        error = _redact_run_text(str(e), test_run)
+        result.errors.append(f"Finalization error: {error}")
+        result.message = f"Finalization test failed: {error}"
 
     result.duration_seconds = time.time() - start_time
     return result
@@ -537,10 +573,10 @@ def check_path_security(verbose: bool = False) -> CheckResult:
         # concrete root rather than importing a resolver that is not part of
         # the path_constants public contract.
         project_root = PROJECT_ROOT.resolve()
-        result.details["project_root"] = str(project_root)
+        result.details["project_root_source"] = "integrity-check-location"
         result.details["project_root_exists"] = project_root.exists()
         if not project_root.exists():
-            result.errors.append(f"Project root does not exist: {project_root}")
+            result.errors.append("Project root does not exist")
 
         # Check hardening config
         try:
@@ -881,12 +917,15 @@ def check_libv2_taxonomy_resolution(verbose: bool = False) -> CheckResult:
         result.duration_seconds = time.time() - start_time
         return result
 
-    result.details["canonical_path"] = str(resolved_path)
+    resolved_display = _public_repo_path(resolved_path)
+    auth_display = _public_repo_path(auth_path)
+    result.details["canonical_path"] = resolved_display
     result.details["levels"] = sorted(verbs)
 
     if resolved_path != auth_path:
         result.errors.append(
-            f"LibV2 resolved {resolved_path}, expected canonical path {auth_path}"
+            f"LibV2 resolved {resolved_display}, expected canonical path "
+            f"{auth_display}"
         )
         result.passed = False
         result.message = "LibV2 resolves a non-canonical Bloom taxonomy path"
@@ -898,7 +937,7 @@ def check_libv2_taxonomy_resolution(verbose: bool = False) -> CheckResult:
         result.message = "LibV2 loads the canonical Bloom taxonomy directly"
 
     if verbose:
-        logger.info(f"  canonical path: {resolved_path}")
+        logger.info(f"  canonical path: {resolved_display}")
         logger.info(f"  taxonomy levels: {sorted(verbs)}")
 
     result.duration_seconds = time.time() - start_time
@@ -1242,12 +1281,7 @@ def run_integrity_checks(
         passed_checks=0,
         failed_checks=0,
         total_duration_seconds=0.0,
-        environment={
-            "python_version": sys.version,
-            "runs_path": str(runs_path),
-            "schemas_path": str(schemas_path),
-            "config_path": str(config_path),
-        },
+        environment=_integrity_environment(runs_path, schemas_path, config_path),
     )
 
     # Run all checks

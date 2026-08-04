@@ -33,11 +33,10 @@ function-scoped autouse fixture.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
-import pytest
-
-from lib import paths
+from lib import libv2_storage, paths
 from lib.decision_capture import DecisionCapture
 from lib.libv2_storage import LibV2Storage
 
@@ -72,6 +71,33 @@ class TestLibV2PathResolver:
     def test_blank_env_is_treated_as_unset(self, monkeypatch):
         monkeypatch.setenv("ED4ALL_LIBV2_ROOT", "   ")
         assert paths.libv2_path() == paths.LIBV2_PATH
+
+
+class TestLibV2AvailabilityLogging:
+    def test_existing_root_log_does_not_disclose_path(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        sensitive_root = tmp_path / "private-course-library"
+        sensitive_root.mkdir()
+        monkeypatch.setattr(libv2_storage, "LIBV2_ROOT", sensitive_root)
+
+        with caplog.at_level(logging.DEBUG, logger=libv2_storage.__name__):
+            libv2_storage._validate_libv2_paths()
+
+        assert "LibV2 root is available" in caplog.messages
+        assert str(sensitive_root) not in caplog.text
+
+    def test_missing_root_log_does_not_disclose_path(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        sensitive_root = tmp_path / "private-missing-library"
+        monkeypatch.setattr(libv2_storage, "LIBV2_ROOT", sensitive_root)
+
+        with caplog.at_level(logging.WARNING, logger=libv2_storage.__name__):
+            libv2_storage._validate_libv2_paths()
+
+        assert "LibV2 root is unavailable" in caplog.messages
+        assert str(sensitive_root) not in caplog.text
 
 
 class TestTrainingCapturesResolver:
