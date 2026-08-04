@@ -1165,10 +1165,8 @@ def _attach_source_grounding(
     return grounded
 
 
-# the persona-prefix variant is a frame template parametrized
-# by ``{persona}``. Pre-Wave-132d this slot was hardcoded to
-# "For an RDF/SHACL learner, {prompt_lc}", which was wrong for any
-# non-SHACL course. The persona is sourced from
+# The persona-prefix variant is a frame template parameterized by
+# ``{persona}`` so it remains valid across course domains. The persona comes from
 # ``PropertyManifest.learner_persona`` (default ``DEFAULT_LEARNER_PERSONA``
 # = "a learner"); see ``lib/ontology/property_manifest.py``.
 _INSTRUCTION_PROMPT_FRAMES = (
@@ -7015,10 +7013,8 @@ def run_synthesis(
                 pref_progress_fh.close()
             except Exception as e:  # pragma: no cover - defensive
                 logger.warning("Failed to close preference sidecar: %s", e)
-        # close the resume checkpoint handle, mirroring the
-        # existing Wave-116 sidecar close logic. The append handle
-        # always closes; the file itself is unlinked only on a
-        # fully-clean exit so a SynthesisBudgetExceeded / unexpected
+        # Close the resume-checkpoint handle unconditionally. Unlink its file
+        # only after a fully clean exit so SynthesisBudgetExceeded or another
         # exception leaves the checkpoint on disk for the next run to
         # resume from.
         if checkpoint_fh is not None:

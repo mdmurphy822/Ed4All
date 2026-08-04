@@ -57,8 +57,7 @@ from lib.validators.synthesis_leakage import (  # noqa: E402
     _ASSESSMENT_SCAFFOLD_PATTERNS,
 )
 
-# Force-inject phrasings (Wave 121). Kept in sync with the factory
-# definitions; if a phrasing changes there, update here.
+# Reference phrasings stay synchronized with the pair factory definitions.
 _PROMPT_REFERENCE_PHRASINGS = [
     " (Reference:", " (Relevant terms:", " (See:", " (In context:",
 ]
@@ -67,8 +66,8 @@ _COMPLETION_REFERENCE_PHRASINGS = [
     " Key vocabulary:", " This concerns ",
 ]
 
-# Wave 122 rotated scaffolding phrasings (instruction + preference share
-# the same set). Audit reports their distribution as a sanity check.
+# Instruction and preference scaffolding share this rotated phrasing set; the
+# audit reports its distribution as a diversity check.
 _SCAFFOLD_PHRASINGS = [
     "is best understood by tying",
     "should ground each idea",
@@ -76,7 +75,7 @@ _SCAFFOLD_PHRASINGS = [
     "is built from the interplay of",
 ]
 
-# Pre-Wave-122 rigid template — must be 0 in any post-Wave-122 run.
+# Retired rigid template; current output must contain zero occurrences.
 _LEGACY_SCAFFOLD = "should be explained through the concrete RDF/SHACL role"
 
 # Suspicious unicode ranges (zero-width, BiDi overrides, invisibles).
@@ -898,7 +897,7 @@ def run_audit(
         _check_diversity(inst),
         _check_bloom_distribution(inst),
         _check_paraphrase_quality(inst),
-        # Wave 124 (audit 2026-04-30 follow-up).
+        # Coverage checks for abstention, schema translation, and citations.
         _check_abstention_coverage(inst),
         _check_schema_translation_coverage(inst),
         _check_citation_coverage(inst),

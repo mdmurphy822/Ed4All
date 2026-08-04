@@ -89,8 +89,8 @@ def main() -> int:
     inst_path = corpus / "training_specs" / "instruction_pairs.jsonl"
     counts = count_property_coverage_from_jsonl(inst_path, manifest)
     templates = template_distribution_from_jsonl(inst_path)
-    # Wave 117: pilot_synthesis.py is the post-hoc surface; the report
-    # represents the final state, not a mid-run snapshot. We pass the
+    # The pilot report represents final state rather than a mid-run snapshot.
+    # Pass the
     # eligible-chunk count as both ``processed`` and ``total`` because
     # the CLI runs synthesis to completion before formatting.
     chunks_count = stats.chunks_eligible

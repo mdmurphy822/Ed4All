@@ -167,8 +167,8 @@ class SynthesisSeatRecoveryCoordinator:
             if self._state == "failed":
                 return False
             if self._state == "recovered":
-                # A late follower observes the now-healthy seat. A genuinely
-                # later incident observes a failed deep probe and receives the
+                # A late follower observes the now-healthy seat. A later
+                # unhealthy probe receives the
                 # exhausted recovery budget (False → pause loud).
                 from lib.vllm_container_lifecycle import coherence_probe
                 return coherence_probe(self.base_url)

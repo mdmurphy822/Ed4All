@@ -186,9 +186,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 file=sys.stderr,
             )
             return 2
-        # Wave 137 follow-up: fall back to a live snapshot when the default
-        # checkpoint is missing (no eval has run since Wave 137d-2 landed).
-        # Lets operators inspect baseline coverage BEFORE the first retrain.
+        # When the default checkpoint is absent, compute a live snapshot so
+        # operators can inspect baseline coverage before retraining.
         live_row = _compute_live_row(args.course_code)
         if live_row is None:
             print(
