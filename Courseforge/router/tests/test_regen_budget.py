@@ -1,23 +1,21 @@
-"""Tests for the regen-budget + escalation contract (Phase 3 Subtask 44).
+"""Tests for the regeneration-budget and escalation contract.
 
-Exercises the per-block regeneration budget tracking and escalation
-paths Worker I landed in Subtasks 41-43:
+Exercises the per-block regeneration budget tracking and escalation paths:
 
-- Subtask 41 (``route_with_self_consistency``): per-fail
+- ``route_with_self_consistency``: per-failure
   ``validation_attempts`` increment, ``COURSEFORGE_OUTLINE_REGEN_BUDGET``
   env var resolution, policy ``regen_budget_by_block_type`` override,
   and the canonical ``escalation_marker="outline_budget_exhausted"``
   stamp + early-loop break when the cumulative attempt count meets the
   resolved budget.
-- Subtask 42 (``route``): the ``escalate_immediately=True`` short-
+- ``route``: the ``escalate_immediately=True`` short-
   circuit on the outline tier — skips the LLM dispatch entirely, stamps
-  the canonical ``outline_budget_exhausted`` marker (NOTE: the plan's
-  wording said ``outline_skipped_by_policy`` but
+  the canonical ``outline_budget_exhausted`` marker because
   ``Block._ESCALATION_MARKERS`` only admits the budget-exhausted /
   structural-unfixable / validator-consensus-fail values; provenance is
   preserved via the ``Touch.purpose="escalate_immediately"`` audit
   record on the same return block).
-- Subtask 42-43 (``_emit_block_escalation``): the canonical
+- ``_emit_block_escalation``: the canonical
   ``block_escalation`` decision-event seam — fired from BOTH the
   budget-exhausted and policy-skip paths so a postmortem reader sees a
   single event class regardless of how the block reached the rewrite
@@ -30,24 +28,21 @@ branching is fully observable without any LLM dispatch.
 
 from __future__ import annotations
 
+import dataclasses
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
-import dataclasses
-import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from blocks import Block  # noqa: E402
+
 from Courseforge.router.router import (  # noqa: E402
-    BlockProviderSpec,
     CourseforgeRouter,
 )
 from MCP.hardening.validation_gates import GateResult  # noqa: E402
-from blocks import Block  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -95,8 +90,7 @@ class _AlwaysFailingOutlineProvider:
         objectives: Any,
         **kwargs: Any,
     ) -> Block:
-        # Phase 3.5 Subtask 18: ``**kwargs`` swallows the new
-        # ``remediation_suffix`` kwarg the router threads on regen.
+        # ``**kwargs`` accepts the remediation suffix threaded on retry.
         self.calls.append(
             {
                 "block": block,
@@ -160,9 +154,7 @@ class _RecordingRewriteProvider:
         objectives: Any,
         **kwargs: Any,
     ) -> Block:
-        # Phase 3.5 Subtask 19: ``**kwargs`` swallows the new
-        # ``remediation_suffix`` kwarg the rewrite remediation loop
-        # threads on regen.
+        # ``**kwargs`` accepts the remediation suffix threaded on retry.
         self.calls.append(
             {
                 "block": block,
@@ -206,7 +198,7 @@ class _StubPolicy:
 
 
 # ---------------------------------------------------------------------------
-# Subtask 41: validation_attempts + budget-exhaustion tests
+# Validation-attempt and budget-exhaustion tests
 # ---------------------------------------------------------------------------
 
 
@@ -241,16 +233,15 @@ def test_budget_exhaustion_sets_outline_budget_exhausted_marker(monkeypatch):
     ``escalation_marker="outline_budget_exhausted"`` on the return block
     and breaks out of the candidate loop early.
 
-    NOTE: The Phase 3 plan section §3.7 lists ``outline_skipped_by_policy``
-    as a candidate marker name, but ``Block._ESCALATION_MARKERS``
+    ``Block._ESCALATION_MARKERS``
     (``Courseforge/scripts/blocks.py:105-111``) only contains
     ``{outline_budget_exhausted, structural_unfixable,
-    validator_consensus_fail}``. Worker 3F's deviation note: the router
-    uses ``outline_budget_exhausted`` for both the regen-budget and the
+    validator_consensus_fail}``. The router uses
+    ``outline_budget_exhausted`` for both the regeneration-budget and the
     policy-skip paths so the marker stays Block-validation-clean;
     provenance is preserved via the ``Touch.purpose="escalate_immediately"``
     audit field on the policy-skip path. This test asserts the actual
-    marker the implementation lands.
+    marker required by the runtime contract.
     """
     monkeypatch.delenv("COURSEFORGE_OUTLINE_N_CANDIDATES", raising=False)
     monkeypatch.delenv("COURSEFORGE_OUTLINE_REGEN_BUDGET", raising=False)
@@ -269,11 +260,10 @@ def test_budget_exhaustion_sets_outline_budget_exhausted_marker(monkeypatch):
 
 
 def test_budget_exhaustion_emits_block_escalation_event(monkeypatch):
-    """The Subtask 41 path emits ONE ``block_escalation`` decision-
-    capture event when the regen budget is exhausted mid-loop.
+    """Budget exhaustion emits one ``block_escalation`` capture event.
 
     The ml_features payload carries the dynamic signals required by the
-    Subtask 43 contract: ``block_id`` / ``block_type`` / ``marker`` /
+    decision-capture contract: ``block_id`` / ``block_type`` / ``marker`` /
     ``attempts`` / ``n_candidates``.
     """
     monkeypatch.delenv("COURSEFORGE_OUTLINE_N_CANDIDATES", raising=False)
@@ -302,7 +292,7 @@ def test_budget_exhaustion_emits_block_escalation_event(monkeypatch):
     # Budget=3 → 3 failed dispatches before the early break fires.
     assert ml.get("attempts") == 3
     assert ml.get("n_candidates") == 3
-    # Rationale must be at least 20 chars (Subtask 43 contract).
+    # Decision-capture rationales must contain at least 20 characters.
     assert isinstance(ev.get("rationale"), str)
     assert len(ev["rationale"]) >= 20
 
@@ -332,7 +322,7 @@ def test_per_block_type_regen_budget_overrides_env(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Subtask 42: escalate_immediately short-circuit tests
+# Immediate-escalation short-circuit tests
 # ---------------------------------------------------------------------------
 
 
@@ -371,9 +361,8 @@ def test_escalate_immediately_sets_outline_skipped_by_policy(monkeypatch):
     """Policy-skip provenance is preserved on the short-circuit return
     block via a ``Touch(purpose="escalate_immediately")`` audit record.
 
-    NOTE on the marker name: the plan's contract section §3.7 calls this
-    case ``outline_skipped_by_policy``, but ``Block._ESCALATION_MARKERS``
-    only admits the canonical 3-value set, so the implementation lands
+    ``Block._ESCALATION_MARKERS`` admits the canonical three-value set, so the
+    implementation uses
     ``escalation_marker="outline_budget_exhausted"`` and signals the
     policy-skip path exclusively via ``Touch.purpose="escalate_immediately"``
     (the audit field is the canonical discriminator a postmortem reader
@@ -467,7 +456,7 @@ def test_validation_attempts_persists_through_block_replace():
     ``dataclasses.replace`` (with no other field changed) preserving
     ``N``, AND a subsequent stamp of ``escalation_marker`` does NOT
     reset the attempt counter. Both halves matter because the router's
-    Subtask 41 escalation block is built as
+    escalation block is built as
     ``dataclasses.replace(last_candidate, escalation_marker=...)``
     where ``last_candidate`` already carries the cumulative
     ``validation_attempts`` count from the per-failure rebind.

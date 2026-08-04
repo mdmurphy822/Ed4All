@@ -1,14 +1,14 @@
-"""Tests for Wave 1.7 W1.7.D — block-objective delivery remediation suffix.
+"""Tests for the block-objective delivery remediation suffix.
 
 Covers the rewrite-tier remediation-loop integration of the three
 ``BlockObjectiveDeliveryValidator`` issue codes
 (``BLOCK_OBJECTIVE_STATEMENT_UNDERSUPPORTED`` /
 ``BLOCK_OBJECTIVE_BLOOM_UNDERMET`` / ``BLOCK_OBJECTIVE_VERB_ABSENT``)
 plus the new ``block_objective_undelivered`` escalation marker that
-fires when the rewrite-tier regen budget exhausts purely on Wave-1.7
-codes.
+fires when the rewrite-tier regeneration budget exhausts purely on
+block-objective delivery codes.
 
-Five canonical tests per plan §2 Fix 1.7.D "Tests required":
+The canonical cases are:
 
 1. ``test_remediation_suffix_for_BLOCK_OBJECTIVE_STATEMENT_UNDERSUPPORTED``
    — assert the rendered suffix contains the objective_id, the
@@ -42,11 +42,11 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import pytest
-
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+from blocks import Block  # noqa: E402
 
 from Courseforge.router.remediation import (  # noqa: E402
     _CODE_BLOCK_OBJECTIVE_BLOOM_UNDERMET,
@@ -57,8 +57,6 @@ from Courseforge.router.remediation import (  # noqa: E402
 )
 from Courseforge.router.router import CourseforgeRouter  # noqa: E402
 from MCP.hardening.validation_gates import GateIssue, GateResult  # noqa: E402
-from blocks import Block  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -204,7 +202,7 @@ def test_remediation_suffix_for_BLOCK_OBJECTIVE_STATEMENT_UNDERSUPPORTED():
 
     # Failing objective_id is named.
     assert "'TO-03'" in suffix
-    # Score + floor render at 2 decimals (per plan directive text).
+    # Score and floor render at two decimals per the prompt contract.
     assert "0.18" in suffix
     assert "0.45" in suffix
     # Statement is truncated — full string should NOT appear, but the
@@ -213,7 +211,7 @@ def test_remediation_suffix_for_BLOCK_OBJECTIVE_STATEMENT_UNDERSUPPORTED():
     assert statement_long[:40] in suffix
     # Truncation suffix marker (ellipsis) must be present.
     assert "…" in suffix
-    # Canonical Wave 1.7 directive copy must appear.
+    # The canonical statement-support directive must appear.
     assert "did not" in suffix
     assert "semantically support" in suffix
     assert "behavioral outcome" in suffix
@@ -245,7 +243,7 @@ def test_remediation_suffix_for_BLOCK_OBJECTIVE_BLOOM_UNDERMET():
     assert "'evaluate'" in suffix
     # Bloom-gap integer is named.
     assert "3 levels below" in suffix
-    # Canonical Wave 1.7 directive copy must appear.
+    # The canonical Bloom-demand directive must appear.
     assert "scaffold up to the declared" in suffix
     assert "cognitive demand" in suffix
 
@@ -274,7 +272,7 @@ def test_remediation_suffix_for_BLOCK_OBJECTIVE_VERB_ABSENT():
     assert "appraise" in suffix
     assert "critique" in suffix
     assert "justify" in suffix
-    # Canonical Wave 1.7 directive copy must appear.
+    # The canonical verb-presence directive must appear.
     assert "no synonym" in suffix
     assert "Bloom-level synonyms" in suffix
 
@@ -337,7 +335,7 @@ def test_rewrite_regen_loop_consumes_block_objective_action_regenerate(
 ):
     """Integration: outline emits a Bloom-undermet block, the rewrite-tier
     validator chain returns ``action="regenerate"`` on the first
-    candidate, the next candidate's prompt carries the per-Wave-1.7
+    candidate, the next candidate's prompt carries the objective-delivery
     suffix interpolating the failing objective_id + Bloom gap, and the
     re-rolled block passes the post-rewrite gate.
 
@@ -392,7 +390,7 @@ def test_rewrite_regen_loop_consumes_block_objective_action_regenerate(
     )
 
     # First candidate dispatched without a suffix; second carries the
-    # Wave 1.7 BLOOM_UNDERMET directive.
+    # Bloom-undermet directive.
     assert len(rewrite.calls) == 2
     assert rewrite.calls[0]["remediation_suffix"] is None
     second = rewrite.calls[1]["remediation_suffix"]
@@ -402,7 +400,7 @@ def test_rewrite_regen_loop_consumes_block_objective_action_regenerate(
     assert "'remember'" in second
     assert "'analyze'" in second
     assert "3 levels below" in second
-    # Wave 1.7 canonical directive copy.
+    # Canonical Bloom-demand directive copy.
     assert "scaffold up to the declared" in second
     # The re-rolled block is the winner — no escalation marker.
     assert out.escalation_marker is None
@@ -457,7 +455,7 @@ def test_block_objective_undelivered_marker_when_budget_exhausted(monkeypatch):
         objectives=objectives,
     )
 
-    # Budget exhausted: surviving block carries the new W1.7.D marker
+    # A budget-exhausted block carries the objective-delivery marker
     # (NOT the generic validator_consensus_fail marker).
     assert out.escalation_marker == "block_objective_undelivered"
     # objective_alignment carries one entry per declared objective_id,

@@ -1,22 +1,17 @@
 #!/usr/bin/env python3
 """Generalized remediation prompt-suffix builder for the two-pass router.
 
-Phase 3.5 Subtasks 1-4 (per `plans/phase3_5_post_rewrite_validation.md`
-§A). Sibling to :mod:`Courseforge.router.router` (the self-consistency
+Sibling to :mod:`Courseforge.router.router` (the self-consistency
 loop that consumes these helpers between candidate iterations) and to
 :mod:`Courseforge.router.inter_tier_gates` (the four ``Block*Validator``
 classes whose ``GateResult`` outputs feed the
 :func:`_append_remediation_for_gates` builder).
 
-Roadmap context (root ``CLAUDE.md`` § Phase 3 outline-rewrite two-pass
-router): both the outline tier and the rewrite tier go through a
-post-emit validator chain. On a failing chain, the offending block is
-re-rolled — but pre-Phase-3.5 the re-roll re-issued the SAME prompt,
-which is wasted budget when the failure mode is deterministic
-(missing CURIEs, wrong ``content_type`` enum value, missing source
-refs, missing objective refs). Phase 3.5 wires the failure context
-into the next prompt as a remediation suffix so the model sees what
-went wrong and the directive to fix it.
+Both the outline and rewrite tiers run a post-emit validator chain. When a
+block fails, its next prompt receives a remediation suffix naming the failure
+and the corrective directive. This avoids repeating an identical prompt for
+deterministic failures such as missing CURIEs, invalid ``content_type`` values,
+or missing source and objective references.
 
 Public surface:
 
@@ -27,8 +22,8 @@ Public surface:
   — preserve-token specialization (CURIE / fact / ref preservation).
   The rewrite tier consumes this via the CURIE-preservation gate.
 - :func:`_missing_preserve_tokens(content, tokens, in_keys)` — token-
-  presence detector. Accepts ``content: Any`` (str or dict) per the
-  Subtask 3 generalization: when str, searches the string body; when
+  presence detector. Accepts ``content: Any`` (str or dict): when str,
+  searches the string body; when
   dict, searches the keys named in ``in_keys`` (default ``("body",)``).
 
 Direct port of the
@@ -46,10 +41,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
 
-
 # ---------------------------------------------------------------------------
-# Per-failure-mode remediation directives table (Subtask 1, pre-resolved
-# decision #4).
+# Per-failure-mode remediation directives table.
 # ---------------------------------------------------------------------------
 #
 # Keys are the canonical ``gate_id`` values for the eight inter-tier
@@ -59,11 +52,8 @@ from MCP.hardening.validation_gates import GateIssue, GateResult
 # overlap is intentional — when both tiers share a failure mode the
 # directive copy stays the same.
 #
-# Source of truth for the gate_id naming: the Phase 3 inter-tier-
-# gates module (``Courseforge/router/inter_tier_gates.py``) and the
-# new ``post_rewrite_validation`` workflow phase
-# (``config/workflows.yaml::post_rewrite_validation``, Phase 3.5
-# Subtask 10).
+# Gate IDs are owned by ``Courseforge/router/inter_tier_gates.py`` and the
+# ``config/workflows.yaml::post_rewrite_validation`` workflow phase.
 
 _REMEDIATION_DIRECTIVES_BY_GATE_ID: Dict[str, str] = {
     # Outline-tier gates (consume Block.content as a dict).
@@ -127,11 +117,11 @@ _REMEDIATION_DIRECTIVES_BY_GATE_ID: Dict[str, str] = {
 
 
 # ---------------------------------------------------------------------------
-# Stub functions (filled in by Subtasks 2, 3).
+# Remediation helpers
 # ---------------------------------------------------------------------------
 
 
-# Per-failure issue-message truncation budget (Subtask 2). Bounds the
+# Per-failure issue-message truncation budget. Bounds the
 # remediation suffix size when a validator emits very long error
 # messages (e.g. structural violations enumerating dozens of missing
 # refs). 200 chars keeps the suffix readable for the model without
@@ -154,28 +144,27 @@ def _truncate_message(message: str, max_chars: int = _MAX_ISSUE_MESSAGE_CHARS) -
 
 
 # ---------------------------------------------------------------------------
-# Wave 1.7 W1.7.D — per-issue-code directive dispatch
+# Per-issue objective-delivery directive dispatch
 # ---------------------------------------------------------------------------
 #
-# Wave 1.7 introduces three issue codes from
+# ``BlockObjectiveDeliveryValidator`` emits three issue codes:
 # ``lib/validators/block_objective_delivery.py::BlockObjectiveDeliveryValidator``:
 #
 #  - ``BLOCK_OBJECTIVE_STATEMENT_UNDERSUPPORTED`` (NLI entailment miss)
 #  - ``BLOCK_OBJECTIVE_BLOOM_UNDERMET`` (Bloom-level gap >= 2)
 #  - ``BLOCK_OBJECTIVE_VERB_ABSENT`` (no verb-synonym in prose)
 #
-# These codes carry per-pair context (objective_id, scores, levels,
-# verbs) embedded in the GateIssue.message f-string. The Wave 1.7
+# These codes carry per-pair context (objective ID, scores, levels, and
+# verbs) embedded in the GateIssue message. The objective-delivery
 # directives interpolate that context so the rewrite-tier model sees a
 # concrete remediation signal — name the failing objective_id, the
 # scoring deltas, the missing verb synonyms, etc.
 #
-# The :data:`_WAVE17_OBJECTIVE_DELIVERY_CODES` set drives both the
-# per-issue dispatch in :func:`_format_failure_block` AND the
-# rewrite-tier "only Wave 1.7 codes" detector in
+# The objective-delivery code set drives both the per-issue dispatch in
+# :func:`_format_failure_block` and the rewrite-tier detector in
 # :meth:`Courseforge.router.router.CourseforgeRouter._gate_results_only_block_objective_failures`
-# (canonical source for both surfaces; mirrors Wave 1.5 W1.5.C's
-# per_claim escalation-marker fallback at
+# It is the canonical source for both surfaces and parallels the per-claim
+# escalation-marker fallback at
 # ``CourseforgeRouter._gate_results_only_per_claim_failures``).
 
 _CODE_BLOCK_OBJECTIVE_STATEMENT_UNDERSUPPORTED: str = (
@@ -194,10 +183,9 @@ _WAVE17_OBJECTIVE_DELIVERY_CODES: frozenset = frozenset(
 
 
 #: Truncation budget for ``objective_statement`` text interpolated into
-#: the Wave 1.7 STATEMENT_UNDERSUPPORTED directive. Keeps the
+#: the statement-unsupported directive. Keeps the
 #: per-failure suffix bounded when an objective statement is
-#: pathologically long. Mirrors Wave 1.5 W1.5.D's per-claim citation
-#: truncation pattern (~80 chars).
+#: pathologically long. Uses the per-claim citation truncation budget.
 _MAX_OBJECTIVE_STATEMENT_CHARS: int = 80
 
 
@@ -228,9 +216,8 @@ def _truncate_statement(
 ) -> str:
     """Truncate an objective_statement at ``max_chars`` with ellipsis.
 
-    Mirrors :func:`_truncate_message` but uses the smaller Wave 1.7
-    statement budget so the directive stays readable at the per-claim
-    citation pattern Wave 1.5 W1.5.D introduced.
+    Uses a smaller budget than :func:`_truncate_message` so the directive
+    remains readable beside per-claim citation context.
     """
     if not statement:
         return statement
@@ -239,7 +226,7 @@ def _truncate_statement(
     return statement[: max_chars - 1].rstrip() + "…"
 
 
-def _extract_first_match(pattern: "re.Pattern[str]", message: str) -> Optional[str]:
+def _extract_first_match(pattern: re.Pattern[str], message: str) -> Optional[str]:
     """Best-effort regex extraction; returns first capture group or None."""
     if not message:
         return None
@@ -254,7 +241,7 @@ def _build_wave17_statement_undersupported_directive(
     message: str,
     objective_statements: Optional[Dict[str, str]],
 ) -> Optional[str]:
-    """Build the W1.7.D STATEMENT_UNDERSUPPORTED remediation directive.
+    """Build the statement-unsupported remediation directive.
 
     Parses the validator's GateIssue.message to extract the
     ``first_failing_objective_id``, ``entailment_score``, and
@@ -296,7 +283,7 @@ def _build_wave17_bloom_undermet_directive(
     *,
     message: str,
 ) -> Optional[str]:
-    """Build the W1.7.D BLOOM_UNDERMET remediation directive.
+    """Build the Bloom-undermet remediation directive.
 
     Parses ``observed_bloom``, ``bloom_gap``, ``first_failing_objective_id``,
     and ``declared_bloom`` out of the validator message. The Bloom
@@ -332,7 +319,7 @@ def _build_wave17_verb_absent_directive(
     *,
     message: str,
 ) -> Optional[str]:
-    """Build the W1.7.D VERB_ABSENT remediation directive.
+    """Build the absent-verb remediation directive.
 
     Parses ``bloom_verb`` and the synonym preview list (the validator's
     ``e.g. <comma-list>`` clause) out of the message. The synonyms_csv
@@ -358,9 +345,9 @@ def _build_wave17_directive(
     message: str,
     objective_statements: Optional[Dict[str, str]],
 ) -> Optional[str]:
-    """Dispatch on a Wave 1.7 issue code → matching directive builder.
+    """Dispatch an objective-delivery issue to its directive builder.
 
-    Returns ``None`` when the issue code isn't a Wave 1.7 code OR when
+    Returns ``None`` when the issue code is unrelated or when
     the message-parse fails (caller falls back to the gate_id directive
     table so the suffix is never silent).
     """
@@ -383,12 +370,12 @@ def _format_failure_block(
 ) -> str:
     """Render one failed ``GateResult`` as a remediation block.
 
-    Per pre-resolved decision #4: each failure renders as a
+    Each failure renders as a
     `\\n- [<gate_id>] <issue.message>\\n  Correct by: <directive>` line
     per issue in the result. The directive is looked up in this order:
 
-    1. **Per-issue Wave 1.7 dispatch** (Wave 1.7 W1.7.D) — when
-       ``issue.code`` is one of the Wave 1.7 block-objective delivery
+    1. **Per-issue objective-delivery dispatch** — when ``issue.code`` is one
+       of the block-objective delivery
        codes (:data:`_WAVE17_OBJECTIVE_DELIVERY_CODES`), build a
        per-axis directive interpolating the parsed message context
        (objective_id, scores, Bloom levels, verb synonyms) plus the
@@ -465,21 +452,21 @@ def _append_remediation_for_gates(
     ``failures`` contains no actionable results the prompt passes
     through unchanged.
 
-    ``objective_statements`` is the optional Wave 1.7 W1.7.D
-    enrichment kwarg — a ``Dict[objective_id, statement]`` map the
+    ``objective_statements`` is an optional enrichment map from objective ID
+    to statement. The
     per-issue dispatch path uses to interpolate the failing objective's
     behavioral-outcome statement into the
     ``BLOCK_OBJECTIVE_STATEMENT_UNDERSUPPORTED`` directive. The
     rewrite-tier router builds this map from the same ``objectives``
     arg it threads through ``_run_validator_chain``; default ``None``
-    keeps every pre-Wave-1.7 caller byte-stable.
+    keeps callers that omit the map byte-stable.
 
     Returns ``prompt`` (unchanged) when no actionable failures exist;
     otherwise returns ``prompt + "\\n\\n<header><blocks>"``.
     """
     actionable: List[GateResult] = []
     for result in failures:
-        # Pre-resolved decision #4: pass-action results don't trigger
+        # Pass-action results do not trigger
         # remediation. The router still passes them in (as the chain
         # output), so filter here rather than at every call site.
         action = result.action
@@ -513,7 +500,7 @@ def _missing_preserve_tokens(
     Direct port of
     :func:`Trainforge.generators.providers._local_provider.LocalSynthesisProvider._missing_preserve_tokens`
     (`Trainforge/generators/providers/_local_provider.py:548-564`), generalised
-    to accept ``content: Any`` per the Subtask 3 contract:
+    to accept ``content: Any``:
 
     - When ``content`` is a string, searches the full string for each
       token via substring match (the rewrite-tier HTML emit shape:
