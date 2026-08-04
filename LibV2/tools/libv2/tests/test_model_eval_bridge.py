@@ -1,4 +1,4 @@
-"""Tests for the LibV2 fresh-eval bridge (Wave 92 deferral closed).
+"""Tests for the LibV2 fresh-evaluation bridge.
 
 All CPU-only: the heavy :class:`AdapterCallable` model load is never
 exercised — tests inject a fake ``model_callable`` (so the
@@ -20,9 +20,8 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[4]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from LibV2.tools.libv2.evaluation import model_bridge as model_eval_bridge  # noqa: E402
 from LibV2.tools.libv2.cli import main as libv2_main  # noqa: E402
-
+from LibV2.tools.libv2.evaluation import model_bridge as model_eval_bridge  # noqa: E402
 
 _SLUG = "syn-eval-101"
 _MODEL_ID = "qwen2-5-1-5b-syn-eval-101-deadbeef"
@@ -84,7 +83,7 @@ def _build_course(tmp_path: Path, *, with_card: bool = True,
 class _FakeHarness:
     """Stand-in for SLMEvalHarness — records args, writes a fake report."""
 
-    last_instance: "_FakeHarness | None" = None
+    last_instance: _FakeHarness | None = None
 
     def __init__(self, course_path, model_callable, smoke_mode=False, **kwargs):
         self.course_path = Path(course_path)

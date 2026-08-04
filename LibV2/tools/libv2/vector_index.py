@@ -75,13 +75,17 @@ from typing import (
 
 import numpy as np
 
+from lib.generation.stop_control import check_stop
 from lib.libv2_storage import (
     DIRNAME_TO_CHUNKSET_KIND as _DIRNAME_TO_KIND,
+)
+from lib.libv2_storage import (
     VECTOR_INDEX_DIRNAME,
-    VECTOR_INDEX_MANIFEST_FILENAME as MANIFEST_FILENAME,
     resolve_imscc_chunks_dir,
 )
-from lib.generation.stop_control import check_stop
+from lib.libv2_storage import (
+    VECTOR_INDEX_MANIFEST_FILENAME as MANIFEST_FILENAME,
+)
 from lib.utils.hashing import sha256_file, sha256_text
 
 try:  # Trainforge is a sibling package; resolved at runtime in-repo.
@@ -421,7 +425,7 @@ class VectorIndexManifest:
     )
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "VectorIndexManifest":
+    def from_dict(cls, data: Dict[str, Any]) -> VectorIndexManifest:
         known = {f for f in cls._ORDER}
         kwargs = {k: data.get(k) for k in known if k in data}
         # Required positional fields validated by the caller / validator;
@@ -429,7 +433,7 @@ class VectorIndexManifest:
         return cls(**kwargs)  # type: ignore[arg-type]
 
     @classmethod
-    def from_file(cls, path: Path) -> "VectorIndexManifest":
+    def from_file(cls, path: Path) -> VectorIndexManifest:
         with Path(path).open(encoding="utf-8") as fh:
             data = json.load(fh)
         if not isinstance(data, dict):
@@ -653,7 +657,7 @@ def _embed_text(
 ) -> str:
     """Build the string embedded for a chunk per ``text_field_policy``
     (D6). 'text+heading' prepends the section heading (the most
-    signal-dense string per the Wave-84 finding) when present.
+    most signal-dense available field) when present.
 
     ``document_prefix`` (e.g. nomic's ``"search_document: "``) is prepended
     to the FINAL passage string when non-empty — asymmetric-retrieval models
@@ -995,7 +999,7 @@ def build_vector_index(
             split_window = max(1, max_seq_tokens - prefix_cost)
         parent_records = [
             {"id": cid, "text": passage}
-            for cid, passage in zip(chunk_ids, passages)
+            for cid, passage in zip(chunk_ids, passages, strict=False)
         ]
         split_records, raw_split_stats = split_overflow_records(
             parent_records, split_window, count_tokens=token_counter
@@ -1094,7 +1098,8 @@ def build_vector_index(
     embed_overflow: Optional[Dict[str, Any]] = None
     if overflow_guard_on:
         overflow_records = [
-            {"id": cid, "text": txt} for cid, txt in zip(chunk_ids, texts)
+            {"id": cid, "text": txt}
+            for cid, txt in zip(chunk_ids, texts, strict=False)
         ]
         embed_overflow = count_overflow_records(
             overflow_records, max_seq_tokens, count_tokens=token_counter

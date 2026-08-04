@@ -345,7 +345,7 @@ def evaluate_retrieval(
     """Run hand-curated gold queries against retrieve_chunks and compute
     recall@k + MRR + per-query rationale.
 
-    This wraps the lower-level ``RetrievalEvaluator`` so Worker J's reference
+    This wraps the lower-level ``RetrievalEvaluator`` so the reference
     retrieval implementation has a single entry point for the
     ``libv2 retrieval-eval`` CLI.  Gold queries live at
     ``LibV2/courses/<slug>/retrieval/gold_queries.jsonl`` by default (one
@@ -558,7 +558,7 @@ def compare_reports(
 
 
 # ---------------------------------------------------------------------------
-# Wave 84: A/B comparison across retrieval method presets
+# A/B comparison across retrieval method presets
 # ---------------------------------------------------------------------------
 
 
@@ -1094,7 +1094,7 @@ def benchmark_retrieval_engines(
             caller (CLI) is responsible for pre-building one index per model
             into a temp suffix dir. The harness records the requested model
             list in the report config; it does not itself orchestrate the
-            per-model index builds (that is wave-C CLI scope).
+            per-model index builds, which remain the CLI's responsibility.
 
     Returns the report dict (also written to ``output_path``).
     """

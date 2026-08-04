@@ -1,11 +1,11 @@
-"""Wave 76 — domain whitelist regression tests.
+"""Domain-whitelist normalization regression tests.
 
-The pre-Wave-76 ``validate_taxonomy_compliance`` did a strict equality
-check against the canonical taxonomy keys (slug form, e.g.
+``validate_taxonomy_compliance`` compares natural-language domain names
+against canonical taxonomy keys (slug form, e.g.
 ``computer-science``), so manifests that emitted the natural-language
 form (``"computer science"``) were marked invalid even though every
-ed-tech tool in the pipeline emits the human-readable form. This test
-locks in the case-insensitive + alias-aware match introduced in Wave 76.
+ed-tech tools may emit the human-readable form. These tests preserve the
+case-insensitive, alias-aware contract.
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""Wave 84 tests: IDF-weighted tag overlap, chunk-type intent prior, and
+"""Tests for IDF-weighted tag overlap, chunk-type intent, and
 retrieval-method preset resolution.
 
 These signals are designed to be A/B'd against BM25 alone via the
@@ -16,8 +16,8 @@ import math
 import pytest
 
 from LibV2.tools.libv2.retrieval_scoring import (
-    BoostContributions,
     RETRIEVAL_METHOD_PRESETS,
+    BoostContributions,
     chunk_type_intent_prior,
     combine_bm25_with_boosts,
     compute_tag_idf,
@@ -25,7 +25,6 @@ from LibV2.tools.libv2.retrieval_scoring import (
     resolve_method_preset,
     tag_idf_overlap_score,
 )
-
 
 # ---------------------------------------------------------------------------
 # compute_tag_idf
@@ -240,11 +239,11 @@ class TestResolveMethodPreset:
 
 
 # ---------------------------------------------------------------------------
-# combine_bm25_with_boosts — Wave 84 boosts integrate with cap
+# Metadata boosts integrate with the combined-score cap
 # ---------------------------------------------------------------------------
 
 
-class TestCombineWithWave84Boosts:
+class TestCombineWithMetadataBoosts:
     def test_tag_idf_contribution_lifts_score(self):
         # Default tag_idf_overlap weight is 0.15.
         contrib = BoostContributions(tag_idf_overlap=1.0)

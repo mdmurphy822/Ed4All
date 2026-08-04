@@ -1,8 +1,8 @@
-"""Wave 74 cleanup — LibV2 slug dedup regression tests.
+"""LibV2 slug-deduplication regression tests.
 
-Bug observed (2026-04-24): ``python -m Trainforge.process_course
---import-to-libv2`` derived a slug from ``course_code`` and
-``course_title`` and produced a doubled ``<code>-<code>`` slug because:
+``python -m Trainforge.process_course --import-to-libv2`` derives a slug from
+``course_code`` and ``course_title``. The import contract must avoid a doubled
+``<code>-<code>`` slug when:
 
     Courseforge's IMSCC packager writes the manifest title as
     ``f"{course_code}: {course_title}"`` (Courseforge/scripts/

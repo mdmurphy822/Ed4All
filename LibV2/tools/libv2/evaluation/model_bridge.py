@@ -1,9 +1,8 @@
-"""Fresh-eval bridge — saved LibV2 adapter to SLM eval harness.
+"""Bridge saved LibV2 adapters into the SLM evaluation harness.
 
-Wave 92 deferred the "run a fresh evaluation from an imported adapter"
-half of ``libv2 models eval`` (Wave 93 only surfaced the *cached*
-``eval_report.json``). Wave 101 shipped the heavy machinery in
-Trainforge — :class:`Trainforge.eval.retrieval.adapter_callable.AdapterCallable`
+``libv2 models eval`` can surface a cached ``eval_report.json`` or run a fresh
+evaluation. The fresh path uses
+:class:`Trainforge.eval.retrieval.adapter_callable.AdapterCallable`
 (loads the base model in 4-bit + applies the saved PEFT adapter,
 exposing ``__call__(prompt) -> str``) and
 :class:`Trainforge.eval.runners.slm_eval_harness.SLMEvalHarness` (takes any
@@ -47,12 +46,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-
 logger = logging.getLogger(__name__)
 
 
 # Actionable guidance surfaced when the heavy training deps are absent.
-# Mirrors the runner's Wave-101 ImportError fallback contract + names the
+# Mirrors the runner's dependency-error contract and names the
 # mandatory gpu_guard wrap for the shared-GPU box.
 TRAINING_DEPS_GUIDANCE = (
     "A fresh evaluation loads the base model + saved adapter, which needs "

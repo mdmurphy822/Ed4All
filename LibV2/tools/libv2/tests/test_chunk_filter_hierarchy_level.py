@@ -1,4 +1,4 @@
-"""Wave 70 — ``hierarchy_level`` filter on ChunkFilter + CLI.
+"""Tests for the ``hierarchy_level`` filter on ChunkFilter and the CLI.
 
 Unlike ``cognitive_domain`` (on the chunk directly), ``hierarchy_level``
 lives on the LO — we look it up via chunk ``learning_outcome_refs[]``
@@ -19,17 +19,14 @@ from pathlib import Path
 from typing import List
 from unittest import mock
 
-import pytest
 from click.testing import CliRunner
 
 from LibV2.tools.libv2.cli import main
 from LibV2.tools.libv2.retriever import (
     ChunkFilter,
     _matches_filter,
-    retrieve_chunks,
     stream_chunks_from_course,
 )
-
 
 # -------------------------------------------------------------------- #
 # Unit: _matches_filter with explicit outcomes map

@@ -1,33 +1,28 @@
-"""Wave 70 — ``cognitive_domain`` filter on ChunkFilter + CLI.
+"""Tests for the ``cognitive_domain`` filter on ChunkFilter and the CLI.
 
 Covers:
 
 * Positive / negative ``_matches_filter`` behavior when the chunk
-  carries ``cognitive_domain`` directly (Wave 60/69 emit).
+  carries ``cognitive_domain`` directly.
 * The filter is case-insensitive (corpora with mixed case still match).
 * Chunks missing the field are rejected when the filter is active.
 * CLI wiring: ``libv2 retrieve --cognitive-domain factual ...`` fires
   the filter through to the underlying retrieve_chunks call.
 
-Note: this wave adds the filter plumbing. Production chunks may not
-carry ``cognitive_domain`` yet — the feature is dependent on Wave 69
-extending the chunk emit. Until then, using the flag will return zero
-results (documented behavior).
+Production chunks may omit ``cognitive_domain`` when enrichment has not
+provided it. In that case the active filter returns zero results, as
+documented.
 """
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import List
 from unittest import mock
 
-import pytest
 from click.testing import CliRunner
 
 from LibV2.tools.libv2.cli import main
 from LibV2.tools.libv2.retriever import ChunkFilter, _matches_filter
-
 
 # -------------------------------------------------------------------- #
 # _matches_filter behavior
@@ -59,7 +54,7 @@ class TestCognitiveDomainFilter:
         )
 
     def test_case_insensitive_match(self):
-        """Corpora may emit mixed case (Wave 60 vs 69 drift); match both."""
+        """Corpora may emit mixed case; matching remains case-insensitive."""
         chunk = {"cognitive_domain": "Factual", "source": {}}
         assert _matches_filter(
             chunk, ChunkFilter(cognitive_domain="factual")
@@ -151,7 +146,7 @@ def test_cli_cognitive_domain_flag_is_optional():
 
 def test_cli_multi_retrieve_cognitive_domain_flag():
     """Same check on the ``multi-retrieve`` command (both CLI verbs
-    must expose the filter per Wave 70 scope)."""
+    must expose the filter as part of the public retrieval contract)."""
     runner = CliRunner()
     captured: dict = {}
 

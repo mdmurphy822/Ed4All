@@ -1,4 +1,4 @@
-"""Wave 77: Study-pack / lesson-plan renderer (pure SQL-over-metadata).
+"""Render study packs and lesson plans from structured archive metadata.
 
 This module is the engine behind ``ed4all libv2 generate-study-pack``.
 It assembles a single coherent document for a week (or set of weeks)
@@ -23,8 +23,7 @@ import re
 from dataclasses import dataclass, field
 from html import escape as _html_escape
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
-
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 # ---------------------------------------------------------------------- #
 # Constants
@@ -377,7 +376,7 @@ _NAMED_ENTITIES = {
 def _decode_html_entities(value: str) -> str:
     """Decode the small set of HTML entities we see in lesson_title."""
 
-    def _sub(match: "re.Match[str]") -> str:
+    def _sub(match: re.Match[str]) -> str:
         body = match.group(1)
         if body.startswith("#"):
             try:
@@ -580,7 +579,7 @@ def render_study_pack(
 
 
 def _infer_course_code(chunks: Sequence[StudyPackChunk]) -> Optional[str]:
-    for c in chunks:
+    if chunks:
         # source.course_id is set by the trainforge emitter.
         # (We didn't carry it on StudyPackChunk to keep the dataclass tight.)
         # Fall through: no source data on the projected chunk.

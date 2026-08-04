@@ -1,4 +1,4 @@
-"""Worker J tests: v4 ChunkFilter fields, structured tokenizer, rationale,
+"""Tests for v4 ChunkFilter fields, structured tokenization, rationale,
 retrieval_text awareness, back-compat guard."""
 
 from __future__ import annotations
@@ -81,7 +81,6 @@ class TestStructuredTokenizer:
         assert "link" not in tokens
 
     def test_preserves_wcag_sc_refs(self):
-        tokens = tokenize("WCAG 2.2 SC 1.4.3 is the contrast criterion")
         # Query-side normalization happens in _canonicalize_query, not tokenize.
         # tokenize sees pre-normalized input, so ask it to handle the slug form:
         tokens_norm = tokenize("wcag-2.2 sc-1.4.3 is the contrast criterion")
@@ -89,7 +88,7 @@ class TestStructuredTokenizer:
         assert "sc-1.4.3" in tokens_norm
 
     def test_legacy_tokenization_still_available(self):
-        """Setting structured_tokens=False reproduces pre-Worker-J behavior."""
+        """Setting structured_tokens=False preserves legacy tokenization."""
         tokens = tokenize("aria-labelledby", structured_tokens=False)
         assert "aria" in tokens
         assert "labelledby" in tokens
@@ -181,7 +180,7 @@ class TestRationalePayload:
 
     def test_rationale_absent_when_disabled_backcompat(self, tmp_path):
         """include_rationale=False must produce to_dict output with NO
-        rationale key at all (byte-identical to pre-Worker-J)."""
+        rationale key at all, preserving the public compatibility shape."""
         chunks = [
             {"id": "c1", "text": "alpha bravo", "chunk_type": "explanation",
              "concept_tags": [], "learning_outcome_refs": [],
@@ -196,7 +195,7 @@ class TestRationalePayload:
         assert results
         d = results[0].to_dict()
         assert "rationale" not in d, "rationale key leaked into back-compat output"
-        # Confirm the keys match the pre-Worker-J public schema exactly.
+        # Confirm the keys match the compatibility schema exactly.
         expected = {
             "chunk_id", "text", "score", "course_slug", "domain", "chunk_type",
             "difficulty", "concept_tags", "source", "tokens_estimate",
@@ -206,7 +205,7 @@ class TestRationalePayload:
 
 
 # ---------------------------------------------------------------------------
-# Worker B flow-metrics tests did the same for quality_report; this one does
+# Flow-metrics tests cover quality_report; this block covers
 # it for retrieval output — byte-identical dict shape when flag is off.
 # ---------------------------------------------------------------------------
 

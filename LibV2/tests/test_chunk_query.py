@@ -1,4 +1,4 @@
-"""Engine-layer tests for ``LibV2.tools.chunk_query`` (Wave 77 Worker β)."""
+"""Engine-layer tests for ``LibV2.tools.chunk_query``."""
 
 from __future__ import annotations
 
@@ -24,7 +24,6 @@ from LibV2.tools.chunk_query import (
     query_chunks,
     validate_choice,
 )
-
 
 # ---------------------------------------------------------------------- #
 # Synthetic archive builder                                               #

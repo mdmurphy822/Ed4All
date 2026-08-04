@@ -1,12 +1,12 @@
-"""Typed faceted chunk query engine (Wave 77 Worker β).
+"""Typed faceted chunk query engine.
 
 Reusable backend for ``ed4all libv2 query`` and (later) MCP tool wrappers
 that need read-only structured access to a LibV2 archive's chunk store.
 
 Design notes
 ------------
-* **Read-only.** The engine never mutates the archive; it just loads
-  ``chunks.jsonl`` (canonical post-Wave-76) and applies in-memory filters.
+* **Read-only.** The engine never mutates the archive; it loads the canonical
+  ``chunks.jsonl`` artifact and applies in-memory filters.
 * **Filter composition is AND.** Multi-value flags inside a single
   filter are OR-combined; cross-filter composition is AND.
 * **TO/CO rollup.** When a terminal outcome (``to-NN``) is queried, the
@@ -507,5 +507,4 @@ def iter_chunks(
     the streaming surface is for ergonomics, not memory pressure.
     """
     result = query_chunks(slug, query, courses_root=courses_root)
-    for chunk in result.chunks:
-        yield chunk
+    yield from result.chunks

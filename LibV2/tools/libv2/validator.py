@@ -227,7 +227,7 @@ def validate_course_manifest(course_dir: Path, repo_root: Path) -> ValidationRes
     return result
 
 
-# Wave 76 — Domain aliases. The canonical taxonomy (schemas/taxonomies/
+# Domain aliases. The canonical taxonomy (schemas/taxonomies/
 # taxonomy.json) keys domains in slug form (``computer-science``), but
 # manifests have shipped human-readable forms (``computer science``,
 # ``Computer Science``) for as long as the importer has been running.
@@ -284,9 +284,8 @@ def _domain_matches(declared: str, canonical: str) -> bool:
     """Case-insensitive match of a declared manifest domain against a
     canonical taxonomy slug, expanded via :data:`_DOMAIN_ALIASES`.
 
-    Wave 76 — fixes a false-negative where ``"computer science"`` (space
-    form, the natural-language form ed-tech tooling emits) failed against
-    the slug-form ``computer-science`` taxonomy key.
+    Accepts natural-language space forms such as ``"computer science"``
+    alongside canonical slug forms such as ``"computer-science"``.
     """
     if not declared:
         return False
@@ -331,7 +330,7 @@ def validate_taxonomy_compliance(course_dir: Path, repo_root: Path) -> Validatio
         result.add_error(f"Unknown division: {division}")
         return result
 
-    # Validate domain (Wave 76 — case-insensitive, alias-aware)
+    # Validate domain with case-insensitive alias matching.
     if division and domain:
         division_data = taxonomy["divisions"].get(division, {})
         domains = division_data.get("domains", {})
@@ -438,23 +437,14 @@ def validate_dataset_config_constraints(course_dir: Path) -> ValidationResult:
 def _count_total_learning_outcomes(course_dir: Path) -> Optional[int]:
     """Count terminal + component outcomes for the minimum-coverage rule.
 
-    Wave 76 — Pre-Wave-76 the validator counted only ``course.json::
-    learning_outcomes[]`` and rejected courses where the count fell
-    below 10. Two failure modes:
-      1. course.json was emitted before Wave 75's component-objective
-         merge, so it held only the 7 terminal LOs even though the
-         course had 36 outcomes total.
-      2. course.json held the full 36 but a follow-on filter (now
-         removed) dropped entries with ``type == "component"``.
-
-    The fix counts the union of:
-      - ``course.json::learning_outcomes[]`` (Wave 75+ canonical: holds
-        terminal AND component LOs in one flat list).
+    Counts the union of:
+      - ``course.json::learning_outcomes[]`` (the canonical flat list of
+        terminal and component outcomes).
       - As a fallback, ``objectives.json::terminal_outcomes[]`` +
         ``objectives.json::component_objectives[]`` (or the legacy
         ``terminal_objectives`` / ``chapter_objectives`` keys), which
-        is what Wave 75 Worker A's emit guarantees even when course.json
-        is mid-migration.
+        preserves compatibility with archives whose course.json contains
+        only terminal outcomes.
 
     Returns the total outcome count, or ``None`` when neither file exists
     / is parseable. Caller is responsible for raising on that condition.
@@ -520,15 +510,14 @@ def validate_learning_outcomes(course_dir: Path) -> ValidationResult:
     Validate learning outcome coverage.
 
     Requirements:
-    - Minimum 10 course-level learning outcomes (terminal + component
-      combined, Wave 76).
-    - Warning above 60 (Wave 76 — bumped from 25 because Wave-75 archives
-      legitimately ship 30-40 LOs once components are counted).
+    - Minimum 10 course-level learning outcomes, combining terminal and
+      component outcomes.
+    - Warning above 60 because complete archives commonly carry both terminal
+      and component outcomes.
     - Warning if <50% of chunks have learning_outcome_refs.
     """
     result = ValidationResult(valid=True)
 
-    course_json_path = course_dir / "course.json"
     # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
     chunks_path = course_dir / "imscc_chunks" / "chunks.json"
     if not chunks_path.exists():

@@ -1,4 +1,4 @@
-"""Wave 84 retriever tests: CamelCase tokenization + section-heading injection.
+"""Retriever tests for CamelCase tokenization and section-heading injection.
 
 Pin the two changes to ``LibV2/tools/libv2/retriever.py`` made to fix the
 shacl_node_shape ranking probe (chunk_00147 ranked #21 against an
@@ -24,7 +24,6 @@ from LibV2.tools.libv2.retriever import (
     _expand_camel_case,
     tokenize,
 )
-
 
 # ---------------------------------------------------------------------------
 # CamelCase expansion
@@ -95,7 +94,7 @@ class TestTokenizeCamelCase:
 
     def test_camelcase_disabled_under_structured_tokens_false(self):
         # Back-compat path: when structured_tokens=False (legacy regex),
-        # CamelCase split is NOT applied — preserves pre-Worker-J shape.
+        # CamelCase splitting is disabled to preserve the compatibility shape.
         toks = tokenize("NodeShape", structured_tokens=False)
         # legacy path lowercases + word-boundary split → single token
         assert toks == ["nodeshape"]

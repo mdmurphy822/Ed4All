@@ -1,13 +1,12 @@
-"""Wave 76 — outcome-minimum rule regression tests.
+"""Outcome-minimum rule regression tests.
 
-Pre-Wave-76 ``validate_learning_outcomes`` counted only
-``course.json::learning_outcomes[]`` and rejected courses with fewer
-than 10 entries. Two failure modes:
+``validate_learning_outcomes`` counts the complete outcome hierarchy rather
+than only ``course.json::learning_outcomes[]``. Two compatibility shapes are
+covered:
 
-  1. course.json was emitted before Wave 75's component-objective merge
-     (held only the 7 terminal LOs).
-  2. course.json held the full 36 but a later filter dropped entries
-     where ``type == "component"``.
+  1. course.json contains only terminal learning outcomes while the objectives
+     sidecar contains the complete hierarchy.
+  2. course.json contains terminal and component outcomes in one flat list.
 
 The fix counts the union of ``course.json::learning_outcomes[]`` AND
 ``objectives.json::terminal_outcomes`` + ``objectives.json::
@@ -18,8 +17,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-
-import pytest
 
 from LibV2.tools.libv2.validator import (
     _count_total_learning_outcomes,
@@ -62,7 +59,7 @@ def _component(idx: int) -> dict:
 
 
 def test_count_terminals_plus_components_via_course_json(tmp_path: Path) -> None:
-    """The Wave-75-aligned shape: course.json carries all 36 in one flat list."""
+    """The canonical course.json shape carries all outcomes in one flat list."""
     archive = _write_course_archive(
         tmp_path,
         course_outcomes=[_terminal(i) for i in range(1, 8)] + [_component(i) for i in range(1, 30)],
@@ -103,7 +100,7 @@ def test_count_dedups_by_id(tmp_path: Path) -> None:
 
 
 def test_count_legacy_objectives_keys(tmp_path: Path) -> None:
-    """Pre-Wave-75 archives use ``terminal_objectives`` / ``chapter_objectives``."""
+    """Legacy archives use ``terminal_objectives`` / ``chapter_objectives``."""
     archive = _write_course_archive(
         tmp_path,
         course_outcomes=None,
@@ -156,8 +153,8 @@ def test_minimum_fails_with_9_total_outcomes(tmp_path: Path) -> None:
 def test_minimum_legacy_archive_with_only_7_terminals_still_fails(tmp_path: Path) -> None:
     """Documents the legacy expected behavior: an archive that genuinely
     has 7 terminals and 0 components should still fail the minimum-10
-    rule. The Wave 76 fix only avoids rejecting GOOD archives — it does
-    not relax the threshold itself.
+    rule. Complete hierarchy counting avoids false rejection without relaxing
+    the threshold itself.
     """
     archive = _write_course_archive(
         tmp_path,
@@ -187,8 +184,7 @@ def test_minimum_uses_objectives_when_course_json_partial(tmp_path: Path) -> Non
 
 
 def test_minimum_passes_above_30_no_warning_under_60(tmp_path: Path) -> None:
-    """Wave 76 — 36 LOs is now expected; the legacy ``recommended max 25``
-    warning bumped to 60. 36 should not warn.
+    """A complete 36-outcome hierarchy remains below the warning threshold.
     """
     archive = _write_course_archive(
         tmp_path,

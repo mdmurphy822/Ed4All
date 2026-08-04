@@ -1,4 +1,4 @@
-"""Worker J tests: evaluate_retrieval against a synthetic 3-chunk / 2-query
+"""Test evaluate_retrieval against a synthetic three-chunk, two-query
 fixture course.  Asserts per-query ranks, recall@k, MRR."""
 
 from __future__ import annotations

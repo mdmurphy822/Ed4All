@@ -1,4 +1,4 @@
-"""Wave 93 — tests for ``LibV2/tools/libv2/importer.py`` model surface.
+"""Tests for the LibV2 importer model surface.
 
 Covers:
 
@@ -36,7 +36,6 @@ from LibV2.tools.libv2.importer import (  # noqa: E402
     promote_model,
 )
 from LibV2.tools.libv2.validator import ValidationError  # noqa: E402
-
 
 # ---------------------------------------------------------------------- #
 # Fixtures                                                                 #
@@ -191,7 +190,7 @@ def _build_run_dir(
 
 
 def test_copied_subdirs_includes_models():
-    """``models`` must be in the canonical copied-subdir list (Wave 93)."""
+    """``models`` must be in the canonical copied-subdirectory list."""
     assert "models" in _COPIED_SUBDIRS, (
         f"_COPIED_SUBDIRS must include 'models'; got {_COPIED_SUBDIRS!r}"
     )

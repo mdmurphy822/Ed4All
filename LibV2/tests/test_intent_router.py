@@ -1,4 +1,4 @@
-"""Tests for ``LibV2.tools.intent_router`` (Wave 78 Worker C).
+"""Tests for ``LibV2.tools.intent_router``.
 
 The intent router classifies natural-language queries into one of six
 canonical intent classes and dispatches each to the appropriate
@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import List
 
 import pytest
 
@@ -28,7 +27,6 @@ from LibV2.tools.intent_router import (
     dispatch,
     extract_entities,
 )
-
 
 # ---------------------------------------------------------------------- #
 # Synthetic archive (for backend-agnostic structural tests)              #
@@ -282,7 +280,7 @@ def test_dispatch_assessment_synthetic_no_facets(tmp_path: Path):
     courses_root = tmp_path / "courses"
     courses_root.mkdir()
     _make_synthetic_archive(courses_root, "demo")
-    out = dispatch(
+    dispatch(
         "give me a quiz",
         "demo",
         top_k=10,

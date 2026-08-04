@@ -1,4 +1,4 @@
-"""Wave 93 — tests for the ``libv2 models`` + ``libv2 import-model`` CLIs.
+"""Tests for the ``libv2 models`` and ``libv2 import-model`` CLIs.
 
 Uses Click's :class:`CliRunner` to invoke the CLI in isolation against
 synthetic LibV2 courses staged under ``tmp_path``.
@@ -19,7 +19,6 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from LibV2.tools.libv2.cli import main as libv2_main  # noqa: E402
-
 
 _HASH64 = "a" * 64
 

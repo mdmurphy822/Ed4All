@@ -1,4 +1,4 @@
-"""Wave 103 - CliRunner tests for the new ``libv2 eval`` subcommands.
+"""CliRunner tests for the ``libv2 eval`` subcommands.
 
 Covers:
 * ``libv2 eval init <slug>`` scaffolds the four files into
@@ -16,7 +16,6 @@ import sys
 from pathlib import Path
 
 from click.testing import CliRunner
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 if str(PROJECT_ROOT) not in sys.path:
@@ -140,7 +139,7 @@ def test_eval_validate_unknown_course_fails(tmp_path):
 
 def test_eval_run_two_arg_form_dispatches_fresh_bridge(tmp_path, monkeypatch):
     """When MODEL_ID is supplied with the default ``--judge none``, the
-    runner routes through the fresh-eval bridge (Wave 92 deferral closed).
+    runner routes through the fresh-evaluation bridge.
 
     The bridge is monkeypatched so the test stays CPU-only; we assert the
     dispatch happened with the right (slug, model_id) rather than actually

@@ -1,4 +1,4 @@
-"""WS2 Wave C — CliRunner tests for ``libv2 retrieval-benchmark --models``.
+"""CliRunner tests for ``libv2 retrieval-benchmark --models``.
 
 Covers the per-model sweep orchestration the eval harness docstring punts to
 the CLI: for each model id the command builds a temp index alongside the

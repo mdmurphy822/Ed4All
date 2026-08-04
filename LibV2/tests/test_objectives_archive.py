@@ -1,14 +1,11 @@
-"""Wave 75 — LibV2 importer must copy objectives.json into the archive.
+"""LibV2 importer must copy objectives.json into the archive.
 
-An audit of the RDF/SHACL calibration-corpus archive found that
-``course.json`` declared only the 7 terminal outcomes — the 29
-component objectives synthesized by Courseforge never propagated
-into the LibV2 archive, so 312 chunk ``learning_outcome_refs`` to
-``co-*`` codes couldn't resolve.
+Compatible inputs may declare only terminal outcomes in ``course.json`` while
+component objectives and their chunk references live in a separate sidecar.
 
-Wave 75 fixes the emit + import sides:
+The emit and import contracts are:
 
-  * Trainforge writes a Wave-75 ``objectives.json`` sidecar carrying
+  * Trainforge writes an ``objectives.json`` sidecar carrying
     the full TO-/CO- hierarchy.
   * LibV2's ``import_course`` copies that sidecar into the archive
     root next to ``course.json``.
@@ -34,8 +31,8 @@ from LibV2.tools.libv2.importer import import_course  # noqa: E402
 def _write_minimal_sourceforge_dir(
     src_dir: Path,
     *,
-    course_code: str = "WAVE75_TEST",
-    course_title: str = "Wave 75 Test Course",
+    course_code: str = "OBJECTIVES_TEST",
+    course_title: str = "Objectives Archive Test Course",
     include_objectives: bool = True,
 ) -> None:
     """Build a minimal Trainforge output dir an import_course call accepts."""
@@ -133,12 +130,12 @@ def test_importer_copies_objectives_json_into_archive(tmp_path):
     assert (archive / "course.json").exists()
     objectives_path = archive / "objectives.json"
     assert objectives_path.exists(), (
-        "Wave 75 regression: objectives.json must land in the LibV2 archive"
+        "objectives.json must land in the LibV2 archive"
     )
 
     data = json.loads(objectives_path.read_text())
     assert data["schema_version"] == "v1"
-    assert data["course_code"] == "WAVE75_TEST"
+    assert data["course_code"] == "OBJECTIVES_TEST"
     assert data["objective_count"] == {"terminal": 1, "component": 1}
     assert any(co["id"] == "co-01" for co in data["component_objectives"])
     assert any(to["id"] == "to-01" for to in data["terminal_outcomes"])
@@ -146,7 +143,7 @@ def test_importer_copies_objectives_json_into_archive(tmp_path):
 
 @pytest.mark.unit
 def test_importer_skips_objectives_when_source_lacks_it(tmp_path):
-    """Pre-Wave-75 source dirs without objectives.json are still importable."""
+    """Source directories without optional objectives.json remain importable."""
     src = tmp_path / "src"
     repo = tmp_path / "libv2"
     _write_minimal_sourceforge_dir(src, include_objectives=False)
@@ -164,5 +161,5 @@ def test_importer_skips_objectives_when_source_lacks_it(tmp_path):
     assert (archive / "course.json").exists()
     assert not (archive / "objectives.json").exists(), (
         "objectives.json must be absent when not present at source — "
-        "Wave 75 importer copies optionally, no fabrication."
+        "The importer copies optional data without fabricating it."
     )

@@ -241,9 +241,9 @@ class QueryDecomposer:
     def _detect_bloom_level(self, query: str) -> Optional[str]:
         """Detect Bloom's taxonomy level from verb usage.
 
-        Wave 55: delegates to the package-local canonical-data matcher
+        Delegates to the package-local canonical-data matcher
         (``LibV2/tools/libv2/_bloom_verbs.py::detect_bloom_level``) and
-        discards the verb. The pre-Wave-55 local implementation used word-
+        discards the verb. A word-
         token set intersection, which lacked the longest-verb-first tie-
         breaking of the canonical matcher. Vendoring (rather than importing
         ``lib.ontology.bloom``) preserves LibV2's cross-package sandbox.

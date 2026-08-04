@@ -1,4 +1,4 @@
-"""Worker J tests: the three metadata-aware boost functions in isolation,
+"""Tests for metadata-aware boost functions in isolation,
 the combine helper, and the loader fallbacks."""
 
 from __future__ import annotations

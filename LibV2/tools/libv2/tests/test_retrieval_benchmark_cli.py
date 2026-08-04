@@ -1,4 +1,4 @@
-"""WS2 Wave C — CliRunner tests for ``libv2 retrieval-benchmark``.
+"""CliRunner tests for ``libv2 retrieval-benchmark``.
 
 The command wraps ``evaluation.harness.benchmark_retrieval_engines`` over the WS1
 mini-course fixture (``tests/fixtures/retrieval/mini_course/``, chunks sha
@@ -179,7 +179,7 @@ class TestHappyPath:
 class TestDeterminism:
     def test_json_deterministic_across_runs(self, tmp_path):
         pytest.importorskip("numpy")  # --build-index builds a vector index (needs [embedding])
-        cdir = _materialize(tmp_path)
+        _materialize(tmp_path)
         out1 = tmp_path / "r1.json"
         out2 = tmp_path / "r2.json"
         for out in (out1, out2):

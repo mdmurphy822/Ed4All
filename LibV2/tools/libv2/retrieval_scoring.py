@@ -26,18 +26,18 @@ DEFAULT_BOOST_WEIGHTS: Dict[str, float] = {
     "concept_graph_overlap": 0.3,
     "lo_match": 0.3,
     "prereq_coverage": 0.2,
-    # Wave 71: Bloom-qualified LO→concept edges from Wave 66's typed graph.
+    # Bloom-qualified learning-outcome-to-concept edges from the typed graph.
     # Boosts chunks whose referenced LOs explicitly target the query's
     # concepts (with a bonus when the Bloom level matches too).
     "targets_concept": 0.25,
-    # Wave 84: separately-fused IDF-weighted concept-tag overlap. Distinct
+    # Separately fused IDF-weighted concept-tag overlap. Distinct
     # from concept_graph_overlap_boost (which is a graph-node Jaccard) —
     # this one rewards chunks with rare query-relevant tags. Conservative
     # weight: prior empirical work on the RDF/SHACL calibration corpus
     # showed this signal alone is near-zero net positive, so default
     # weight is small.
     "tag_idf_overlap": 0.15,
-    # Wave 84: query-intent → chunk_type prior. Detect verbs like
+    # Query-intent-to-chunk-type prior. Detect verbs like
     # "define", "explain", "example", "procedure", "assess" in the query
     # and reward chunks whose chunk_type matches. Audit on the RDF/SHACL
     # calibration corpus showed this alone gave +16% MRR over BM25 —
@@ -141,11 +141,11 @@ def load_concept_graph_node_ids(course_dir: Path) -> Set[str]:
 
 
 # ---------------------------------------------------------------------------
-# Wave 71: targets-concept edge boost (Bloom-qualified LO→concept)
+# Targets-concept edge boost (Bloom-qualified LO→concept)
 # ---------------------------------------------------------------------------
 #
-# The Wave 66 Trainforge inference rule `targets_concept_from_lo` materializes
-# Wave 57 Courseforge `targetedConcepts[]` payloads as first-class typed edges
+# The Trainforge `targets_concept_from_lo` inference rule materializes
+# Courseforge `targetedConcepts[]` payloads as first-class typed edges
 # in `concept_graph_semantic.json`:
 #
 #     {"source": "<lo_id>", "target": "<concept_id>",
@@ -156,9 +156,9 @@ def load_concept_graph_node_ids(course_dir: Path) -> Set[str]:
 # graph couldn't: "does this chunk's LO explicitly target the concepts in
 # the user's query, and at what cognitive demand?"
 #
-# The pre-Wave-71 `concept_graph_overlap_boost` only compared chunk.concept_tags
-# against query tokens — concept membership, not the LO→concept relationship.
-# This boost reads the typed graph, so a chunk whose LO targets the concept at
+# Unlike `concept_graph_overlap_boost`, which compares chunk concept tags
+# against query tokens, this boost reads the typed graph so a chunk whose LO
+# targets the concept at
 # the query's Bloom level scores higher than a chunk that happens to mention
 # the concept without the explicit LO binding.
 
@@ -169,9 +169,8 @@ def load_targets_concept_edges(
     """Load targets-concept edges from ``graph/concept_graph_semantic.json``.
 
     Returns a ``{lo_id_lower: [(concept_id_lower, bloom_level_lower), ...]}``
-    map. Empty dict when the typed graph is absent (pre-Wave-66 corpora) or
-    has no targets-concept edges (corpus built from LOs without Wave 57
-    ``targetedConcepts[]``).
+    map. Returns an empty dict when the typed graph is absent or has no
+    targets-concept edges because its outcomes omit ``targetedConcepts[]``.
 
     LO IDs and concept slugs are lowercased here so callers can match
     case-insensitively against chunk.learning_outcome_refs / query tokens
@@ -417,7 +416,7 @@ def load_pedagogy_model(course_dir: Path) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Wave 84: IDF-weighted concept-tag overlap (separately-fused signal)
+# IDF-weighted concept-tag overlap (separately fused signal)
 # ---------------------------------------------------------------------------
 
 def compute_tag_idf(corpus_tags: Iterable[Iterable[str]]) -> Dict[str, float]:
@@ -489,7 +488,7 @@ def tag_idf_overlap_score(
 
 
 # ---------------------------------------------------------------------------
-# Wave 84: query-intent → chunk_type prior
+# Query-intent-to-chunk-type prior
 # ---------------------------------------------------------------------------
 
 # Maps intent verbs/keywords in the query to chunk_type values that should
@@ -561,7 +560,7 @@ def chunk_type_intent_prior(
 
 
 # ---------------------------------------------------------------------------
-# Wave 84: retrieval method presets
+# Retrieval method presets
 # ---------------------------------------------------------------------------
 
 # Preset method names → boost-flag overrides. Used by retrieve_chunks
@@ -645,9 +644,9 @@ class BoostContributions:
     concept_graph_overlap: float = 0.0
     lo_match: float = 0.0
     prereq_coverage: float = 0.0
-    targets_concept: float = 0.0  # Wave 71
-    tag_idf_overlap: float = 0.0  # Wave 84
-    chunk_type_intent: float = 0.0  # Wave 84
+    targets_concept: float = 0.0
+    tag_idf_overlap: float = 0.0
+    chunk_type_intent: float = 0.0
 
     def to_dict(self) -> Dict[str, float]:
         return {
@@ -679,9 +678,9 @@ def combine_bm25_with_boosts(
         contributions.concept_graph_overlap * w.get("concept_graph_overlap", 0.0)
         + contributions.lo_match * w.get("lo_match", 0.0)
         + contributions.prereq_coverage * w.get("prereq_coverage", 0.0)
-        + contributions.targets_concept * w.get("targets_concept", 0.0)  # Wave 71
-        + contributions.tag_idf_overlap * w.get("tag_idf_overlap", 0.0)  # Wave 84
-        + contributions.chunk_type_intent * w.get("chunk_type_intent", 0.0)  # Wave 84
+        + contributions.targets_concept * w.get("targets_concept", 0.0)
+        + contributions.tag_idf_overlap * w.get("tag_idf_overlap", 0.0)
+        + contributions.chunk_type_intent * w.get("chunk_type_intent", 0.0)
     )
     # Negative penalties from prereq violations can reduce the score but not below 0.
     capped = max(-max_total_boost, min(max_total_boost, raw))

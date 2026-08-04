@@ -1,4 +1,4 @@
-"""WS2 Wave C — opt-in real-model end-to-end ``retrieval-benchmark`` smoke.
+"""Opt-in real-model end-to-end ``retrieval-benchmark`` smoke test.
 
 Builds a real sentence-transformers vector index over the WS1 mini-course
 fixture with the cached ``all-MiniLM-L6-v2`` (Apache-2.0, dim 384) and runs

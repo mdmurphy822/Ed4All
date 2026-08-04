@@ -10,6 +10,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+# Canonical LibV2 course-slug helper (single source of truth). The LibV2
+# package is always invoked from the repo root (``python -m LibV2.tools...``),
+# so ``lib`` is importable; ``lib.ontology.slugs`` pulls only ``re`` so this
+# adds no heavy dependency.
+from lib.ontology.slugs import libv2_course_slug
+
 from .models.course import (
     ArxivMetadata,
     Classification,
@@ -22,19 +28,13 @@ from .models.course import (
 )
 from .validator import ValidationError, validate_course_strict
 
-# Canonical LibV2 course-slug helper (single source of truth). The LibV2
-# package is always invoked from the repo root (``python -m LibV2.tools...``),
-# so ``lib`` is importable; ``lib.ontology.slugs`` pulls only ``re`` so this
-# adds no heavy dependency.
-from lib.ontology.slugs import libv2_course_slug
-
 logger = logging.getLogger(__name__)
 
-# Wave 93 — canonical list of top-level subdirs to mirror from a Trainforge /
+# Canonical list of top-level subdirectories to mirror from a Trainforge or
 # Sourceforge build into ``LibV2/courses/<slug>/``. Adding ``"models"`` here
 # means trained adapters land alongside corpus / graph / training_specs as
 # first-class artifacts. Keep the order stable; tests pin both membership
-# and presence of ``"models"`` (Wave 93).
+# and the presence of ``"models"``.
 #
 # Phase 7c: ``imscc_chunks`` replaces the legacy ``corpus`` directory. Both
 # names appear in the list so the importer copies whichever the build emits
@@ -50,12 +50,12 @@ _COPIED_SUBDIRS: list[str] = [
     "models",
 ]
 
-# Wave 70 introduced a ``LIBV2_SHACL_IMPORT_STRICT`` gate here that routed
+# ``LIBV2_SHACL_IMPORT_STRICT`` previously routed
 # ``CourseManifest.to_dict()`` through the Courseforge SHACL shapes. The
 # gate was non-functional: the LibV2 manifest payload carries none of the
 # ed4all: @type fields that ``courseforge_v1.shacl.ttl`` targets, so the
 # expanded RDF graph had zero focus nodes and every NodeShape conformed
-# vacuously. Wave 72 removes the dead call site. The lower-level
+# vacuously. The dead call site is intentionally absent. The lower-level
 # ``_shacl_validator.validate_manifest_shacl`` helper is preserved — it
 # works correctly on real Courseforge JSON-LD payloads (see
 # ``schemas/tests/test_courseforge_shacl_shapes.py``) and stays available
@@ -351,7 +351,7 @@ def import_course(
     target_dir.mkdir(parents=True)
 
     # Copy Sourceforge output. ``_COPIED_SUBDIRS`` is the canonical
-    # source of truth (Wave 93) — it includes ``models`` so adapter
+    # source of truth; it includes ``models`` so adapter
     # runs survive a re-import.
     for subdir in _COPIED_SUBDIRS:
         src = source_dir / subdir
@@ -363,13 +363,13 @@ def import_course(
     if course_json.exists():
         shutil.copy(course_json, target_dir / "course.json")
 
-    # Wave 75 — copy objectives.json sidecar if Trainforge emitted it.
+    # Copy the objectives sidecar when Trainforge emitted it.
     # Carries the full TO-/CO- hierarchy (terminal_outcomes[] +
     # component_objectives[] with parent_terminal back-pointers) so
     # downstream chunk ``learning_outcome_refs`` can resolve against
     # ALL outcomes, not just the terminal ones declared on course.json.
-    # Optional: pre-Wave-75 archives don't carry one and that's still
-    # valid (LibV2 retrieval keeps falling back to course.json).
+    # Older archives may omit the optional sidecar; retrieval then resolves
+    # outcomes from course.json.
     objectives_json = source_dir / "objectives.json"
     if objectives_json.exists():
         shutil.copy(objectives_json, target_dir / "objectives.json")
@@ -552,7 +552,7 @@ def import_course(
 
 
 def _validate_model_pointers(pointers: dict) -> None:
-    """Validate ``_pointers.json`` payload against the Wave 93 schema.
+    """Validate ``_pointers.json`` against the model-pointer schema.
 
     Best-effort: when ``jsonschema`` isn't installed, fall back to a
     structural check (top-level required keys + history entry shape).
@@ -572,17 +572,21 @@ def _validate_model_pointers(pointers: dict) -> None:
         # Minimal structural check
         for key in ("current", "history"):
             if key not in pointers:
-                raise ValueError(f"_pointers.json missing required key: {key}")
+                raise ValueError(
+                    f"_pointers.json missing required key: {key}"
+                ) from None
         if not isinstance(pointers["history"], list):
-            raise ValueError("_pointers.json::history must be a list")
+            raise ValueError("_pointers.json::history must be a list") from None
         for entry in pointers["history"]:
             if not isinstance(entry, dict):
-                raise ValueError("_pointers.json::history entries must be objects")
+                raise ValueError(
+                    "_pointers.json::history entries must be objects"
+                ) from None
             for key in ("model_id", "promoted_at"):
                 if key not in entry:
                     raise ValueError(
                         f"_pointers.json::history entry missing key: {key}"
-                    )
+                    ) from None
         return
 
     if not schema_path.exists():
@@ -637,8 +641,8 @@ def import_model(
 ) -> Path:
     """Import a trained-adapter run dir into a LibV2 course's ``models/`` dir.
 
-    Wave 93 — wires :class:`Trainforge.training.runner.TrainingRunner.run`'s
-    output (which writes ``adapter.safetensors`` + ``model_card.json`` +
+    Wires :class:`Trainforge.training.runner.TrainingRunner.run` output
+    (``adapter.safetensors`` + ``model_card.json`` +
     ``eval_report.json`` + ``training_run.jsonl`` into a run dir) into
     LibV2 as a first-class artifact.
 
@@ -774,9 +778,8 @@ def _update_manifest_slm_processing(course_dir: Path, card: dict) -> None:
     - ``generation`` ← previous generation + 1 (or 0 on first import)
     - ``parent_version`` ← previous slm_version (None on first import)
 
-    Wave 93: this is the first wave that actually writes to this slot;
-    the field has been carried by the manifest since v1.2.0 but
-    nothing has populated it.
+    The slot mirrors the latest imported model while retaining the prior model
+    version as lineage metadata.
     """
     manifest_path = course_dir / "manifest.json"
     if not manifest_path.exists():
@@ -821,7 +824,7 @@ def _update_manifest_slm_processing(course_dir: Path, card: dict) -> None:
 def list_course_models(course_slug: str, repo_root: Path) -> dict:
     """Return a summary of all imported models for a course.
 
-    Wave 93 — backs ``libv2 models list <slug>``. Returns a dict
+    Backs ``libv2 models list <slug>``. Returns a dict
     mapping ``model_id`` to its top-level card metadata + an
     ``is_current`` flag derived from ``_pointers.json::current``.
     """
@@ -877,7 +880,7 @@ def promote_model(
 ) -> Path:
     """Flip ``_pointers.json::current`` to a new model_id.
 
-    Wave 93 — backs ``libv2 models promote <slug> <model_id>``.
+    Backs ``libv2 models promote <slug> <model_id>``.
     Demotes the previous current (sets its ``demoted_at``) and appends
     a new history entry. No-ops + returns the pointer path when
     ``model_id`` is already current.
@@ -933,7 +936,7 @@ def get_model_eval_report(
 ) -> Optional[dict]:
     """Return the cached ``eval_report.json`` for a model, or ``None``.
 
-    Wave 93 — backs ``libv2 models eval <slug> <model_id>``. This
+    Backs ``libv2 models eval <slug> <model_id>``. This
     function only surfaces the CACHED (training-time) report. To run a
     FRESH evaluation from the saved adapter, use the fresh-eval bridge
     ``LibV2.tools.libv2.evaluation.model_bridge.run_fresh_eval`` (exposed as

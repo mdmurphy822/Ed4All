@@ -1,16 +1,15 @@
-"""Wave 70 — vendored SHACL validator for LibV2 import gate.
+"""Vendored SHACL validator for the LibV2 import gate.
 
 LibV2 is sandboxed from ``lib/`` (see ``LibV2/CLAUDE.md``) so we can't
 reach into ``lib.ontology.jsonld_context_loader`` here. This module
-vendors a minimal version of the Wave 64 loader — just enough to serve
+vendors a minimal version of the canonical loader — just enough to serve
 the Courseforge JSON-LD @context locally when pyld asks for it — plus a
 thin ``validate_payload`` helper that converts a JSON-LD-shaped dict to
 RDF and runs it through ``schemas/context/courseforge_v1.shacl.ttl``.
 
 The vendored form is deliberately tiny: one URL binding, one loader,
-one ``validate_payload`` call. When the Wave 64 loader changes we
-reconcile by hand — LibV2's sandbox is the feature, not an
-inconvenience.
+one ``validate_payload`` call. Keep it synchronized manually with the
+canonical loader while preserving LibV2's package boundary.
 
 All heavy deps (pyld, pyshacl, rdflib) are imported lazily inside the
 validator, and the caller is expected to handle ``ImportError`` so a
@@ -60,7 +59,7 @@ def _load_context_document() -> Dict[str, Any]:
 def _make_loader(previous_loader: Optional[Callable[..., Any]] = None):
     """Build a pyld document loader that serves the local @context file.
 
-    Mirrors the chain-calling behavior of the Wave 64 loader: the local
+    Mirrors the canonical loader's chain-calling behavior: the local
     binding always wins for the canonical URL; anything else falls
     through to ``previous_loader`` (or raises a clear JsonLdError).
     """
@@ -152,8 +151,8 @@ def validate_manifest_shacl(
     """
     _ensure_deps()
 
-    from pyld import jsonld
     import pyshacl
+    from pyld import jsonld
     from rdflib import Graph
 
     # Make sure the @context resolves locally even in a hermetic run.

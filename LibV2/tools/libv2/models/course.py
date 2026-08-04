@@ -14,7 +14,7 @@ class Classification:
     subdomains: list[str] = field(default_factory=list)
     topics: list[str] = field(default_factory=list)
     subtopics: list[str] = field(default_factory=list)
-    # Wave 133f: HuggingFace model-card tags appended to the default
+    # Hugging Face model-card tags appended to the default
     # ['education','qlora','peft','trainforge',<slug>] list when an
     # adapter for this course publishes. Replaces the substring sniff
     # in Trainforge.eval.hf_model_index.write_hf_readme.
@@ -274,7 +274,7 @@ class CourseManifest:
     source_package: Optional[str] = None  # Filename of source IMSCC in source/ dir (legacy)
     source_artifacts: Optional[SourceArtifacts] = None  # Enhanced source tracking
     arxiv_metadata: Optional[ArxivMetadata] = None  # Arxiv paper metadata
-    # Wave 132c: explicit Trainforge eval-harness profile selector. Read by
+    # Explicit Trainforge evaluation-harness profile selector. Read by
     # Trainforge.eval.runners.slm_eval_harness._resolve_default_profile in
     # preference to the substring-sniff over classification fields.
     eval_profile: Optional[str] = None

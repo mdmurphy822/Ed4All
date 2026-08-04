@@ -1,16 +1,16 @@
-"""Wave 71 — targets-concept edge boost in retrieval scoring.
+"""Tests for the targets-concept edge boost in retrieval scoring.
 
-The Wave 66 Trainforge rule ``targets_concept_from_lo`` writes
+The Trainforge rule ``targets_concept_from_lo`` writes
 ``targets-concept`` edges into ``concept_graph_semantic.json`` linking
-each LO to the Bloom-qualified concepts it explicitly targets. Pre-
-Wave-71 the LibV2 retriever only loaded the untyped ``concept_graph.json``
-(node ids only); the typed edges were invisible to ranking.
+each LO to the Bloom-qualified concepts it explicitly targets. LibV2 also
+loads the untyped ``concept_graph.json`` for node-ID matching; the typed graph
+supplies the richer relationship used by this boost.
 
-This wave surfaces them as a fourth retrieval boost:
+The relationship contributes an additional retrieval boost:
 
   score = bm25 × (1 + capped_boost)
-  capped_boost absorbs the Wave 71 ``targets_concept`` contribution at
-  weight 0.25 alongside the three Wave 5 boosts.
+  capped_boost absorbs the ``targets_concept`` contribution at weight 0.25
+  alongside the other metadata boosts.
 
 Tests below exercise the loader, the pure scoring function, and the
 end-to-end integration in ``retrieve_chunks``. They use synthetic
@@ -30,13 +30,12 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from LibV2.tools.libv2.retrieval_scoring import (  # noqa: E402
-    BoostContributions,
     DEFAULT_BOOST_WEIGHTS,
+    BoostContributions,
     combine_bm25_with_boosts,
     load_targets_concept_edges,
     targets_concept_boost,
 )
-
 
 # ---------------------------------------------------------------------- #
 # Loader
@@ -52,7 +51,7 @@ def _write_semantic_graph(course_dir: Path, edges: list) -> None:
 
 
 def test_loader_returns_empty_when_graph_absent(tmp_path):
-    """Pre-Wave-66 corpora (no semantic graph) yield an empty map, not an error."""
+    """Corpora without a semantic graph yield an empty map, not an error."""
     assert load_targets_concept_edges(tmp_path) == {}
 
 
@@ -239,7 +238,7 @@ def test_boost_unions_edges_across_multiple_los():
 
 
 def test_targets_concept_contributes_to_final_score():
-    """The Wave 71 contribution actually lifts the combined score."""
+    """The targets-concept contribution lifts the combined score."""
     base = BoostContributions()
     with_boost = BoostContributions(targets_concept=1.0)
 
@@ -258,7 +257,7 @@ def test_targets_concept_appears_in_to_dict_payload():
 
 
 def test_default_boost_weights_include_targets_concept():
-    """DEFAULT_BOOST_WEIGHTS declares the Wave 71 slot so extra callers that
+    """DEFAULT_BOOST_WEIGHTS declares the targets-concept slot so callers that
     pull the dict see a sensible default instead of silently weighting zero."""
     assert "targets_concept" in DEFAULT_BOOST_WEIGHTS
     assert DEFAULT_BOOST_WEIGHTS["targets_concept"] > 0.0

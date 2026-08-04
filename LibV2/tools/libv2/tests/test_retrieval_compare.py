@@ -1,4 +1,4 @@
-"""Wave 84 integration tests for the A/B retrieval-method comparison.
+"""Integration tests for A/B retrieval-method comparison.
 
 Builds a minimal in-memory course tree, drops a probe set, runs
 ``compare_retrieval_methods`` over it, and asserts the shape and

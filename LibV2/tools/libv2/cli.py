@@ -438,7 +438,7 @@ def catalog_stats(ctx):
 @click.option("--limit", "-n", type=int, default=10, help="Maximum results (default: 10)")
 @click.option("--sample-per-course", type=int, help="Max chunks per course for cross-course search")
 @click.option("--output", "-o", type=click.Choice(["text", "json", "jsonld"]), default="text", help="Output format")
-# Worker J: reference-retrieval flags
+# Reference-retrieval controls
 @click.option("--include-rationale", is_flag=True, help="Emit per-result rationale (matched tags/LOs, boost contributions)")
 @click.option("--no-metadata-scoring", is_flag=True, help="Disable concept/LO/prereq boosts (pure BM25)")
 @click.option("--no-concept-graph-boost", is_flag=True, help="Disable only the concept-graph-overlap boost")
@@ -1415,7 +1415,7 @@ def eval_generate(ctx, slug: str, num_queries: int, output: str):
 @click.argument("slug")
 @click.argument("model_id", required=False)
 @click.option("--judge", type=click.Choice(["none", "anthropic", "local_nli"]),
-              default="none", help="Wave 103: qualitative judge for ED4ALL-Bench")
+              default="none", help="Qualitative judge for ED4ALL-Bench")
 @click.option("--output", "-o", type=click.Path(), help="Save report to file")
 @click.option("--verbose", "-v", is_flag=True, help="Show progress for each query")
 @click.option("--format", "-f", "fmt", type=click.Choice(["text", "json"]), default="text",
@@ -1573,7 +1573,7 @@ def eval_init(ctx, slug: str):
         holdout.write_text(
             json.dumps({
                 "_comment": (
-                    "Wave 103 placeholder. Run HoldoutBuilder to populate "
+                    "Template only. Run HoldoutBuilder to populate "
                     "withheld_edges before publishing eval numbers."
                 ),
                 "withheld_edges": [],
@@ -1975,6 +1975,7 @@ def retrieval_compare(
     expected_chunk_ids[], optional chunk_type/difficulty/notes).
     """
     from datetime import datetime as _dt
+
     from .evaluation.harness import compare_retrieval_methods
 
     repo_root = ctx.obj["repo_root"]
@@ -2112,16 +2113,16 @@ def ask(ctx, query: str, course: Optional[str], method: str, limit: int,
         libv2 ask "compare UDL vs differentiated instruction" --method hybrid
         libv2 ask "How does owl:sameAs entail?" --course <course-slug> --force
     """
-    from .retriever import retrieve_chunks
     from .query_log import (
-        write_query_record,
         attach_answer,
         compact_retrieval_result,
         find_answered_query,
         load_record,
         query_path,
         resolve_storage_dir,
+        write_query_record,
     )
+    from .retriever import retrieve_chunks
 
     if limit > 50:
         print_warning("LibV2 RAG policy caps results at 50; clamping.")
@@ -2579,6 +2580,7 @@ def _run_fresh_model_eval(
     gpu_guard wrap) instead of a bare stack trace.
     """
     from lib.decision_capture import DecisionCapture
+
     from .evaluation import model_bridge
 
     capture = DecisionCapture(course_code=slug, phase="libv2-indexing", tool="libv2")
@@ -3568,7 +3570,7 @@ def answer_grounded(ctx, query: str, course: str, engine: str, limit: int,
     # answer or a refusal is not an "answer" to persist as content).
     if do_log and result.status.startswith("answered"):
         try:
-            from .query_log import attach_answer, compact_retrieval_result, write_query_record
+            from .query_log import attach_answer, write_query_record
 
             record_path = write_query_record(
                 repo_root, course, query,

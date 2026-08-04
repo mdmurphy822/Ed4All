@@ -1,4 +1,4 @@
-"""Worker T — ChunkFilter content_type_label enforcement (REC-VOC-03 Phase 2).
+"""ChunkFilter content_type_label enforcement tests (REC-VOC-03 Phase 2).
 
 Tests the ChunkFilter.__post_init__ hook that validates content_type_label
 against the ChunkType enum when TRAINFORGE_ENFORCE_CONTENT_TYPE=true.

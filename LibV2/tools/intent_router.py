@@ -1,10 +1,8 @@
-"""Query intent router (Wave 78 Worker C).
+"""Route natural-language queries to the appropriate LibV2 retrieval engine.
 
-Wave 77 β shipped ``ed4all libv2 query`` for *user-driven* faceted
-filtering — the user already knows what facets they want and the CLI
-just applies them. That leaves a gap: the package also needs an
-*intent-routed* retrieval surface where natural-language queries
-dispatch to the right backend automatically:
+``ed4all libv2 query`` provides *user-driven* faceted filtering when the user
+already knows the desired facets. This module provides an *intent-routed*
+surface that dispatches natural-language queries to the right backend:
 
 * exact graph lookup for objective queries (``which chunks assess
   to-04?``);
@@ -41,10 +39,9 @@ Two public entry points::
     dispatch(query, slug, top_k=5) -> {intent_class, results, source_path,
                                         confidence, entities}
 
-The dispatcher reuses Wave 77 β's ``LibV2/tools/chunk_query`` and Wave
-77's ``MCP/tools/tutoring_tools`` for the heavy lifting; this module
-only owns *intent classification + entity extraction + result envelope
-shaping*.
+The dispatcher reuses ``LibV2.tools.chunk_query`` and
+``MCP.tools.tutoring_tools`` for retrieval. This module owns intent
+classification, entity extraction, and result-envelope shaping.
 """
 
 from __future__ import annotations
@@ -52,18 +49,14 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from LibV2.tools.chunk_query import (
-    BLOOM_LEVELS,
-    CHUNK_TYPES,
     QueryFilter,
     UnknownSlugError,
     query_chunks,
 )
-
 
 __all__ = [
     "INTENT_CLASSES",
@@ -500,8 +493,8 @@ def _slugify_token(text: str) -> str:
 def _candidate_concepts(query: str, slug: str, courses_root: Optional[Path] = None) -> List[str]:
     """Return concept-graph node ids that the query mentions.
 
-    Strategy: build the set of concept-graph node ids (DomainConcept
-    only, post-Wave-76), then for each id, check if its slug or label
+    Strategy: build the set of ``DomainConcept`` node IDs, then for each ID,
+    check whether its slug or label
     appears as a substring in the lowercased query. Returns matched
     ids sorted by descending node ``frequency`` (most central first)
     so the dispatcher's first-match rule picks the most-anchored
@@ -818,7 +811,7 @@ def _dispatch_concept(
     ranked = sorted(
         (
             {**c, "score": float(s)}
-            for c, s in zip(chunks, scores)
+            for c, s in zip(chunks, scores, strict=False)
             if s > 0
         ),
         key=lambda r: r["score"],

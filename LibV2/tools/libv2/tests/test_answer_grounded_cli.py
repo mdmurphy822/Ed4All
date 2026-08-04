@@ -1,4 +1,4 @@
-"""WS3 Wave C — CliRunner tests for the grounded-answer CLI surface.
+"""CliRunner tests for the grounded-answer CLI surface.
 
 Covers ``libv2 answer-grounded`` (the single entry point), plus the thin
 delegations ``libv2 answer-eval`` and ``libv2 refusal-calibrate``.
@@ -33,12 +33,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[4]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-import LibV2.tools.libv2.cli as cli  # noqa: E402
-from LibV2.tools.libv2.cli import main as libv2_main  # noqa: E402
 from lib.retrieval.grounded_answer import (  # noqa: E402
     Citation,
     GroundedAnswer,
 )
+from LibV2.tools.libv2.cli import main as libv2_main  # noqa: E402
 
 _SLUG = "mini-answer-101"
 
