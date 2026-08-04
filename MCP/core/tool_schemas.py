@@ -484,7 +484,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "seed",
             # Wave 129: deterministic-generator pass-throughs (Wave 124-127).
             # Mirrors run_synthesis() kwargs at
-            # Trainforge/synthesize_training.py:677-685 so the workflow-phase
+            # Trainforge/synthesis/synthesize_training.py:677-685 so the workflow-phase
             # dispatch + external MCP clients can trigger kg_metadata /
             # violation_detection / abstention / schema_translation without
             # routing through the CLI.

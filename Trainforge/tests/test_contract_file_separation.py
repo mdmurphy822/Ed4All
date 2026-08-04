@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from Trainforge.synthesize_training import (
+from Trainforge.synthesis.synthesize_training import (
     _GENERATION_CONTRACT_FILES,
     _VERDICT_POLICY_FILES,
     _synthesis_static_contract_components,

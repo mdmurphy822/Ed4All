@@ -358,7 +358,7 @@ _CORPUS_GENERALIZATION_ENV_DEFAULTS: Dict[str, str] = {
 _TEXTBOOK_SYNTHESIS_PROVIDER_ENV = "TEXTBOOK_SYNTHESIS_PROVIDER"
 
 # The env var that selects the Trainforge TRAINING-PAIR synthesis provider
-# (``Trainforge/synthesize_training.py::run_synthesis`` via the
+# (``Trainforge/synthesis/synthesize_training.py::run_synthesis`` via the
 # ``training-synthesizer`` agent). Distinct from
 # ``TEXTBOOK_SYNTHESIS_PROVIDER`` above: that selects the authoring-adjacent
 # three-stage textbook-structure synthesis (concept vocabulary + objectives);

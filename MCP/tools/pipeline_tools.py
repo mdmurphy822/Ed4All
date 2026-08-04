@@ -9227,7 +9227,7 @@ def register_pipeline_tools(mcp):
         """Generate SFT + DPO training pairs from a Trainforge corpus.
 
         Wave 30 Gap 3: exposes
-        :func:`Trainforge.synthesize_training.run_synthesis` as an MCP
+        :func:`Trainforge.synthesis.synthesize_training.run_synthesis` as an MCP
         tool so external clients + the textbook_to_course pipeline both
         route to the same backing implementation. Reads
         ``{corpus_dir}/corpus/chunks.jsonl`` and writes
@@ -9306,7 +9306,7 @@ def register_pipeline_tools(mcp):
                 absent/empty.
         """
         try:
-            from Trainforge.synthesize_training import (
+            from Trainforge.synthesis.synthesize_training import (
                 DEFAULT_SEED,
                 run_synthesis,
             )
@@ -27496,7 +27496,7 @@ def _build_tool_registry() -> dict:
 
     # Wave 30 Gap 3: training_synthesis phase
     # ============================================================================
-    # Wraps ``Trainforge.synthesize_training.run_synthesis`` as a pipeline phase
+    # Wraps ``Trainforge.synthesis.synthesize_training.run_synthesis`` as a pipeline phase
     # so ``textbook_to_course`` runs now materialise ``training_specs/
     # instruction_pairs.jsonl`` + ``training_specs/preference_pairs.jsonl``
     # alongside ``assessments.json``. Pre-Wave-30 the synthesizer only ran
@@ -27606,7 +27606,7 @@ def _build_tool_registry() -> dict:
         # so workflow-phase dispatch + external MCP clients can trigger
         # kg_metadata / violation_detection / abstention / schema_translation
         # without the CLI. Defaults mirror run_synthesis() at
-        # Trainforge/synthesize_training.py:677-685.
+        # Trainforge/synthesis/synthesize_training.py:677-685.
         with_kg_metadata = bool(kwargs.get("with_kg_metadata", False))
         kg_metadata_max_pairs = int(kwargs.get("kg_metadata_max_pairs", 2000))
         with_violation_detection = bool(
@@ -27624,7 +27624,7 @@ def _build_tool_registry() -> dict:
         # Number of INSTRUCTION units synthesized per chunk. Default 1 =
         # byte-identical to every run before this kwarg was plumbed. It is
         # routed here (not only through the standalone
-        # ``Trainforge/synthesize_training.py`` argparse flag) because
+        # ``Trainforge/synthesis/synthesize_training.py`` argparse flag) because
         # reject-mined DPO negatives (``Trainforge/synthesis/synthesis_reject_mining.py``)
         # have STRUCTURALLY ZERO yield below 2: a chunk with one instruction
         # unit can never hold both an accepted anchor and a rejected unit, so
@@ -27641,7 +27641,7 @@ def _build_tool_registry() -> dict:
             instruction_variants_per_chunk = 1
 
         try:
-            from Trainforge.synthesize_training import (
+            from Trainforge.synthesis.synthesize_training import (
                 DEFAULT_SEED,
                 run_synthesis,
             )

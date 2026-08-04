@@ -3,7 +3,7 @@
 Wires Worker F's Wave 1 taxonomy (schemas/taxonomies/content_type.json) into
 the two free-string content_type consumers:
 
-- Trainforge/synthesize_training.py (instruction_pair emission)
+- Trainforge/synthesis/synthesize_training.py (instruction_pair emission)
 - LibV2/tools/libv2/retriever.py (ChunkFilter.content_type_label)
 
 Gated by TRAINFORGE_ENFORCE_CONTENT_TYPE=true. Default behavior: accept any

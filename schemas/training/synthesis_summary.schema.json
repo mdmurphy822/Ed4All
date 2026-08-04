@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://libv2.local/schema/synthesis_summary.schema.json",
   "title": "Trainforge Synthesis Summary",
-  "description": "W3.H sub-task H5: per-run sidecar emitted by `Trainforge/synthesize_training.py::run_synthesis` next to `dataset_config.json` (default `<course>/training_specs/synthesis_summary.json`). Records the canonical source_coverage block for the assessment-items -> training-pairs arrow plus per-surface pair counts so the W3.G master promotion-chain aggregator can attribute every dropped pair. Optional artifact — absence is interpreted as a legacy build (pre-W3.H) by the master aggregator. The same numbers are mirrored into `dataset_config.json::statistics.promotion_ladder` (W3.B emit shape) but in a less aggregator-friendly layout; this sidecar is the canonical W3.H surface.",
+  "description": "Per-run sidecar emitted by `Trainforge/synthesis/synthesize_training.py::run_synthesis` next to `dataset_config.json` (default `<course>/training_specs/synthesis_summary.json`). Records canonical source coverage and per-surface pair counts so the promotion-chain aggregator can attribute dropped pairs. The artifact is optional for older builds. The same numbers are mirrored into `dataset_config.json::statistics.promotion_ladder`; this sidecar is the canonical aggregation surface.",
   "type": "object",
   "required": ["schema_version", "course_code", "provider", "source_coverage"],
   "additionalProperties": false,

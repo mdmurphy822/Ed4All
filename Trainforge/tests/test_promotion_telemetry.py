@@ -35,7 +35,7 @@ from typing import Any, Dict
 
 import pytest
 
-from Trainforge.synthesize_training import (
+from Trainforge.synthesis.synthesize_training import (
     SynthesisStats,
     _update_dataset_config,
 )

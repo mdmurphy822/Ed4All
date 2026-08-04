@@ -11,12 +11,12 @@ from pathlib import Path
 
 import pytest
 
-import Trainforge.synthesize_training as synthesis_module
+import Trainforge.synthesis.synthesize_training as synthesis_module
 from Trainforge.synthesis.synthesis_concurrency import (
     BoundedOrderedMap,
     resolve_synthesis_max_concurrent,
 )
-from Trainforge.synthesize_training import (
+from Trainforge.synthesis.synthesize_training import (
     _checkpoint_terminal_rejection,
     _run_generation_unit,
     _synthesis_runtime_policy_identity,

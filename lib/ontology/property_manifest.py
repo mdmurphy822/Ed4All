@@ -63,7 +63,7 @@ class PropertyManifest:
     properties: List[PropertyEntry]
     description: Optional[str] = None
     # Wave 132d: short noun-phrase for the persona-prefix variant in
-    # Trainforge.synthesize_training._INSTRUCTION_PROMPT_FRAMES. Default
+    # Trainforge.synthesis.synthesize_training._INSTRUCTION_PROMPT_FRAMES. Default
     # is ``DEFAULT_LEARNER_PERSONA`` when absent so courses without a
     # manifest still get a sensible (generic) persona.
     learner_persona: str = DEFAULT_LEARNER_PERSONA

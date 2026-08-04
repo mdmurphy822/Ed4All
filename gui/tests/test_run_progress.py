@@ -1215,7 +1215,7 @@ def test_training_synthesis_units_and_tail_from_pairs_checkpoint(
 ):
     """training_synthesis maps to the per-pair resume sidecar
     ``<corpus>/training_specs/.synthesis_pairs_checkpoint.jsonl``
-    (Trainforge/synthesize_training.py::_append_synthesis_pairs_checkpoint).
+    (Trainforge/synthesis/synthesize_training.py::_append_synthesis_pairs_checkpoint).
     The corpus anchors off the trainforge_assessment output exactly like the
     registry handler: assessments_path one parent up, chunks_path two."""
     corpus = tmp_path / "trainforge-corpus"

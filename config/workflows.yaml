@@ -4801,11 +4801,7 @@ workflows:
               on_error: fail_closed
             description: W2.D — regression-net regex gate against padded-distractor patterns in IMSCC assessment items. Post-publication seam → action=block (re-rolling at this seam is too late). Pairs with the outline_/rewrite_ siblings on the Courseforge two-pass seams.
 
-      # Wave 30 Gap 3: training-pair synthesis. Pre-Wave-30,
-      # Trainforge/synthesize_training.py was never wired into any
-      # end-to-end run — every LibV2 course had zero SFT/DPO pairs
-      # so ``ed4all export-training ... --format dpo`` had nothing
-      # real to export. This phase reads the Trainforge corpus
+      # Training-pair synthesis reads the Trainforge corpus
       # produced by ``trainforge_assessment`` and emits
       # ``training_specs/instruction_pairs.jsonl`` +
       # ``training_specs/preference_pairs.jsonl``. Optional: callers
@@ -4876,8 +4872,7 @@ workflows:
           # (Trainforge/synthesis/synthesis_reject_mining.py) have STRUCTURALLY ZERO
           # yield below 2 -- one instruction unit per chunk can never hold both
           # an accepted anchor and a rejected unit -- so the documented
-          # shadow-measurement path was previously reachable only from the
-          # standalone Trainforge/synthesize_training.py argparse flag.
+          # shadow-measurement path requires at least two instruction variants.
           - param: instruction_variants_per_chunk
             source: workflow_params
             key: instruction_variants_per_chunk

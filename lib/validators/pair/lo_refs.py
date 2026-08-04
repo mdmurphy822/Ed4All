@@ -22,7 +22,7 @@ Surface mirror of three precedents:
 Two surfaces:
 
 1. :meth:`validate_pair` — per-pair pre-write filter wired into
-   ``Trainforge/synthesize_training.py`` AFTER W4.A's claim-support
+   ``Trainforge/synthesis/synthesize_training.py`` AFTER W4.A's claim-support
    check. Returns ``(promotion_status, rejection_reason, new_fields)``
    where ``new_fields`` carries a ``pair_lo_resolution`` audit-trail
    payload.
@@ -536,7 +536,7 @@ class PairLearningOutcomeRefsValidator:
                                         "Re-run training_synthesis "
                                         "with W4.B's per-pair filter "
                                         "wired in (see "
-                                        "Trainforge/synthesize_training.py "
+                                        "Trainforge/synthesis/synthesize_training.py "
                                         "post-W4.A call site), or "
                                         "regenerate the IMSCC chunks "
                                         "so the chunk picks up the "

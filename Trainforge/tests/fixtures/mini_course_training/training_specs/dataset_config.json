@@ -8,5 +8,5 @@
   "statistics": {
     "total_tokens": 589
   },
-  "fixture_notes": "Pre-enriched fixture used by Trainforge.synthesize_training tests. Updated by the stage when run."
+  "fixture_notes": "Pre-enriched fixture used by Trainforge.synthesis.synthesize_training tests. Updated by the stage when run."
 }

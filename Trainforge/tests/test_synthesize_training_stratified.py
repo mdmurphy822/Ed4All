@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Wave 77: stratified-sampling and misconception-DPO emission for
-``Trainforge.synthesize_training``.
+``Trainforge.synthesis.synthesize_training``.
 
 Covered contracts:
   - ``--stratify bloom`` produces a roughly-uniform bloom-level distribution
@@ -32,7 +32,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.synthesize_training import (  # noqa: E402
+from Trainforge.synthesis.synthesize_training import (  # noqa: E402
     _build_misconception_dpo_pair,
     _eligible,
     _resolve_libv2_corpus_dir,

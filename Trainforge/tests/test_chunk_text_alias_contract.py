@@ -16,7 +16,7 @@ auto-generated slot-filler residue. Two MCP dispatch tests
 ``instruction_pairs.jsonl``.
 
 Every assertion below drives a PRODUCTION entry point —
-``Trainforge.synthesize_training._pair_eligibility_for_mode`` (the seam
+``Trainforge.synthesis.synthesize_training._pair_eligibility_for_mode`` (the seam
 ``run_synthesis`` itself calls) and the ``synthesize_training`` tool-registry
 callable — never the leaf ``content_gate_eligibility``. A leaf test would not
 have caught this: the leaf was doing exactly what it was told.
@@ -40,7 +40,7 @@ from Trainforge.synthesis.synthesis_eligibility import (
     ChunkTextContractError,
     resolve_chunk_text,
 )
-from Trainforge.synthesize_training import _pair_eligibility_for_mode
+from Trainforge.synthesis.synthesize_training import _pair_eligibility_for_mode
 
 # Prose long enough to clear the content gate's 40-word floor on its own, so
 # the fixtures below isolate the ALIAS variable rather than riding on

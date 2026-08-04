@@ -408,7 +408,7 @@ class TrainingRunner:
             raise FileNotFoundError(
                 f"LibV2 course {self.course_slug!r} is missing training specs: "
                 f"{missing}. Run "
-                f"``python -m Trainforge.synthesize_training --slug "
+                f"``python -m Trainforge.synthesis.synthesize_training --slug "
                 f"{self.course_slug}`` first."
             )
 

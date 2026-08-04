@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from Trainforge.synthesize_training import run_synthesis
+from Trainforge.synthesis.synthesize_training import run_synthesis
 
 
 class _PreflightObserved(RuntimeError):

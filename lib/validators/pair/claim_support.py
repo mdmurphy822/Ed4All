@@ -1056,7 +1056,7 @@ class PairClaimSupportValidator:
     TrainingPairPromotionValidator`):
 
     1. :meth:`validate_pair` — per-pair pre-write filter called from
-       :mod:`Trainforge.synthesize_training` immediately AFTER
+       :mod:`Trainforge.synthesis.synthesize_training` immediately AFTER
        :meth:`TrainingPairPromotionValidator.validate_pair` returns
        ``"validated"``. Returns
        ``(promotion_status, rejection_reason, new_fields)``.

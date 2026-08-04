@@ -123,7 +123,7 @@ def test_env_override_keeps_anthropic_fail_closed(campaign_env, monkeypatch, tmp
     run_synthesis, and the Anthropic SDK path fails closed unconditionally —
     even a caller asking for ``local`` cannot be re-routed to a barred
     teacher without the loud SynthesisLicensingError."""
-    from Trainforge.synthesize_training import (
+    from Trainforge.synthesis.synthesize_training import (
         SynthesisLicensingError,
         run_synthesis,
     )

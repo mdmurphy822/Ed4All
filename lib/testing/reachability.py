@@ -54,7 +54,7 @@ __all__ = [
 ]
 
 # Kept in sync with Trainforge/generators/providers/_local_provider.py (DEFAULT_BASE_URL,
-# ENV_BASE_URL) and Trainforge/synthesize_training.py (the
+# ENV_BASE_URL) and Trainforge/synthesis/synthesize_training.py (the
 # TRAINFORGE_SYNTHESIS_PROVIDER override). Duplicated here rather than imported
 # so the helper stays importable without pulling the generator stack.
 DEFAULT_LOCAL_SYNTHESIS_BASE_URL = "http://localhost:8000/v1"
@@ -109,7 +109,7 @@ def resolve_local_synthesis_base_url() -> str:
 def effective_synthesis_provider(provider: str) -> str:
     """Resolve the provider a synthesis call will actually use.
 
-    Mirrors ``Trainforge/synthesize_training.py::run_synthesis``: a non-empty
+    Mirrors ``Trainforge/synthesis/synthesize_training.py::run_synthesis``: a non-empty
     ``TRAINFORGE_SYNTHESIS_PROVIDER`` env var overrides the caller-supplied
     ``provider`` kwarg. Used so a test that passes ``provider="mock"`` can ask
     whether an env override has silently re-routed it to ``local``.

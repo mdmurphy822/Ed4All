@@ -180,7 +180,7 @@ def test_synthesize_training_schema_includes_wave_124_127_generator_kwargs():
     unknown params and the deterministic generators stayed off.
 
     This test pins the schema to the run_synthesis() kwarg shape at
-    ``Trainforge/synthesize_training.py:677-685`` so a future contributor
+    ``Trainforge/synthesis/synthesize_training.py:677-685`` so a future contributor
     adding a new generator kwarg gets a failing test if they forget the
     third wiring location.
     """
@@ -264,7 +264,7 @@ def test_synthesize_training_registry_forwards_wave_124_127_kwargs(tmp_path: Pat
         json.dumps(chunk) + "\n", encoding="utf-8"
     )
 
-    import Trainforge.synthesize_training as st_mod
+    import Trainforge.synthesis.synthesize_training as st_mod
 
     real_run_synthesis = st_mod.run_synthesis
     st_mod.run_synthesis = fake_run_synthesis  # type: ignore[assignment]

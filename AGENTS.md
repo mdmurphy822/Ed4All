@@ -47,7 +47,7 @@ Registered agents, grouped by the directory their spec lives in:
 |-------|--------|
 | Courseforge specs (`Courseforge/agents/`) | `course-outliner`, `requirements-collector`, `content-generator`, `brightspace-packager`, `oscqr-course-evaluator`, `quality-assurance`, `semantik-automation-coordinator`, `imscc-intake-parser`, `content-analyzer`, `accessibility-remediation`, `content-quality-remediation`, `intelligent-design-mapper`, `remediation-validator`, `textbook-ingestor`, `source-router` |
 | Trainforge specs (`Trainforge/agents/`) | `assessment-extractor`, `rag-indexer`, `assessment-generator`, `assessment-validator` |
-| Non-`.md` source | `semantik-converter` (→ `SemantiK/CLAUDE.md`), `libv2-archivist` (→ `LibV2/tools/libv2/importer.py`), `training-synthesizer` (→ `Trainforge/synthesize_training.py`) |
+| Non-`.md` source | `semantik-converter` (→ `SemantiK/CLAUDE.md`), `libv2-archivist` (→ `LibV2/tools/libv2/importer.py`), `training-synthesizer` (→ `Trainforge/synthesis/synthesize_training.py`) |
 | In-code, no `source` at all | `textbook-stager`, `semantik-chunker` |
 
 One spec ships **without** a `config/agents.yaml` entry:
@@ -194,7 +194,7 @@ The project separates two surfaces with different exposure:
   training data. The trained model is a derivative work of *those* outputs, so
   the provider's ToS and the underlying model license decide shippability.
 
-Provider posture for `Trainforge/synthesize_training.py` (`--provider`):
+Provider posture for `Trainforge/synthesis/synthesize_training.py` (`--provider`):
 
 | Provider | Status for training-pair synthesis |
 |----------|-----------------------------------|

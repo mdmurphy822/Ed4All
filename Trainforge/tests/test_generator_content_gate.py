@@ -403,7 +403,7 @@ class _RecordingCapture:
 
 
 def test_ineligible_skip_emits_a_capture_with_interpolated_signals():
-    from Trainforge.synthesize_training import (
+    from Trainforge.synthesis.synthesize_training import (
         SynthesisStats,
         _record_ineligible_disposition,
     )

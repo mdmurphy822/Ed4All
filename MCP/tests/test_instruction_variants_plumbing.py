@@ -4,7 +4,7 @@ Reject-mined DPO negatives (``Trainforge/synthesis/synthesis_reject_mining.py``)
 STRUCTURALLY ZERO yield unless a chunk holds at least two instruction units:
 one unit can never hold both an accepted anchor and a rejected unit to pair it
 against. The knob that controls that count was settable ONLY through the
-standalone ``Trainforge/synthesize_training.py --instruction-variants-per-chunk``
+standalone ``Trainforge/synthesis/synthesize_training.py --instruction-variants-per-chunk``
 argparse flag — ``_synthesize_training`` forwarded a fixed kwarg list that
 omitted it, and neither ``config/workflows.yaml`` nor ``cli/`` mentioned it — so
 the documented shadow-measurement path was unreachable through ``ed4all run``.
@@ -80,7 +80,7 @@ class _RecordingRunSynthesis:
 
 @pytest.fixture()
 def recorded_run_synthesis(monkeypatch: pytest.MonkeyPatch):
-    import Trainforge.synthesize_training as st
+    import Trainforge.synthesis.synthesize_training as st
 
     recorder = _RecordingRunSynthesis()
     monkeypatch.setattr(st, "run_synthesis", recorder)

@@ -9,7 +9,7 @@ from Trainforge.synthesis.synthesis_journal import (
     GenerationJournal,
     load_generation_journal,
 )
-from Trainforge.synthesize_training import (
+from Trainforge.synthesis.synthesize_training import (
     _call_with_seat_recovery,
     _run_generation_unit,
 )

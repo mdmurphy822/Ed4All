@@ -1239,7 +1239,7 @@ class TaskExecutor:
         # env var routes instruction-pair / preference-pair synthesis
         # through an in-process license-clean provider (local /
         # together / any registered OpenAI-compatible provider) via
-        # ``Trainforge.synthesize_training.run_synthesis`` rather than
+        # ``Trainforge.synthesis.synthesize_training.run_synthesis`` rather than
         # the Claude Code subagent. The training-pair corpus is the
         # canonical training-data surface (it literally trains the SLM
         # adapter), so per ``docs/LICENSING.md`` § "Synthesis providers"

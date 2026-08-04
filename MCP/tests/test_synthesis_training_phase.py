@@ -1,6 +1,6 @@
 """Wave 30 Gap 3 — synthesize_training phase wiring.
 
-Pre-Wave-30, ``Trainforge/synthesize_training.py`` had zero callers
+Pre-Wave-30, ``Trainforge/synthesis/synthesize_training.py`` had zero callers
 inside any end-to-end pipeline run. Every LibV2 course was missing
 ``training_specs/instruction_pairs.jsonl`` +
 ``training_specs/preference_pairs.jsonl``, so ``ed4all export-training

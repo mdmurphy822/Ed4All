@@ -1,7 +1,7 @@
 """Wave 117: shared pilot-report helpers.
 
 Used by both ``Trainforge.scripts.ops.pilot_synthesis`` (post-hoc, reads
-JSONL from disk) and ``Trainforge.synthesize_training`` (in-flight,
+JSONL from disk) and ``Trainforge.synthesis.synthesize_training`` (in-flight,
 operates on in-memory record lists). Same report shape; the JSONL
 readers are thin wrappers over the in-memory variants.
 """

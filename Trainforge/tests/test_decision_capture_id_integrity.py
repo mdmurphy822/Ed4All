@@ -2,7 +2,7 @@
 """
 Wave 112 Task 1 regression net.
 
-Locks in the contract that ``Trainforge.synthesize_training._last_event_id``
+Locks in the contract that ``Trainforge.synthesis.synthesize_training._last_event_id``
 fails loud when called against a ``DecisionCapture`` that has not logged any
 decisions. The pre-Wave-112 implementation returned ``""`` here, which then
 rode into the emitted ``instruction_pair`` / ``preference_pair`` JSONL as
@@ -27,7 +27,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.decision_capture import DecisionCapture  # noqa: E402
-from Trainforge.synthesize_training import _last_event_id  # noqa: E402
+from Trainforge.synthesis.synthesize_training import _last_event_id  # noqa: E402
 
 
 def test_last_event_id_raises_on_empty_capture():

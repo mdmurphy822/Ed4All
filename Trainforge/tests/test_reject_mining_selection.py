@@ -54,7 +54,7 @@ from Trainforge.synthesis.synthesis_reject_mining import (
     token_jaccard,
     unframe_instruction_prompt,
 )
-from Trainforge.synthesize_training import _apply_instruction_variant
+from Trainforge.synthesis.synthesize_training import _apply_instruction_variant
 
 PERSONA = "a learner"
 CHUNK = "chunk-0001"
@@ -1161,7 +1161,7 @@ def test_selection_pass_runs_inside_run_synthesis(tmp_path, monkeypatch, mode):
     roll-up, the append loop). A NameError in any of them is invisible to
     every flag-off test in the tree.
     """
-    from Trainforge.synthesize_training import run_synthesis
+    from Trainforge.synthesis.synthesize_training import run_synthesis
 
     monkeypatch.setenv(MINE_REJECTS_ENV, mode)
     corpus = _working_copy(tmp_path, f"wired-{mode}")
@@ -1179,7 +1179,7 @@ def test_selection_pass_runs_inside_run_synthesis(tmp_path, monkeypatch, mode):
 
 
 def test_flag_off_run_reports_no_funnel(tmp_path, monkeypatch):
-    from Trainforge.synthesize_training import run_synthesis
+    from Trainforge.synthesis.synthesize_training import run_synthesis
 
     monkeypatch.delenv(MINE_REJECTS_ENV, raising=False)
     corpus = _working_copy(tmp_path, "wired-off")

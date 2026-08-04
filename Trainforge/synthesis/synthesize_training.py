@@ -1,27 +1,21 @@
 #!/usr/bin/env python3
-"""
-Trainforge — Training Pair Synthesis Stage
+"""Generate grounded SFT and DPO training pairs from an enriched chunkset.
 
-Reads the enriched ``corpus/chunks.jsonl`` produced by the base pass (and,
-when present, refined by ``alignment/align_chunks.py``), and emits two artifacts under
-``training_specs/`` inside the same output directory:
+The stage reads ``chunks.jsonl`` and emits two artifacts under
+``training_specs/``:
 
     training_specs/instruction_pairs.jsonl   # SFT format
     training_specs/preference_pairs.jsonl    # DPO format
 
-It also updates ``training_specs/dataset_config.json`` with counts under
+It updates ``training_specs/dataset_config.json`` with counts under
 ``statistics.instruction_pairs`` and ``statistics.preference_pairs``.
 
-This stage is invoked either:
-    * programmatically: ``run_synthesis(corpus_dir=..., course_code=...)``
-    * from the CLI via ``process_course.py --synthesize`` after base
-      processing completes.
-
-It uses the deterministic mock provider by default. An Anthropic provider
-hook exists for future work but is not wired.
+Invoke it through ``run_synthesis(...)``, the canonical module CLI, or the
+pipeline synthesis phase. Provider selection fails closed according to the
+license policy; the deterministic mock provider is for plumbing tests only.
 
 All generation decisions are captured via :class:`lib.decision_capture.DecisionCapture`
-using two new decision types:
+using the synthesis decision types:
 
     * ``instruction_pair_synthesis``  (one event per instruction pair)
     * ``preference_pair_generation``  (one event per preference pair)
@@ -546,13 +540,8 @@ def staged_objective_contract_enabled() -> bool:
     and ``pair_eligibility`` requires ``synthesis_focus_objective`` to be
     present on the chunk it is handed.
 
-    This predicate exists so the FOCUS seam and the ELIGIBILITY seam can never
-    disagree about which modes are staged.  They previously did: focus was
-    gated on v4 alone while eligibility admitted v4-or-micro-v1, so a micro-v1
-    run handed ``pair_eligibility`` an UNFOCUSED chunk and every chunk
-    carrying ``learning_outcome_refs`` reported
-    ``missing_canonical_objective_focus`` — a whole-corpus zero-pair emit with
-    no error raised.
+    This predicate keeps the focus and eligibility seams on the same staged
+    mode set, preventing an unfocused chunk from reaching pair eligibility.
     """
     from Trainforge.generators.staged.micro import (
         staged_synthesis_micro_v1_enabled,
@@ -1021,8 +1010,7 @@ def _build_misconception_dpo_pair(
                         f"{empty_field} field after strip(); the DPO pair "
                         f"would carry an empty chosen/rejected side and "
                         f"violate the preference_pair schema, so the entry "
-                        f"is dropped before emit. Pre-Wave-112 this drop "
-                        f"happened with no audit trail."
+                        f"is dropped before emit with this audit event."
                     ),
                 )
             except Exception as e:  # pragma: no cover - defensive
@@ -1791,7 +1779,7 @@ _SYNTHESIS_REJECTION_CONTRACT_VERSION = "v1"
 # Fingerprint keys accepted rows + generation journal.  Changing these
 # files invalidates all resume-cached pairs. Verdict-policy changes
 # (validators, thresholds, classifiers, embedding) do NOT regenerate
-# previously-accepted pairs — only their verdict verdict digest changes.
+# accepted pairs — only their verdict digest changes.
 _GENERATION_CONTRACT_FILES = (
     "Trainforge/synthesis/synthesize_training.py",
     "Trainforge/synthesis/synthesis_eligibility.py",
@@ -2216,12 +2204,8 @@ def _project_terminal_dispositions(
 ) -> List[Dict[str, Any]]:
     """Project rejected / ineligible checkpoint records into the operator file.
 
-    The checkpoint sidecar is unlinked on a clean exit, so whatever this
-    projection drops is gone for good. It previously dropped
-    ``rejection_evidence``, which is why a rejected pair left only a reason
-    string on disk and an audit of 150 claim-support rejections could
-    hand-adjudicate 14 of them: the per-sentence NLI scores that decided each
-    verdict existed only inside a deleted file.
+    The checkpoint sidecar is unlinked on a clean exit, so this projection
+    preserves ``rejection_evidence`` needed to audit each terminal verdict.
 
     ``rejection_evidence`` is carried through when present and OMITTED (not
     nulled) when absent, so a row that never had one is byte-identical to
@@ -3562,7 +3546,7 @@ def run_synthesis(
             pilot_manifest = load_property_manifest(pilot_slug)
         except FileNotFoundError:
             logger.info(
-                "Wave 117: no property manifest for course %r; skipping "
+                "No property manifest for course %r; skipping "
                 "pilot_report.md.",
                 pilot_slug,
             )
@@ -3721,7 +3705,7 @@ def run_synthesis(
                 "--curriculum-from-graph / --prereq-windowed require "
                 f"pedagogy_graph.json under {corpus_dir} (looked in graph/, "
                 f"pedagogy/, and the corpus root). Pass --no-graph to "
-                f"opt out of the Wave-91 graph-required default."
+                "opt out explicitly when the corpus has no pedagogy graph."
             )
         graph = load_pedagogy_graph(graph_path)
         curriculum_ctx = build_curriculum_context(graph, chunks)
@@ -4134,7 +4118,7 @@ def run_synthesis(
             and smoke_mode == "none"
         ):
             logger.warning(
-                "Wave 119: --max-pairs=%d will clip this run before all "
+                "--max-pairs=%d will clip this run before all "
                 "%d eligible chunks are visited. Property-coverage gates "
                 "may underreport because surface forms anchored in late "
                 "chunks will not be sampled. Remove --max-pairs (or set "
@@ -4483,7 +4467,7 @@ def run_synthesis(
                     _utils_append_jsonl(inst_progress_fh, _p, flush=False)
                 inst_progress_fh.flush()
                 logger.info(
-                    "Wave 124: appended %d abstention pairs (chunks_with_silent=%d, "
+                    "Appended %d abstention pairs (chunks_with_silent=%d, "
                     "skipped_no_concepts=%d, capped=%s) from %s",
                     ab_stats.pairs_emitted,
                     ab_stats.chunks_with_silent,
@@ -4531,7 +4515,7 @@ def run_synthesis(
                     _utils_append_jsonl(inst_progress_fh, _p, flush=False)
                 inst_progress_fh.flush()
                 logger.info(
-                    "Wave 124: appended %d schema-translation pairs "
+                    "Appended %d schema-translation pairs "
                     "(surface_forms_used=%d, skipped_no_definition=%d, "
                     "capped=%s) from manifest_family=%s",
                     st_stats.pairs_emitted,
@@ -4616,7 +4600,7 @@ def run_synthesis(
         )
         if _dart_block_text_map:
             logger.info(
-                "Wave 9 TIGHT: dual-source DART cross-check enabled "
+                "Dual-source block cross-check enabled "
                 "(staging_dir=%s, %d block-text entries loaded).",
                 staging_dir, len(_dart_block_text_map),
             )
@@ -6405,7 +6389,7 @@ def run_synthesis(
                     # Don't kill the run for a report-write failure —
                     # the JSONL is the source of truth.
                     logger.warning(
-                        "Wave 117: pilot_report.md write failed: %s", exc,
+                        "pilot_report.md write failed: %s", exc,
                     )
 
         # Under concurrent generation, a stop request closes the submission
@@ -6589,7 +6573,7 @@ def run_synthesis(
             # operator can inspect partial output and re-run with a
             # higher cap to resume from the cache.
             logger.warning(
-                "Wave 116: synthesis stopped early; sidecars preserved at "
+                "Synthesis stopped early; sidecars preserved at "
                 "%s and %s",
                 instruction_progress, preference_progress,
             )
@@ -6628,7 +6612,7 @@ def run_synthesis(
                 write_pilot_report_atomic(pilot_report_path, _final_report)
             except OSError as exc:
                 logger.warning(
-                    "Wave 117: pilot_report.md final write failed: %s", exc,
+                    "pilot_report.md final write failed: %s", exc,
                 )
 
         # --- Persist artifacts ------------------------------------------------
@@ -7261,7 +7245,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            "Wave 110 / Phase D: hard cap on Claude-Max session dispatches "
+            "Hard cap on Claude-session dispatches "
             "(claude_session provider only). When the cap is hit, raises "
             "SynthesisBudgetExceeded; partial output is preserved in "
             "<corpus>/training_specs/.synthesis_cache.jsonl and the next "
@@ -7274,7 +7258,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Bounded immutable generation workers (1-48). Unset resolves "
-            "TRAINFORGE_SYNTHESIS_MAX_CONCURRENT, whose legacy default is 1. "
+            "TRAINFORGE_SYNTHESIS_MAX_CONCURRENT, whose default is 1. "
             "Results are committed by one deterministic source-order writer."
         ),
     )
@@ -7283,7 +7267,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=20,
         help=(
-            "Wave 117: regenerate training_specs/pilot_report.md every N "
+            "Regenerate training_specs/pilot_report.md every N "
             "processed chunks during the run, so the operator has live "
             "property-coverage / template-distribution visibility. Set "
             "to 0 to disable. No-op when the course has no property "
@@ -7295,7 +7279,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help=(
-            "Worker A: opt OUT of the per-pair resume checkpoint sidecar "
+            "Opt out of the per-pair resume checkpoint sidecar "
             "(default: checkpoint enabled). The sidecar at "
             "<training_specs>/.synthesis_pairs_checkpoint.jsonl records "
             "every accepted instruction / preference pair and is unlinked "
@@ -7354,7 +7338,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
         help=(
             "Order emitted pairs by topological sort over pedagogy_graph "
-            "prerequisite_of edges (Wave 91: default ON). Each pair anchors "
+            "prerequisite_of edges (default: on). Each pair anchors "
             "at the latest concept its chunk references; pairs whose chunks "
             "reference no concepts go to the end. Cycle-break: "
             "(first_seen_week, concept_id) asc."
@@ -7369,7 +7353,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help=(
-            "Opt out of the Wave-91 graph-required default. Use only for "
+            "Opt out of the graph-required default. Use only for "
             "legacy corpora that have no pedagogy_graph.json on disk."
         ),
     )
@@ -7422,7 +7406,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--smoke-deterministic",
         action="store_true",
         help=(
-            "Wave 120: forces provider='mock', stratified-samples ~20 "
+            "Force provider='mock' and stratified-sample about 20 "
             "chunks (every property-bearing chunk first, capped at 3 per "
             "surface form, padded to 20). No LLM call — completes in "
             "<60 s. Writes training_specs/smoke_pilot_report.md with "
@@ -7435,7 +7419,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--smoke-paraphrase",
         action="store_true",
         help=(
-            "Wave 120: like --smoke-deterministic but keeps the "
+            "Like --smoke-deterministic but keep the "
             "configured --provider so the paraphrase path (and "
             "preserve_tokens preservation) is exercised on ~20 "
             "stratified chunks. Floors scaled to 2 pairs per property. "
@@ -7517,7 +7501,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            "Wave 125a: cap on emitted SHACL violation-detection pairs. "
+            "Cap on emitted SHACL violation-detection pairs. "
             "When unset (default), the entire pyshacl-validated catalog "
             "(>= 800 pairs) is appended. Set this to balance the "
             "violation-detection share of the total corpus when running "
@@ -7537,7 +7521,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help=(
-            "Wave 124 fix: append abstention probes ('the source does "
+            "Append abstention probes ('the source does "
             "not establish X') to instruction_pairs.jsonl. Reads "
             "pedagogy_graph.json, samples concepts the chunk does NOT "
             "address, and emits grounded 'no, no evidence' completions. "
@@ -7566,7 +7550,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help=(
-            "Wave 124 fix: append schema-to-English bridge pairs to "
+            "Append schema-to-English bridge pairs to "
             "instruction_pairs.jsonl. Walks the property manifest's "
             "surface forms (e.g. sh:datatype, rdfs:subClassOf) and "
             "emits one definition pair + one usage pair per CURIE from "

@@ -45,7 +45,7 @@ from Trainforge.generators.pairs.preference import (
     JACCARD_DELTA_MIN,
     synthesize_preference_pair,
 )
-from Trainforge.synthesize_training import run_synthesis
+from Trainforge.synthesis.synthesize_training import run_synthesis
 
 FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "mini_course_training"
 SCHEMAS_ROOT = PROJECT_ROOT / "schemas"
@@ -788,7 +788,7 @@ def test_build_misconception_dpo_pair_logs_drop_on_empty_misconception():
     family looked clean in the captures. This test pins the audit
     contract so future refactors can't silently drop again.
     """
-    from Trainforge.synthesize_training import _build_misconception_dpo_pair
+    from Trainforge.synthesis.synthesize_training import _build_misconception_dpo_pair
 
     captured: list[dict] = []
 
@@ -829,7 +829,7 @@ def test_build_misconception_dpo_pair_logs_drop_on_empty_misconception():
 def test_build_misconception_dpo_pair_logs_drop_on_empty_correction():
     """Symmetric to the misconception-empty case: empty correction must
     also emit an audit event before the ``None`` return."""
-    from Trainforge.synthesize_training import _build_misconception_dpo_pair
+    from Trainforge.synthesis.synthesize_training import _build_misconception_dpo_pair
 
     captured: list[dict] = []
 
@@ -864,7 +864,7 @@ def test_build_misconception_dpo_pair_logs_drop_on_empty_correction():
 
 def test_build_misconception_dpo_pair_no_log_when_pair_built():
     """A well-formed misconception should NOT emit a skip event."""
-    from Trainforge.synthesize_training import _build_misconception_dpo_pair
+    from Trainforge.synthesis.synthesize_training import _build_misconception_dpo_pair
 
     captured: list[dict] = []
 

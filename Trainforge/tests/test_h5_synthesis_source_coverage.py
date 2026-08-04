@@ -2,7 +2,7 @@
 
 Pins the canonical W3.H ``source_coverage`` block on the new
 ``training_specs/synthesis_summary.json`` sidecar emitted by
-``Trainforge/synthesize_training.py::run_synthesis`` (via the
+``Trainforge/synthesis/synthesize_training.py::run_synthesis`` (via the
 ``_emit_synthesis_summary_sidecar`` helper). Five tests:
 
 * canonical shape + invariants (5 fields, dropped == sum, schema
@@ -27,7 +27,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from Trainforge.synthesize_training import (  # noqa: E402
+from Trainforge.synthesis.synthesize_training import (  # noqa: E402
     SynthesisStats,
     _emit_synthesis_summary_sidecar,
 )

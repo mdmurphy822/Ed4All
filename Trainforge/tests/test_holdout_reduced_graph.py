@@ -25,7 +25,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.synthesize_training import (  # noqa: E402
+from Trainforge.synthesis.synthesize_training import (  # noqa: E402
     _load_withheld_edge_index,
     _normalize_holdout_rel,
     _reduce_graph_by_holdout,
@@ -168,7 +168,7 @@ def test_withheld_edge_never_in_graph_sft_pair(tmp_path):
 # (its lazy ``HoldoutBuilder`` build at eval time). These tests pin the fix:
 # ``run_synthesis`` pre-builds the split when a graph->pair arm is enabled.
 
-from Trainforge.synthesize_training import (  # noqa: E402
+from Trainforge.synthesis.synthesize_training import (  # noqa: E402
     _ensure_holdout_split_for_graph_pairs,
     run_synthesis,
 )

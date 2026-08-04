@@ -54,7 +54,7 @@ from lib.validators.dpo_yield_projection import (  # noqa: E402
 )
 
 #: Search chain for the canonical objectives artifact, mirroring
-#: ``Trainforge/synthesize_training.py``'s ``_objectives_candidates`` — the
+#: ``Trainforge/synthesis/synthesize_training.py``'s ``_objectives_candidates`` — the
 #: same locations the real ``training_synthesis`` phase searches, in the
 #: same precedence order, so this script's projection sees the same
 #: objectives a real run would.

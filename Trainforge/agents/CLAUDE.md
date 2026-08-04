@@ -20,7 +20,7 @@ directory for the pedagogy/concept-graph build phase.
 Most agent specs live beside this file as `<agent-name>.md` and are resolved
 through a `source:` entry in `config/agents.yaml` (capabilities, `type`,
 `max_instances`). Two exceptions matter when enumerating the registry:
-`training-synthesizer`'s `source:` points at `Trainforge/synthesize_training.py`
+`training-synthesizer`'s `source:` points at `Trainforge/synthesis/synthesize_training.py`
 rather than a spec file, and `pedagogy-graph-builder` has **no**
 `config/agents.yaml` entry at all — it is declared only in
 `config/workflows.yaml`, so a registry walk will not see it.

@@ -59,7 +59,7 @@ in the GPT critique (lines 225-233):
    ``min_rationale_richness_score=0.30``.
 
 Filter mechanics (call site, in
-:mod:`Trainforge.synthesize_training`)::
+:mod:`Trainforge.synthesis.synthesize_training`)::
 
     status, reason, new_fields = validator.validate_pair(
         pair, kind="instruction", chunk=chunk,
@@ -684,7 +684,7 @@ class TrainingPairPromotionValidator:
     Two surfaces:
 
     - :meth:`validate_pair` — the in-process call site invoked by
-      :mod:`Trainforge.synthesize_training` between
+      :mod:`Trainforge.synthesis.synthesize_training` between
       ``_attach_source_grounding`` success and the buffer / sidecar /
       checkpoint append. Returns
       ``(promotion_status, rejection_reason, new_fields_dict)`` so the

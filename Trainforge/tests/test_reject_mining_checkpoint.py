@@ -36,7 +36,7 @@ from Trainforge.synthesis.synthesis_reject_mining import (  # noqa: E402
 from Trainforge.synthesis.synthesis_reject_mining import (  # noqa: E402
     MINE_REJECTS_ENV,
 )
-from Trainforge.synthesize_training import (  # noqa: E402
+from Trainforge.synthesis.synthesize_training import (  # noqa: E402
     _DISPOSITION_PROJECTED_FIELDS,
     _GENERATION_CONTRACT_FILES,
     _VERDICT_POLICY_FILES,
@@ -679,7 +679,7 @@ class _NullCapture:
 
 def _install_mined_rows(monkeypatch, rows) -> dict:
     """Substitute the selector's RESULT; leave the emit path untouched."""
-    import Trainforge.synthesize_training as st
+    import Trainforge.synthesis.synthesize_training as st
     from Trainforge.synthesis.synthesis_reject_mining import MinedFunnel
 
     seen = {"calls": 0}
@@ -704,7 +704,7 @@ def test_mined_rows_reach_the_written_preference_corpus(
     executed by any test in the tree (verified by making its first statement
     raise: the whole reject-mining suite still passed).
     """
-    import Trainforge.synthesize_training as st
+    import Trainforge.synthesis.synthesize_training as st
 
     monkeypatch.setenv(MINE_REJECTS_ENV, "on")
     rows = _mine_rows(2)
@@ -782,7 +782,7 @@ def test_mined_rows_honour_the_per_artifact_cap(
 
 def _install_mining_tripwire(monkeypatch) -> dict:
     """Fail loudly if the selector is reached at all."""
-    import Trainforge.synthesize_training as st
+    import Trainforge.synthesis.synthesize_training as st
 
     seen = {"calls": 0}
 
@@ -866,7 +866,7 @@ def test_mining_skipped_when_the_generation_map_stopped_early(
     ``stopped_early`` can only ever be set on the concurrent path.
     """
     from lib.generation import stop_control
-    import Trainforge.synthesize_training as st
+    import Trainforge.synthesis.synthesize_training as st
 
     monkeypatch.setenv(MINE_REJECTS_ENV, "on")
     seen = _install_mining_tripwire(monkeypatch)

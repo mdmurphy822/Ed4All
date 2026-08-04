@@ -7,7 +7,7 @@ in ``plans/wave8-generator-pair-validation-audit-2026-05.md`` § 4
 
 Predecessors landing:
 
-* W8.A — :func:`Trainforge.synthesize_training._stamp_deterministic_pair_audit_fields`
+* W8.A — :func:`Trainforge.synthesis.synthesize_training._stamp_deterministic_pair_audit_fields`
   helper that fans every appended deterministic-generator pair through
   the W2.E + W4.A + W4.B + W4.C audit-field stamping pattern. Stamps
   ``promotion_status="validated"`` (oracle-grounded by construction),
@@ -140,7 +140,7 @@ Drift notes vs plan §4:
   on disk carries: ``promotion_status="validated"``, …". The on-disk
   pair envelope is JSON-serialised per
   :func:`json.dumps(_p, sort_keys=True)` at
-  ``Trainforge/synthesize_training.py:1538``, so the assertion
+  ``Trainforge/synthesis/synthesize_training.py:1538``, so the assertion
   reads the JSONL file back rather than the in-memory return list.
 * The plan's Test 5 / 6 specs call ``validate({"course_dir": ...})``;
   in practice the validator accepts either ``course_dir`` (which
@@ -234,7 +234,7 @@ def _write_pedagogy_graph(course_dir: Path) -> Path:
     in :data:`Trainforge.eval.faithfulness._RELATION_TEMPLATES`.
 
     Path matches branch (1) of
-    :func:`Trainforge.synthesize_training._resolve_pedagogy_graph_path`'s
+    :func:`Trainforge.synthesis.synthesize_training._resolve_pedagogy_graph_path`'s
     candidate list (``<corpus_dir>/graph/pedagogy_graph.json``) so the
     LibV2-archive layout resolution wins on a fresh fixture.
     """
@@ -366,7 +366,7 @@ def _worker_a_landed(pair: Dict[str, Any]) -> bool:
 
 _DEFERRED_W8_A_SKIP = (
     "Wave 8 Worker A (`_stamp_deterministic_pair_audit_fields` helper "
-    "in `Trainforge/synthesize_training.py::run_synthesis`) has not "
+    "in `Trainforge/synthesis/synthesize_training.py::run_synthesis`) has not "
     "landed yet. Deterministic-generator pairs do not carry the "
     "W2.E + W4.A + W4.B + W4.C audit fields. Test deferred until "
     "Worker A lands; per the Wave 8 plan §5 sequencing this is "
@@ -403,7 +403,7 @@ def test_kg_metadata_pair_carries_audit_fields_after_run_synthesis(
     deferred-verification marker. Once Worker A lands the same test
     runs-not-skip and asserts the contract against the live emit.
     """
-    from Trainforge.synthesize_training import run_synthesis
+    from Trainforge.synthesis.synthesize_training import run_synthesis
 
     course_dir = _copy_mini_training_fixture(tmp_path)
     _write_pedagogy_graph(course_dir)
@@ -514,7 +514,7 @@ def test_violation_pair_carries_audit_fields_after_run_synthesis(
     pytest.importorskip("pyshacl")
     pytest.importorskip("rdflib")
 
-    from Trainforge.synthesize_training import run_synthesis
+    from Trainforge.synthesis.synthesize_training import run_synthesis
 
     _patch_shacl_manifest(monkeypatch)
     course_dir = _copy_mini_training_fixture(tmp_path)
@@ -613,7 +613,7 @@ def test_pair_lo_refs_validate_walk_skips_deterministic_pairs(
     detects that condition via the pre-walk audit-field check and
     skips with a deferred-verification marker.
     """
-    from Trainforge.synthesize_training import run_synthesis
+    from Trainforge.synthesis.synthesize_training import run_synthesis
     from lib.validators.pair_lo_refs import PairLearningOutcomeRefsValidator
 
     course_dir = _copy_mini_training_fixture(tmp_path)
@@ -710,7 +710,7 @@ def test_pair_promotion_validate_walk_passes_deterministic_pairs(
     Skip pattern: same deferred-verification marker as Test 5 when
     Worker A hasn't landed.
     """
-    from Trainforge.synthesize_training import run_synthesis
+    from Trainforge.synthesis.synthesize_training import run_synthesis
     from lib.validators.training_pair_promotion import (
         TrainingPairPromotionValidator,
     )
@@ -813,7 +813,7 @@ def test_kg_metadata_pair_carries_question_type_true_false(
     the same operator-readable signal fires on a single-failure CI
     output.
     """
-    from Trainforge.synthesize_training import run_synthesis
+    from Trainforge.synthesis.synthesize_training import run_synthesis
 
     course_dir = _copy_mini_training_fixture(tmp_path)
     _write_pedagogy_graph(course_dir)

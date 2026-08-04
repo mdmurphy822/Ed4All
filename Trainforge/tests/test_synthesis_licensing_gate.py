@@ -1,6 +1,6 @@
 """Marketable-v1 D4 / Phase 4 — license-clean gate for training-pair synthesis.
 
-``Trainforge/synthesize_training.py::run_synthesis`` fails closed for two
+``Trainforge/synthesis/synthesize_training.py::run_synthesis`` fails closed for two
 distinct Anthropic-related cases:
 
 - ``provider="anthropic"`` — the Anthropic-SDK training path was REMOVED
@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from Trainforge.synthesize_training import (
+from Trainforge.synthesis.synthesize_training import (
     SynthesisLicensingError,
     _ANTHROPIC_FAMILY_SYNTHESIS_PROVIDERS,
     _REMOVED_SYNTHESIS_PROVIDERS,

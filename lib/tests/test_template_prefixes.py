@@ -2,7 +2,7 @@
 generator template_id prefix tuple.
 
 Both consumers (lib.validators.curie_anchoring and
-Trainforge.synthesize_training) MUST import the canonical tuple from
+Trainforge.synthesis.synthesize_training) MUST import the canonical tuple from
 lib.ontology.template_prefixes. Drift between local copies = silent
 under-enforcement (e.g. a future fifth deterministic generator added
 to one file but not the other).
@@ -22,7 +22,7 @@ def test_deterministic_template_prefixes_single_source_of_truth() -> None:
     from lib.validators.curie_anchoring import (
         DETERMINISTIC_TEMPLATE_PREFIXES as ca,
     )
-    from Trainforge.synthesize_training import (
+    from Trainforge.synthesis.synthesize_training import (
         _DETERMINISTIC_TEMPLATE_PREFIXES as st,
     )
 

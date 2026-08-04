@@ -1170,7 +1170,7 @@ def _usage_detail(
 #                               block).
 #   assessment_synthesis        ``_ASSESSMENTS_CHECKPOINT_NAME`` written to
 #                               ``project_path/06_assessments/``.
-#   training_synthesis          Trainforge/synthesize_training.py
+#   training_synthesis          Trainforge/synthesis/synthesize_training.py
 #                               ``_append_synthesis_pairs_checkpoint`` (opened
 #                               ``"a"`` + flushed per accepted pair) at
 #                               ``<corpus>/training_specs/

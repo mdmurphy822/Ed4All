@@ -25,7 +25,7 @@ from Trainforge.synthesis.synthesis_holdout import (
     SynthesisHoldoutError,
     load_synthesis_holdout_registry,
 )
-from Trainforge.synthesize_training import run_synthesis
+from Trainforge.synthesis.synthesize_training import run_synthesis
 
 SPLITS = ("checkpoint_dev", "grounding_stress", "pedagogy_misconception")
 

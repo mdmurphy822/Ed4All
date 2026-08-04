@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.synthesize_training import run_synthesis  # noqa: E402
+from Trainforge.synthesis.synthesize_training import run_synthesis  # noqa: E402
 from Trainforge.tests._synthesis_fakes import (  # noqa: E402
     FakeLocalDispatcher,
     make_instruction_response,

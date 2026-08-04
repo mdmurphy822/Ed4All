@@ -44,7 +44,7 @@ def test_pipeline_synthesizer_propagates_graceful_stop(
     chunks_dir.mkdir(parents=True)
     (chunks_dir / "chunks.jsonl").write_text("{}\n", encoding="utf-8")
 
-    import Trainforge.synthesize_training as synthesis
+    import Trainforge.synthesis.synthesize_training as synthesis
 
     def _stop(**_kwargs):
         raise GracefulStopRequested("training_synthesis.pair_loop", 17)
@@ -73,7 +73,7 @@ def test_pipeline_synthesizer_propagates_generator_failure(
     chunks_dir.mkdir(parents=True)
     (chunks_dir / "chunks.jsonl").write_text("{}\n", encoding="utf-8")
 
-    import Trainforge.synthesize_training as synthesis
+    import Trainforge.synthesis.synthesize_training as synthesis
 
     def _fail(**_kwargs):
         raise ConnectionError("teacher endpoint unavailable")
@@ -105,7 +105,7 @@ def test_pipeline_synthesizer_rejects_empty_pair_artifacts(
     (specs / "instruction_pairs.jsonl").write_text("", encoding="utf-8")
     (specs / "preference_pairs.jsonl").write_text("", encoding="utf-8")
 
-    import Trainforge.synthesize_training as synthesis
+    import Trainforge.synthesis.synthesize_training as synthesis
 
     class _Stats:
         instruction_pairs_emitted = 0
@@ -140,7 +140,7 @@ def test_optional_pipeline_synthesizer_preserves_legacy_error_envelope(
     chunks_dir.mkdir(parents=True)
     (chunks_dir / "chunks.jsonl").write_text("{}\n", encoding="utf-8")
 
-    import Trainforge.synthesize_training as synthesis
+    import Trainforge.synthesis.synthesize_training as synthesis
 
     def _fail(**_kwargs):
         raise ConnectionError("teacher endpoint unavailable")

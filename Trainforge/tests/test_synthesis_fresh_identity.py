@@ -16,7 +16,7 @@ from Trainforge.synthesis.synthesis_fresh_start import (
     FreshStartError,
     bind_fresh_start_run_contract,
 )
-from Trainforge.synthesize_training import (
+from Trainforge.synthesis.synthesize_training import (
     _append_synthesis_pairs_checkpoint,
     _load_synthesis_pairs_checkpoint,
 )

@@ -572,7 +572,7 @@ tracker.update_status("content_generator", "IN_PROGRESS",
        Runs under the `staged-v4` synthesis contract —
        `workflow_runner` setdefaults `TRAINFORGE_STAGED_SYNTHESIS_V4=true`
        and passes no CLI selector. `--synthesis-contract` is a
-       `python -m Trainforge.synthesize_training` flag, NOT a pipeline
+       `python -m Trainforge.synthesis.synthesize_training` flag, NOT a pipeline
        route. `micro-v1` is selectable but cannot complete a production
        run today (its Stage A needs an `action_object` the production
        objective loader strips) — see

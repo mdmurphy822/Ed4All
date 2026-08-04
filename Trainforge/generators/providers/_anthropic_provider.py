@@ -4,7 +4,7 @@ Anthropic synthesis identity constants (slim module).
 
 Phase 4 — the Anthropic-SDK TRAINING-PAIR synthesis path was removed
 entirely: the ``AnthropicSynthesisProvider`` class and its SDK transport
-no longer exist, and ``Trainforge/synthesize_training.py::run_synthesis``
+no longer exist, and ``Trainforge/synthesis/synthesize_training.py::run_synthesis``
 now fails closed UNCONDITIONALLY on ``provider="anthropic"`` (no
 acknowledgment escape). The training-pair corpus is therefore license-clean
 by construction. See ``docs/LICENSING.md`` § "Synthesis providers".

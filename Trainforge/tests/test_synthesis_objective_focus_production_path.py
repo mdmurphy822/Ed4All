@@ -23,7 +23,7 @@ from typing import Any, Dict, List
 
 import pytest
 
-from Trainforge.synthesize_training import (
+from Trainforge.synthesis.synthesize_training import (
     _focus_chunk_on_objective,
     _pair_eligibility_for_mode,
     run_synthesis_from_libv2,

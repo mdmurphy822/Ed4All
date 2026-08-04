@@ -1,5 +1,5 @@
 """Graceful-stop ("checkpoint on command") regression tests for
-``Trainforge/synthesize_training.py::run_synthesis``.
+``Trainforge/synthesis/synthesize_training.py::run_synthesis``.
 
 These extend the resume-checkpoint suite in
 ``test_synthesize_training.py:1795-2129`` (``preserved on budget-exceeded``
@@ -44,8 +44,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-import Trainforge.synthesize_training as synthesize_training  # noqa: E402
-from Trainforge.synthesize_training import run_synthesis  # noqa: E402
+import Trainforge.synthesis.synthesize_training as synthesize_training  # noqa: E402
+from Trainforge.synthesis.synthesize_training import run_synthesis  # noqa: E402
 from lib.generation import stop_control  # noqa: E402
 from lib.generation.stop_control import GracefulStopRequested  # noqa: E402
 

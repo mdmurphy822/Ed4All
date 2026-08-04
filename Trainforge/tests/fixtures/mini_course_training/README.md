@@ -1,7 +1,7 @@
 # mini_course_training — SFT/DPO training-pair synthesis fixture
 
 Pre-built corpus of 15 enriched chunks used by Worker C's
-`Trainforge.synthesize_training` stage. This fixture is NOT a raw HTML course
+`Trainforge.synthesis.synthesize_training` stage. This fixture is NOT a raw HTML course
 — it is pre-chunked and pre-enriched, because the synthesis stage consumes
 `corpus/chunks.jsonl` (the output of the base + alignment passes) rather than
 raw source HTML.

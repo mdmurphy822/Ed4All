@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Wave 79 Worker B: prerequisite-aware curriculum ordering for
-``Trainforge.synthesize_training``.
+``Trainforge.synthesis.synthesize_training``.
 
 Covered contracts:
   * Topo sort over ``prerequisite_of`` edges emits pairs in dependency order.
@@ -34,7 +34,7 @@ from Trainforge.synthesis.curriculum import (  # noqa: E402
     build_prereq_recap,
     order_pairs_by_curriculum,
 )
-from Trainforge.synthesize_training import (  # noqa: E402
+from Trainforge.synthesis.synthesize_training import (  # noqa: E402
     run_synthesis,
     run_synthesis_from_libv2,
 )

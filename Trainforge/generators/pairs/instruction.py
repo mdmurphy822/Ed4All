@@ -77,7 +77,7 @@ COMPLETION_MIN, COMPLETION_MAX = 50, 600
 #                             analyze-bloom level (already a tuned cell).
 #   * ``orientation``       — low frequency, structural framing only.
 #   * ``prerequisites``     — pedagogically owned by the prereq-recap
-#                             generator (Trainforge/synthesize_training.py),
+#                             generator (Trainforge/synthesis/synthesize_training.py),
 #                             not the per-chunk instruction surface.
 #   * ``exercise``          — owned by the assessment / DPO factories, not
 #                             the SFT instruction surface.

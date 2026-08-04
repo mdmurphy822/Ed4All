@@ -38,7 +38,7 @@ from lib.ontology.property_manifest import (  # noqa: E402
     PropertyManifest,
 )
 from Trainforge import synthesize_training  # noqa: E402, F401
-from Trainforge.synthesize_training import run_synthesis  # noqa: E402
+from Trainforge.synthesis.synthesize_training import run_synthesis  # noqa: E402
 
 
 FIXTURE_ROOT = (
@@ -442,7 +442,7 @@ def test_run_synthesis_logs_warning_when_max_pairs_clips_eligible_chunks(
     already burned)."""
     course_dir = _make_working_copy(tmp_path)
 
-    with caplog.at_level(logging.WARNING, logger="Trainforge.synthesize_training"):
+    with caplog.at_level(logging.WARNING, logger="Trainforge.synthesis.synthesize_training"):
         run_synthesis(
             corpus_dir=course_dir,
             course_code="MINI_TRAINING_101",
@@ -919,7 +919,7 @@ def test_smoke_stratified_sampler_prefers_property_bearing_chunks() -> None:
     """The smoke sampler picks every property-bearing chunk first (up to
     3 per surface form), then pads with random chunks."""
     import random as _r
-    from Trainforge.synthesize_training import _smoke_stratified_sample
+    from Trainforge.synthesis.synthesize_training import _smoke_stratified_sample
 
     chunks = [
         {"id": f"c{i}", "text": f"chunk {i} contains the keyword sh:NodeShape"}
@@ -1816,7 +1816,7 @@ def test_violation_generator_skipped_for_non_shacl_family(
     # synthesize_training imports it via from-import inside run_synthesis,
     # so the module-level binding is what gets resolved each call.
 
-    caplog.set_level(logging.WARNING, logger="Trainforge.synthesize_training")
+    caplog.set_level(logging.WARNING, logger="Trainforge.synthesis.synthesize_training")
     stats = run_synthesis(
         corpus_dir=course_dir,
         course_code="MINI_TRAINING_101",
@@ -2161,7 +2161,7 @@ def test_synthesis_checkpoint_schema_version_drift_invalidates(
         _json.dumps(v0_record) + "\n", encoding="utf-8",
     )
 
-    caplog.set_level(logging.WARNING, logger="Trainforge.synthesize_training")
+    caplog.set_level(logging.WARNING, logger="Trainforge.synthesis.synthesize_training")
     stats = run_synthesis(
         corpus_dir=working,
         course_code="MINI_TRAINING_101",
@@ -2219,7 +2219,7 @@ def test_stale_terminal_rejection_fingerprint_regenerates(
         encoding="utf-8",
     )
 
-    caplog.set_level(logging.WARNING, logger="Trainforge.synthesize_training")
+    caplog.set_level(logging.WARNING, logger="Trainforge.synthesis.synthesize_training")
     stats = run_synthesis(
         corpus_dir=working,
         course_code="MINI_TRAINING_101",

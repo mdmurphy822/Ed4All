@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-import Trainforge.synthesize_training as synthesis
+import Trainforge.synthesis.synthesize_training as synthesis
 
 
 SUPER_SNAPSHOT = "4f0cf9f6c9f84c0daac28fb98f1a5730"

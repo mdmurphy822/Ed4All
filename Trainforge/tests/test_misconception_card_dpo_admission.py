@@ -18,7 +18,7 @@ from __future__ import annotations
 import pytest
 
 from Trainforge.generators.staged.window_contract import build_evidence_window
-from Trainforge.synthesize_training import (
+from Trainforge.synthesis.synthesize_training import (
     _focus_chunk_on_objective,
     _pair_eligibility_for_mode,
 )

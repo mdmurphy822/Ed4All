@@ -346,7 +346,7 @@ Two closely-related representations exist:
 ### InstructionPair
 
 **Definition:** `schemas/knowledge/instruction_pair.schema.json`.
-**Instance production:** `Trainforge/synthesize_training.py` → `Trainforge/generators/pairs/instruction.py`.
+**Instance production:** `Trainforge/synthesis/synthesize_training.py` → `Trainforge/generators/pairs/instruction.py`.
 **Instance consumption:** Downstream SFT trainers (Alpaca / OpenAI format).
 
 **Required fields:**

@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://ed4all/schemas/training/property_manifest.schema.json",
   "title": "Property Manifest",
-  "description": "Wave 109 / Phase C: Declares the canonical surface forms a course-specific SLM adapter must teach. The synthesis-side PropertyCoverageValidator and the eval-side PerPropertyEvaluator both consume this manifest.",
+  "description": "Declares the canonical surface forms a course-specific SLM adapter must teach. The synthesis-side PropertyCoverageValidator and eval-side PerPropertyEvaluator both consume this manifest.",
   "type": "object",
   "required": ["family", "properties"],
   "properties": {
@@ -16,7 +16,7 @@
     "learner_persona": {
       "type": "string",
       "minLength": 1,
-      "description": "Wave 132d: short noun-phrase describing the target learner (e.g. 'an RDF/SHACL learner', 'a chemistry undergraduate'). Threaded into Trainforge.synthesize_training._INSTRUCTION_PROMPT_FRAMES variant 1 as the persona prefix. Default 'a learner' when absent."
+      "description": "Short noun phrase describing the target learner. Threaded into Trainforge.synthesis.synthesize_training._INSTRUCTION_PROMPT_FRAMES variant 1 as the persona prefix. Defaults to 'a learner' when absent."
     },
     "validation_kind": {
       "type": "string",

@@ -75,7 +75,7 @@ def write_jsonl(
 ) -> int:
     """Atomically write an iterable of dict records to a JSONL file.
 
-    Mirrors :func:`Trainforge.synthesize_training._write_jsonl` --
+    Mirrors :func:`Trainforge.synthesis.synthesize_training._write_jsonl` --
     writes to ``{path}.tmp`` then ``rename(path)`` so a partial write
     never clobbers the existing artifact.
 
@@ -127,7 +127,7 @@ def append_jsonl(
     Designed for in-progress sidecars + resume checkpoints where the
     caller owns the file lifetime (open at start of run, append per
     record, close at end). Mirrors the inline pattern at
-    :mod:`Trainforge.synthesize_training` line 1180, 1725, 1809, etc.
+    :mod:`Trainforge.synthesis.synthesize_training` line 1180, 1725, 1809, etc.
 
     Args:
         fh: File handle (text mode, encoding="utf-8" expected).
