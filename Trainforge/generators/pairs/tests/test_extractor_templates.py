@@ -11,11 +11,11 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.instruction_pair_extractor import (  # noqa: E402
+from Trainforge.generators.pairs.extractor import (  # noqa: E402
     METHOD_COMMON_PITFALL,
     METHOD_COMMON_PITFALL_MULTI_ARM,
     METHOD_PROBLEM_SOLUTION,
@@ -328,7 +328,7 @@ def test_run_extraction_dispatches_template_aware_methods(tmp_path):
         capture=None,
     )
     methods = Counter(p["metadata"]["extraction_method"] for p in pairs)
-    # Must see all four new methods plus the multi-arm + DPO siblings.
+    # Every structured method and its multi-arm or DPO sibling must dispatch.
     expected = {
         METHOD_PROCEDURE,
         METHOD_REAL_WORLD_SCENARIO,

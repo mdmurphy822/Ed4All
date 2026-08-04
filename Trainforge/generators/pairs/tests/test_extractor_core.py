@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for ``Trainforge.instruction_pair_extractor`` (Wave 79).
+"""Core contracts for structure-aware instruction-pair extraction.
 
 Covered contracts:
   - assessment_item chunks with ``Q: ... A: ...`` markers yield Q -> A
@@ -24,11 +24,11 @@ from pathlib import Path
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.instruction_pair_extractor import (  # noqa: E402
+from Trainforge.generators.pairs.extractor import (  # noqa: E402
     ALL_METHODS,
     METHOD_ASSESSMENT_ITEM,
     METHOD_EXAMPLE_REASONING,

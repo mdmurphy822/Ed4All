@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Trainforge — Real Q-A / task-solution / reasoning-chain extractor.
+"""Extract instruction pairs from structures already present in chunks.
 
-Where Wave 77 epsilon's :mod:`Trainforge.synthesize_training` wraps every
-chunk in an "Explain X" template, this stage walks the *structure already
-present* in chunks and lifts:
+The extractor recognizes assessment, exercise, worked-example, explanation,
+misconception, procedure, scenario, pitfall, and problem-solution structures:
 
 * genuine Q -> A pairs from ``assessment_item`` chunks (stem, correct
   answer marker, reasoning),
@@ -21,15 +20,14 @@ SFT/DPO training depends on (``objective_ids``, ``bloom_level``,
 ``difficulty``, ``chunk_type``, ``extraction_method``,
 ``source_chunk_id``, ``quality_score``).
 
-This module is a *new*, additive extractor. It does not modify the
-Wave 77 epsilon API. The two stages can run side by side; their pair
-JSONLs are union-able by ``source_chunk_id`` + ``extraction_method``.
+Its output can be combined with synthesized pairs using
+``source_chunk_id`` and ``extraction_method`` as provenance keys.
 
 CLI:
 
 .. code-block:: bash
 
-    python -m Trainforge.instruction_pair_extractor \\
+    python -m Trainforge.generators.pairs.extractor \\
         --slug <course-slug> \\
         --methods assessment_item,exercise,example_reasoning,\\
 explanation_template,misconception_distinguish,misconception_contrast \\
@@ -56,7 +54,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 # Make project root importable when run as a script.
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -78,9 +76,8 @@ METHOD_EXAMPLE_REASONING = "example_reasoning"
 METHOD_EXPLANATION_TEMPLATE = "explanation_template"
 METHOD_MISCONCEPTION_DISTINGUISH = "misconception_distinguish"
 METHOD_MISCONCEPTION_CONTRAST = "misconception_contrast"
-# Wave 81: template-aware extractors keyed on chunk_type values that are now
-# propagated from Courseforge ``data-cf-template-type`` (Wave 79 C). Each
-# extractor produces a richer pair shape than the legacy
+# Template-aware extractors use chunk types propagated from Courseforge
+# ``data-cf-template-type``. Each produces a richer pair shape than the general
 # ``explanation_template`` fallback because the source HTML carries
 # template-specific subsections (Steps / Inputs / Output for procedure,
 # Your Task / Approach / Success Criteria for real_world_scenario, etc.).
@@ -118,8 +115,8 @@ _QUALITY_BY_METHOD: Dict[str, float] = {
     METHOD_EXPLANATION_TEMPLATE: 0.6,
     METHOD_MISCONCEPTION_DISTINGUISH: 0.9,
     METHOD_MISCONCEPTION_CONTRAST: 0.9,
-    # Wave 81 template-aware buckets — generally higher than
-    # explanation_template because the chunks carry strict subsection
+    # Template-aware buckets are generally higher than explanation_template
+    # because the chunks carry strict subsection
     # structure (Inputs/Steps/Output etc.) that produces well-shaped pairs.
     METHOD_PROCEDURE: 1.0,
     METHOD_REAL_WORLD_SCENARIO: 0.95,
@@ -797,11 +794,11 @@ def extract_from_misconceptions(
 
 
 # ---------------------------------------------------------------------------
-# Wave 81 template-aware extractors
+# Template-aware extractors
 # ---------------------------------------------------------------------------
 #
-# These extractors run when chunk.chunk_type matches a Wave 79 C template
-# label (procedure, real_world_scenario, common_pitfall, problem_solution).
+# These extractors run when ``chunk_type`` identifies a structured template
+# (procedure, real_world_scenario, common_pitfall, or problem_solution).
 # Each template emits a stable subsection grammar that we exploit to lift
 # pairs richer than what the legacy explanation_template fallback produces.
 
@@ -1175,20 +1172,20 @@ def _shape_dpo_pair(
 
 
 def _read_chunks(path: Path) -> List[Dict[str, Any]]:
-    """Thin wrapper around :func:`lib.utils.read_jsonl` (W-D6)."""
+    """Read chunk records through the shared JSONL utility."""
     return _utils_read_jsonl(path)
 
 
 def _write_jsonl(path: Path, records: Iterable[Dict[str, Any]]) -> int:
-    """Thin wrapper around :func:`lib.utils.write_jsonl` (W-D6)."""
+    """Write extracted records through the shared JSONL utility."""
     return _utils_write_jsonl(path, records)
 
 
 def _resolve_corpus_path(slug: str, libv2_root: Optional[Path] = None) -> Path:
     """Locate ``imscc_chunks/chunks.jsonl`` for ``slug`` under LibV2.
 
-    Phase 7c: prefers ``imscc_chunks/`` and falls back to legacy
-    ``corpus/`` via the shim for unprovisioned archives.
+    The shared storage resolver accepts both the canonical archive location
+    and archives that still use the earlier corpus directory name.
     """
     from lib.libv2_storage import resolve_imscc_chunks_path
 
@@ -1285,11 +1282,8 @@ def run_extraction(
             # template keeps the ``derived_from=explanation_template``
             # quality bucket honest.
             emitted.extend(extract_from_explanation(chunk))
-        # Wave 81: template-aware extractors keyed on the four new
-        # chunk_type values that are now propagated from Courseforge
-        # data-cf-template-type (Wave 79 C). Each emits richer pairs than
-        # the explanation_template fallback because the source HTML has
-        # template-specific subsection structure.
+        # Structured chunk types retain template-specific subsections, which
+        # support richer pairs than the general explanation fallback.
         if chunk_type == "procedure" and METHOD_PROCEDURE in method_set:
             emitted.extend(extract_from_procedure(chunk))
         if (
@@ -1375,12 +1369,7 @@ def _capture_emit(
     pair: Dict[str, Any],
     chunk: Dict[str, Any],
 ) -> None:
-    """Log one ``instruction_pair_synthesis`` decision per emitted pair.
-
-    Per root CLAUDE.md "LLM call-site instrumentation" rule, we capture a
-    rationale that interpolates dynamic signals (chunk id, method, quality
-    score, lo refs, lengths) so the decision is replayable post-hoc.
-    """
+    """Log one replayable synthesis decision per emitted pair."""
     md = pair["metadata"]
     method = md["extraction_method"]
     chunk_id = md["source_chunk_id"]
@@ -1388,13 +1377,12 @@ def _capture_emit(
     out_len = len(pair.get("output") or "")
     chain = pair.get("reasoning_chain") or []
     rationale = (
-        f"Wave 79 extractor lifted a {method} pair from chunk {chunk_id} "
+        f"Structural extraction emitted a {method} pair from chunk {chunk_id} "
         f"(chunk_type={md.get('chunk_type')}, lo_refs={md.get('objective_ids')}, "
         f"bloom={md.get('bloom_level')}, difficulty={md.get('difficulty')}). "
         f"Instruction length={instr_len} chars, output length={out_len} chars, "
         f"reasoning_chain_steps={len(chain)}, quality_score={md.get('quality_score')}. "
-        f"Pair extracted from existing chunk structure rather than via "
-        f"template wrap (Wave 77 epsilon stays for that)."
+        "The pair is grounded in structure already present in the chunk."
     )
     try:
         capture.log_decision(
@@ -1428,16 +1416,18 @@ def _parse_methods(raw: Optional[str]) -> Tuple[str, ...]:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m Trainforge.instruction_pair_extractor",
+        prog="python -m Trainforge.generators.pairs.extractor",
         description=(
             "Extract genuine instruction-response and reasoning-chain pairs "
-            "from a Trainforge-aligned chunks.jsonl. Beyond Wave 77 epsilon's "
-            "template wrap."
+            "from a Trainforge-aligned chunks.jsonl using source structure."
         ),
     )
     parser.add_argument(
         "--slug",
-        help="LibV2 course slug (looked up under LibV2/courses/<slug>/corpus).",
+        help=(
+            "LibV2 course slug (looked up under "
+            "LibV2/courses/<slug>/imscc_chunks)."
+        ),
     )
     parser.add_argument(
         "--chunks",
@@ -1448,7 +1438,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=",".join(ALL_METHODS),
         help=(
             "Comma-separated list of extraction methods to run. Defaults "
-            "to all six."
+            "to all registered methods."
         ),
     )
     parser.add_argument(

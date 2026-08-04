@@ -348,10 +348,9 @@ Trainforge/
 ├── architecture.md
 ├── process_course.py            # IMSCC → RAG corpus pipeline (CourseProcessor)
 ├── alignment/                   # Learning-outcome and teaching-role alignment
-├── alignment/                   # Runtime-derived outcome alignment
-│   └── outcomes.py             # Objective vocabulary matching + parent rollup
-├── curriculum.py                # Curriculum/teaching-role surface
-├── instruction_pair_extractor.py
+│   ├── align_chunks.py          # Chunk teaching-role alignment
+│   ├── outcomes.py              # Objective vocabulary matching + parent rollup
+│   └── tests/                   # Alignment contracts
 ├── synthesize_training.py       # Legacy CLI/import compatibility shim
 ├── train_course.py              # SLM adapter training entry point
 ├── rag/                       # Retrieval and typed graph construction
@@ -400,8 +399,10 @@ Trainforge/
 │   │   ├── _curriculum_provider.py  # Curriculum provider surface
 │   │   └── _session_budget.py       # Budget tracker + circuit breaker
 │   ├── pairs/
+│   │   ├── extractor.py         # Structure-aware pair extraction
 │   │   ├── instruction.py       # Canonical instruction-pair authoring
-│   │   └── preference.py        # Canonical preference-pair authoring
+│   │   ├── preference.py        # Canonical preference-pair authoring
+│   │   └── tests/               # Extractor contracts
 │   ├── postprocessing/
 │   │   ├── summary_factory.py   # Deterministic retrieval-summary enrichment
 │   │   ├── pair_decontamination.py  # Mandatory gold-set leakage screening
