@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 from typing import Any, Iterable
@@ -329,7 +330,7 @@ def render_readme(summary: dict[str, Any]) -> str:
 <div align="center">
 <table>
 <thead>
-<tr bgcolor="#1F6FEB"><th align="center" colspan="4"><font color="#FFFFFF">🎓 Development Token Tracking</font></th></tr>
+<tr bgcolor="#1F6FEB"><th align="center" colspan="4"><font color="#FFFFFF">Token Tracking</font></th></tr>
 <tr>
 <td align="center" width="25%" bgcolor="#EDE9FE"><font color="#111827"><strong>{total:,}</strong><br><sub>🧠 DEVELOPMENT TOKENS</sub></font></td>
 <td align="center" width="25%" bgcolor="#DBEAFE"><font color="#111827"><strong>{summary['total_sessions']:,}</strong><br><sub>🧭 SESSIONS</sub></font></td>
@@ -380,9 +381,79 @@ def _comparable(summary: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in summary.items() if key != "generated_at_utc"}
 
 
-def _install_hook(repo: Path) -> int:
+def _validate_summary(summary: object) -> dict[str, Any]:
+    """Validate the public aggregate without consulting private session logs."""
+    if not isinstance(summary, dict) or summary.get("schema_version") != SCHEMA_VERSION:
+        raise ValueError(f"aggregate must use schema_version {SCHEMA_VERSION}")
+    if not isinstance(summary.get("generated_at_utc"), str):
+        raise ValueError("aggregate requires generated_at_utc")
+    if summary.get("scope") != "Ed4All development sessions":
+        raise ValueError("aggregate has an unexpected scope")
+
+    sources = summary.get("sources")
+    if not isinstance(sources, dict) or set(sources) != {"claude", "codex"}:
+        raise ValueError("aggregate sources must contain exactly claude and codex")
+    for name in ("claude", "codex"):
+        source = sources[name]
+        if not isinstance(source, dict):
+            raise ValueError(f"aggregate source {name!r} must be an object")
+        for field in _empty_source():
+            value = source.get(field)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError(f"aggregate {name}.{field} must be a non-negative integer")
+
+    total_tokens = sum(source["tokens"] for source in sources.values())
+    total_sessions = sum(source["sessions"] for source in sources.values())
+    total_user_turns = sum(source["user_turns"] for source in sources.values())
+    expected_average = total_tokens // total_sessions if total_sessions else 0
+    expected = {
+        "total_tokens": total_tokens,
+        "total_sessions": total_sessions,
+        "average_tokens_per_session": expected_average,
+        "total_user_turns": total_user_turns,
+    }
+    for field, value in expected.items():
+        if summary.get(field) != value:
+            raise ValueError(f"aggregate {field} is inconsistent with its sources")
+
+    lines = summary.get("repository_lines")
+    if not isinstance(lines, dict):
+        raise ValueError("aggregate repository_lines must be an object")
+    for field in (*LOC_CATEGORIES, "total"):
+        value = lines.get(field)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError(f"aggregate repository_lines.{field} must be a non-negative integer")
+    if lines["total"] != sum(lines[field] for field in LOC_CATEGORIES):
+        raise ValueError("aggregate repository_lines.total is inconsistent")
+    return summary
+
+
+def _check_rendered(repo: Path) -> int:
+    """Validate publishable tracker state without reading private logs."""
+    aggregate_path = repo / DEFAULT_AGGREGATE
+    readme_path = repo / DEFAULT_README
+    try:
+        summary = _validate_summary(json.loads(aggregate_path.read_text(encoding="utf-8")))
+        if summary["repository_lines"] != collect_loc(repo):
+            print("Development-token tracked LOC is stale; run the updater.", file=sys.stderr)
+            return 1
+        readme = readme_path.read_text(encoding="utf-8")
+        if readme != _replace_marked(readme, render_readme(summary)):
+            print("README Token Tracking section is stale; run the updater.", file=sys.stderr)
+            return 1
+    except (OSError, ValueError, json.JSONDecodeError, KeyError) as exc:
+        print(f"Development-token rendered check failed: {exc}", file=sys.stderr)
+        return 2
+    print("Rendered development-token statistics are current.")
+    return 0
+
+
+def _install_hook(repo: Path, external: Path | None = None) -> int:
     hook = repo / ".git" / "hooks" / "pre-push"
-    command = "python3 scripts/ops/update_development_tokens.py --check\n"
+    command = "python3 scripts/ops/update_development_tokens.py"
+    if external is not None:
+        command += f" --external {shlex.quote(str(external.expanduser().resolve()))}"
+    command += " --check\n"
     content = "#!/bin/sh\nset -eu\n" + command
     if hook.exists() and hook.read_text(encoding="utf-8") != content:
         print(f"Refusing to overwrite existing hook: {hook}", file=sys.stderr)
@@ -407,11 +478,18 @@ def main(argv: list[str] | None = None) -> int:
         help="write a numeric-only machine aggregate without changing tracked files",
     )
     parser.add_argument("--check", action="store_true")
+    parser.add_argument(
+        "--check-rendered",
+        action="store_true",
+        help="validate aggregate schema, README rendering, and tracked LOC without session logs",
+    )
     parser.add_argument("--install-hook", action="store_true")
     args = parser.parse_args(argv)
     repo = args.repo.resolve()
     if args.install_hook:
-        return _install_hook(repo)
+        return _install_hook(repo, args.external)
+    if args.check_rendered:
+        return _check_rendered(repo)
     external = args.external
     if external is None and os.environ.get("ED4ALL_TOKEN_STATS_EXPORT"):
         external = Path(os.environ["ED4ALL_TOKEN_STATS_EXPORT"])

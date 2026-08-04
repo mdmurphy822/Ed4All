@@ -8,6 +8,7 @@ model efficiency.
 ```bash
 python3 scripts/ops/update_development_tokens.py
 python3 scripts/ops/update_development_tokens.py --check
+python3 scripts/ops/update_development_tokens.py --check-rendered
 ```
 
 The updater deduplicates Claude streaming snapshots by session and message ID.
@@ -111,6 +112,13 @@ fields are ignored, but the export should still contain no raw session data.
 Copying this small aggregate is the supported direction-independent workflow;
 the updater does not open an SSH connection or publish a machine address.
 
+`--check-rendered` is the CI-safe check. It does not read Claude or Codex logs
+and does not need the private aggregate path. It validates the tracked
+schema-v2 aggregate, confirms that its LOC totals match `git ls-files`, and
+confirms that the README's **Token Tracking** section is the exact rendering of
+that aggregate. It cannot determine whether new local sessions have occurred;
+use the full `--check` before committing.
+
 ## Pre-push freshness check
 
 Install the local hook once:
@@ -120,6 +128,20 @@ python3 scripts/ops/update_development_tokens.py --install-hook
 ```
 
 The hook runs `--check` and rejects a push when the local numeric aggregates or
-README footer are stale. It never updates or amends a commit. The installer
+README section are stale. It never updates or amends a commit. The installer
 refuses to overwrite a pre-existing hook; in that case, add the documented
 `--check` command to the existing hook manually.
+
+When a second machine's numeric aggregate is part of the totals, install the
+hook with an explicit local path:
+
+```bash
+python3 scripts/ops/update_development_tokens.py \
+  --external <path-to-local-export.json> \
+  --install-hook
+```
+
+The installer resolves and shell-quotes that path inside the untracked local
+hook. The path is never written to tracked documentation or configuration.
+Environment-derived export paths are deliberately not embedded; pass
+`--external` explicitly when installing the hook.

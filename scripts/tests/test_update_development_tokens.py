@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 import re
+import shlex
 import subprocess
 
 
@@ -107,7 +108,8 @@ def test_readme_marker_update_is_stable() -> None:
     source = "# Project\n\n## What Ed4All does\n\nComplete section.\n\n## From source to course-grounded AI\n\nPipeline.\n"
     first = stats._replace_marked(source, rendered)
     assert stats._replace_marked(first, rendered) == first
-    assert "🎓 Development Token Tracking" in first
+    assert ">Token Tracking</font>" in first
+    assert "Development Token Tracking" not in first
     assert "<tr><td align=\"center\">Claude</td><td align=\"center\">3</td>" in first
     assert "<tr><td align=\"center\">Codex</td><td align=\"center\">7</td>" in first
     assert first.index("Complete section.") < first.index(stats.README_START)
@@ -135,6 +137,44 @@ def test_update_then_check_with_synthetic_empty_logs(tmp_path: Path) -> None:
     args = ["--repo", str(repo), "--claude-root", str(claude), "--codex-root", str(codex)]
     assert stats.main(args) == 0
     assert stats.main([*args, "--check"]) == 0
+    assert stats.main([*args, "--external", str(tmp_path / "missing.json"), "--check-rendered"]) == 0
+
+
+def test_check_rendered_rejects_stale_tracked_loc(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "docs" / "reference").mkdir(parents=True)
+    (repo / "README.md").write_text(
+        "# Project\n\n## What Ed4All does\n\nComplete.\n\n## From source to course-grounded AI\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    args = [
+        "--repo", str(repo),
+        "--claude-root", str(tmp_path / "claude"),
+        "--codex-root", str(tmp_path / "codex"),
+    ]
+    assert stats.main(args) == 0
+    (repo / "new.py").write_text("print('tracked')\n", encoding="utf-8")
+    subprocess.run(["git", "add", "new.py"], cwd=repo, check=True)
+    assert stats.main(["--repo", str(repo), "--check-rendered"]) == 1
+
+
+def test_install_hook_embeds_only_explicit_external_path(tmp_path: Path, monkeypatch) -> None:
+    repo = tmp_path / "repo"
+    hooks = repo / ".git" / "hooks"
+    hooks.mkdir(parents=True)
+    external = tmp_path / "private aggregate's copy.json"
+    assert stats.main(["--repo", str(repo), "--external", str(external), "--install-hook"]) == 0
+    hook = (hooks / "pre-push").read_text(encoding="utf-8")
+    assert f"--external {shlex.quote(str(external.resolve()))} --check" in hook
+
+    second = tmp_path / "second"
+    second_hooks = second / ".git" / "hooks"
+    second_hooks.mkdir(parents=True)
+    monkeypatch.setenv("ED4ALL_TOKEN_STATS_EXPORT", str(external))
+    assert stats.main(["--repo", str(second), "--install-hook"]) == 0
+    assert "--external" not in (second_hooks / "pre-push").read_text(encoding="utf-8")
 
 
 def test_export_only_contains_no_local_metadata(tmp_path: Path) -> None:

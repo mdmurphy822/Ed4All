@@ -60,28 +60,28 @@ Accessible HTML · Digital course + IMSCC · Grounded training data · Hybrid re
 <thead>
 <tr bgcolor="#1F6FEB"><th align="center" colspan="4"><font color="#FFFFFF">Token Tracking</font></th></tr>
 <tr>
-<td align="center" width="25%" bgcolor="#EDE9FE"><font color="#111827"><strong>12,886,474,014</strong><br><sub>🧠 DEVELOPMENT TOKENS</sub></font></td>
+<td align="center" width="25%" bgcolor="#EDE9FE"><font color="#111827"><strong>13,289,473,697</strong><br><sub>🧠 DEVELOPMENT TOKENS</sub></font></td>
 <td align="center" width="25%" bgcolor="#DBEAFE"><font color="#111827"><strong>53</strong><br><sub>🧭 SESSIONS</sub></font></td>
-<td align="center" width="25%" bgcolor="#D1FAE5"><font color="#111827"><strong>6,441</strong><br><sub>💬 USER TURNS OBSERVED</sub></font></td>
-<td align="center" width="25%" bgcolor="#FFEDD5"><font color="#111827"><strong>1,211,236</strong><br><sub>🧱 TRACKED TEXT LOC</sub></font></td>
+<td align="center" width="25%" bgcolor="#D1FAE5"><font color="#111827"><strong>6,442</strong><br><sub>💬 USER TURNS OBSERVED</sub></font></td>
+<td align="center" width="25%" bgcolor="#FFEDD5"><font color="#111827"><strong>1,201,065</strong><br><sub>🧱 TRACKED TEXT LOC</sub></font></td>
 </tr>
 </thead>
 <tbody>
 <tr bgcolor="#334155"><th align="center"><font color="#FFFFFF">🤝 COLLABORATOR</font></th><th align="center"><font color="#FFFFFF">TOKENS</font></th><th align="center"><font color="#FFFFFF">SESSIONS</font></th><th align="center"><font color="#FFFFFF">USER TURNS</font></th></tr>
 <tr><td align="center">Claude</td><td align="center">12,016,436,779</td><td align="center">38</td><td align="center">5,961</td></tr>
-<tr><td align="center">Codex</td><td align="center">870,037,235</td><td align="center">15</td><td align="center">480</td></tr>
+<tr><td align="center">Codex</td><td align="center">1,273,036,918</td><td align="center">15</td><td align="center">481</td></tr>
 <tr bgcolor="#0E7490"><th align="center"><font color="#FFFFFF">↔️ TOKEN FLOW</font></th><th align="center"><font color="#FFFFFF">READ</font></th><th align="center"><font color="#FFFFFF">WRITTEN</font></th><th align="center"><font color="#FFFFFF">AVG / SESSION</font></th></tr>
-<tr><td align="center">All sessions</td><td align="center">12,840,026,230</td><td align="center">46,447,784</td><td align="center">243,141,019</td></tr>
+<tr><td align="center">All sessions</td><td align="center">13,242,472,414</td><td align="center">47,001,283</td><td align="center">250,744,786</td></tr>
 <tr bgcolor="#6D28D9"><th align="center"><font color="#FFFFFF">🔎 TOKEN DETAIL</font></th><th align="center"><font color="#FFFFFF">COUNT</font></th><th align="center"><font color="#FFFFFF">TOKEN DETAIL</font></th><th align="center"><font color="#FFFFFF">COUNT</font></th></tr>
-<tr><td align="center">Fresh input</td><td align="center">24,636,112</td><td align="center">Cache writes</td><td align="center">285,091,038</td></tr>
-<tr><td align="center">Cache reads</td><td align="center">12,530,299,080</td><td align="center">Model output</td><td align="center">46,447,784</td></tr>
-<tr><td align="center">Reasoning output subset</td><td align="center">367,349</td><td align="center">Counted again in total</td><td align="center">No</td></tr>
+<tr><td align="center">Fresh input</td><td align="center">30,028,856</td><td align="center">Cache writes</td><td align="center">285,091,038</td></tr>
+<tr><td align="center">Cache reads</td><td align="center">12,927,352,520</td><td align="center">Model output</td><td align="center">47,001,283</td></tr>
+<tr><td align="center">Reasoning output subset</td><td align="center">474,429</td><td align="center">Counted again in total</td><td align="center">No</td></tr>
 <tr bgcolor="#0369A1"><th align="center"><font color="#FFFFFF">⏱️ SESSION DURATION</font></th><th align="center"><font color="#FFFFFF">CLAUDE AVG</font></th><th align="center"><font color="#FFFFFF">CODEX AVG</font></th><th align="center"><font color="#FFFFFF">COMBINED AVG</font></th></tr>
-<tr><td align="center">First-to-last observed event</td><td align="center">18h 20m</td><td align="center">13h 51m</td><td align="center">17h 4m</td></tr>
+<tr><td align="center">First-to-last observed event</td><td align="center">18h 20m</td><td align="center">13h 52m</td><td align="center">17h 4m</td></tr>
 <tr bgcolor="#C2410C"><th align="center"><font color="#FFFFFF">📚 TRACKED TEXT</font></th><th align="center"><font color="#FFFFFF">LINES</font></th><th align="center"><font color="#FFFFFF">TRACKED TEXT</font></th><th align="center"><font color="#FFFFFF">LINES</font></th></tr>
-<tr><td align="center">Application source</td><td align="center">553,319</td><td align="center">Tests</td><td align="center">504,588</td></tr>
-<tr><td align="center">Documentation</td><td align="center">37,933</td><td align="center">Tooling / configuration</td><td align="center">114,220</td></tr>
-<tr><td align="center">Other text</td><td align="center">1,176</td><td align="center">Total physical lines</td><td align="center">1,211,236</td></tr>
+<tr><td align="center">Application source</td><td align="center">552,206</td><td align="center">Tests</td><td align="center">504,808</td></tr>
+<tr><td align="center">Documentation</td><td align="center">33,226</td><td align="center">Tooling / configuration</td><td align="center">109,576</td></tr>
+<tr><td align="center">Other text</td><td align="center">1,249</td><td align="center">Total physical lines</td><td align="center">1,201,065</td></tr>
 </tbody>
 </table>
 <sub>[How these privacy-safe project metrics are counted →](docs/operations/development-token-stats.md)</sub>

@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev-v0.4.0]
   pull_request:
     branches: [main]
 
@@ -61,6 +61,9 @@ jobs:
 
       - name: Run integrity checks
         run: python ci/integrity_check.py --verbose
+
+      - name: Check rendered development statistics
+        run: python scripts/ops/update_development_tokens.py --check-rendered
 
       # The integrity run above already ENFORCES the course-slug guard
       # (check_course_slug_leak) and the retired-engine-name guard
