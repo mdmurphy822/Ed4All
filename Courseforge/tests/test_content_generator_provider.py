@@ -1,8 +1,7 @@
 """Tests for ContentGeneratorProvider.
 
-Exercises the LLM-agnostic Courseforge content-generator provider that
-opens a Phase-1 in-process LLM seam alongside the existing Wave-74
-subagent dispatch path. Coverage:
+Exercises the LLM-agnostic Courseforge content-generator provider and its
+in-process LLM seam alongside subagent dispatch. Coverage:
 
 - Construction: unknown provider raises, default provider is anthropic,
   ``COURSEFORGE_PROVIDER`` env honored, supported providers set.
@@ -33,15 +32,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Courseforge.generators._provider import (  # noqa: E402
-    ContentGeneratorProvider,
+from Courseforge.generators._provider import (  # noqa: E402, I001
     DEFAULT_PROVIDER,
     ENV_PROVIDER,
     SUPPORTED_PROVIDERS,
-    SynthesisProviderError,
+    ContentGeneratorProvider,
 )
-from blocks import Block, Touch  # noqa: E402  (Phase 2 intermediate format)
-
+# Importing the provider installs the supported Courseforge/scripts bridge.
+from blocks import Block  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -177,7 +175,7 @@ def test_local_backend_routes_to_local_base_url(monkeypatch):
         page_template="<!--TEMPLATE-->",
         page_context=_sample_page_context(),
     )
-    # Phase 2 Subtask 35: provider returns a Block, not a raw HTML str.
+    # The provider returns a Block rather than a raw HTML string.
     assert isinstance(out, Block)
     assert out.block_type == "explanation"
     assert out.page_id == "week_01_content_01_intro"
@@ -214,7 +212,7 @@ def test_together_backend_returns_html(monkeypatch):
         page_template="<!--TEMPLATE-->",
         page_context=_sample_page_context(),
     )
-    # Phase 2 Subtask 35: provider returns a Block; the parsed prose
+    # The provider returns a Block; the parsed prose
     # carries "Body" (the body of the mocked `<p>Body</p>` HTML).
     assert isinstance(out, Block)
     assert "Body" in out.content
@@ -248,7 +246,7 @@ def test_anthropic_backend_returns_html(monkeypatch):
         page_template="<!--TEMPLATE-->",
         page_context=_sample_page_context(),
     )
-    # Phase 2 Subtask 35: provider returns a Block; "Body" in content.
+    # The provider returns a Block with "Body" in its content.
     assert isinstance(out, Block)
     assert "Body" in out.content
     assert out.touched_by[0].provider == "anthropic"
@@ -338,7 +336,7 @@ def test_empty_course_code_raises_value_error(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Pipeline integration (Subtask 14): drives _generate_course_content with
+# Pipeline integration: drives _generate_course_content with
 # COURSEFORGE_PROVIDER=local + LOCAL_SYNTHESIS_BASE_URL pointing at a
 # MockTransport URL so we observe at least one POST to /v1/chat/completions
 # while no Anthropic SDK gets imported.
@@ -387,7 +385,7 @@ _SEMANTIK_HTML_FIXTURE = """<!DOCTYPE html>
 def test_pipeline_tools_routes_through_provider_when_env_set(
     monkeypatch, tmp_path
 ):
-    """Subtask 14: COURSEFORGE_PROVIDER=local drives _generate_course_content
+    """COURSEFORGE_PROVIDER=local drives _generate_course_content
     through the in-process provider. Asserts a POST hits the local
     /v1/chat/completions surface and that the Anthropic SDK is never
     imported on the call path.

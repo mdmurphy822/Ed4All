@@ -6,20 +6,20 @@ generator surface. Mirrors :class:`Trainforge.generators.providers._curriculum_p
 line-for-line so the operator-facing env-var contract and decision-
 capture posture match across the project's LLM call sites.
 
-Phase 3 Subtask 10: the HTTP / dispatch / decision-capture plumbing
-moved into :class:`Courseforge.generators._base._BaseLLMProvider`;
-this module now owns only the page-authoring task surface (the
+The HTTP, dispatch, and decision-capture plumbing lives in
+:class:`Courseforge.generators._base._BaseLLMProvider`; this module owns the
+page-authoring task surface (the
 ``generate_page`` public entry, the page-context user prompt, and
 the per-call ``content_generator_call`` decision-capture event).
-The constructor signature, decision-capture rationale, and Block
-return shape are byte-stable across the refactor — Phase 1 tests
+The constructor signature, decision-capture rationale, and Block return shape
+are compatibility contracts pinned by
 (``Courseforge/tests/test_content_generator_provider.py``) pin the
 contract.
 
 Operator selects the backend via ``COURSEFORGE_PROVIDER`` env or the
 ``provider`` constructor kwarg. Default is ``"anthropic"`` for backward
-compatibility with the existing Wave-74 subagent path; the Phase-1 ToS
-recommendation to flip operators to ``local`` lands in
+compatibility with the subagent dispatch path; provider licensing guidance
+lives in
 ``docs/LICENSING.md`` and the root ``CLAUDE.md``, not in code.
 
 Default config:
@@ -45,7 +45,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# Phase 2 Subtask 35: ``blocks.py`` lives at
+# ``blocks.py`` lives at
 # ``Courseforge/scripts/blocks.py``; ensure the sibling-of-this-package
 # directory is importable so ``from blocks import Block`` resolves the
 # same regardless of how this provider module is loaded (CLI, MCP tool,
@@ -54,7 +54,7 @@ _SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
-from blocks import (  # noqa: E402  (Phase 2 intermediate format)
+from blocks import (  # noqa: E402
     Block,
     Touch,
     _parse_provider_page_html,
@@ -114,8 +114,7 @@ class ContentGeneratorProvider(_BaseLLMProvider):
     Constructor selects the backend via the ``provider`` kwarg
     (``anthropic`` / ``together`` / ``local``); when none is passed,
     falls back to the ``COURSEFORGE_PROVIDER`` env var, defaulting to
-    ``anthropic`` for backward compatibility with the Wave-74
-    subagent path.
+    ``anthropic`` for backward compatibility with subagent dispatch.
 
     Together + Local route through :class:`OpenAICompatibleClient`
     (composition, not inheritance). Anthropic routes through the
@@ -128,7 +127,7 @@ class ContentGeneratorProvider(_BaseLLMProvider):
 
     - ``generate_page(*, course_code, week_number, page_id,
       page_template, page_context) -> Block`` — returns a
-      :class:`Block` (Phase 2 Subtask 35) carrying the rendered prose,
+      :class:`Block` carrying the rendered prose,
       parsed structure, and a single Touch entry annotating the
       outline-tier provenance of the in-process LLM call.
 
@@ -153,13 +152,12 @@ class ContentGeneratorProvider(_BaseLLMProvider):
         client: Optional[Any] = None,
         anthropic_client: Optional[Any] = None,
     ) -> None:
-        # Phase 3a env-var-first contract (Subtask 24): Phase 1's
-        # content-generator delegates model resolution directly to the
+        # The content generator delegates model resolution directly to the
         # base, which enforces ``model or os.environ.get(<synthesis env
         # var>) or <baseline>`` per backend (see
         # :class:`_BaseLLMProvider.__init__` `:192-243`). The kwarg wins
         # over the env var; the env var beats the hardcoded baseline.
-        # Symmetric with the Phase 3 outline / rewrite providers, which
+        # Symmetric with the outline and rewrite providers, which
         # additionally honour their own per-tier env var
         # (``COURSEFORGE_OUTLINE_MODEL`` / ``COURSEFORGE_REWRITE_MODEL``)
         # before delegating to the base.
@@ -221,7 +219,7 @@ class ContentGeneratorProvider(_BaseLLMProvider):
             ``touched_by`` annotating the outline-tier provenance of
             this LLM call. ``block_type="explanation"`` is the sane
             default for the in-process LLM provider's outline draft;
-            Phase 3's per-block-type router will dispatch alternative
+            The per-block-type router dispatches alternative
             block types (e.g. ``self_check_question`` / ``activity``)
             to dedicated provider call sites.
 
@@ -250,8 +248,7 @@ class ContentGeneratorProvider(_BaseLLMProvider):
             page_id=page_id,
         )
 
-        # Phase 2 Subtask 35: parse the rendered HTML into the
-        # canonical Block intermediate.
+        # Parse rendered HTML into the canonical Block intermediate.
         heading, paragraphs = _parse_provider_page_html(text)
 
         # Slug for the Block ID derives from the heading (or the page_id
