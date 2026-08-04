@@ -454,8 +454,8 @@ def fold_fragment_results(
         _merge_objective_alignment_dedup(
             prev.merged_objective_alignment, result.merged_objective_alignment
         )
-        # Wave #22 quick-wins: union the folded fragment's pedagogical roles into
-        # the prior result (sorted, deduped); keep the prior result's unit unless
+        # Union the folded fragment's pedagogical roles into the prior result
+        # (sorted and deduplicated); keep the prior result's unit unless
         # it had none (the surviving result is the dominant one — no fabrication).
         if result.merged_unit_roles:
             prev.merged_unit_roles = sorted(
@@ -802,7 +802,7 @@ def _section_is_boundary(section: Any) -> bool:
             return True
     except (TypeError, ValueError):
         pass
-    # A7 (end-user-HTML audit): a section carrying a ``data-dart-opener`` role
+    # A section carrying a ``data-dart-opener`` role
     # (a promoted pedagogical opener — objectives / try_it / worked_example / …
     # from the SemantiK adapter) is a soft sub-boundary, so a chunk never fuses
     # a worked example, its solution, and the next example. Attribute-driven —
@@ -810,7 +810,7 @@ def _section_is_boundary(section: Any) -> bool:
     # ED4ALL_CHUNK_SECTION_HARD_BREAK (this fn's sole call site is gated on it).
     if getattr(section, "data_dart_opener", None):
         return True
-    # Wave #22 Tier-2 (composite units): a section at a composite-unit EDGE
+    # A section at a composite-unit edge
     # (its ``data-dart-unit`` type harvested from the ``<section class="dart-unit">``
     # wrapper) is a preferred boundary, so a chunk never straddles two units.
     # Attribute-driven; only consulted under ED4ALL_CHUNK_SECTION_HARD_BREAK
@@ -821,7 +821,7 @@ def _section_is_boundary(section: Any) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Wave #22 quick-wins — chunk pedagogical-role metadata (additive, no gate)
+# Chunk pedagogical-role metadata (additive, no gate)
 #
 # The SemantiK-converted HTML carries ``data-dart-unit`` (composite-unit type)
 # on unit ``<section>``s, ``data-dart-flow`` (statement / solution-steps /
@@ -1396,25 +1396,25 @@ class MergedSectionResult:
     merged_headings: List[str] = field(default_factory=list)
     merged_key_claims: List[Dict[str, Any]] = field(default_factory=list)
     merged_objective_alignment: List[Dict[str, Any]] = field(default_factory=list)
-    #: Fix 1 — True when this result's buffer opened on a SECTION-boundary
+    #: True when this result's buffer opened on a section-boundary
     #: section (a new textbook section). Consulted by
     #: :func:`fold_fragment_results` so a sub-floor boundary result is never
     #: folded BACKWARD into the prior section (which would re-fuse across the
     #: exact boundary the hard break just enforced). Default False → legacy
     #: fold behaviour is unchanged when the hard-break flag is off.
     section_boundary: bool = False
-    #: Wave #22 quick-wins — the chunk-level pedagogical-unit type aggregated
+    #: Chunk-level pedagogical-unit type aggregated
     #: from every constituent section's ``data_dart_unit`` (plurality winner /
     #: ``None`` on tie via :func:`aggregate_composite_unit`). ``None`` when no
     #: constituent section carried a unit (legacy / non-DART). Attribute-access
     #: only (not in the legacy 5-tuple ``__iter__``).
     merged_composite_unit: Optional[str] = None
-    #: Wave #22 quick-wins — distinct pedagogical flow/opener role slugs present
+    #: Distinct pedagogical flow/opener role slugs present
     #: across the constituent sections (union of ``data_dart_opener`` +
     #: ``data_dart_flows``), sorted for deterministic diffs. Empty on legacy /
     #: non-DART sections. Attribute-access only.
     merged_unit_roles: List[str] = field(default_factory=list)
-    #: Build #23 Tier-3 — the chunk-level composite-unit SUBCLASS, resolved from
+    #: Chunk-level composite-unit subclass resolved from
     #: the constituent sections' ``data_dart_subclass`` PAIRED with the resolved
     #: ``merged_composite_unit`` (:func:`aggregate_unit_subclass`). ``None`` when
     #: the unit doesn't resolve or carried no subclass. Attribute-access only.
@@ -1572,9 +1572,9 @@ def merge_small_sections(
         section_objective_alignment = list(
             getattr(section, "objective_alignment", []) or []
         )
-        # Wave #22 quick-wins: the section's pedagogical unit + flow/opener roles.
+        # Aggregate the section's pedagogical unit and flow/opener roles.
         section_unit, section_roles = section_unit_signals(section)
-        # Build #23 Tier-3: the section's unit subclass (rides the unit).
+        # Resolve the section's unit subclass alongside its unit.
         section_subclass = section_subclass_signal(section)
 
         if not buffer_started:
@@ -1776,17 +1776,17 @@ def chunk_text_block(
                     return [idx, idx + len(collapsed_needle)]
         return [search_from, search_from + len(needle)]
 
-    # Worker N (REC-ID-01): stable per-source locator for content-hash IDs.
+    # Stable per-source locator used to derive content-hash IDs.
     source_locator = item.get("item_path") or f"{item['module_id']}/{item['item_id']}"
 
-    # W5.F: build the create_chunk kwargs once. The callback contract
+    # Build create_chunk arguments once. The callback contract
     # adds two new kwargs (``merged_key_claims`` /
     # ``merged_objective_alignment``); but a legacy callback (e.g. a
     # downstream consumer that wraps ``CourseProcessor._create_chunk``
-    # before the W5.B stamp site lands) won't accept them. We pass the
+    # before these fields were added) may not accept them. Pass the
     # extras only when at least one is non-empty, AND fall back to the
-    # legacy kwarg set on TypeError so the callback contract stays
-    # additive — pre-W5.B callbacks keep working byte-identical.
+    # legacy argument set on TypeError so the callback contract stays
+    # additive and older callbacks remain byte-identical.
     base_kwargs: Dict[str, Any] = {
         "section_source_ids": section_source_ids,
         "merged_headings": merged_headings,
@@ -1800,7 +1800,7 @@ def chunk_text_block(
         extra_kwargs["curie_anchors"] = curie_anchors
     if forced_curie_anchors:
         extra_kwargs["forced_curie_anchors"] = forced_curie_anchors
-    # Wave #22 quick-wins: additive pedagogical metadata. When a chunk is
+    # Carry additive pedagogical metadata. When a chunk is
     # sentence-split into sub-chunks, every sub-chunk inherits the same
     # section-level unit/roles (per-section, not per-sentence — mirrors the
     # merged key_claims / objective_alignment carry).
@@ -1808,7 +1808,7 @@ def chunk_text_block(
         extra_kwargs["composite_unit"] = composite_unit
     if unit_roles:
         extra_kwargs["unit_roles"] = list(unit_roles)
-    # Build #23 Tier-3: the unit subclass rides the unit → carry it alongside.
+    # The unit subclass rides the unit, so carry it alongside.
     if unit_subclass:
         extra_kwargs["unit_subclass"] = unit_subclass
 
@@ -2315,8 +2315,8 @@ def chunk_content(
     current_lesson_id: Optional[str] = None
     position_in_module = 0
 
-    # Wave-era denominator for misconceptions_present_rate: pages whose
-    # parsed JSON-LD declared at least one misconception.
+    # Denominator for misconceptions_present_rate: pages whose parsed JSON-LD
+    # declares at least one misconception.
     pages_with_misconceptions = {
         item["item_id"]
         for item in parsed_items
