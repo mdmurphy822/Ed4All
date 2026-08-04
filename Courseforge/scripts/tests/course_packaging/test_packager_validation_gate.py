@@ -1,6 +1,6 @@
 """
 Tests for the per-week LO validation gate in package_multifile_imscc.py
-(Worker I — FOLLOWUP-WORKER-H-3).
+and its failure behavior.
 
 Guards against the LO-fanout defect silently reappearing: if a future
 change to Courseforge's generation path reintroduces week-local IDs or

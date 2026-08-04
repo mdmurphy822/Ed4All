@@ -5,12 +5,11 @@ Package multi-file weekly course content into an IMS Common Cartridge (IMSCC) fi
 Walks 03_content_development/week_*/ directories and creates an IMSCC with a proper
 imsmanifest.xml reflecting the week -> module hierarchy.
 
-Per-week ``learningObjectives`` validation runs by default (Wave 2, Worker L
-— REC-CTR-03). Every ``week_*/*.html`` page with JSON-LD is validated against
+Per-week ``learningObjectives`` validation runs by default (REC-CTR-03). Every
+``week_*/*.html`` page with JSON-LD is validated against
 the canonical objectives registry before packaging; the packager refuses to
 build when any page's ``learningObjectives`` lists an ID outside its week's
-allowed set. This guards against the LO-fanout defect that shipped in
-pre-Worker-H packages and capped Trainforge quality metrics.
+allowed set. This prevents week-local objective drift from reaching Trainforge.
 
 Resolution order for the objectives file:
 
@@ -802,8 +801,8 @@ def build_manifest(
 ) -> str:
     """Build imsmanifest.xml for multi-file weekly content.
 
-    Phase 2 (Subtask 29):
-      * ``outline_only`` — when ``True``, the per-week ``html_files`` walk
+    ``outline_only`` controls the reduced package shape:
+      * when ``True``, the per-week ``html_files`` walk
         filters to only ``*overview.html`` and ``*summary.html`` pages
         (drops content / application / self_check / discussion). The
         general LOM ``<description>`` text is also tagged with the prefix
@@ -811,7 +810,7 @@ def build_manifest(
         package carries outline-tier content only. The companion
         ``course_metadata.json`` stub augmentation (``blocks_summary
         .outline_only=true``) is written upstream by
-        ``generate_course.py`` (Subtask 28); this function only consumes
+        ``generate_course.py``; this function only consumes
         / surfaces that signal in the manifest.
     """
     ns = "http://www.imsglobal.org/xsd/imsccv1p3/imscp_v1p1"
@@ -843,13 +842,9 @@ def build_manifest(
     title_el = ET.SubElement(general, lm("title"))
     ET.SubElement(title_el, lm("string"), {"language": "en"}).text = f"{course_code}: {course_title}"
     desc_el = ET.SubElement(general, lm("description"))
-    description_text = (
-        "A 12-week graduate course covering learning theory, instructional design, "
-        "cognitive load, blended teaching, assessment, and accessibility."
-    )
-    # Phase 2 (Subtask 29): tag the LOM description with an `[OUTLINE] `
-    # prefix in outline-only packaging so LMS-side viewers can detect the
-    # outline-tier deliverable shape without parsing
+    description_text = f"Accessible IMS Common Cartridge for {course_title}."
+    # Prefix the LOM description so LMS viewers can detect the outline-only
+    # deliverable without parsing
     # course_metadata.json::blocks_summary.
     if outline_only:
         description_text = "[OUTLINE] " + description_text
@@ -863,8 +858,8 @@ def build_manifest(
     })
     # CC 1.3 imscp profile: the ROOT item of a rooted-hierarchy organization
     # admits only <item>/<metadata> children — a <title> here violates the
-    # profile XSD (caught by cartridge_conformance once the manifest-profile
-    # schemas were vendored 2026-07-19) and breaks strict LMS imports. The
+    # profile XSD, fails cartridge_conformance, and breaks strict LMS imports.
+    # The
     # course title travels in <metadata>/<lomimscc:lom> above.
     root_item = ET.SubElement(org, cc("item"), {"identifier": "ROOT"})
 
@@ -944,9 +939,8 @@ def build_manifest(
             week_title = _extract_week_title(title_dir, week_num_int)
         ET.SubElement(week_item, cc("title")).text = week_title
 
-        # Phase 2 (Subtask 29): in outline-only mode, drop every page
-        # except the overview + summary deliverables (the outline-tier
-        # surfaces). Content / application / self_check / discussion
+        # In outline-only mode, keep only overview and summary deliverables.
+        # Content, application, self-check, and discussion
         # pages are excluded from BOTH the manifest organization tree
         # and the resources section so the IMSCC payload itself stays
         # outline-shaped (no orphan resources, no ITEM entries pointing
@@ -1062,8 +1056,8 @@ def package_imscc(
 ):
     """Create the IMSCC zip package.
 
-    Per-week learningObjectives validation runs by default (Wave 2, Worker L
-    — REC-CTR-03). Resolution order for the objectives file:
+    Per-week learningObjectives validation runs by default (REC-CTR-03).
+    Resolution order for the objectives file:
 
     1. Explicit ``objectives_path`` argument (CLI ``--objectives PATH``).
     2. Auto-discovery: ``content_dir / "course.json"`` if it exists.
@@ -1075,8 +1069,8 @@ def package_imscc(
     available. Hard-fail (``SystemExit(2)``) only occurs on a genuine
     validation FAILURE — never on a missing objectives file alone.
 
-    Phase 2 (Subtask 29):
-      * ``outline_only`` — when ``True``, the per-week zip walk filters to
+    ``outline_only`` controls the reduced package shape:
+      * when ``True``, the per-week zip walk filters to
         only ``*overview.html`` and ``*summary.html`` pages so the IMSCC
         payload mirrors the manifest organization tree (no orphan
         resources). The manifest description gets a ``[OUTLINE] `` prefix.
@@ -1084,7 +1078,7 @@ def package_imscc(
         (``generate_course.py --emit-mode outline``); this packager only
         consumes / surfaces the marker.
 
-    W3.H sub-task H3:
+    Coverage reporting:
       * ``coverage_sidecar_path`` — when provided, write a canonical
         ``packaging_report.json`` sidecar (per
         ``schemas/library/packaging_report.schema.json``) carrying the
@@ -1093,7 +1087,7 @@ def package_imscc(
         (``missing_lo`` / ``gate_block`` / ``outline_filter``). When the
         per-week LO contract validator fails (``SystemExit(2)``), the
         sidecar is still emitted before raising so a downstream
-        consumer (W3.G master aggregator) sees the failure attribution.
+        downstream aggregator sees the failure attribution.
     """
     # Coverage tracking — initialised pre-validation so a hard-fail
     # path can still emit the sidecar with attribution.
@@ -1105,7 +1099,7 @@ def package_imscc(
     _assessment_coverage: Optional[dict] = None
 
     def _emit_coverage_sidecar(*, pages_packaged: int) -> None:
-        """Best-effort write of the W3.H H3 packaging_report sidecar.
+        """Best-effort write of the packaging_report sidecar.
 
         Failure path: log + continue. The sidecar is observability,
         not a build gate; the package_path itself is the source of
@@ -1164,7 +1158,7 @@ def package_imscc(
             objectives_path = candidate
             print(f"[validate] Auto-discovered objectives at {candidate}")
 
-    # W3.H H3: count pages_authored = every week_*/*.html page on disk
+    # Count pages_authored as every week_*/*.html page on disk
     # BEFORE any filtering. This is the upstream denominator for the
     # source_coverage block; pages_packaged (computed below) is the
     # numerator. Running this scan here means the validator-failure
@@ -1190,7 +1184,7 @@ def package_imscc(
                 print(f"  - {msg}")
             print("Fix the offending pages (or re-run generate_course.py with --objectives) then retry.")
             print("Override with --skip-validation if you really know what you're doing.")
-            # W3.H H3: classify each failure. A failure message that
+            # Classify each failure. A failure message that
             # mentions "no learningObjectives" / "missing learning"
             # buckets to ``missing_lo``; everything else (out-of-week
             # IDs, malformed JSON-LD) buckets to ``gate_block``.
@@ -1265,12 +1259,10 @@ def package_imscc(
     with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("imsmanifest.xml", manifest_xml)
 
-        # REC-TAX-01 cleanup (Wave 3, Worker M): bundle Worker J's
-        # course_metadata.json classification stub at the zip root when
-        # present. Trainforge consume already supports both zip-root and
+        # Bundle the course_metadata.json classification stub at the zip root
+        # when present. Trainforge consume already supports both zip-root and
         # sibling paths, but zip-root is the canonical self-contained
-        # delivery — this closes the Wave 2 integration gap. Additive
-        # only; absence is a no-op for backward-compat.
+        # delivery. Absence remains a no-op for backward compatibility.
         stub_path = content_dir / "course_metadata.json"
         if stub_path.exists():
             zf.write(stub_path, stub_path.name)
@@ -1298,15 +1290,13 @@ def package_imscc(
             content_dir
         ):
             for html_file in html_files:
-                # Phase 2 (Subtask 29): mirror the manifest filter so the
-                # zip payload matches the organization tree (no orphan
-                # resources / no resources missing from manifest).
+                # Mirror the manifest filter so the zip payload matches the
+                # organization tree without orphan or missing resources.
                 if outline_only and not (
                     html_file.name.endswith("overview.html")
                     or html_file.name.endswith("summary.html")
                 ):
-                    # W3.H H3: outline-only filtering is a known
-                    # exclusion class — track separately from
+                    # Track outline-only filtering separately from
                     # gate-driven drops so the master aggregator can
                     # tell intentional outline pruning from quality
                     # failures.
@@ -1333,7 +1323,7 @@ def package_imscc(
         print(f"  Files: {file_count} HTML + 1 manifest = {total} total")
     print(f"  Size: {output_path.stat().st_size / 1024:.1f} KB")
 
-    # W3.H H3: emit the canonical packaging_report sidecar (no-op
+    # Emit the canonical packaging_report sidecar (no-op
     # when ``coverage_sidecar_path`` was not provided). pages_packaged
     # = file_count after all filters; pages_authored was captured
     # pre-validation; drop_reasons accumulated during the walk.
@@ -1369,7 +1359,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--outline-only",
         action="store_true",
         help=(
-            "Phase 2 (Subtask 29): package only outline-tier deliverables "
+            "Package only outline-tier deliverables "
             "(overview + summary pages per week). The IMSCC manifest "
             "description gets an `[OUTLINE] ` prefix; content / "
             "application / self_check / discussion pages are dropped from "

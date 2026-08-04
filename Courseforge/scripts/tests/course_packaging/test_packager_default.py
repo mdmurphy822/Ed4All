@@ -1,5 +1,5 @@
 """
-Tests for Worker L (REC-CTR-03) — packager default-on + workflow gate.
+Tests for the REC-CTR-03 default-on packager validation gate.
 
 Validates that:
     1. Without ``--objectives`` and WITH ``course.json`` at content-dir root,
@@ -8,7 +8,7 @@ Validates that:
     3. Validation failure raises ``SystemExit(2)`` even under auto-discovery.
     4. Without any objectives source (no arg, no course.json), a warning is
        printed and packaging proceeds — backward-compat.
-    5. The new ``PageObjectivesValidator`` class returns a ``GateResult`` of
+    5. ``PageObjectivesValidator`` returns a ``GateResult`` of
        the expected shape for clean, violating, and no-objectives inputs.
 """
 
@@ -98,7 +98,7 @@ def content_dir_no_courseJson(tmp_path):
 # ---------------------------------------------------------------------------
 
 class TestPackagerDefaultOn:
-    """Exercises the default-on behavior flipped in Worker L."""
+    """Exercises default-on validation behavior."""
 
     def test_validation_runs_by_default_with_auto_discovery(
         self, content_dir_with_courseJson, tmp_path, capsys,
@@ -118,6 +118,10 @@ class TestPackagerDefaultOn:
         assert "Auto-discovered objectives" in captured
         assert "All week pages pass per-week LO contract" in captured
         assert output.exists(), "package must be produced when validation passes"
+        with zipfile.ZipFile(output) as package:
+            manifest = package.read("imsmanifest.xml").decode("utf-8")
+        assert "Accessible IMS Common Cartridge for Test Course." in manifest
+        assert "12-week graduate course" not in manifest
 
     def test_skip_validation_bypasses(
         self, content_dir_with_courseJson, tmp_path, capsys,
@@ -146,7 +150,7 @@ class TestPackagerDefaultOn:
         (content_dir_with_courseJson / "week_01" / "week_01_overview.html").write_text(
             _page_html(["TO-01", "CO-01"]), encoding="utf-8",
         )
-        # Fabricated week-local ID — exact shape of the pre-fix defect.
+        # A fabricated week-local ID violates the canonical objective registry.
         (content_dir_with_courseJson / "week_03" / "week_03_overview.html").write_text(
             _page_html(["W03-CO-01"]), encoding="utf-8",
         )
@@ -255,20 +259,19 @@ class TestPageObjectivesValidator:
 
 
 # ---------------------------------------------------------------------------
-# Wave 3 / Worker M — course_metadata.json stub inclusion in IMSCC zip
+# course_metadata.json stub inclusion in the IMSCC zip
 # ---------------------------------------------------------------------------
 #
-# Closes the Wave 2 integration gap: Worker J's course_metadata.json
-# classification stub was emitted alongside the IMSCC but never bundled
-# inside it. Trainforge's consume already handled both zip-root and
-# sibling paths, so the gap was latent — but zip-root is the canonical
+# The course_metadata.json classification stub belongs inside the IMSCC.
+# Trainforge consumption handles both zip-root and sibling paths, but zip-root
+# is the canonical
 # self-contained delivery. Behavior: additive, no env var, no-op when
 # the stub file is absent.
 # ---------------------------------------------------------------------------
 
 
 class TestPackagerStubInclusion:
-    """Wave 3 / Worker M: course_metadata.json bundled at zip root."""
+    """course_metadata.json is bundled at the zip root."""
 
     def test_packager_includes_course_metadata_when_present(
         self, content_dir_with_courseJson, tmp_path,
@@ -282,7 +285,7 @@ class TestPackagerStubInclusion:
             _page_html(["TO-01", "CO-03", "CO-04"]), encoding="utf-8",
         )
         # Stub body is arbitrary JSON; the packager does not parse it,
-        # only bundles it. Shape mirrors Worker J's emit contract.
+        # only bundles it. Shape mirrors the producer contract.
         stub_payload = {
             "courseCode": "TST_915",
             "classification": {

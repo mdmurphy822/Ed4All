@@ -1,9 +1,7 @@
-"""Wave2-I3 regression tests for the packaging-shaped ``course.json``
+"""Regression tests for packaging-shaped ``course.json``
 emission from ``MCP.tools.pipeline_tools._package_imscc``.
 
-Source: Finding 3 of
-``plans/dispatch-7-execution-inspection-2026-05.md``. Closes the
-``PAGE_OBJECTIVES_PATH_MISSING`` blocker by emitting
+The package phase prevents ``PAGE_OBJECTIVES_PATH_MISSING`` by emitting
 ``<project>/03_content_development/course.json`` from
 ``<project>/01_learning_objectives/synthesized_objectives.json`` BEFORE
 the mature packager + the ``PageObjectivesValidator`` gate fire.
@@ -47,7 +45,6 @@ if str(_CF_SCRIPTS) not in sys.path:
 from MCP.tools.pipeline_tools import (  # noqa: E402
     _project_synthesized_objectives_to_course_json,
 )
-
 
 # ---------------------------------------------------------------------------
 # Canonical synthesized_objectives.json shapes
@@ -148,13 +145,9 @@ _SYNTHESIZED_COURSEFORGE_FORM = {
 }
 
 
-# Vendor dict-of-lists form (Wave2b — chapter_objectives is a dict of
-# chapter-label -> flat list of CO dicts). The Wave 2 smoke verification
-# (plans/wave2-smoke-verification-2026-05.md "Surprises") found this
-# shape on real vendor-derived corpora; before Wave2b both helpers
-# silently dropped every CO-NN entry because they only handled the
-# list-of-groups + flat-list shapes. Mirrors the vendor dict-of-lists
-# layout — chapter labels as keys, flat CO dict lists as values.
+# Vendor dict-of-lists form: chapter labels are keys and flat component-
+# objective lists are values. Both helpers must preserve every CO-NN entry
+# alongside the list-of-groups and flat-list compatibility shapes.
 _SYNTHESIZED_VENDOR_DICT_OF_LISTS_FORM = {
     "course_name": "TST_910",
     "duration_weeks": 8,
@@ -298,7 +291,7 @@ def _build_project(
 
 
 class TestCourseJsonEmissionFromSynthesizedObjectives:
-    """Wave2-I3: closes PAGE_OBJECTIVES_PATH_MISSING blocker."""
+    """Covers the PAGE_OBJECTIVES_PATH_MISSING packaging contract."""
 
     def test_fresh_emit_writes_packaging_shaped_course_json(self, tmp_path):
         """Project with synthesized_objectives + no course.json => course.json
@@ -426,7 +419,7 @@ class TestCourseJsonEmissionFromSynthesizedObjectives:
         assert on_disk["course_code"] == "TST_911"
 
     def test_flat_list_chapter_objectives_is_handled(self, tmp_path):
-        """Wave2b regression: chapter_objectives as a flat list of CO
+        """chapter_objectives as a flat list of component objectives
         dicts (LibV2 archive's un-grouped variant) is normalized into a
         single synthetic group so every CO-NN id survives.
 
@@ -477,17 +470,13 @@ class TestCourseJsonEmissionFromSynthesizedObjectives:
         }
 
     def test_vendor_dict_of_lists_shape_is_handled(self, tmp_path):
-        """Wave2b regression: chapter_objectives as a dict-of-lists
+        """chapter_objectives as a dict-of-lists
         (vendor dict-of-lists shape) must NOT silently drop every CO-NN
         entry.
 
-        Pre-Wave2b the projection only handled list-of-groups +
-        flat-list shapes; a dict-shaped chapter_objectives was passed
-        through as-is, breaking
-        ``load_canonical_objectives``' downstream walk (which iterates
-        ``chapter_objectives`` expecting list-of-groups) and silently
-        emitting an empty CO set. Closes
-        ``plans/wave2-smoke-verification-2026-05.md`` "Surprises".
+        The projection normalizes this form before
+        ``load_canonical_objectives`` walks the list-of-groups contract, so the
+        component-objective set cannot be silently emptied.
         """
         _, synth_path, course_json_path = _build_project(
             tmp_path,
