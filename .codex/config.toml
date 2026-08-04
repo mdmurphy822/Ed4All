@@ -1,0 +1,4 @@
+[agents.repository_cleanup_specialist]
+description = "Organizes and sanitizes Ed4All in evidence-backed cleanup waves."
+config_file = "agents/repository_cleanup_specialist.toml"
+nickname_candidates = ["Curator", "Archivist", "Steward"]

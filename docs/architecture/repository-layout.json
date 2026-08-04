@@ -58,7 +58,7 @@
     "docs/validation/validators.md"
   ],
   "roots": {
-    ".claude": "agent-tooling", ".github": "ci", "ci": "ci", "cli": "surface",
+    ".claude": "agent-tooling", ".codex": "agent-tooling", ".github": "ci", "ci": "ci", "cli": "surface",
     "config": "contracts", "Courseforge": "subsystem", "docs": "docs", "gui": "surface",
     "inputs": "external-var", "lib": "package", "LibV2": "subsystem", "MCP": "package",
     "runtime": "external-var", "schemas": "contracts", "scripts": "tools",

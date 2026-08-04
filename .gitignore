@@ -164,8 +164,13 @@ examples/
 inputs/*
 !inputs/.gitkeep
 
-# Codex CLI sentinel — empty marker file the agent leaves; not project state
-.codex
+# Codex project configuration — publish only reviewed custom-agent definitions.
+# Session state, caches, and personal overrides remain private.
+.codex/*
+!.codex/config.toml
+!.codex/agents/
+.codex/agents/*
+!.codex/agents/repository_cleanup_specialist.toml
 
 # Wave 116: sidecar files written incrementally during synthesis runs.
 # Cleaned up at end of clean runs; preserved on budget-exceeded exits.

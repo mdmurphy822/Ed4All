@@ -88,6 +88,9 @@ parent product is public source.
   generated instances.
 - `ci/` contains repository policy, guards, allowlists, and their tests.
   Operational runbooks belong in `docs/operations/`.
+- `.claude/` and `.codex/` contain reviewed harness-level agent configuration,
+  not pipeline agents or runtime state. Personal settings, sessions, caches,
+  and worktrees remain ignored.
 - `scripts/` contains maintained utilities organized by § 3. Shipped code must
   not import a script as a runtime dependency.
 - `docs/` follows the publication contract in § 4.

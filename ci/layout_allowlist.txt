@@ -26,6 +26,7 @@
 
 # --- top-level directories (seeded from the tracked tree, 2026-07-29) ------
 dir:.claude
+dir:.codex
 dir:.github
 dir:ci
 dir:cli

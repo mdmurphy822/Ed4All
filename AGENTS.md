@@ -22,7 +22,7 @@ guide, read it there rather than copying it here.
 
 ## 1. Where agents are declared
 
-There are **three distinct agent surfaces**. They are not interchangeable, and
+There are **four distinct agent surfaces**. They are not interchangeable, and
 conflating them is the most common source of confusion in this repo.
 
 ### 1.1 Pipeline agents — `config/agents.yaml`
@@ -79,10 +79,10 @@ Pipeline-internal tools registered in
 decorated `@mcp.tool()` are reachable from workflow phases only, never from an
 external MCP client.
 
-### 1.3 Review subagents — `.claude/agents/*.md`
+### 1.3 Claude Code subagents — `.claude/agents/*.md`
 
-Ten Claude Code subagent definitions, each with YAML frontmatter (`name`,
-`description`, `tools`). These are **code-review and audit agents**, entirely
+Eleven Claude Code subagent definitions, each with YAML frontmatter (`name`,
+`description`, `tools`). These are **development, review, and audit agents**, entirely
 separate from the pipeline registry — they never appear in
 `config/agents.yaml` and never run as a workflow phase.
 
@@ -98,6 +98,17 @@ separate from the pipeline registry — they never appear in
 | `training-data-auditor` | Pre-training audit of instruction/preference pairs |
 | `training-monitor` | Live diagnostics for in-progress training runs |
 | `validation-gate-reviewer` | New/changed validators and their `config/workflows.yaml` wiring |
+| `repository-cleanup-specialist` | Recursive organization, dead-code evidence, privacy sanitation, public-doc curation, and cleanup validation |
+
+### 1.4 Codex custom agents — `.codex/agents/*.toml`
+
+Project-scoped Codex subagent definitions. They configure spawned maintenance
+sessions and are separate from both the pipeline registry and Claude Code
+review agents.
+
+| Agent | Purpose |
+|-------|---------|
+| `repository_cleanup_specialist` | Bounded organization, dead-code, publication-hygiene, and documentation-cleanup waves |
 
 ---
 
