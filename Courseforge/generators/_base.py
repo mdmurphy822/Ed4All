@@ -154,8 +154,7 @@ def _default_supported_providers() -> Tuple[str, ...]:
     ``anthropic`` (SDK transport) plus EVERY ``openai_compatible`` endpoint
     row in ``config/endpoints.yaml`` — so a vanilla ``_BaseLLMProvider``
     can reach ALL registry endpoints (``nvidia-deepseek``, ``together-
-    vision``, ``groq``, ``fireworks``, ``deepseek``, …), not just the four
-    per-vendor branches the legacy hardcoded tuple admitted. The
+    vision``, ``groq``, ``fireworks``, ``deepseek``, …). The
     ``claude_session`` dispatcher row is intentionally EXCLUDED — it is not
     an HTTP endpoint and the base has no dispatcher plumbing (the rewrite
     tier intercepts it before ``super().__init__``). Subclasses that pin a
@@ -163,8 +162,8 @@ def _default_supported_providers() -> Tuple[str, ...]:
     ``("anthropic", "together", "local", "nvidia")``) keep restricting;
     this only widens the DEFAULT used when a subclass passes none.
 
-    Anti-cycle / missing-file hardening: a registry read failure falls back
-    to the legacy trio so a vanilla provider never crashes at import.
+    A registry read failure uses the built-in HTTP provider set so importing
+    the base provider does not depend on registry availability.
     """
     providers = ["anthropic"]
     try:
@@ -413,9 +412,9 @@ class _BaseLLMProvider(ABC):
             self._anthropic_client = None
 
         else:
-            # Generic OpenAI-compatible seat: any other registry
-            # endpoint the legacy hardcoded branches never reached
-            # (``nvidia-deepseek``, ``together-vision``, ``groq``,
+            # Generic OpenAI-compatible seat: any registry endpoint outside
+            # the dedicated provider branches (``nvidia-deepseek``,
+            # ``together-vision``, ``groq``,
             # ``fireworks``, ``deepseek``, …). Identity (base_url / model /
             # api_key) resolves ENTIRELY from the endpoint row — the base
             # holds no per-vendor env constants for these — via
@@ -464,9 +463,8 @@ class _BaseLLMProvider(ABC):
         so vendor-specific fields (e.g. a reasoning model's
         ``chat_template_kwargs:{thinking:false}``) are no longer dropped.
 
-        ``provider_label`` is pinned to the endpoint name so decision-
-        capture rationales keep naming the seat exactly as the legacy
-        per-vendor branches did. ``timeout`` is forwarded from
+        ``provider_label`` is pinned to the endpoint name so decision-capture
+        rationales identify the resolved seat. ``timeout`` is forwarded from
         ``self._timeout`` (``None`` → the client resolves its own default).
         """
         from lib.llm.endpoints import (  # noqa: PLC0415 — lazy, transport-free
@@ -575,11 +573,10 @@ class _BaseLLMProvider(ABC):
         genuine no-op signal so a downstream input-truncation tripwire
         fail-OPENs on the Anthropic path.
 
-        Introduced for the rewrite-overflow-fix-2026-06 tripwire: usage
-        travels by RETURN VALUE (not a shared-mutable ``last_usage`` on the
-        client), so a cloud block can never read a stale OAI count from a
-        prior local call. The legacy 2-tuple :meth:`_dispatch_call` stays
-        the surface every other tier consumes.
+        Usage travels by return value rather than shared mutable client state,
+        preventing one request from observing another request's token count.
+        The 2-tuple :meth:`_dispatch_call` remains the interface for callers
+        that do not consume usage metadata.
         """
         if self._provider == "anthropic":
             text, retry_count = self._call_anthropic(user_prompt)
@@ -598,7 +595,7 @@ class _BaseLLMProvider(ABC):
         # Thread the resolved endpoint row's ``extra_body`` request-
         # body extras (e.g. a reasoning model's
         # ``chat_template_kwargs:{thinking:false}``) at the top level of the
-        # body. ``None`` for every legacy seat → byte-stable no-op. Applied
+        # body. ``None`` leaves the request body unchanged. Applied
         # BEFORE ``extra_payload`` so a caller-supplied per-call override
         # still wins.
         if self._extra_body:
@@ -776,9 +773,8 @@ class _BaseLLMProvider(ABC):
         """
         if self._capture is None:
             return
-        # Pass the optional fields ONLY when supplied so legacy call
-        # sites keep their exact log_decision call shape (test fakes may
-        # pin a strict keyword signature).
+        # Pass optional fields only when supplied because capture adapters may
+        # implement the required signature without these extensions.
         extra: Dict[str, Any] = {}
         if alternatives_considered:
             extra["alternatives_considered"] = alternatives_considered
