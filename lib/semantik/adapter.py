@@ -1864,9 +1864,8 @@ def _scrub_marker_artifacts(
     that cannot exist in publisher-authored accessible HTML — and it deletes a
     whitespace-bounded ``&gt;`` whatever it means. On a vendor corpus that is
     pure data loss: ``a) &gt; b) &lt; c) &gt; d) &gt;`` (an inequality answer
-    key) became ``a) b) &lt; c) d)``, and "The symbols &lt; and &gt; each have a
-    smaller side" lost its ``&gt;`` — 13 of 20 entity-bearing paragraphs in the
-    first two chapters of a 9-chapter publisher algebra corpus (2026-08-01). The
+    key) becomes ``a) b) &lt; c) d)``, and "The symbols &lt; and &gt; each have a
+    smaller side" loses its ``&gt;``. The
     ``_MARKER_COMPARISON_RE`` guard only protects a LONE-single-character
     operand on each side (``x &gt; y``), so ``) &gt; b`` is not covered. The
     colon-run arms stay on: they are notation folds, not deletions.
@@ -3141,9 +3140,8 @@ def _strip_body_folios(
     ``drop_standalone=False`` disables ARM A. A leaked printed folio is a SCAN
     artifact: publisher-authored accessible HTML has no page furniture in its
     body, so on that lane ARM A only ever fires on a legitimately short numeric
-    body — and a solved-exercise answer IS one. Measured on a 9-chapter
-    publisher algebra corpus (2026-08-01): every "Show answer / 96" TRY-IT
-    solution whose answer was a bare 2-4 digit number was silently deleted, so
+    body — and a solved-exercise answer IS one. A solved-exercise solution whose
+    answer is a bare 2-4 digit number would otherwise be silently deleted, so
     the rendered page showed the reveal control with nothing behind it. ARM B
     (the fused running-header TAIL strip) is anchored to a Title-Case
     "Chapter N …" prefix and cannot misfire this way, so it stays on.

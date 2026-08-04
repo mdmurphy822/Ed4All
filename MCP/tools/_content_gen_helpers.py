@@ -98,8 +98,8 @@ _ARTICLE_ID_RE = re.compile(
 # Headings that almost certainly aren't real chapter/topic titles.
 # Matched case-insensitively and via substring against the normalized heading
 # (lowercased, whitespace-collapsed). Keeping this explicit rather than
-# hand-tuning a classifier — catches the front-matter / back-matter /
-# publisher-chrome categories that plagued the first real corpus run.
+# hand-tuning a classifier catches known front-matter, back-matter, and
+# publisher-chrome categories deterministically.
 _HEADING_BLOCKLIST_TOKENS = frozenset([
     # Bibliographic / front / back matter
     "references", "bibliography", "index", "glossary", "appendix",

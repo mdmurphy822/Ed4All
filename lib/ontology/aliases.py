@@ -11,8 +11,7 @@ RDF tooling that wants to import our vocabulary.
 
 Why ``owl:equivalentProperty`` / ``owl:equivalentClass`` (not ``owl:sameAs``)?
 -----------------------------------------------------------------------------
-Per the LibV2 corpus answers Q9 (`q_20260426_205704_f9dc2230`) and
-Q11 (`q_20260426_205705_7c3f954f`), ``owl:sameAs`` is reserved for
+``owl:sameAs`` is reserved for
 INDIVIDUAL identity: it asserts that two IRIs denote the same
 real-world thing, and every triple about one is entailed about the
 other in both directions. Using sameAs for a surface-form synonym

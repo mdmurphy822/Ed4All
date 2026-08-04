@@ -41,8 +41,7 @@
 # Why sh:SPARQLRule instead of sh:TripleRule:
 #
 #   sh:TripleRule's node expressions support paths, filters, and
-#   sub-shapes but no ORDER BY / LIMIT (corpus chunk_00181, cache
-#   query q_20260426_205717_834f3a35). First-occurrence-by-sort
+#   sub-shapes but no ORDER BY / LIMIT. First-occurrence-by-sort
 #   requires SPARQL row ordering and bounding, which only a
 #   CONSTRUCT/WHERE body can express.
 #

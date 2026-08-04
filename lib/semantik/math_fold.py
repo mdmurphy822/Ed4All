@@ -558,18 +558,16 @@ def is_prose_fragment_span(content: str, prose_vocab: "frozenset | None") -> boo
 
 
 # ---------------------------------------------------------------------------
-# Currency / markup OPENER guards (2026-08-01 vendor-lane text-corruption fix).
+# Currency / markup opener guards.
 # ---------------------------------------------------------------------------
 # The ``$`` pairing scans below decide, for every unescaped ``$``, whether it
 # OPENS a math region. Two shapes must never open one:
 #
 #  (1) CURRENCY — a ``$`` immediately followed by a complete CURRENCY AMOUNT
 #      (``$5``, ``$131.19``, ``$19,400``) whose candidate span carries NO math
-#      evidence after that amount. Measured on a publisher algebra corpus
-#      (BCcampus intro algebra, 9 chapter files): every ``$`` in the corpus is
-#      currency, and letting one open a region ate 601 amounts (``$5 and $10``
-#      → ``5 and \$10``: the opener was dropped as a prose refusal) and opened
-#      31 cascade regions. The evidence test is what keeps GENUINE math that
+#      evidence after that amount. Treating currency as a math opener corrupts
+#      amounts such as ``$5 and $10`` into ``5 and \$10`` and can open spurious
+#      cascade regions. The evidence test is what keeps GENUINE math that
 #      merely starts with a digit — ``$5x + 3$``, ``$3 + 4 = 7$`` — opening
 #      exactly as before: an operator / backslash after the leading amount is
 #      positive math evidence, while ``$5 and ``, ``$5, `` and ``$131.19</td>``

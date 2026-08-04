@@ -226,14 +226,13 @@ def assemble(
     """Assemble the end-user page string (pure; no I/O)."""
     fragment = _extract_content_fragment(content_html)
     if mathjax:
-        # Round-7b (moved here 2026-08-01) — escape preserved currency ``$``
+        # Escape preserved currency ``$``
         # (``$5``) to ``\$`` so two amounts in one paragraph never FALSE-PAIR
         # into an italic span under the ``inlineMath [['$','$']]`` config below.
         # This is a RENDER concern of THIS page, not a property of the converted
-        # artifact: the adapter used to do it, which shipped 601 literal ``\$``
-        # tokens into the accessible HTML the chunker and every non-MathJax
-        # consumer read (measured on a 9-chapter publisher algebra corpus,
-        # 2026-08-01). Genuine ``$…$`` / ``\(…\)`` math is stashed and untouched;
+        # artifact: doing it in the adapter would ship literal ``\$`` tokens into
+        # accessible HTML consumed by the chunker and non-MathJax clients.
+        # Genuine ``$…$`` / ``\(…\)`` math is stashed and untouched;
         # the pass is idempotent, so re-assembling a page is a fixed point.
         fragment = escape_currency_dollars(fragment)
 

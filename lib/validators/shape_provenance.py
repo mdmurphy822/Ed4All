@@ -31,9 +31,8 @@ Returns ``None`` from ``lookup`` rather than raising for any of the
 above; the parent Phase 6 task constraint is that the enricher must
 tolerate shape IRIs that aren't in the cache.
 
-See ``plans/phase-6-shacl-result-enrichment.md`` § 2.1 for the
-architectural decision and Q-new (``q_20260426_233557_671ecebc``) for
-the corpus-grounded justification.
+The cache intentionally recognizes only the declaration forms emitted by the
+repository's canonical shape files; unrecognized forms remain non-fatal.
 """
 
 from __future__ import annotations

@@ -506,11 +506,10 @@ class RewriteSourceGroundingValidator:
                 )
                 continue
 
-            # Encode surfaces + sentences in ONE batched call per block
-            # (was: one model call per surface and per sentence — thousands
-            # of batch-1 GPU round trips per gate run, measured 10+ min on a
-            # 424-block corpus). Routed through the shared feature cache when
-            # present (cross-gate memoized batch encode) else encode_batch.
+            # Encode surfaces + sentences in one batched call per block to avoid
+            # per-surface and per-sentence GPU round trips. Route through the
+            # shared feature cache when present (cross-gate memoized batch
+            # encode), otherwise use encode_batch.
             # Same model, same normalize=True → scores identical to the
             # per-call path up to float noise, far below min_cosine margins.
             all_texts = grounding_surfaces + non_trivial

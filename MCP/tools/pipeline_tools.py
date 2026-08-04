@@ -22387,11 +22387,10 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
 #     (byte-identical no-op); unset / blank / garbage / truthy -> the phase
 #     runs (the ED4ALL_GPU_LIFECYCLE default-ON house pattern).
 #   * no ``*.glmocr_layout.json`` -> skip-with-pass (born-digital corpus).
-#   * SCOPED to THIS run's own corpus (``_heading_judge_corpus_stems``): a
-#     campaign shares ONE corpus directory across books, so an unscoped glob
-#     judged — and copied back over — a DIFFERENT book's leftover sidecars
-#     (2026-07-22 shared-corpus-dir incident). A foreign stem is never judged,
-#     never copied back, and never counted. An unresolvable stem set keeps the
+#   * SCOPED to THIS run's own corpus (``_heading_judge_corpus_stems``): an
+#     unscoped glob can select another input's leftover sidecars from a shared
+#     directory. A foreign stem is never judged, copied back, or counted. An
+#     unresolvable stem set keeps the
 #     legacy unscoped behavior but logs it LOUDLY.
 #   * a chapter whose pendings end 100% UNJUDGED is a REAL FAILURE: it is
 #     counted (``chapters_unjudged``), logged at ERROR, and its warning names
@@ -22776,14 +22775,9 @@ _HEADING_JUDGE_CORPUS_SUFFIXES = _CORPUS_INPUT_SUFFIXES
 def _heading_judge_corpus_stems(pdf_paths: Any) -> Set[str]:
     """Stems of THIS run's own corpus inputs — the sidecar ALLOWLIST.
 
-    Cross-book contamination guard (2026-07-22 shared-corpus-dir incident): the
-    campaign points every run at ONE book inside a SHARED corpus directory
-    (``--corpus <dir>/<book>.pdf``), so ``_heading_judge_corpus_dirs`` resolves
-    to that shared directory and a bare ``*.glmocr_layout.json`` glob picks up
-    EVERY other book's leftover sidecars. In the incident a run judged a
-    FOREIGN book (105 pendings of a different title), burned the seat on it,
-    and copied judged HTML + corrected escalations back over that other book's
-    conversion output (its ``.glmocr_escalations.jsonl.bak`` is the fingerprint).
+    A file input can live in a directory shared with unrelated conversion
+    sidecars. Restricting discovery to the input stem prevents the heading judge
+    from reading or copying another input's artifacts.
 
     A FILE token contributes its own stem; a DIRECTORY token contributes the
     stems of the corpus-input files it holds (non-recursive — the

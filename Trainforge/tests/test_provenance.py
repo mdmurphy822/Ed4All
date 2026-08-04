@@ -156,8 +156,9 @@ def test_xpath_is_absolute():
 
 
 # ---------------------------------------------------------------------------
-# Test 5: coverage — 100% of chunks in a local regenerated corpus carry both
-# fields. Opt-in via TRAINFORGE_PROVENANCE_CORPUS (see helper below).
+# Test 5: coverage — 100% of chunks in an operator-local, always-private
+# regenerated corpus carry both fields. Supply its untracked path through
+# TRAINFORGE_PROVENANCE_CORPUS (see helper below).
 # ---------------------------------------------------------------------------
 
 
@@ -167,7 +168,10 @@ def test_every_chunk_has_provenance_fields():
     """
     chunks = _load_local_corpus_chunks_if_available()
     if chunks is None:
-        pytest.skip("No local regenerated corpus available (see TRAINFORGE_PROVENANCE_CORPUS env var)")
+        pytest.skip(
+            "No private operator-local regenerated corpus available "
+            "(see TRAINFORGE_PROVENANCE_CORPUS env var)"
+        )
     missing_xpath = [c["id"] for c in chunks if "html_xpath" not in c.get("source", {})]
     missing_span = [c["id"] for c in chunks if "char_span" not in c.get("source", {})]
     assert not missing_xpath, f"chunks missing html_xpath: {missing_xpath[:5]}"

@@ -771,21 +771,16 @@ def test_skip_paths_carry_the_new_count_keys(corpus, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# (vii) 2026-07-22 shared-corpus-dir incident: cross-book sidecar sweep + a
-#       100%-unjudged chapter reported as "N judged / 0 failed".
+# (vii) Shared-directory isolation and all-unjudged failure reporting.
 #
-# The campaign runs every book out of ONE shared corpus directory
-# (``--corpus <shared>/<book>.pdf``), so the phase's ``*.glmocr_layout.json``
-# glob resolved to that shared dir and judged a DIFFERENT book's leftover
-# sidecars — burning the seat on them and copying judged HTML + corrected
-# escalations back over that other book's conversion output.
+# A file-scoped run must ignore unrelated sidecars in the same directory and
+# must report a chapter with no judge verdicts as unjudged rather than passed.
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
 def shared_corpus(tmp_path, monkeypatch):
-    """A SHARED corpus dir holding this run's book AND a foreign book's
-    leftover sidecars (the campaign workspace shape)."""
+    """A shared corpus dir containing target and unrelated sidecars."""
     corpus_dir = tmp_path / "shared-corpus"
     corpus_dir.mkdir()
     # this run's own book

@@ -536,9 +536,8 @@ class DecisionCapture:
     # Any decision_type with >= _BOILERPLATE_MIN_COUNT entries is scanned.
     # If > _BOILERPLATE_RATE_THRESHOLD of those entries share the same
     # first-_BOILERPLATE_PREFIX_LEN-char prefix, a structured WARNING is
-    # emitted (not a decision_event — that would recurse). Finding 6 of
-    # plans/dispatch-7-execution-inspection-2026-05.md: 62/63 source_selection
-    # decisions in a real full-course run shared a byte-identical 165-char string.
+    # emitted (not a decision_event — that would recurse). This detects call
+    # sites whose rationales repeat a static prefix instead of dynamic signals.
     _BOILERPLATE_MIN_COUNT: int = 5
     _BOILERPLATE_RATE_THRESHOLD: float = 0.60
     _BOILERPLATE_PREFIX_LEN: int = 80
