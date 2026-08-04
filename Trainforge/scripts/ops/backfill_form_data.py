@@ -117,7 +117,7 @@ def _resolve_chunks_jsonl(course_code: str) -> Optional[Path]:
 
 
 # ----------------------------------------------------------------------
-# Session log — Plan §2.2 / Worker B
+# Resumable session log
 #
 # Per-session sidecar at ``LibV2/courses/<slug>/.backfill_session.jsonl``
 # (or next to the catalog YAML when no course slug is wired). One JSONL
@@ -276,7 +276,7 @@ def _sort_targets_clustered(
             key=lambda pair: pair[0],
         )
     if family_map is None:
-        # Flat fallback: Wave 136d behavior.
+        # Use the flat fallback when no family cluster is available.
         return sorted(
             ((c, counts.get(c, 0)) for c in degraded_curies),
             key=lambda pair: (-pair[1], pair[0]),
@@ -326,7 +326,7 @@ def _sort_targets_clustered(
     return ordered_clusters + singletons_bucket
 
 
-# Wave 137b: keep the Wave 136d name available for callers that
+# Keep the earlier helper name available for callers that
 # imported `_sort_targets` directly. Implementation now routes through
 # the clustered sort with `family_map=None` so behavior is unchanged
 # for the legacy signature.
@@ -409,11 +409,11 @@ def _atomic_write_yaml(payload: Dict[str, Any], target: Path) -> None:
     tmp_path.replace(target)
 
 
-# Anchors `forms:` then any indented `<CURIE>:` block. Used to slice the
-# Wave 136c drafting CLI's stdout into the YAML payload (drop the
+# Anchor `forms:` and each indented `<CURIE>:` block so the drafting CLI's
+# stdout can be sliced into the YAML payload while dropping the
 # trailing operator next-steps comment block before yaml.safe_load).
 _NEXT_STEPS_HEADER_RE = re.compile(r"^\s*#\s*NEXT STEPS\s*$", re.MULTILINE)
-# Wave 137d-1: when the drafting CLI emits a review checklist between
+# When the drafting CLI emits a review checklist between
 # the YAML block and the next-steps banner, the slicer must cut at the
 # checklist header (it appears BEFORE the next-steps header). Match the
 # 60-equals-sign banner followed by "REVIEW CHECKLIST" on the next line.
@@ -971,7 +971,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "<family>.yaml."
         ),
     )
-    # Wave 137b: restrict a session to one family cluster (e.g. just
+    # Restrict a session to one family cluster (for example,
     # cardinality) so the operator can flip a single family from
     # partial -> complete in one sitting and the family_completeness
     # gate goes green on that family.
@@ -985,7 +985,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "family map at parse time."
         ),
     )
-    # Wave 137 follow-up: per-HTTP-request timeout for the drafting
+    # Bound each HTTP request made by the drafting
     # subprocess. Default 300s — Qwen 14B-Q4 routinely needs 90-180s
     # for the 35+-item drafting prompt and exceeds the provider's
     # standard 60s budget on high-coupling CURIEs (rdf:type etc.).
@@ -998,7 +998,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "drafting CLI. Default 300 (5 min)."
         ),
     )
-    # Wave 137 follow-up: pre-warm Ollama with a configurable
+    # Pre-warm Ollama with a configurable
     # keep_alive timer so the first CURIE doesn't pay cold-start +
     # mid-session operator review pauses don't unload the model.
     # Default 30m: long enough that operator reviews don't unload,
@@ -1011,7 +1011,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "'30m', '1h', '5m', '0' to skip warmup). Default 30m."
         ),
     )
-    # Wave 137 followup: scope the loop to one CURIE for targeted
+    # Scope the loop to one CURIE for targeted
     # backfill (typically pairs with --semantic-profile). Without this
     # flag the loop processes every degraded CURIE in the family up to
     # --limit. With it, only the named CURIE runs (--limit / --by /
@@ -1027,7 +1027,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "high-coupling CURIEs."
         ),
     )
-    # Wave 137 followup: per-CURIE semantic profile. Loaded from
+    # Load an optional per-CURIE semantic profile from
     # schemas/training/semantic_profiles.yaml and passed through to
     # both (a) the drafting subprocess as --semantic-profile and (b)
     # the post-merge validator's profile rules. The profile's
@@ -1045,7 +1045,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "with a matching target."
         ),
     )
-    # Wave 137 followup: corpus-driven CURIE discovery. When set, the
+    # Enable private-corpus-driven CURIE discovery. When set, the
     # loop's target list is computed from the corpus's actual CURIE
     # inventory (via lib.ontology.curie_discovery) rather than from
     # the static property manifest. The number of CURIEs the operator
@@ -1075,10 +1075,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "vocabulary first."
         ),
     )
-    # Plan §2.2 / Worker B: per-session resume log + flags. Default
+    # Configure the per-session resume log and flags. The default
     # behavior preserves prior runs: an operator who doesn't pass
     # --retry-failed and has no prior session log on disk sees zero
-    # change from the pre-Worker-B contract.
+    # change from the compatibility contract.
     parser.add_argument(
         "--retry-failed",
         action="store_true",
@@ -1125,7 +1125,7 @@ def main(
     manifest_curies = [p.curie for p in manifest.properties]
     label_by_curie: Dict[str, str] = {p.curie: p.label for p in manifest.properties}
 
-    # Wave 137 followup: load semantic profile (if requested) and
+    # Load the semantic profile when requested and
     # cross-validate against --curie. The profile drives both the
     # drafting prompt and the post-merge validator.
     semantic_profile = None
@@ -1160,7 +1160,7 @@ def main(
     _invalidate_form_data_cache()
     form_data = _load_form_data(args.family)
 
-    # Wave 137 followup: --curie scopes the loop to one target.
+    # --curie scopes the loop to one target.
     # Bypasses the degraded-placeholder filter so the operator can
     # force-redraft a `complete` entry that's semantically wrong (e.g.
     # rdf:type drifted into rdfs:domain/range usage).
@@ -1174,7 +1174,7 @@ def main(
             return 2
         degraded = [args.curie]
     elif args.discover_from_corpus:
-        # Wave 137 followup: corpus-driven CURIE discovery. Compute the
+        # For private-corpus-driven discovery, compute the
         # target list from the corpus's actual CURIE inventory.
         from lib.ontology.curie_discovery import discover_curies_from_corpus
         chunks_path_for_discovery = _resolve_chunks_jsonl(args.course_code)
@@ -1251,7 +1251,7 @@ def main(
     chunks_path = _resolve_chunks_jsonl(args.course_code)
     counts = _count_curie_frequencies(chunks_path, degraded)
 
-    # Wave 137b: load the family map (None on families without one --
+    # Load the family map (None on families without one --
     # the clustered sort falls back to flat freq-desc behavior).
     try:
         family_map = load_family_map(args.family)
@@ -1284,12 +1284,12 @@ def main(
             return 2
 
     if args.curie:
-        # Wave 137 followup: --curie scoping bypasses sort + cluster
+        # --curie scoping bypasses sort and cluster
         # filter + --limit. The single target carries its measured
         # corpus frequency for telemetry consistency.
         targets = [(args.curie, counts.get(args.curie, 0))]
     elif args.discover_from_corpus:
-        # Wave 137 followup: discovery preserves its own
+        # Discovery preserves its own
         # frequency-desc order; family-cluster sort doesn't apply
         # because corpus-discovered CURIEs may not be in any family.
         ordered = [(curie, counts.get(curie, 0)) for curie in degraded]
@@ -1308,8 +1308,7 @@ def main(
 
     yaml_path = _resolve_yaml_path(args.family, args.yaml_path)
 
-    # Plan §2.2 / Worker B: per-session resume log. Resolve the
-    # session log path before opening so --clean-session can unlink
+    # Resolve the per-session log path before opening so --clean-session can unlink
     # cleanly, and so the prior-session filter runs against the
     # correct file.
     session_log_path = _resolve_session_log_path(args.course_code, yaml_path)
@@ -1342,7 +1341,7 @@ def main(
                 if curie not in set(skipped_for_prior_failure)
             ]
 
-    # Wave 137 follow-up: pre-warm the model so first CURIE doesn't
+    # Pre-warm the model so the first CURIE does not
     # pay cold-start. Skipped if --keep-alive=0.
     if args.keep_alive and args.keep_alive != "0":
         _warmup_provider(args.provider, args.model, args.keep_alive, print_fn=print_fn)
@@ -1383,7 +1382,7 @@ def main(
     finally:
         session_log_fh.close()
 
-    # Plan §2.2 / Worker B: on clean exit, unlink the session log
+    # On clean exit, unlink the session log
     # when the family is now fully complete (zero degraded entries
     # remain). Mirrors align_chunks.py's clean-exit unlink — once the
     # authoritative state (the YAML overlay) carries everything, the
@@ -1423,7 +1422,7 @@ def main(
             f"max_redrafts_exceeded={counters['max_redrafts_exceeded']}"
         ),
     )
-    # Wave 137 follow-up: any CURIE that hit the auto-redraft ceiling
+    # Any CURIE that reaches the auto-redraft ceiling
     # surfaces as a non-zero exit code so the operator (or downstream
     # CI) sees a clear failure signal.
     if counters["max_redrafts_exceeded"] > 0:

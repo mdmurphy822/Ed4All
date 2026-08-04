@@ -63,7 +63,7 @@ from Trainforge.scripts.maintenance._review_checklist import build_review_checkl
 logger = logging.getLogger(__name__)
 
 
-# Wave 137c: prompt-template version captured in every drafted entry's
+# Prompt-template version captured in every drafted entry's
 # provenance block. Bump in lockstep with material edits to
 # ``_DRAFTING_PROMPT_TEMPLATE``.
 _PROMPT_VERSION = "wave-136c-v1.0"
@@ -225,7 +225,7 @@ def _draft_one_curie(provider: Any, prompt: str) -> Dict[str, Any]:
         },
     )
     # Try lenient extraction for backends that wrap output in markdown
-    # fences or surrounding prose (Wave 113 hardening on 7B-Q4 servers).
+    # fences or surrounding prose from compact local-model responses.
     try:
         return json.loads(text)
     except json.JSONDecodeError:
@@ -494,7 +494,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "routinely exceeds the provider's standard 60s budget."
         ),
     )
-    # Wave 137 follow-up: feedback-loop on auto-redraft. The backfill
+    # Accept feedback for the automatic redraft loop. The backfill
     # loop captures append-time validator violations and passes them to
     # the next drafting attempt as structural feedback so Qwen can fix
     # what its previous attempt got wrong. Format: JSON-encoded list of
@@ -509,7 +509,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "metadata about Qwen's own prior output, not example content)."
         ),
     )
-    # Wave 137 followup: per-CURIE semantic profile. When supplied, the
+    # Apply the per-CURIE semantic profile when supplied; the
     # profile's prompt_directive is prepended to the drafting prompt and
     # the post-draft validator runs the profile's bad/good signal checks
     # (in addition to the structural rules). Profiles live at
@@ -526,7 +526,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "validator. The profile's target_curie must match --curie."
         ),
     )
-    # Wave 137 followup: allow drafting a CURIE that isn't in the
+    # Allow explicit drafting of a CURIE that is not in the
     # property manifest. Used by --discover-from-corpus runs through
     # the backfill loop where the corpus surfaces vocabulary the
     # manifest hasn't declared yet. Falls back to surface_forms=[curie],
@@ -569,7 +569,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 file=sys.stderr,
             )
             return 2
-        # Wave 137 followup: --allow-non-manifest synthesizes a
+        # --allow-non-manifest synthesizes a
         # default PropertyEntry shape so corpus-discovered CURIEs
         # outside the manifest can still flow through the drafting
         # contract. Surface_forms defaults to [curie] (single-form);
@@ -619,7 +619,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
             return 2
 
-    # Wave 137 followup: load the semantic profile (if requested) and
+    # Load the semantic profile when requested and
     # verify its target_curie matches --curie. Profile drives both the
     # prompt directive and the post-draft validator's profile rules.
     semantic_profile = None
@@ -671,7 +671,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
 
     # Step 7: coerce into SurfaceFormData (anchored_status="complete").
-    # Wave 137c: provenance is auto-stamped with reviewed_by="PENDING_REVIEW";
+    # Stamp provenance with reviewed_by="PENDING_REVIEW";
     # the operator-next-steps banner reminds the operator to replace it
     # with their handle before committing.
     drafted = _coerce_to_surface_form_data(
@@ -679,12 +679,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
 
     # Step 8: validate. Build a one-CURIE form_data dict and run the
-    # canonical contract validator. Wave 136b widens this to content-
+    # canonical contract validator. The contract covers content-
     # quality rules.
     #
-    # Wave 137 follow-up: the drafting CLI itself emits entries with
-    # provenance.reviewed_by="PENDING_REVIEW" (Wave 137c-2 sentinel
-    # forcing operator review before commit). Wave 137a-3 Rule 4
+    # The drafting CLI emits entries with
+    # provenance.reviewed_by="PENDING_REVIEW", which forces operator review
+    # before commit. The contract
     # rejects PENDING_REVIEW as INCOMPLETE_PROVENANCE — which would
     # ALWAYS fire on the drafting CLI's own output, blocking the
     # operator from ever seeing the YAML. Filter that one violation
