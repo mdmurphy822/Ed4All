@@ -11,7 +11,7 @@ contract):
 
 1. With a wired capture, at least one event fires; the first event's
    ``decision_type`` is ``"assessment_planning"`` (the per-call planning
-   emit at ``assessment_generator.py:292-309``).
+   emit in ``Trainforge/generators/assessment/generator.py``).
 2. Rationale interpolates dynamic signals — objective count + Bloom's
    level distribution — and is at least 20 chars.
 3. ``capture=None`` is the back-compat default; no exceptions, no
@@ -78,14 +78,14 @@ def test_capture_fires_on_generate_call():
         source_chunks=_stub_chunks(),
     )
     # First event MUST be assessment_planning per
-    # ``assessment_generator.py:292-309``.
+    # ``Trainforge/generators/assessment/generator.py``.
     assert len(capture.events) >= 1
     first = capture.events[0]
     assert first["decision_type"] == "assessment_planning"
     rationale = first["rationale"]
     assert isinstance(rationale, str)
     assert len(rationale) >= 20
-    # Dynamic signals interpolated by ``assessment_generator.py:284-291``.
+    # Dynamic signals interpolated by the canonical assessment generator.
     assert "1 objectives" in rationale
     assert "Bloom" in rationale or "bloom" in rationale.lower()
     alternatives = [
@@ -138,7 +138,7 @@ def test_capture_rationale_carries_dynamic_signals():
         if e["decision_type"] == "assessment_planning"
     )
     # 3-objective N must appear in rationale per the production format
-    # string at assessment_generator.py:284-291.
+    # string in the canonical assessment generator.
     assert "3 objectives" in planning["rationale"]
     # Bloom's joined-list of two levels.
     assert "remember" in planning["rationale"]

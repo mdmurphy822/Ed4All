@@ -415,12 +415,6 @@ Trainforge/
 │   │   ├── schema_translation_generator.py # CURIE translation pairs
 │   │   ├── assessment_sft_generator.py # Assessment SFT program
 │   │   └── graph_sft_generator.py    # Concept-graph SFT program
-│   ├── instruction_factory.py   # Deprecated compatibility alias
-│   ├── preference_factory.py    # Deprecated compatibility alias
-│   ├── summary_factory.py       # Deprecated compatibility alias
-│   ├── pair_decontamination.py  # Deprecated compatibility alias
-│   ├── assessment_generator.py  # Deprecated compatibility alias
-│   └── question_factory.py      # Deprecated compatibility alias
 ├── eval/                        # 5-layer × 3-tier evaluation surface
 │   ├── publication/             # Model-index, headline-delta, and reproducibility exports
 │   ├── hf_model_index.py       # Compatibility import facade for publication/model-index

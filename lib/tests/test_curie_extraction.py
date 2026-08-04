@@ -6,8 +6,9 @@ that Wave 131 introduced. Tests here mirror the slice of behavior
 ``test_curie_preservation_validator.py`` already exercises via the
 validator wrapper, plus dedicated coverage for the URL-scheme
 exclusion path. Wave 135b's force-injection in
-``Trainforge/generators/pairs/instruction.py`` /
-``preference_factory.py`` consumes ``extract_curies`` directly, so a
+``Trainforge/generators/pairs/instruction.py`` and
+``Trainforge/generators/pairs/preference.py`` consume ``extract_curies``
+directly, so a
 silent regex regression here would shift the trained adapter's CURIE
 distribution — the unit coverage is load-bearing.
 """

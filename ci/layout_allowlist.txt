@@ -118,7 +118,6 @@ flatcap:SemantiK/semantik_structure/gates=9
 flatcap:SemantiK/semantik_structure/glmocr=13
 flatcap:SemantiK/semantik_structure/qwen_specialists=22
 flatcap:Trainforge/eval=14
-flatcap:Trainforge/generators=10
 flatcap:Trainforge/rag=8
 flatcap:Trainforge/rag/inference_rules=12
 flatcap:Trainforge/training=9

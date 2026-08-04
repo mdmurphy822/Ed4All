@@ -982,7 +982,7 @@ Sizes (file count + total lines per subfolder, regenerated 2026-05-07):
 | `Question` | `Trainforge/generators/assessment/question_factory.py:36` | factory-side question |
 | `QuestionChoice` | `question_factory.py:28` | choice option |
 | `QuestionData` | `Trainforge/generators/assessment/generator.py:81` | generator-side question |
-| `AssessmentData` | `assessment_generator.py:112` | assessment bundle |
+| `AssessmentData` | `Trainforge/generators/assessment/generator.py` | assessment bundle |
 | `InputRef` | `lib/provenance.py:37` | provenance input pointer |
 | `OutputRef` | `lib/provenance.py:91` | provenance output pointer |
 | `ByteRange` | `lib/provenance.py:27` | byte range within a file |

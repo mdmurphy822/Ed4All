@@ -29,8 +29,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 
-# Length sentinels — match instruction_factory.py / preference_factory.py
-# so paraphrased output respects the same downstream gates.
+# Length sentinels match the canonical instruction and preference pair
+# factories so paraphrased output respects the same downstream gates.
 PROMPT_MIN, PROMPT_MAX = 40, 400
 COMPLETION_MIN, COMPLETION_MAX = 50, 600
 
