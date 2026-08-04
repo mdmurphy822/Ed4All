@@ -19,7 +19,7 @@ SemantiK ───> Courseforge ───> Trainforge ────────�
 ```
 
 **Receives:** Processed training artifacts from Trainforge (corpus / graph / training_specs / pedagogy / quality).
-**Role:** Store, index, and organize training data for SLM model training, AND host trained adapters under `courses/<slug>/models/<model_id>/` (Wave 93). Promotion ledger at `models/_pointers.json` per `schemas/models/model_pointers.schema.json`.
+**Role:** Store, index, and organize training data for SLM model training, and host trained adapters under `courses/<slug>/models/<model_id>/`. The promotion ledger lives at `models/_pointers.json` and follows `schemas/models/model_pointers.schema.json`.
 
 ## CRITICAL: RAG Query Restrictions
 
@@ -119,21 +119,21 @@ the prior answer is suspect).
 # Ask a question scoped to one course (record lands at
 # courses/<slug>/queries/<query_id>.json):
 libv2 ask "How does SHACL distinguish NodeShape from PropertyShape?" \
-  --course demo-course-1 --limit 10
+  --course <course-slug> --limit 10
 
 # Cross-course query (record lands at catalog/queries/<query_id>.json):
 libv2 ask "compare UDL vs differentiated instruction" --method hybrid
 
 # Attach the synthesized answer to a previously-asked query:
-libv2 answer q_20260426_204818_7c65277e --course demo-course-1 \
+libv2 answer <query-id> --course <course-slug> \
   "<synthesized answer text>"
 
 # Browse the log:
-libv2 queries list --course demo-course-1
-libv2 queries show q_20260426_204818_7c65277e --course demo-course-1
+libv2 queries list --course <course-slug>
+libv2 queries show <query-id> --course <course-slug>
 
 # Force fresh retrieval (skip cache):
-libv2 ask "How does owl:sameAs entail?" --course demo-course-1 --force
+libv2 ask "How does owl:sameAs entail?" --course <course-slug> --force
 ```
 
 Default retrieval method is `bm25+intent`; override with `--method
@@ -292,9 +292,9 @@ non-loopback base_url raises `AnswerProviderNotLocal`).
 
 ```bash
 # Answer one course question, grounded + citation-gated:
-libv2 answer-grounded "What is a SHACL NodeShape?" --course demo-course-1
-libv2 answer-grounded "Explain RRF fusion" -c demo-course-2 --engine semantic
-libv2 answer-grounded "Define a derivative" -c demo-course-3 --json --with-groundedness
+libv2 answer-grounded "What is a SHACL NodeShape?" --course <course-slug>
+libv2 answer-grounded "Explain RRF fusion" -c <course-slug> --engine semantic
+libv2 answer-grounded "Define a derivative" -c <course-slug> --json --with-groundedness
 
 # --engine auto picks hybrid-rrf when a vector index exists, else lexical — the
 # benchmark-selected default (pure semantic never beat BM25). Resolved by the ONE
@@ -304,12 +304,12 @@ libv2 answer-grounded "Define a derivative" -c demo-course-3 --json --with-groun
 
 # Eval harness over a course gold set (BM25/semantic) — emits
 # grounded_answer_eval_<ts>.json under retrieval_eval/:
-libv2 answer-eval --course demo-course-1 --engine lexical
+libv2 answer-eval --course <course-slug> --engine lexical
 
 # Calibrate the refusal threshold for one (course, engine) — measures
 # answerable (gold-set) vs unanswerable (refusal-probe) score distributions,
 # emits refusal_calibration.json under retrieval_eval/:
-libv2 refusal-calibrate --course demo-course-1 --engine semantic
+libv2 refusal-calibrate --course <course-slug> --engine semantic
 ```
 
 `answer-grounded` exit codes: **0** answered (or answered-with-warnings), **2**
@@ -345,7 +345,7 @@ Examples below use the full module path; substitute `libv2` if aliased.
 
 ### Adding a New Course
 ```bash
-libv2 import /path/to/trainforge/output/course_name \
+libv2 import <trainforge-output-dir> \
   --domain physics \
   --subdomain mechanics
 ```

@@ -17,7 +17,7 @@ from .retriever import (
     retrieve_chunks,
 )
 
-# Add lib to path for decision capture
+# Make repository-level decision capture imports available.
 ED4ALL_ROOT = Path(__file__).resolve().parents[3]  # LibV2/tools/libv2/multi_retriever.py → Ed4All/
 if str(ED4ALL_ROOT) not in sys.path:
     sys.path.insert(0, str(ED4ALL_ROOT))
@@ -35,7 +35,7 @@ class MultiQueryRetriever:
     - Result fusion using RRF
 
     Example:
-        >>> retriever = MultiQueryRetriever(repo_root=Path("/path/to/LibV2"))
+        >>> retriever = MultiQueryRetriever(repo_root=Path("<libv2-root>"))
         >>> results = retriever.retrieve(
         ...     query="Compare ADDIE and SAM instructional design models",
         ...     limit=15,
@@ -104,8 +104,7 @@ class MultiQueryRetriever:
         chunk_type: Optional[str] = None,
         difficulty: Optional[str] = None,
         strategy_weights: Optional[dict[str, float]] = None,
-        # Wave 70 — RDF-aligned filter axes. Additive; fusion behavior
-        # untouched (filters fire per-sub-query in ``_execute_single_query``).
+        # RDF-aligned filters are applied independently to every sub-query.
         cognitive_domain: Optional[str] = None,
         hierarchy_level: Optional[str] = None,
         course_slug: Optional[str] = None,
@@ -178,12 +177,8 @@ class MultiQueryRetriever:
                 course_slug=effective_slug,
                 engine=engine,
             )
-            # Return the retrieved results directly (no fusion needed for a
-            # single query). Previously this branch dropped ``results`` and
-            # returned an empty list, so ``decompose=False`` callers always
-            # saw zero results even when retrieval succeeded. Project each
-            # RetrievalResult into a FusedResult so the FusionResult shape
-            # (and to_dict() serialization) matches the decomposed path.
+            # Project direct retrieval results into the same result shape used
+            # by the decomposed path.
             fused = [
                 FusedResult.from_retrieval_result(r, "original")
                 for r in results
@@ -389,8 +384,8 @@ class MultiQueryRetriever:
             division: Division filter
             chunk_type: Chunk type filter
             difficulty: Difficulty filter
-            cognitive_domain: Cognitive domain filter (Wave 70)
-            hierarchy_level: LO hierarchy level filter (Wave 70)
+            cognitive_domain: Cognitive-domain filter
+            hierarchy_level: Learning-outcome hierarchy filter
 
         Returns:
             Dict mapping sub-query text to results
@@ -459,8 +454,8 @@ class MultiQueryRetriever:
             division: Division filter
             chunk_type: Chunk type filter
             difficulty: Difficulty filter
-            cognitive_domain: Cognitive domain filter (Wave 70)
-            hierarchy_level: LO hierarchy level filter (Wave 70)
+            cognitive_domain: Cognitive-domain filter
+            hierarchy_level: Learning-outcome hierarchy filter
 
         Returns:
             List of RetrievalResult objects

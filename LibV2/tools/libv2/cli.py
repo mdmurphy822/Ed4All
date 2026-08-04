@@ -448,7 +448,7 @@ def catalog_stats(ctx):
 @click.option("--week", "week_num", type=int, help="Filter by week number (parses source.module_id)")
 @click.option("--teaching-role", help="Filter by teaching_role (transfer, assess, synthesize, ...)")
 @click.option("--content-type", "content_type_label", help="Filter by content_type_label")
-# Wave 70 RDF-aligned filters
+# RDF-aligned retrieval filters
 @click.option("--cognitive-domain", help="Filter by cognitive_domain (factual, conceptual, procedural, metacognitive)")
 @click.option("--hierarchy-level", type=click.Choice(["terminal", "chapter"]),
               help="Filter by LO hierarchy_level (resolved via learning_outcome_refs against course.json outcomes)")
@@ -485,7 +485,7 @@ def retrieve(ctx, query: str, domain: Optional[str], division: Optional[str],
 
         libv2 retrieve "CSS grid" --chunk-type example --limit 5
 
-        libv2 retrieve "define a SHACL NodeShape" --course demo-course-1 --engine semantic
+        libv2 retrieve "define a SHACL NodeShape" --course <course-slug> --engine semantic
     """
     from .retriever import retrieve_chunks
 
@@ -582,7 +582,7 @@ def retrieve(ctx, query: str, domain: Optional[str], division: Optional[str],
 @click.option("--decompose/--no-decompose", default=True, help="Enable query decomposition")
 @click.option("--explain", is_flag=True, help="Show decomposition explanation")
 @click.option("--output", "-o", type=click.Choice(["text", "json", "jsonld"]), default="text", help="Output format")
-# Wave 70 RDF-aligned filters
+# RDF-aligned retrieval filters
 @click.option("--cognitive-domain", help="Filter by cognitive_domain (factual, conceptual, procedural, metacognitive)")
 @click.option("--hierarchy-level", type=click.Choice(["terminal", "chapter"]),
               help="Filter by LO hierarchy_level (resolved via learning_outcome_refs against course.json outcomes)")
@@ -800,8 +800,8 @@ def remove_course_cmd(ctx, slug: str, yes: bool):
 
     \b
     Examples:
-        libv2 remove demo-course-1
-        libv2 remove demo-course-1 --yes
+        libv2 remove <course-slug>
+        libv2 remove <course-slug> --yes
     """
     from .remove import (
         CourseRemovalError,
@@ -1034,8 +1034,8 @@ def migrate_cmd(ctx, slug: Optional[str], all_courses: bool, apply_flag: bool):
 
     \b
     Examples:
-        libv2 migrate demo-course-1               # dry-run plan for one course
-        libv2 migrate demo-course-1 --apply       # migrate one course
+        libv2 migrate <course-slug>               # dry-run plan for one course
+        libv2 migrate <course-slug> --apply       # migrate one course
         libv2 migrate --all                       # dry-run plan for every course
         libv2 migrate --all --apply               # migrate every course
     """
@@ -1142,7 +1142,7 @@ def link_outcomes(ctx, slug: str, objectives: str, threshold: float):
 
     Examples:
 
-        libv2 link-outcomes accessibility-design --objectives /path/to/learning_objectives.json
+        libv2 link-outcomes <course-slug> --objectives <objectives-file>
 
         libv2 link-outcomes my-course -o objectives.json --threshold 0.2
     """
@@ -1430,7 +1430,7 @@ def eval_run(ctx, slug: str, model_id: Optional[str], judge: str,
     \b
     - Legacy retrieval eval (no MODEL_ID): runs the LibV2 retrieval
       harness against quality/eval_set.json. Use 'eval generate' first.
-    - Wave 103 ED4ALL-Bench (with MODEL_ID): invokes AblationRunner
+    - ED4ALL-Bench (with MODEL_ID): invokes AblationRunner
       against the named adapter under courses/<slug>/models/<model_id>.
 
     Examples:
@@ -1438,7 +1438,7 @@ def eval_run(ctx, slug: str, model_id: Optional[str], judge: str,
     \b
         libv2 eval run accessibility-design
         libv2 eval run my-course -v -o report.json
-        libv2 eval run demo-course-1 my-model-id --judge anthropic
+        libv2 eval run <course-slug> <model-id> --judge anthropic
     """
     repo_root = ctx.obj["repo_root"]
     course_dir = repo_root / "courses" / slug
@@ -1515,7 +1515,7 @@ def eval_run(ctx, slug: str, model_id: Optional[str], judge: str,
 
 
 # ---------------------------------------------------------------------- #
-# Wave 103 - ED4ALL-Bench per-course eval directory                       #
+# ED4ALL-Bench per-course evaluation directory                           #
 # ---------------------------------------------------------------------- #
 
 
@@ -1535,7 +1535,7 @@ def _schemas_eval_dir() -> Path:
 @click.argument("slug")
 @click.pass_context
 def eval_init(ctx, slug: str):
-    """Wave 103: scaffold the per-course eval/ directory.
+    """Scaffold the per-course evaluation directory.
 
     Copies the four ED4ALL-Bench defaults from schemas/eval/ into
     courses/<slug>/eval/ - prompt_template.txt, rubric.md,
@@ -1544,7 +1544,7 @@ def eval_init(ctx, slug: str):
 
     \b
     Example:
-        libv2 eval init demo-course-1
+        libv2 eval init <course-slug>
     """
     repo_root: Path = ctx.obj["repo_root"]
     course_dir = repo_root / "courses" / slug
@@ -1592,7 +1592,7 @@ def eval_init(ctx, slug: str):
 @click.argument("slug")
 @click.pass_context
 def eval_validate(ctx, slug: str):
-    """Wave 103: assert the per-course eval/ directory is well-formed.
+    """Assert that the per-course evaluation directory is well formed.
 
     Checks all four files exist, prompt_template.txt has the
     {context_section} and {question} placeholders, and eval_config.yaml
@@ -1600,7 +1600,7 @@ def eval_validate(ctx, slug: str):
 
     \b
     Example:
-        libv2 eval validate demo-course-1
+        libv2 eval validate <course-slug>
     """
     repo_root: Path = ctx.obj["repo_root"]
     course_dir = repo_root / "courses" / slug
@@ -1771,7 +1771,7 @@ def cross_index(ctx, repo_root: Optional[str], output: Optional[str]):
 
         libv2 cross-index
 
-        libv2 cross-index --repo-root /path/to/Ed4All --output catalog.json
+        libv2 cross-index --repo-root <project-root> --output catalog.json
     """
     from .cross_package.indexer import write_cross_package_index
 
@@ -1968,7 +1968,7 @@ def retrieval_compare(
 
     \b
     Example:
-        libv2 retrieval-compare --course demo-course-1 \\
+        libv2 retrieval-compare --course <course-slug> \\
             --methods bm25,bm25+intent,hybrid
 
     Probe JSON shape — same as eval-set ``EvalQuery`` (query_id, query_text,
@@ -2108,9 +2108,9 @@ def ask(ctx, query: str, course: Optional[str], method: str, limit: int,
 
     \b
     Examples:
-        libv2 ask "How do I model SHACL property paths?" --course demo-course-1
+        libv2 ask "How do I model SHACL property paths?" --course <course-slug>
         libv2 ask "compare UDL vs differentiated instruction" --method hybrid
-        libv2 ask "How does owl:sameAs entail?" --course demo-course-1 --force
+        libv2 ask "How does owl:sameAs entail?" --course <course-slug> --force
     """
     from .retriever import retrieve_chunks
     from .query_log import (
@@ -2377,7 +2377,7 @@ def export_rdf(ctx, slug: str, output_dir: Optional[str], output_format: str):
 def models_group():
     """Manage trained adapters attached to a course.
 
-    Wave 93 — adapters trained by Trainforge land under
+    Adapters trained by Trainforge land under
     ``courses/<slug>/models/<model_id>/`` alongside ``imscc_chunks/``
     (Phase 7c rename of ``corpus/``), ``graph/``, etc.
     ``_pointers.json`` records which model_id is currently promoted.
@@ -2394,7 +2394,7 @@ def models_list(ctx, slug: str, output: str):
 
     \b
     Example:
-        libv2 models list demo-course-1
+        libv2 models list <course-slug>
     """
     from .importer import list_course_models
 
@@ -2457,7 +2457,7 @@ def models_promote(ctx, slug: str, model_id: str, promoted_by: Optional[str]):
 
     \b
     Example:
-        libv2 models promote demo-course-1 qwen2-5-1-5b-demo-course-1-3a4f8c92
+        libv2 models promote <course-slug> <model-id>
     """
     from .importer import promote_model
 
@@ -2507,10 +2507,10 @@ def models_eval_cmd(ctx, slug: str, model_id: str, output: str,
 
     \b
     Examples:
-        libv2 models eval demo-course-1 qwen2-5-1-5b-demo-course-1-3a4f8c92
-        libv2 models eval demo-course-1 <model_id> --fresh --smoke
+        libv2 models eval <course-slug> <model-id>
+        libv2 models eval <course-slug> <model-id> --fresh --smoke
         scripts/ops/gpu_guard.sh run --task libv2-fresh-eval -- \\
-            libv2 models eval demo-course-1 <model_id> --fresh --replace
+            libv2 models eval <course-slug> <model-id> --fresh --replace
     """
     from .importer import get_model_eval_report
 
@@ -2644,13 +2644,13 @@ def import_model_cmd(ctx, run_dir: str, course: str, promote: bool,
                      promoted_by: Optional[str]):
     """Import a TrainingRunner output dir into a LibV2 course.
 
-    Validates ``model_card.json`` against LibV2ModelValidator (Wave 89);
+    Validates ``model_card.json`` against ``LibV2ModelValidator``;
     fails loud on critical issues. Optionally promotes the new model
     as current with ``--promote``.
 
     \b
     Example:
-        libv2 import-model /path/to/run-dir --course demo-course-1 --promote
+        libv2 import-model <training-run-dir> --course <course-slug> --promote
     """
     from .importer import import_model
     from .validator import ValidationError
@@ -2863,7 +2863,7 @@ def retrieval_benchmark(
 
     Example:
 
-        libv2 retrieval-benchmark --course demo-course-1 \\
+        libv2 retrieval-benchmark --course <course-slug> \\
             --engines bm25,semantic,hybrid-rrf
     """
     from .evaluation.harness import benchmark_retrieval_engines
@@ -2884,7 +2884,7 @@ def retrieval_benchmark(
         print_error("--k resolved to an empty cutoff list")
         sys.exit(1)
 
-    # Multi-model sweep (wave-C CLI orchestration). For each model: build a
+    # Build and benchmark an isolated temporary index for each model.
     # temp index alongside the canonical dir, swap it into place for the
     # benchmark run, restore the canonical index, write one tagged report.
     if models_csv:
@@ -3003,8 +3003,7 @@ def _run_model_sweep(
     device=None,
     batch_size=None,
 ):
-    """Orchestrate a per-model benchmark sweep (the wave-C CLI scope the
-    harness docstring punts on).
+    """Orchestrate a per-model benchmark sweep before model selection.
 
     For each model id: build a temp index into
     ``vector_index.bench-<tag>/`` alongside the canonical ``vector_index/``,
@@ -3234,7 +3233,7 @@ def vector_index_build(ctx, course, provider, model_id, chunkset, device,
 
     Example:
 
-        libv2 vector-index build --course demo-course-1 --provider st
+        libv2 vector-index build --course <course-slug> --provider st
     """
     from lib.embedding.providers import (
         EmbeddingBackendUnavailable,
@@ -3392,7 +3391,7 @@ def vector_index_verify(ctx, course):
     sys.exit(1)
 
 
-# WS3 Wave C — grounded-answer surface.
+# Grounded-answer command surface.
 # `answer-grounded` invokes the single entry point lib.retrieval.grounded_answer
 # .answer_course_question (it owns refusal + the WS1 citation gate; bypassing it
 # is the hallucination-by-construction path). The companion `answer-eval` and
@@ -3506,9 +3505,9 @@ def answer_grounded(ctx, query: str, course: str, engine: str, limit: int,
 
     \b
     Examples:
-        libv2 answer-grounded "What is a SHACL NodeShape?" --course demo-course-1
-        libv2 answer-grounded "Explain RRF fusion" -c demo-course-2 --engine semantic
-        libv2 answer-grounded "Define a derivative" -c demo-course-3 --json --with-groundedness
+        libv2 answer-grounded "What is a SHACL NodeShape?" --course <course-slug>
+        libv2 answer-grounded "Explain RRF fusion" -c <course-slug> --engine semantic
+        libv2 answer-grounded "Define a derivative" -c <course-slug> --json --with-groundedness
     """
     from lib.decision_capture import DecisionCapture
     from lib.retrieval.answer_backend import (
@@ -3621,8 +3620,8 @@ def answer_eval(ctx, course: str, engine: str, limit: int, no_groundedness: bool
 
     \b
     Example:
-        libv2 answer-eval --course demo-course-1 --engine lexical
-        libv2 answer-eval --course demo-course-1 --arms base,retrieval,grounded
+        libv2 answer-eval --course <course-slug> --engine lexical
+        libv2 answer-eval --course <course-slug> --arms base,retrieval,grounded
     """
     repo_root: Path = ctx.obj["repo_root"]
 
@@ -3697,7 +3696,7 @@ def refusal_calibrate(ctx, course: str, engine: str, limit: int, no_write: bool)
 
     \b
     Example:
-        libv2 refusal-calibrate --course demo-course-1 --engine semantic
+        libv2 refusal-calibrate --course <course-slug> --engine semantic
     """
     from lib.retrieval.refusal import main as refusal_main
 
@@ -3732,7 +3731,7 @@ def attribution_calibrate(ctx, course: str, engine: str, limit: int,
 
     \b
     Example:
-        libv2 attribution-calibrate --course demo-course-1 --engine lexical
+        libv2 attribution-calibrate --course <course-slug> --engine lexical
     """
     from lib.retrieval.attribution_calibrate import (
         DEFAULT_PRECISION_FLOOR,
@@ -3795,7 +3794,7 @@ def gold_validate(ctx, course: str, coverage: bool, no_coverage_write: bool):
 
     \b
     Example:
-        libv2 gold-validate --course demo-course-1 --coverage
+        libv2 gold-validate --course <course-slug> --coverage
     """
     from lib.retrieval.gold_set import (
         critical_issues,
@@ -3886,7 +3885,7 @@ def gold_repin(ctx, course: str, kind: str, chunks_path: Optional[str],
 
     \b
     Example:
-        libv2 gold-repin --course demo-course-1 --kind corpus
+        libv2 gold-repin --course <course-slug> --kind corpus
     """
     from lib.retrieval.gold_repin import GoldRepinError, repin_gold_set
 
@@ -3966,8 +3965,8 @@ def gold_candidates(ctx, course: str, n: Optional[int], seed: int,
 
     \b
     Example:
-        libv2 gold-candidates --course demo-course-1 --n 100
-        libv2 gold-candidates --course demo-course-1 --templates definition,worked_example
+        libv2 gold-candidates --course <course-slug> --n 100
+        libv2 gold-candidates --course <course-slug> --templates definition,worked_example
     """
     from lib.decision_capture import DecisionCapture
     from lib.retrieval.answer_backend import (
@@ -4036,7 +4035,7 @@ def probe_candidates(ctx, course: str, limit: int, no_write: bool):
 
     \b
     Example:
-        libv2 probe-candidates --course demo-course-1
+        libv2 probe-candidates --course <course-slug>
     """
     from lib.decision_capture import DecisionCapture
     from lib.retrieval.answer_backend import (
@@ -4102,7 +4101,7 @@ def gold_promote(ctx, course: str, freeze: bool, dry_run: bool):
 
     \b
     Example:
-        libv2 gold-promote --course demo-course-1 --freeze
+        libv2 gold-promote --course <course-slug> --freeze
     """
     from lib.retrieval.gold_authoring import GoldPromoteError, promote_candidates
 
@@ -4174,7 +4173,7 @@ def gold_metadata_backfill(ctx, course: str, no_write: bool):
 
     \b
     Example:
-        libv2 gold-metadata-backfill --course demo-course-1
+        libv2 gold-metadata-backfill --course <course-slug>
     """
     from lib.retrieval.gold_metadata_backfill import generate_backfill_proposal
 
@@ -4225,7 +4224,7 @@ def gold_key_points(ctx, course: str, no_write: bool):
 
     \b
     Example:
-        libv2 gold-key-points --course demo-course-1
+        libv2 gold-key-points --course <course-slug>
     """
     from lib.decision_capture import DecisionCapture
     from lib.retrieval.answer_backend import (
@@ -4295,7 +4294,7 @@ def gold_difficulty_regrade(ctx, course: str, regrade_from: str, no_write: bool)
 
     \b
     Example:
-        libv2 gold-difficulty-regrade --course demo-course-1
+        libv2 gold-difficulty-regrade --course <course-slug>
     """
     from lib.decision_capture import DecisionCapture
     from lib.retrieval.answer_backend import (
@@ -4375,7 +4374,7 @@ def gold_parts(ctx, course: str, no_retrieval: bool, no_write: bool):
 
     \b
     Example:
-        libv2 gold-parts --course demo-course-1
+        libv2 gold-parts --course <course-slug>
     """
     from lib.decision_capture import DecisionCapture
     from lib.retrieval.answer_backend import (
@@ -4467,8 +4466,8 @@ def gold_enrich_passages(ctx, course: str, engine: str, top_k: int,
 
     \b
     Examples:
-        libv2 gold-enrich-passages --course demo-course-1
-        libv2 gold-enrich-passages --course demo-course-1 --promote --unfreeze-for-enrich
+        libv2 gold-enrich-passages --course <course-slug>
+        libv2 gold-enrich-passages --course <course-slug> --promote --unfreeze-for-enrich
     """
     from lib.retrieval.gold_passage_enrichment import (
         GoldEnrichError,

@@ -19,7 +19,7 @@ The script targets two operator surfaces:
    archive without invoking the full ``textbook_to_course``
    workflow.
 
-Design decisions:
+Operational contract:
 
 - **Reuse over reimplementation.** The script delegates to the staged
   chunkset emitter in ``MCP/tools/pipeline_tools.py`` via the tool
@@ -57,14 +57,14 @@ Usage::
 
     # Backfill a single course.
     python -m LibV2.tools.libv2.scripts.backfill_legacy_chunks \\
-        --course-slug demo-course-1
+        --course-slug <course-slug>
 
     # Dry-run: log what would be done without writing anything.
     python -m LibV2.tools.libv2.scripts.backfill_legacy_chunks --dry-run
 
     # Force re-chunk even if semantik_chunks/ already exists.
     python -m LibV2.tools.libv2.scripts.backfill_legacy_chunks \\
-        --course-slug demo-course-1 --force
+        --course-slug <course-slug> --force
 
 Exit codes:
     0  success (or all targets skipped/dry-run).
@@ -86,10 +86,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# Ensure project root is importable when invoked as a script (not just
-# via ``python -m``). Two parents up from the file location:
-# .../LibV2/tools/libv2/scripts/backfill_legacy_chunks.py -> repo root
-# is four parents up.
+# Make repository packages importable for direct script execution.
 _PROJECT_ROOT = Path(__file__).resolve().parents[4]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
@@ -229,11 +226,8 @@ async def _invoke_chunker(course_slug: str, html_dir: Path) -> Dict[str, Any]:
             "MCP/tools/pipeline_tools.py::_run_dart_chunking"
         )
 
-    # The helper accepts ``course_name`` (used as both course code and
-    # slug source) and ``staging_dir``. We pass the course slug
-    # uppercased as the ``course_name`` so chunk IDs carry a stable
-    # course-code prefix matching Phase 7b ST 11's behavior:
-    # ``course_code = course_name.upper().replace("-", "_")``.
+    # Supply the slug as the course name so emitted chunk IDs receive a
+    # stable, normalized course-code prefix.
     raw_response = await run_dart_chunking(
         course_name=course_slug,
         staging_dir=str(html_dir),

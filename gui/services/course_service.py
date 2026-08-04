@@ -19,8 +19,9 @@ deps) wraps these functions. Atomic writes reuse
 ``gui.shared_state._atomic_write_json`` (tmpfile + ``os.replace``).
 
 A ``course_id`` accepted by the read/write helpers may be a Courseforge
-``project_id`` (``PROJ-...``), a ``course_name`` (e.g. ``DEMO_101``), or a
-LibV2 ``slug`` (e.g. ``demo-course-1``); resolution searches both corpora.
+``project_id`` (``PROJ-...``), a ``course_name`` (for example,
+``<COURSE_CODE>``), or a LibV2 ``slug`` (for example, ``<course-slug>``);
+resolution searches both corpora.
 """
 
 from __future__ import annotations
@@ -86,10 +87,9 @@ def _read_json(path: Path) -> Optional[Dict[str, Any]]:
 
 
 def _atomic_write_json(target: Path, payload: Any) -> None:
-    """Atomic JSON write — reuse the shared_state idiom (tmpfile + os.replace).
+    """Write JSON atomically through the shared state implementation.
 
-    Imported lazily so this module stays importable even if a future
-    shared_state edit pulls in a heavier dep; the function itself is web-free.
+    The lazy import keeps this web-independent service lightweight at import time.
     """
     from gui.shared_state import _atomic_write_json as _shared_atomic
 
@@ -837,9 +837,9 @@ def _validate_attestation(attestation: Dict[str, Any]) -> None:
 def _default_weeks(chapter_count: int) -> int:
     """Objective-driven default pacing: ``max(8, ceil(chapters / 2))``.
 
-    Mirrors the Wave 1.8 ``WAVE18_COS_PER_WEEK`` default (2) used by
-    ``plan_course_structure`` so a GUI-authored objectives doc with no explicit
-    ``duration_weeks`` paces consistently with the pipeline.
+    Uses the ``WAVE18_COS_PER_WEEK`` default of two from
+    ``plan_course_structure`` so GUI-authored objectives without an explicit
+    ``duration_weeks`` value follow pipeline pacing.
     """
     return max(8, math.ceil(chapter_count / 2)) if chapter_count else 8
 
