@@ -82,8 +82,8 @@ class InsufficientPreferencePairsError(RuntimeError):
 # absolute ``Path`` (used as-is). First-existing wins so we accept both
 # the v0.2.0 and v0.3.0 LibV2 layouts.
 
-# Wave 96: the canonical Courseforge vocabulary lives under the
-# project-root schemas/context/ tree, not inside each LibV2 course.
+# The canonical Courseforge vocabulary lives under the project-root
+# schemas/context tree, not inside each LibV2 course.
 # Without this fallback the runner silently substitutes the empty-bytes
 # sha256 for vocabulary_ttl_hash and emits a model card whose hash
 # doesn't pin the actual TTL the synthesizer consumed.
@@ -108,8 +108,8 @@ _PROVENANCE_SOURCES = (
         "graph/vocabulary.ttl",
         _VOCABULARY_TTL_CANONICAL,
     ]),
-    # Wave 92: holdout split for Tier-2 eval. The runner emits a stub
-    # split when the eval submodule has not pre-built one; the real
+    # Holdout split for Tier-2 evaluation. The runner emits a stub split when
+    # the evaluation submodule has not pre-built one; the real
     # split is built by ``Trainforge.eval.holdout_builder.HoldoutBuilder``
     # before training. Empty-bytes hash is acceptable here because
     # the eval phase is gated below — a present-but-empty file means
@@ -250,8 +250,7 @@ class TrainingRunner:
         run_dir = self._models_root / model_id
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        # Decision capture handle (Wave 89 added the trainforge-training
-        # phase enum so this stream lives at:
+        # Decision-capture stream for the trainforge-training phase lives at:
         #   runtime/training-captures/trainforge/<COURSE>/phase_trainforge-training/
         # plus the LibV2-mirrored copy under the slug.
         capture = self._build_capture()
@@ -277,11 +276,9 @@ class TrainingRunner:
                         f"is missing: {adapter_path}"
                     )
 
-            # Wave 100 Bug 5: emit the model_card.json + training_run.jsonl
-            # BEFORE running the eval harness. Wave 92's eval bridge is
-            # still unwired in production (raises NotImplementedError);
-            # without this restructure, a fully-successful training run
-            # produces no provenance card and no decision log on disk.
+            # Emit model_card.json and training_run.jsonl before invoking the
+            # evaluation harness so downstream evaluation failure cannot erase
+            # the successful training run's provenance.
             #
             # The flow is now:
             #   1. _dispatch_training succeeds → adapter on disk
@@ -312,12 +309,11 @@ class TrainingRunner:
                     ImportError,
                     FileNotFoundError,
                 ) as exc:
-                    # Wave 101: eval-bridge errors fall through to the
-                    # no-eval-scores path so a successful training run
+                    # Evaluation-bridge errors fall through to the no-score
+                    # path so a successful training run
                     # never voids its provenance card on a downstream
                     # eval failure.
-                    #   * NotImplementedError - legacy Wave 92 boundary
-                    #     (kept for back-compat with stubs).
+                    #   * NotImplementedError - compatibility boundary for stubs.
                     #   * ImportError - heavy ML deps missing
                     #     (CPU-only dev box; ed4all[training] not
                     #     installed).
@@ -331,8 +327,8 @@ class TrainingRunner:
                     )
                     eval_scores = None
 
-            # Wave 100: if eval succeeded, fold scores into a SECOND
-            # model_card.json write (overwriting the first). The
+            # If evaluation succeeds, fold scores into a second model-card
+            # write. The
             # _emit_model_card helper does an atomic tmpfile + rename,
             # so a partial overwrite never leaves a half-card on disk.
             if eval_scores is not None:
@@ -948,7 +944,7 @@ class TrainingRunner:
         return card_path
 
     # ------------------------------------------------------------------ #
-    # Wave 92 — eval hook                                                 #
+    # Evaluation hook                                                     #
     # ------------------------------------------------------------------ #
 
     def _run_eval_harness(
@@ -958,7 +954,7 @@ class TrainingRunner:
     ) -> Dict[str, Any]:
         """Invoke the SLM eval harness and return canonical eval scores.
 
-        Wave 101 wires the bridge: build an
+        Build an
         :class:`Trainforge.eval.retrieval.adapter_callable.AdapterCallable`
         around the saved adapter dir, hand it to
         :class:`SLMEvalHarness`, parse the resulting
@@ -1047,14 +1043,14 @@ class TrainingRunner:
                 model_id=Path(run_dir).name,
                 model_card=model_card,
                 base_model_repo=self.spec.huggingface_repo,
-                # Wave 133f: pass the LibV2 course directory so
-                # write_hf_readme reads classification.tags from
+                # Pass the LibV2 course directory so write_hf_readme reads
+                # classification.tags from
                 # manifest.json instead of substring-sniffing the slug.
                 course_path=course_path,
             )
         except Exception:  # noqa: BLE001 - README is best-effort
             logger.exception(
-                "Wave 101: write_hf_readme failed; eval_report.json "
+                "write_hf_readme failed; eval_report.json "
                 "still on disk."
             )
 

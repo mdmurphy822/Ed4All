@@ -1119,10 +1119,9 @@ class PEFTTrainer:
         if selected_adapter is None:
             trainer.save_model(str(output_dir))
 
-        # TRL's save_model() writes adapter_model.safetensors (with
-        # underscore). Wave 99 worker found the old "adapter.safetensors"
-        # return value tripped the runner's adapter-presence guard
-        # because the file on disk was actually adapter_model.safetensors.
+        # TRL's save_model() writes adapter_model.safetensors; return that
+        # canonical path so the runner's adapter-presence guard checks the
+        # artifact that TRL actually creates.
         adapter_path = selected_adapter or (
             output_dir / "adapter_model.safetensors"
         )
@@ -1316,20 +1315,17 @@ class PEFTTrainer:
             dpo_config_kwargs["save_total_limit"] = int(_dpo_save_total_limit)
         dpo_args = DPOConfig(**_filter_accepted(DPOConfig, dpo_config_kwargs))
 
-        # Wave 100: DPOTrainer expects a model directory or HF repo ID,
-        # NOT a file path. Wave 90 mistakenly passed the
-        # ``adapter_model.safetensors`` file string, which raised an
-        # ``HFValidationError`` / ``OSError`` at DPOTrainer init time.
-        # Resolve the parent directory so TRL can load the SFT-trained
-        # adapter via the standard from_pretrained flow.
+        # DPOTrainer expects a model directory or HF repository ID, not an
+        # adapter file. Resolve the parent directory so TRL can load the
+        # SFT-trained adapter through the standard from_pretrained flow.
         sft_adapter_path = Path(sft_adapter_path)
         if sft_adapter_path.is_file():
             sft_model_dir = sft_adapter_path.parent
         else:
             sft_model_dir = sft_adapter_path
 
-        # Wave 100: TRL 0.12+'s DPOTrainer requires `processing_class`
-        # (the renamed tokenizer arg). The SFT save_model() path saves
+        # TRL 0.12+'s DPOTrainer requires `processing_class` (the renamed
+        # tokenizer argument). The SFT save_model() path saves
         # the tokenizer alongside the adapter; base-model fallback
         # covers legacy SFT dirs that don't carry the tokenizer.
         # trust_remote_code is spec-driven (True only for repo-local-code
@@ -1382,8 +1378,8 @@ class PEFTTrainer:
                 "torch_dtype": torch.bfloat16 if bf16_ok else torch.float16,
             })
 
-        # Wave 100: stacking DPO on a saved PEFT-SFT adapter requires
-        # loading the adapter via ``PeftModel.from_pretrained(...,
+        # Stacking DPO on a saved PEFT-SFT adapter requires loading the
+        # adapter through ``PeftModel.from_pretrained(...,
         # is_trainable=True)``. Passing the sft_model_dir as a string
         # to ``DPOTrainer(model=...)`` triggered
         # ``RuntimeError: element 0 of tensors does not require grad``

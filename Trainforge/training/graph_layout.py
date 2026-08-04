@@ -59,8 +59,8 @@ _SEMANTIC_GRAPH_CANDIDATES = (
     "imscc_chunks/concept_graph_semantic.json",
 )
 
-# concept_graph.json (the Worker-B classifier output — supplies the
-# concept_classes map to build_pedagogy_graph). Optional.
+# concept_graph.json supplies the optional concept-classes map consumed by
+# build_pedagogy_graph.
 _CONCEPT_CLASSES_CANDIDATES = (
     "graph/concept_graph.json",
     "concept_graph/concept_graph.json",

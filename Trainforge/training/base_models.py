@@ -65,15 +65,14 @@ class BaseModelSpec:
 # Registry                                                                #
 # ---------------------------------------------------------------------- #
 #
-# Wave 90 shipped 5 supported bases; ``nemotron3-nano-30b`` (entry 6) was
-# added later for the big-memory host. The first entry (Qwen2.5-1.5B) is the
+# The first entry (Qwen2.5-1.5B) is the
 # default for textbook-to-course training because:
 #   * Open weights (no HF gating, no HF_TOKEN required).
 #   * Native ChatML template, plays nicely with TRL's SFTTrainer.
 #   * 1.5B fits a single 24GB GPU with QLoRA at rank 16.
 #
-# Llama-3.2 + Phi-3.5 are gated; runner surfaces a clear error to set
-# ``HF_TOKEN`` when those bases are selected (Wave 90 Risk register).
+# Llama-3.2 + Phi-3.5 are gated; the runner surfaces a clear error requiring
+# ``HF_TOKEN`` when either base is selected.
 
 _REGISTRY: Dict[str, BaseModelSpec] = {
     "qwen2.5-1.5b": BaseModelSpec(
