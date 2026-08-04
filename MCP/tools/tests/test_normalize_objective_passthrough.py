@@ -12,7 +12,7 @@ from every objective it normalized. With those keys gone:
   ``ORPHAN_TERMINAL_NO_CHAPTER_REF`` false positives.
 
 Downstream consumers that also depend on these keys surviving:
-``Trainforge/pedagogy_graph_builder.py`` (CO→TO edge validation) and
+``Trainforge/rag/graphs/pedagogy_graph_builder.py`` (CO→TO edge validation) and
 ``lib/validators/libv2/packet_integrity.py`` (CO→TO expansion).
 
 These pins assert the keys round-trip through both

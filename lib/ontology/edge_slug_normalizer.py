@@ -7,7 +7,7 @@ paths that disagree about slug spelling:
   ``concept_graph_semantic.json``) — uses **hyphens** with no
   ``_of`` / ``-of`` suffix: ``is-a``, ``defined-by``,
   ``derived-from-objective``, ``targets-concept``.
-* ``Trainforge/pedagogy_graph_builder.py`` (emits
+* ``Trainforge/rag/graphs/pedagogy_graph_builder.py`` (emits
   ``pedagogy_graph.json``) — uses **underscores** and a directional
   ``_of`` suffix on directional ties: ``prerequisite_of``,
   ``derived_from_objective``, ``belongs_to_module``,
@@ -28,7 +28,7 @@ Why a normalizer beats forcing one emitter to change:
    silently invalidate those archives until they are regenerated.
 2. **Each convention is locally defensible.** Underscored slugs match
    the relation_type field-naming used elsewhere in
-   ``pedagogy_graph_builder.py``; the ``_of`` suffix encodes
+   the pedagogy graph builder; the ``_of`` suffix encodes
    directionality, which is information the purely-hyphenated
    convention drops. A normalizer preserves both surfaces while still
    collapsing them to one canonical form at lookup time.

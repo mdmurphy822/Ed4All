@@ -398,7 +398,7 @@ def test_concept_class_subclass_of_skos_concept(vocab_graph):
 # ---------------------------------------------------------------------- #
 # 7. Phase 2.6 — Pedagogy-graph edge predicates (mint the remaining 9)
 #
-# pedagogy_graph_builder.py emits 13 distinct relation_type slugs; four
+# The pedagogy graph builder emits 13 distinct relation_type slugs; four
 # overlap with Phase 2.1 (or normalize back to it via Phase 2.7). The nine
 # below were unminted before this phase and rounded-tripped through the
 # JSON-LD @vocab fallback only. These tests enforce four invariants:

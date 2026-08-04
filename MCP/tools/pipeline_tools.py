@@ -29173,7 +29173,7 @@ def _build_tool_registry() -> dict:
     #
     # New ``concept_extraction`` workflow phase (between ``source_mapping``
     # and ``course_planning`` per plan ST 11). The phase runs the
-    # ``Trainforge.pedagogy_graph_builder.build_pedagogy_graph`` over a
+    # ``Trainforge.rag.graphs.pedagogy_graph_builder.build_pedagogy_graph`` over a
     # canonical v4 chunkset (DART chunks emitted by the upstream
     # ``chunking`` phase, falling back to a minimal inline projection of
     # ``*_synthesized.json`` sidecars when the upstream chunkset is not
@@ -29511,7 +29511,7 @@ def _build_tool_registry() -> dict:
                     )
                     # Phase 8 ST 6: emit canonical 'id' key
                     # (build_pedagogy_graph at
-                    # Trainforge/pedagogy_graph_builder.py:593 reads
+                    # The pedagogy graph builder reads
                     # c.get('id'); pre-Phase-8 chunk_id-keyed emit was
                     # silently dropped). Forward path (upstream
                     # dart_chunks_path JSONL load at :6231-6243) already

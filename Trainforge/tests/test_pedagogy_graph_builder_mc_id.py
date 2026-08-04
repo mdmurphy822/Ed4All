@@ -1,16 +1,7 @@
-"""Wave 99 — pedagogy_graph_builder._mc_id parity with the canonical algorithm.
+"""Keep misconception identifiers identical across all graph and pair emitters.
 
-Pre-Wave-99 the builder hashed misconception text only (lowercased,
-stripped). The two other call sites (``process_course._build_misconceptions
-_for_graph`` and ``preference_factory._misconception_id``) hash the
-3-input seed ``statement|correction|bloom_level``. Drift across the three
-sites caused 34 ``mc_*`` nodes in the RDF/SHACL calibration corpus pedagogy graph
-to disagree with chunk-level + DPO-pair IDs (Wave 97 rebuilt the on-disk
-file as a one-shot).
-
-This module is the regression test that locks the three sites to a single
-algorithm. It synthesizes a misconception entry, runs the canonical
-``_build_misconceptions_for_graph`` pipeline, and asserts that
+The tests synthesize a misconception entry, run the canonical
+``_build_misconceptions_for_graph`` pipeline, and assert that
 ``pedagogy_graph_builder._mc_id`` invoked with the same input produces the
 identical ``mc_<hex>`` ID. Parametrized variants cover the with-bloom and
 without-bloom branches plus whitespace normalization.
@@ -29,14 +20,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.pedagogy_graph_builder import (  # noqa: E402
-    _mc_id,
-    build_pedagogy_graph,
-)
+from lib.ontology.misconception_id import canonical_mc_id  # noqa: E402
 from Trainforge.generators.pairs.preference import (  # noqa: E402
     _misconception_id,
 )
-from lib.ontology.misconception_id import canonical_mc_id  # noqa: E402
+from Trainforge.rag.graphs.pedagogy_graph_builder import (  # noqa: E402
+    _mc_id,
+    build_pedagogy_graph,
+)
 
 
 def _chunk_with_misconception(
@@ -124,9 +115,8 @@ def test_mc_id_matches_canonical_helper(statement, correction, bloom):
 def test_mc_id_matches_preference_factory(statement, correction, bloom):
     """All three canonical sites produce the same hash for the same input.
 
-    Closes the Wave 95 + Wave 97 drift class: ``preference_factory`` and
-    ``pedagogy_graph_builder`` must mint identical ``mc_*`` IDs so DPO
-    pairs link cleanly to graph nodes.
+    ``preference_factory`` and ``pedagogy_graph_builder`` must mint identical
+    ``mc_*`` IDs so DPO pairs link cleanly to graph nodes.
     """
 
     builder_id = _mc_id(statement, correction, bloom)

@@ -4,7 +4,7 @@ Wave 99 extracted the canonical mc-ID hash to one helper; this module
 locks the algorithm + fallback semantics so future call sites stay
 byte-equivalent. The three current call sites are:
 
-* ``Trainforge/pedagogy_graph_builder.py::_mc_id``
+* ``Trainforge/rag/graphs/pedagogy_graph_builder.py::_mc_id``
 * ``Trainforge/process_course.py::_build_misconceptions_for_graph``
 * ``Trainforge/generators/pairs/preference.py::_misconception_id``
 

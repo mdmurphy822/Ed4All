@@ -5,7 +5,7 @@ used across Trainforge:
 
 * ``Trainforge/process_course.py::_build_misconceptions_for_graph``
 * ``Trainforge/generators/pairs/preference.py::_misconception_id``
-* ``Trainforge/pedagogy_graph_builder.py::_mc_id``
+* ``Trainforge/rag/graphs/pedagogy_graph_builder.py::_mc_id``
 
 Wave 99 unifies the three previously-redundant inline implementations behind
 this helper to prevent the drift class that motivated Wave 95

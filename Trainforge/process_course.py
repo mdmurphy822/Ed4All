@@ -3761,7 +3761,7 @@ class CourseProcessor:
     ) -> Dict[str, Any]:
         """Build the typed pedagogical graph.
 
-        Runs ``Trainforge.pedagogy_graph_builder.build_pedagogy_graph`` at
+        Runs ``Trainforge.rag.graphs.pedagogy_graph_builder.build_pedagogy_graph`` at
         emit time so fresh archives carry the full relation set —
         ``derived_from_objective`` / ``concept_supports_outcome`` /
         ``assessment_validates_outcome`` / ``chunk_at_difficulty``, plus
@@ -3868,7 +3868,7 @@ class CourseProcessor:
                 )
 
         try:
-            from Trainforge.pedagogy_graph_builder import build_pedagogy_graph
+            from Trainforge.rag.graphs.pedagogy_graph_builder import build_pedagogy_graph
         except Exception as exc:  # pragma: no cover — import-failure guard
             logger.warning(
                 "pedagogy_graph_builder import failed; emitting "

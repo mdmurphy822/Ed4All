@@ -2,7 +2,7 @@
 
 The Ed4All pipeline carries concepts in two ID conventions:
 
-* **Pedagogy graph** (``Trainforge/pedagogy_graph_builder.py``) — emits
+* **Pedagogy graph** (``Trainforge/rag/graphs/pedagogy_graph_builder.py``) — emits
   ``concept:{slug}`` because nodes are typed-class entities and the
   prefix names the class (e.g. ``concept:rdf-graph``,
   ``module:week-3``, ``bloom:apply``).

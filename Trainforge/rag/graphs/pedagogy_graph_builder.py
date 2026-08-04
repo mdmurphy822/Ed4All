@@ -1,149 +1,18 @@
-"""Wave 75 — real pedagogy graph builder.
+"""Build the typed pedagogy graph consumed by retrieval and synthesis.
 
-Replaces the stub ``_generate_pedagogy_graph`` (which only mirrored
-pedagogy/logistics concept tags into a co-occurrence graph) with a
-genuine pedagogical graph. Walks chunks + objectives + modules and
-emits typed pedagogical edges so downstream consumers (RAG retrieval,
-training-pair synthesis, course intelligence dashboards) can reason
-about *teaches* / *assesses* / *practices* / *exemplifies* /
-*supports_outcome* relations rather than re-deriving them from
-chunk concept tags.
+The builder joins v4 chunks, objectives, modules, concept classifications,
+misconceptions, Bloom levels, and difficulty levels into a deterministic graph.
+It emits provenance, teaching, assessment, prerequisite, interference, module,
+and outcome-support relationships while keeping every edge referentially
+complete.
 
-Wave 78 (Worker B) completes the relation set with four new edge
-types — ``derived_from_objective`` (Chunk → Objective provenance,
-mirrored from concept_graph_semantic), ``concept_supports_outcome``
-(DomainConcept → Outcome rollup, derived from concept ∩ chunk LO
-refs), ``assessment_validates_outcome`` (assessment_item Chunk →
-Outcome rollup via parent_terminal CO chains, distinct from the
-direct ``assesses`` edge), and ``chunk_at_difficulty`` (Chunk →
-DifficultyLevel typed node) — bringing the graph from 10 to 14
-distinct relation types so the strict validator (Worker A) and intent
-router (Worker C) have complete substrate to operate on.
-
-Wave 76 (Worker D) refines the ``prerequisite_of`` and
-``interferes_with`` rules so they emit only meaningful edges:
-
-* ``prerequisite_of(A, B)`` requires (1) B's first-seen week strictly
-  later than A's, (2) at least one chunk that contains both A and B
-  as concept tags, and (3) both endpoints classified as
-  ``DomainConcept`` per the supplied ``concept_classes`` map (when
-  provided). The previous rule emitted a hard-capped (50/source)
-  cartesian within adjacent weeks and could overwhelm the graph with
-  weak prerequisite edges.
-* ``interferes_with(M, C)`` only emits when ``C`` is classified as
-  ``DomainConcept``. PedagogicalMarker / AssessmentOption / LowSignal
-  / InstructionalArtifact targets are dropped.
-
-Public entry point::
-
-    build_pedagogy_graph(chunks, objectives, course_id=None,
-                         modules=None, concept_classes=None)
-        -> Dict[str, Any]
-
-Inputs:
-
-* ``chunks``       -- iterable of v4 chunk dicts (the same shape that
-                       lands in ``imscc_chunks/chunks.jsonl``).
-* ``objectives``   -- canonical objectives dict. Accepts both shapes:
-                       (a) Worker A's planned ``objectives.json``
-                       (terminal_objectives / chapter_objectives), or
-                       (b) Courseforge's ``synthesized_objectives.json``
-                       (same key names — they share a contract).
-* ``course_id``    -- optional course code. Used as an attribute on
-                       every node.
-* ``modules``      -- optional explicit list of module ids in display
-                       order. When omitted, modules are discovered
-                       from chunk source.module_id and ordered by the
-                       leading ``week_NN`` token plus first-seen order.
-
-Output: a dict with ``kind``, ``nodes``, ``edges``, ``generated_at``,
-plus a ``stats`` block summarising counts per node-class and per
-relation-type. Every node carries a ``class`` field. Every edge
-carries a ``relation_type`` field.
-
-Node classes:
-
-* ``Outcome``           -- one per terminal objective (TO-NN).
-* ``ComponentObjective``-- one per chapter objective (CO-NN).
-* ``Chunk``             -- one per chunk (chunk_type kept as attr).
-* ``Module``            -- one per top-level module (week_NN slice).
-* ``BloomLevel``        -- six canonical levels.
-* ``Misconception``     -- one per unique misconception statement.
-* ``DifficultyLevel``   -- three canonical levels (foundational,
-                            intermediate, advanced) — Wave 78.
-
-Edge types (each gets ``relation_type`` set verbatim):
-
-* ``teaches``                       -- Chunk -> Objective (non-assessment
-                                        chunks).
-* ``assesses``                      -- Chunk -> Objective (assessment_item
-                                        chunks and chunks emitted from
-                                        quiz/self-check). Direct ref —
-                                        complement of the rollup edge
-                                        ``assessment_validates_outcome``.
-* ``practices``                     -- Chunk -> Objective
-                                        (chunk_type=exercise).
-* ``exemplifies``                   -- Chunk -> Concept (example chunks;
-                                        concept slugs from
-                                        chunk.concept_tags).
-* ``prerequisite_of``               -- Concept -> Concept (week N -> week
-                                        N+1 concept ordering).
-* ``interferes_with``               -- Misconception -> Concept (links
-                                        each misconception node to chunk
-                                        concept_tags).
-* ``belongs_to_module``             -- Chunk -> Module.
-* ``supports_outcome``              -- ComponentObjective -> Outcome
-                                        (parent_to).
-* ``at_bloom_level``                -- Objective -> BloomLevel.
-* ``follows``                       -- Module -> Module (display-order
-                                        chain).
-* ``derived_from_objective``        -- Chunk -> Objective (Wave 78).
-                                        Mirrors the concept_graph_semantic
-                                        ``derived-from-objective`` edge
-                                        type into the pedagogy graph as
-                                        explicit chunk-to-LO provenance —
-                                        every chunk emits one edge per
-                                        item in its
-                                        ``learning_outcome_refs``.
-                                        Conceptually similar to
-                                        ``teaches`` but represents
-                                        PROVENANCE rather than pedagogy.
-* ``concept_supports_outcome``      -- DomainConcept -> Outcome (Wave 78).
-                                        Derived: concept C → outcome O
-                                        when at least one chunk contains
-                                        C in concept_tags AND that
-                                        chunk's learning_outcome_refs
-                                        rolled up to terminal level
-                                        contains O. Edge weight = number
-                                        of supporting chunks. Restricted
-                                        to DomainConcept-classified
-                                        sources (Wave 76 filter).
-* ``assessment_validates_outcome``  -- AssessmentItem Chunk -> Outcome
-                                        (Wave 78). For every
-                                        ``chunk_type == "assessment_item"``
-                                        chunk with a ``co-NN`` ref, emit
-                                        a rollup edge to that ref's
-                                        parent terminal ``to-NN``.
-                                        Distinct from ``assesses`` (which
-                                        targets the direct ref) — this is
-                                        the rollup chain.
-* ``chunk_at_difficulty``           -- Chunk -> DifficultyLevel (Wave 78).
-                                        Every chunk with a ``difficulty``
-                                        attribute (foundational /
-                                        intermediate / advanced) emits an
-                                        edge to the corresponding
-                                        DifficultyLevel typed node.
-                                        Enables filtering / clustering by
-                                        cognitive load via graph
-                                        traversal.
-
-The builder is fail-soft: malformed objectives or chunks are skipped
-with no exception, and an empty graph is emitted when both inputs are
-empty so callers can rely on the schema shape.
+``build_pedagogy_graph`` accepts either canonical objective naming convention
+and optional module ordering or concept classifications. Malformed records are
+skipped, and empty inputs still produce the stable graph envelope expected by
+validators and downstream consumers.
 """
 from __future__ import annotations
 
-import hashlib
 import re
 from collections import OrderedDict, defaultdict
 from datetime import datetime
@@ -162,8 +31,8 @@ _QUIZ_MODULE_RE = re.compile(
     r"(self[_-]?check|quiz|exam|assessment|test)\b", re.IGNORECASE
 )
 
-# Wave 78: canonical difficulty levels — must match the ``difficulty``
-# enum on chunk_v4.schema.json. Used both to seed DifficultyLevel typed
+# These values match the ``difficulty`` enum in chunk_v4.schema.json. They seed
+# DifficultyLevel typed
 # nodes unconditionally (mirroring the BloomLevel-node convention) and to
 # guard chunk_at_difficulty edge emission against malformed values.
 DIFFICULTY_LEVELS = ("foundational", "intermediate", "advanced")
@@ -283,16 +152,11 @@ def _module_sort_key(module_id: str) -> Tuple[int, str]:
 def _mc_id(statement: str, correction: str = "", bloom_level: str = "") -> str:
     """Stable misconception id (canonical 3-input content hash).
 
-    Wave 99: routes through ``lib.ontology.misconception_id.canonical_mc_id``
-    so the builder's hash matches byte-for-byte the IDs minted by:
+    Routes through ``lib.ontology.misconception_id.canonical_mc_id`` so the
+    builder's hash matches byte-for-byte the IDs minted by:
 
     * ``Trainforge/process_course.py::_build_misconceptions_for_graph``
     * ``Trainforge/generators/pairs/preference.py::_misconception_id``
-
-    Pre-Wave-99 the builder hashed text-only (statement, lowercased, with no
-    correction or bloom_level seed). That made pedagogy-graph ``mc_*`` nodes
-    disagree with chunk-level and DPO-pair IDs. A one-shot rebuild repaired
-    existing artifacts; routing through the canonical helper prevents recurrence.
 
     Call sites in this builder must supply ``correction`` and
     ``bloom_level`` from the same misconception entry — both default to
@@ -301,8 +165,7 @@ def _mc_id(statement: str, correction: str = "", bloom_level: str = "") -> str:
     return canonical_mc_id(statement, correction, bloom_level)
 
 
-# Wave 82: chunk IDs are stamped by ``process_course._chunk_content`` with
-# the ``{course_code_lower}_chunk_NNNNN`` shape. The trailing
+# Chunk IDs use the ``{course_code_lower}_chunk_NNNNN`` shape. The trailing
 # ``_chunk_NNNNN`` is anchored; everything before is the lowercased course
 # code. Used by ``build_pedagogy_graph`` to recover ``course_id`` when the
 # caller omits it, closing the empty-``course_id`` artifact gap.
@@ -336,8 +199,7 @@ def load_objectives_with_fallback(
     objectives_path: Optional[str],
     synthesized_path: Optional[str],
 ) -> Dict[str, Any]:
-    """Read Worker A's ``objectives.json`` if present; else fall back to
-    Courseforge's ``synthesized_objectives.json``.
+    """Read canonical objectives, then the synthesized-objectives alternative.
 
     Both files share the same canonical contract (terminal_objectives /
     chapter_objectives). Returns the parsed dict, or an empty dict
@@ -350,7 +212,7 @@ def load_objectives_with_fallback(
         if not path:
             continue
         if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 return json.load(f)
     return {}
 
@@ -372,9 +234,8 @@ def build_pedagogy_graph(
 
     See module docstring for inputs / outputs / edge semantics.
 
-    ``concept_classes`` (Wave 76): optional mapping of concept slug ->
-    class label sourced from ``concept_graph.json`` (Worker B's
-    classifier). Recognised classes: ``DomainConcept``, ``Misconception``,
+    ``concept_classes`` optionally maps concept slugs to class labels from
+    ``concept_graph.json``. Recognised classes: ``DomainConcept``, ``Misconception``,
     ``PedagogicalMarker``, ``AssessmentOption``, ``LowSignal``,
     ``InstructionalArtifact``. Filters apply to ``prerequisite_of`` and
     ``interferes_with`` only — DomainConcept endpoints are kept;
@@ -382,8 +243,8 @@ def build_pedagogy_graph(
     every concept is treated as DomainConcept-default (legacy mode);
     the new co-occurrence + strict-later-week filter still applies.
 
-    Wave 82: ``course_id`` falls back to a chunk-ID-derived value when
-    the caller passes None/empty. Empty identifiers in emitted pedagogy graphs
+    ``course_id`` falls back to a chunk-ID-derived value when the caller passes
+    None or an empty value. Empty identifiers in emitted pedagogy graphs
     are reconstructible from the upstream artifacts already available to the
     builder. Chunk IDs follow the
     ``{course_code_lower}_chunk_NNNNN`` shape (set in
@@ -413,7 +274,7 @@ def build_pedagogy_graph(
             "level": level,
         })
 
-    # Wave 78: DifficultyLevel typed nodes — emitted unconditionally so
+    # DifficultyLevel nodes are emitted unconditionally so
     # downstream traversals can land on the node even on chunk-empty
     # corpora (parity with BloomLevel emission above).
     for level in DIFFICULTY_LEVELS:
@@ -427,7 +288,7 @@ def build_pedagogy_graph(
     # ------------------------------------------------------------------
     # 2. Outcome + ComponentObjective nodes from objectives.
     #    Supports BOTH conventions:
-    #      (a) Worker A's objectives.json:
+    #      (a) canonical objectives.json:
     #          terminal_outcomes / component_objectives (parent_terminal)
     #      (b) Courseforge synthesized_objectives.json:
     #          terminal_objectives / chapter_objectives (parent_to)
@@ -531,7 +392,7 @@ def build_pedagogy_graph(
     #    Discover modules from chunks (top-level week slice) unless a
     #    caller-supplied list is provided. Maintain a stable ordering.
     # ------------------------------------------------------------------
-    discovered_modules: "OrderedDict[str, None]" = OrderedDict()
+    discovered_modules: OrderedDict[str, None] = OrderedDict()
     for c in chunks:
         src = c.get("source") or {}
         mid = _module_top_slice(
@@ -568,7 +429,7 @@ def build_pedagogy_graph(
     # ------------------------------------------------------------------
     # 6. follows edges (Module -> Module by display order).
     # ------------------------------------------------------------------
-    for a, b in zip(ordered_modules, ordered_modules[1:]):
+    for a, b in zip(ordered_modules, ordered_modules[1:], strict=False):
         edges.append({
             "source": f"module:{a}",
             "target": f"module:{b}",
@@ -579,7 +440,7 @@ def build_pedagogy_graph(
     # 7. Chunk nodes + per-chunk edges.
     # ------------------------------------------------------------------
     valid_objective_ids = set(objective_nodes.keys())
-    # Wave 78: parent-terminal lookup for CO -> TO rollup. Used by both
+    # Parent-terminal lookup for CO -> TO rollup. Used by both
     # ``assessment_validates_outcome`` (assessment chunk -> parent_TO)
     # and ``concept_supports_outcome`` (rolling each chunk's CO refs up
     # to terminal level before counting concept-supports-outcome chunks).
@@ -605,7 +466,7 @@ def build_pedagogy_graph(
     concept_to_chunks_all: Dict[str, Set[str]] = defaultdict(set)
     concept_to_week: Dict[str, int] = {}
     concept_label: Dict[str, str] = {}
-    # Wave 78: per-chunk rolled-up Outcome (terminal) ref set. For each
+    # Per-chunk rolled-up Outcome (terminal) ref set. For each
     # chunk we compute the union of (a) terminal refs already in the
     # chunk's learning_outcome_refs and (b) parents of any CO refs.
     # Drives the ``concept_supports_outcome`` derivation: a concept
@@ -682,7 +543,7 @@ def build_pedagogy_graph(
                 })
 
         # ------------------------------------------------------------
-        # Wave 78: derived_from_objective (Chunk -> Objective).
+        # derived_from_objective (Chunk -> Objective).
         # Mirrors concept_graph_semantic's `derived-from-objective`
         # rule into pedagogy_graph as explicit chunk-LO provenance.
         # Conceptually similar to ``teaches`` but represents PROVENANCE
@@ -700,7 +561,7 @@ def build_pedagogy_graph(
             })
 
         # ------------------------------------------------------------
-        # Wave 78: assessment_validates_outcome (AssessmentItem chunk
+        # assessment_validates_outcome (AssessmentItem chunk
         # -> Outcome) — rollup chain. For every assessment_item chunk
         # ref pointing at a CO-NN, emit an edge to that CO's
         # parent_terminal TO-NN. Distinct from ``assesses`` (which
@@ -724,7 +585,7 @@ def build_pedagogy_graph(
                 })
 
         # ------------------------------------------------------------
-        # Wave 78: chunk_at_difficulty (Chunk -> DifficultyLevel).
+        # chunk_at_difficulty (Chunk -> DifficultyLevel).
         # Every chunk with a canonical ``difficulty`` value emits an
         # edge to the corresponding DifficultyLevel typed node.
         # Malformed / missing values silently skipped (fail-soft, in
@@ -741,7 +602,7 @@ def build_pedagogy_graph(
                 })
 
         # ------------------------------------------------------------
-        # Wave 78: roll up this chunk's LO refs to terminal level so
+        # Roll up this chunk's LO refs to terminal level so
         # the post-loop ``concept_supports_outcome`` derivation can
         # count concept->outcome supporting chunks consistently. A
         # ref already at TO-NN level passes through; a CO-NN ref maps
@@ -776,7 +637,7 @@ def build_pedagogy_graph(
 
         # Aggregate concept_tags per-week for prerequisite_of inference.
         # Also accumulate per-chunk membership across ALL chunk types
-        # (Wave 76) — the new prerequisite_of rule needs this to test
+        # so the prerequisite_of rule can test
         # "exists at least one chunk containing both A and B".
         m = re.match(r"week_(\d+)", top_mid or "")
         week = int(m.group(1)) if m else None
@@ -805,7 +666,7 @@ def build_pedagogy_graph(
     def _emit_concept(slug: str) -> None:
         if slug in concept_nodes_emitted:
             return
-        # Wave 82: acronym-aware title-case for the default label.
+        # Preserve acronyms when deriving a default display label.
         from lib.ontology.labels import slug_to_label
         node = {
             "id": f"concept:{slug}",
@@ -840,7 +701,7 @@ def build_pedagogy_graph(
         for mc in misconceptions:
             if isinstance(mc, dict):
                 text = (mc.get("misconception") or mc.get("text") or "").strip()
-                # Wave 99: thread the same 3-input seed used by
+                # Thread the same three-input seed used by
                 # ``process_course._build_misconceptions_for_graph`` and
                 # ``preference_factory._misconception_id`` so the builder's
                 # mc_node_id matches byte-for-byte. Empty-string fallbacks
@@ -880,7 +741,7 @@ def build_pedagogy_graph(
             for slug in targets:
                 if slug:
                     mc_to_concepts[mc_node_id].add(slug)
-                    # Wave 82: acronym-aware label.
+                    # Preserve acronyms in the derived label.
                     from lib.ontology.labels import slug_to_label as _slbl
                     concept_label.setdefault(slug, _slbl(slug))
                     if slug not in concept_to_week:
@@ -893,13 +754,12 @@ def build_pedagogy_graph(
                             concept_to_week.setdefault(slug, int(m.group(1)))
 
     # Emit misconception nodes (sorted for determinism).
-    for mc_id_, node in sorted(mc_seen.items()):
+    for _mc_id_value, node in sorted(mc_seen.items()):
         nodes.append(node)
 
-    # Wave 76: a concept is interferes_with-eligible only when classified
+    # A concept is interferes_with-eligible only when classified
     # as a DomainConcept. When ``concept_classes`` is unset, every concept
-    # is treated as DomainConcept-default (legacy compatibility — Worker
-    # B's classifier had not run yet on older corpora).
+    # is treated as DomainConcept by the compatibility contract.
     def _is_domain_concept(slug: str) -> bool:
         if not concept_classes:
             return True
@@ -925,12 +785,12 @@ def build_pedagogy_graph(
     # ------------------------------------------------------------------
     # 9b. concept_supports_outcome edges (DomainConcept -> Outcome).
     #
-    #     Wave 78: derived rollup. Concept C supports Outcome O when
+    #     Concept C supports Outcome O when
     #     at least one chunk contains C as a concept_tag AND that
     #     chunk's learning_outcome_refs (rolled up CO -> parent_TO)
     #     contains O. Edge weight (``confidence``) = count of
     #     supporting chunks. Source endpoint must be DomainConcept-
-    #     classified per Worker D's filter (when ``concept_classes``
+    #     classified by ``concept_classes`` when that map is
     #     supplied; permissive default otherwise). Target endpoint
     #     is always an Outcome that exists in ``objective_nodes``,
     #     so referential integrity is intact.
@@ -958,7 +818,7 @@ def build_pedagogy_graph(
     # ------------------------------------------------------------------
     # 10. prerequisite_of edges (Concept -> Concept).
     #
-    #     Wave 76 rule (replaces the prior adjacent-week cartesian):
+    #     Emit a prerequisite only when all of these conditions hold:
     #
     #     Emit prerequisite_of(A, B) iff ALL hold:
     #       (1) A's first-seen week W_A < B's first-seen week W_B

@@ -5,7 +5,7 @@
 Build a typed pedagogical / concept graph from the chunked SemantiK HTML
 chunkset during the Phase 6 `concept_extraction` workflow phase, BEFORE objective
 synthesis runs. Wraps the deterministic
-`Trainforge/pedagogy_graph_builder.py::build_pedagogy_graph` helper and
+`Trainforge/rag/graphs/pedagogy_graph_builder.py::build_pedagogy_graph` helper and
 persists the result to the LibV2 course tree as
 `concept_graph_semantic.json` so downstream phases (objective synthesis,
 content generation, training synthesis) consume one canonical graph
@@ -58,7 +58,7 @@ roadmap §6.1 recommendation.
    fallback derives it from chunk-ID prefix when caller passes empty,
    but we pass it explicitly so the value is auditable.
 3. Call
-   `Trainforge.pedagogy_graph_builder.build_pedagogy_graph(chunks, course_id=course_id, concept_classes=...)`.
+   `Trainforge.rag.graphs.pedagogy_graph_builder.build_pedagogy_graph(chunks, course_id=course_id, concept_classes=...)`.
    No `objectives` argument — that surface stays empty in this phase
    (objectives don't exist yet at this point in the chain).
 4. Persist the returned graph dict to

@@ -1296,7 +1296,7 @@ def _normalize_objective_entry(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     # present — these MUST NOT be stripped: an empty roll-up set makes
     # prune_orphan_terminals delete every terminal, and a missing chapter
     # ref triggers ORPHAN_TERMINAL_NO_CHAPTER_REF on the CO-less branch.
-    # Downstream consumers: Trainforge/pedagogy_graph_builder.py (CO→TO
+    # Downstream consumers: Trainforge/rag/graphs/pedagogy_graph_builder.py (CO→TO
     # edges), lib/validators/libv2/packet_integrity.py (CO→TO expansion).
     # Pure pass-through — all other normalization is unchanged.
     for passthrough_key in (

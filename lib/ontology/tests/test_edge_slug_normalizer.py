@@ -3,7 +3,7 @@
 The Ed4All concept-graph surface is fed by two emitters that disagree
 about slug spelling — ``Trainforge/rag/typed_edge_inference.py`` emits
 hyphenated slugs (``is-a``, ``derived-from-objective``) and
-``Trainforge/pedagogy_graph_builder.py`` emits underscored slugs with
+``Trainforge/rag/graphs/pedagogy_graph_builder.py`` emits underscored slugs with
 a ``_of`` suffix on directional ties (``prerequisite_of``,
 ``derived_from_objective``). The Phase 2.7 normalizer
 (``lib.ontology.edge_slug_normalizer.normalize_edge_slug``) collapses
@@ -15,7 +15,7 @@ Property coverage:
 * **Idempotency** — every canonical key in ``SLUG_TO_IRI`` round-trips
   through the normalizer unchanged.
 * **Bridging** — the underscored / ``_of``-suffixed variants emitted
-  by ``pedagogy_graph_builder.py`` map to their hyphenated canonical
+  by the pedagogy graph builder map to their hyphenated canonical
   forms.
 * **Pass-through** — unknown slugs (no matching registry entry after
   normalization) are returned unchanged. Critical: the normalizer

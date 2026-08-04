@@ -1,24 +1,16 @@
-"""Wave 82 regression test for pedagogy_graph_builder course_id fallback.
+"""Verify that the pedagogy graph derives a missing course identifier.
 
-The RDF/SHACL calibration corpus audit found a shipped pedagogy_graph.json with
-``course_id: ""`` despite chunks carrying the course code in their IDs
-(``demo_course_1_chunk_00001``). The pre-Wave-81
-``_generate_pedagogy_graph`` stub didn't pass ``course_id``, and the
-builder silently emitted ``""`` for the top-level field.
-
-Wave 82 hardens the contract: when ``course_id`` is None/empty, the
-builder derives a best-effort value from the first chunk's ID prefix.
-This makes the failure mode (silent empty course_id) impossible without
-a corresponding chunk-ID corruption.
+When ``course_id`` is empty, the builder derives a best-effort value from the
+first canonical chunk ID. An empty result is valid only when no chunk carries
+the required identifier shape.
 """
 
 from __future__ import annotations
 
-from Trainforge.pedagogy_graph_builder import (
+from Trainforge.rag.graphs.pedagogy_graph_builder import (
     _derive_course_id_from_chunks,
     build_pedagogy_graph,
 )
-
 
 # ---------------------------------------------------------------------------
 # _derive_course_id_from_chunks (the new helper)
@@ -122,8 +114,7 @@ class TestBuildPedagogyGraphCourseIdFallback:
 
     def test_no_course_id_no_canonical_chunks_emits_empty(self):
         # When neither the caller nor the chunks supply a course code,
-        # the builder still emits "" rather than crashing — keeps legacy
-        # test fixtures (which use bare "chunk_001"-style IDs) passing.
+        # the builder emits an empty value rather than inventing an identifier.
         chunks = [
             {
                 "id": "chunk_001",

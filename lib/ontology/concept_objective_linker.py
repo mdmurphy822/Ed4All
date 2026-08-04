@@ -11,7 +11,7 @@ Contract
 
 :func:`link_concepts_to_objectives` walks every learning objective and
 populates its ``key_concepts`` / ``keyConcepts`` field from the concept
-graph emitted by :func:`Trainforge.pedagogy_graph_builder.build_pedagogy_graph`
+graph emitted by :func:`Trainforge.rag.graphs.pedagogy_graph_builder.build_pedagogy_graph`
 (the same concept-graph schema that
 ``schemas/knowledge/concept_graph_semantic.schema.json`` validates). The
 goal is to make every LO carry a non-empty list of concept slugs so
@@ -55,7 +55,7 @@ Defensive rules
   warning-only severity of the upstream
   :class:`lib.validators.concept_graph.ConceptGraphValidator` gate.
 - Concept-node ID prefixes like ``"concept:"`` (the pedagogy-graph form
-  emitted by :func:`Trainforge.pedagogy_graph_builder.build_pedagogy_graph`)
+  emitted by :func:`Trainforge.rag.graphs.pedagogy_graph_builder.build_pedagogy_graph`)
   are stripped before matching. Bloom / DifficultyLevel / Outcome /
   ComponentObjective / Module / Chunk classes are filtered out — only
   ``Concept`` and ``DomainConcept`` (the two concept-class node labels
@@ -72,7 +72,7 @@ Cross-references
 * ``schemas/knowledge/concept_graph_semantic.schema.json`` — concept-
   graph node shape.
 * :mod:`lib.ontology.slugs` — canonical slug helper.
-* :mod:`Trainforge.pedagogy_graph_builder` — upstream concept-graph
+* :mod:`Trainforge.rag.graphs.pedagogy_graph_builder` — upstream concept-graph
   emitter (concept-class nodes use ``"concept:{slug}"`` IDs and class
   ``"Concept"`` per :func:`build_pedagogy_graph`).
 """
@@ -102,7 +102,7 @@ _CONCEPT_CLASS_LABELS: frozenset = frozenset(
 
 # ID-namespace prefix the pedagogy-graph builder uses for concept nodes.
 # We strip this so the slug matched against LO text is the bare concept
-# slug, not the prefixed form. Mirror :func:`Trainforge.pedagogy_graph_builder`
+# slug, not the prefixed form. Mirror :func:`Trainforge.rag.graphs.pedagogy_graph_builder`
 # which emits ``"concept:{slug}"`` for concept-class nodes (line 786).
 _CONCEPT_ID_PREFIX: str = "concept:"
 

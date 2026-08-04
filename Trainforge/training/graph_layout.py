@@ -210,7 +210,7 @@ def ensure_graph_layout(course_dir: Path) -> Dict[str, Any]:
         concept_classes = _extract_concept_classes(_load_json(cc_path))
 
     try:
-        from Trainforge.pedagogy_graph_builder import build_pedagogy_graph
+        from Trainforge.rag.graphs.pedagogy_graph_builder import build_pedagogy_graph
     except Exception as exc:  # noqa: BLE001 — import-failure guard
         report["notes"].append(f"pedagogy_builder_import_failed: {exc}")
         logger.warning(

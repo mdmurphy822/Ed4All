@@ -101,7 +101,7 @@ edge type to its RDF predicate. Keys mirror two emit surfaces:
 * ``schemas/knowledge/concept_graph_semantic.schema.json::edges[].type``
   for semantic-graph entries.
 * The ``relation_type`` values emitted by
-  ``Trainforge/pedagogy_graph_builder.py`` for pedagogy-graph entries.
+  ``Trainforge/rag/graphs/pedagogy_graph_builder.py`` for pedagogy-graph entries.
 
 Equivalent emitter conventions are resolved by the slug normalizer to
 the registry's canonical keys."""

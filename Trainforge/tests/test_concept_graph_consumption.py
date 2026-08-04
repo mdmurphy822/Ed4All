@@ -42,7 +42,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from Trainforge.process_course import CourseProcessor  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -142,7 +141,7 @@ def test_consumes_phase6_concept_graph_when_present(
         )
 
     with mock.patch(
-        "Trainforge.pedagogy_graph_builder.build_pedagogy_graph",
+        "Trainforge.rag.graphs.pedagogy_graph_builder.build_pedagogy_graph",
         _sentinel_builder,
     ):
         graph = proc._generate_pedagogy_graph(_minimal_chunks())
@@ -185,7 +184,7 @@ def test_falls_through_to_build_when_path_is_none() -> None:
         }
 
     with mock.patch(
-        "Trainforge.pedagogy_graph_builder.build_pedagogy_graph",
+        "Trainforge.rag.graphs.pedagogy_graph_builder.build_pedagogy_graph",
         _capturing_builder,
     ):
         graph = proc._generate_pedagogy_graph(_minimal_chunks())
@@ -217,7 +216,7 @@ def test_falls_through_when_path_does_not_exist(
 
     with caplog.at_level(logging.WARNING, logger="Trainforge.process_course"):
         with mock.patch(
-            "Trainforge.pedagogy_graph_builder.build_pedagogy_graph",
+            "Trainforge.rag.graphs.pedagogy_graph_builder.build_pedagogy_graph",
             _capturing_builder,
         ):
             graph = proc._generate_pedagogy_graph(_minimal_chunks())
@@ -254,7 +253,7 @@ def test_falls_through_on_malformed_upstream_json(
 
     with caplog.at_level(logging.WARNING, logger="Trainforge.process_course"):
         with mock.patch(
-            "Trainforge.pedagogy_graph_builder.build_pedagogy_graph",
+            "Trainforge.rag.graphs.pedagogy_graph_builder.build_pedagogy_graph",
             _capturing_builder,
         ):
             graph = proc._generate_pedagogy_graph(_minimal_chunks())
@@ -288,7 +287,7 @@ def test_falls_through_on_non_dict_payload(
 
     with caplog.at_level(logging.WARNING, logger="Trainforge.process_course"):
         with mock.patch(
-            "Trainforge.pedagogy_graph_builder.build_pedagogy_graph",
+            "Trainforge.rag.graphs.pedagogy_graph_builder.build_pedagogy_graph",
             _capturing_builder,
         ):
             graph = proc._generate_pedagogy_graph(_minimal_chunks())

@@ -11,7 +11,7 @@ registered by ``_build_tool_registry`` to confirm it:
     ``concept_graph_sha256`` keys the workflow runner threads through
     ``phase_outputs.concept_extraction``.
 
-The helper is a pure file-IO + ``Trainforge.pedagogy_graph_builder``
+The helper is a pure file-IO + ``Trainforge.rag.graphs.pedagogy_graph_builder``
 dispatch path (no LLM, no network), so the test is fast (~50 ms) and
 fully hermetic via ``tmp_path`` + monkeypatched ``_PROJECT_ROOT``.
 """

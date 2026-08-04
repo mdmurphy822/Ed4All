@@ -53,6 +53,6 @@ class TestRoundTrip:
 
 def test_constant_value():
     # Pin the exact prefix string — emit sites at
-    # Trainforge/pedagogy_graph_builder.py:731,767,864,895,953,954 use
+    # Pedagogy graph emitters use
     # f"concept:{slug}" verbatim.
     assert CONCEPT_PREFIX == "concept:"

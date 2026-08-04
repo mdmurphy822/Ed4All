@@ -54,7 +54,7 @@ def test_b3_emits_pedagogy_graph(tmp_path, monkeypatch):
         return {"kind": "pedagogy", "nodes": [{"id": "n1"}], "edges": []}
 
     monkeypatch.setattr(
-        "Trainforge.pedagogy_graph_builder.build_pedagogy_graph",
+        "Trainforge.rag.graphs.pedagogy_graph_builder.build_pedagogy_graph",
         _fake_builder,
     )
     report = ensure_graph_layout(course)

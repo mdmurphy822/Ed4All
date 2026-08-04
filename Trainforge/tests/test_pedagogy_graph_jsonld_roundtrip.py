@@ -2,7 +2,7 @@
 
 Verifies that ``schemas/context/pedagogy_graph_v1.jsonld`` is a faithful
 round-trip bridge between the JSON-shaped ``pedagogy_graph.json`` (emitted by
-``Trainforge/pedagogy_graph_builder.py``) and an RDF graph, AND that
+``Trainforge/rag/graphs/pedagogy_graph_builder.py``) and an RDF graph, AND that
 cross-artifact joins against ``concept_graph.json`` work via the
 ``https://ed4all.io/concept/<slug>`` IRI scheme.
 

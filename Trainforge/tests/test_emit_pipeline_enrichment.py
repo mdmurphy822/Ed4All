@@ -124,7 +124,7 @@ def _objectives_payload() -> Dict[str, Any]:
     """
     # ``bloom_level`` must stay snake_case: that is the canonical key in
     # ``schemas/knowledge/objectives_v1.schema.json`` and the key
-    # ``Trainforge.pedagogy_graph_builder`` reads. Courseforge's
+    # ``Trainforge.rag.graphs.pedagogy_graph_builder`` reads. Courseforge's
     # synthesized objectives use camelCase ``bloomLevel``, which the
     # builder does NOT read — using it here would silently skip the
     # ``at_bloom_level`` rule.

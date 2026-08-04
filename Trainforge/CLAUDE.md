@@ -354,7 +354,7 @@ Trainforge/
 ├── instruction_pair_extractor.py
 ├── synthesize_training.py       # Legacy CLI/import compatibility shim
 ├── train_course.py              # SLM adapter training entry point
-├── pedagogy_graph_builder.py    # Typed pedagogy/concept graph builder
+├── rag/                       # Retrieval and typed graph construction
 ├── synthesis/                   # Canonical SFT/DPO synthesis implementation
 │   ├── synthesize_training.py   # Chunk → instruction/preference pair synthesis
 │   └── synthesis_*.py           # Contracts, resume, eligibility, progress, mining

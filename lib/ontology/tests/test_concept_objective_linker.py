@@ -22,9 +22,9 @@ from lib.ontology.concept_objective_linker import link_concepts_to_objectives
 
 
 def _make_concept_node(slug, label=None, cls="Concept"):
-    """Build a concept-graph node mirroring ``Trainforge.pedagogy_graph_builder``.
+    """Build a concept-graph node matching the Trainforge pedagogy graph shape.
 
-    Pedagogy-graph emit format (line 786 of ``pedagogy_graph_builder.py``):
+    Pedagogy-graph emit format:
     ``id="concept:{slug}", class="Concept", label=...``.
     """
     return {

@@ -3,7 +3,7 @@ projection fallback emits canonical ``id`` keys (not legacy
 ``chunk_id``) so the graph builders actually consume them.
 
 Pre-Phase-8: the inline projection emitted ``chunk_id``-keyed dicts;
-``Trainforge/pedagogy_graph_builder.py:593`` read ``cid = c.get("id")``
+``Trainforge/rag/graphs/pedagogy_graph_builder.py`` reads ``cid = c.get("id")``
 strictly (no ``chunk_id`` fallback). Result: every chunk produced by
 the fallback path was silently dropped. Phase 8 ST 6 closed that gap by
 emitting the canonical ``id`` key.

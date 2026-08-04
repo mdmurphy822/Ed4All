@@ -4,7 +4,7 @@ Gates the structure + minimal quality of ``concept_graph_semantic.json``
 emitted by the new ``concept_extraction`` workflow phase (Subtask 11)
 via ``MCP/tools/pipeline_tools.py::_run_concept_extraction`` (Subtask
 12), which delegates to
-``Trainforge.pedagogy_graph_builder.build_pedagogy_graph``.
+``Trainforge.rag.graphs.pedagogy_graph_builder.build_pedagogy_graph``.
 
 Wired as the ``concept_graph`` validation gate on
 ``textbook_to_course::concept_extraction``. Phase 6 lands as
@@ -63,7 +63,7 @@ Cross-references:
   schema shape. The validator does NOT JSON-Schema-validate the
   graph; it operates on the in-memory dict to keep wall-time low and
   emit per-issue codes.
-* ``Trainforge/pedagogy_graph_builder.py::build_pedagogy_graph`` —
+* ``Trainforge/rag/graphs/pedagogy_graph_builder.py::build_pedagogy_graph`` —
   the upstream emitter Subtask 12 dispatches.
 * ``lib/validators/min_edge_count.py`` — Wave 91 sibling validator
   that gates pre-synthesis sparsity at higher floors (≥100 edges,

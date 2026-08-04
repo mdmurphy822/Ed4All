@@ -29,10 +29,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-import pytest
-
-from Trainforge.pedagogy_graph_builder import build_pedagogy_graph
-
+from Trainforge.rag.graphs.pedagogy_graph_builder import build_pedagogy_graph
 from Trainforge.tests._archive_discovery import make_synthetic_archive
 
 ROOT = Path(__file__).resolve().parents[2]
