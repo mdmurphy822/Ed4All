@@ -33,19 +33,32 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections import Counter
 from pathlib import Path
 
-from data.common._splits import stable_split_for_id
 from data.builders.build_figure_catalog import EXTREME_ASPECT, TINY_MAX_PX
-from scripts.fetch_ar5iv_figure_assets import _safe_path
+from data.common._splits import stable_split_for_id
 
 CATALOG = Path("data/figure_catalog/catalog.jsonl")
 ARXIV_LICENSE_MAP = Path("data/figure_images/_arxiv_license_map.json")
 MANIFEST = Path("data/figure_images/_fetch_manifest.jsonl")
 OUT = Path("data/figure_alt_dataset")
+FIGURE_IMAGES = Path("data/figure_images")
 SOURCES = ("arxiv", "pmc", "openstax")
 TRAIN_FRAC, VAL_FRAC = 0.80, 0.10
+
+
+def _arxiv_image_path(source: str, doc_id: str, ref: str) -> Path:
+    """Resolve a catalog reference to its fetched arXiv image path."""
+    tail = (
+        ref.split("/assets/", 1)[-1]
+        if "/assets/" in ref
+        else ref.rsplit("/", 1)[-1]
+    )
+    tail = re.sub(r"[^A-Za-z0-9._/-]", "_", tail).lstrip("/")
+    safe_doc_id = re.sub(r"[^A-Za-z0-9._-]", "_", doc_id)
+    return FIGURE_IMAGES / source / safe_doc_id / tail
 
 
 def _manifest_index(manifest: Path = MANIFEST) -> dict[tuple[str, str, str], str]:
@@ -82,7 +95,7 @@ def _resolve_image(rec: dict, mf_idx: dict[tuple[str, str, str], str]) -> Path |
         stem = ref if src == "pmc" else Path(ref).stem
         lp = mf_idx.get((src, doc_id, stem))
         return Path(lp) if lp else None
-    return _safe_path(src, doc_id, ref)
+    return _arxiv_image_path(src, doc_id, ref)
 
 
 def refine_decorative_with_pixels(
