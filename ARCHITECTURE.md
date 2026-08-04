@@ -10,24 +10,22 @@ architecture and operations guides.
 
 ## The system at a glance
 
-```text
- Books and learning material
-             |
-             v
- +------------------+    +------------------+    +------------------+
- |     SemantiK     | -> |   Courseforge    | -> |    Trainforge    |
- | source material  |    | accessible HTML  |    | course package   |
- | -> accessible    |    | -> digital course|    | -> RAG corpus +  |
- | HTML + provenance|    | + IMSCC package  |    | SFT / DPO pairs  |
- +------------------+    +------------------+    +---------+--------+
-                                                            |
-                                                            v
-                                                  +------------------+
-                                                  |      LibV2       |
-                                                  | archive, custom  |
-                                                  | hybrid RRF search|
-                                                  | + optional LoRA  |
-                                                  +------------------+
+```mermaid
+flowchart LR
+    SOURCE["Books and learning material"] --> SEM["SemantiK<br/>Accessible HTML + provenance"]
+    SEM --> COURSE["Courseforge<br/>Digital course + IMSCC"]
+    COURSE --> TRAIN["Trainforge<br/>RAG corpus + SFT/DPO pairs"]
+    TRAIN --> LIB["LibV2<br/>Archive + hybrid RRF retrieval"]
+    LIB --> ANSWER["Grounded answers<br/>or optional LoRA training"]
+
+    classDef source fill:#FFF7ED,stroke:#C2410C,color:#431407,stroke-width:2px;
+    classDef transform fill:#EFF6FF,stroke:#1D4ED8,color:#172554,stroke-width:2px;
+    classDef library fill:#ECFDF5,stroke:#047857,color:#052E2B,stroke-width:2px;
+    classDef outcome fill:#F5F3FF,stroke:#6D28D9,color:#2E1065,stroke-width:2px;
+    class SOURCE source;
+    class SEM,COURSE,TRAIN transform;
+    class LIB library;
+    class ANSWER outcome;
 ```
 
 The main workflow follows this write path. LibV2 also provides the read path:
@@ -71,7 +69,8 @@ and training stages a common instructional vocabulary.
 **Outputs:** structured course pages, learning metadata, validation reports, and
 an IMSCC package.
 
-**Deep dive:** [Courseforge overview](Courseforge/README.md) and
+**Deep dive:** [Courseforge overview](Courseforge/README.md),
+[Courseforge architecture](Courseforge/architecture.md), and
 [getting started](Courseforge/docs/guides/getting-started.md).
 
 ### Trainforge: a course package to retrieval and training data
@@ -119,7 +118,8 @@ before returning an answer.
 **Outputs:** a catalogued course archive, filterable retrieval results, and
 grounded answers over existing content.
 
-**Deep dive:** [LibV2 overview](LibV2/README.md) and
+**Deep dive:** [LibV2 overview](LibV2/README.md),
+[LibV2 architecture](LibV2/architecture.md), and
 [retrieval and serving architecture](docs/architecture/retrieval-and-serving.md).
 
 ## Artifact contract

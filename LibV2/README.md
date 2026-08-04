@@ -23,7 +23,7 @@ reciprocal rank fusion (RRF).
 [![Retrieval](https://img.shields.io/badge/Retrieval-BM25%20%2B%20Dense-2563EB)](#retrieval-flow)
 [![License](https://img.shields.io/badge/License-Apache--2.0-22C55E)](../LICENSE)
 
-[Quick start](#quick-start) · [See retrieval](#retrieval-flow) · [Browse commands](#everyday-commands) · [Read the architecture](../docs/architecture/retrieval-and-serving.md)
+[Quick start](#quick-start) · [See retrieval](#retrieval-flow) · [Browse commands](#everyday-commands) · [Read the architecture](architecture.md)
 
 </div>
 
