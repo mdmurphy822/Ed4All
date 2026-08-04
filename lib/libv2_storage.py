@@ -48,7 +48,7 @@ class LibV2StorageError(Exception):
 # (canonical path); reads attempt ``imscc_chunks/`` first and fall back to
 # ``corpus/`` with a deprecation warning so unprovisioned LibV2 archives
 # keep working through one migration cycle. The shim is dropped in Phase 8
-# once ``backfill_legacy_chunks.py`` (Worker W18) has migrated all archives.
+# once the staged-chunkset backfill command has migrated all archives.
 
 IMSCC_CHUNKS_DIRNAME = "imscc_chunks"
 # ``semantik_chunks/`` is the ACTIVE emit dir. ``dart_chunks/`` is a PURE
@@ -193,7 +193,7 @@ def resolve_imscc_chunks_dir(
         warnings.warn(
             f"Phase 7c deprecation: {course_dir.name} still uses "
             f"{LEGACY_CORPUS_DIRNAME}/; run "
-            f"LibV2/tools/libv2/scripts/backfill_legacy_chunks.py to migrate.",
+            "LibV2/tools/libv2/scripts/ops/backfill_legacy_chunks.py to migrate.",
             DeprecationWarning,
             stacklevel=2,
         )

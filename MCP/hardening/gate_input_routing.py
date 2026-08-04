@@ -1266,7 +1266,7 @@ def _build_chunkset_drift(
       ``<course_dir>/imscc_chunks/chunks.jsonl``.
     * Fall back to the Phase-7c shim ``<course_dir>/corpus/chunks.jsonl``
       for the IMSCC side on legacy archives the
-      ``backfill_legacy_chunks.py`` migration hasn't touched yet
+      the staged-chunkset backfill migration has not touched yet
       (lib.libv2_storage.resolve_imscc_chunks_path handles the
       shim warning + fallback).
 
@@ -1780,6 +1780,7 @@ def _resolve_objective_statements_map(
         return {}
     try:
         import json as _json
+
         from lib.validators.abcd_objective import _flatten_objectives
 
         path = Path(objectives_path)
@@ -2098,6 +2099,7 @@ def _build_block_statistical_input(
         else:
             try:
                 import json as _json
+
                 from lib.validators.abcd_objective import (
                     _flatten_objectives,
                 )

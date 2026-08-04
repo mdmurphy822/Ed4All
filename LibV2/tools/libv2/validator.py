@@ -103,7 +103,7 @@ def validate_course_structure(course_dir: Path) -> ValidationResult:
     # Required directories
     # Phase 7c: corpus/ renamed to imscc_chunks/. Either is accepted as
     # the IMSCC chunkset directory; legacy archives that still carry
-    # corpus/ keep validating until backfill_legacy_chunks.py migrates them.
+    # Legacy corpus layouts remain readable until the backfill command migrates them.
     required_dirs = [
         "graph",
     ]

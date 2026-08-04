@@ -1,6 +1,6 @@
-"""Staged-chunkset backfill operator script regression tests.
+"""Staged-chunkset backfill operator command tests.
 
-Smoke coverage for ``LibV2/tools/libv2/scripts/backfill_legacy_chunks.py``.
+Coverage for ``LibV2/tools/libv2/scripts/ops/backfill_legacy_chunks.py``.
 Each test builds a tmp_path LibV2 fixture (one or more course
 directories with a minimal ``source/html/`` payload), invokes
 ``main(argv)`` directly, and asserts the post-run filesystem state.
@@ -21,8 +21,8 @@ import pytest
 # Project root for imports (pytest may not have project root on path).
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from LibV2.tools.libv2.scripts import backfill_legacy_chunks  # noqa: E402
-
+from LibV2.tools.libv2.scripts import backfill_legacy_chunks as legacy  # noqa: E402
+from LibV2.tools.libv2.scripts.ops import backfill_legacy_chunks  # noqa: E402
 
 # Minimal HTML payload that ``HTMLContentParser`` will happily parse
 # into a ContentSection. Keeping it small but non-empty so the
@@ -269,3 +269,5 @@ class TestBackfillForceFlag:
         # empty-input chunker run produces a real SHA-256 over empty
         # bytes, which is NOT 64 zeros.
         assert after["chunks_sha256"] != "0" * 64
+    def test_legacy_module_reuses_canonical_main(self):
+        assert legacy.main is backfill_legacy_chunks.main

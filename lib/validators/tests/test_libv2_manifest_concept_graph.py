@@ -36,8 +36,8 @@ from typing import Any, Dict
 import pytest
 
 from lib.validators.libv2_manifest import (
-    LibV2ManifestValidator,
     _CONCEPT_GRAPH_SHA256_RE,
+    LibV2ManifestValidator,
 )
 
 
@@ -240,7 +240,7 @@ def test_legacy_archive_without_concept_graph_blocks_critical(archive_without_gr
     Phase 6 left the gate at warning severity so legacy archives
     didn't surface noise. Phase 7c ST 17 promoted the field to a required
     manifest key; legacy archives MUST now be backfilled (via
-    ``LibV2/tools/libv2/scripts/backfill_legacy_chunks.py``) to be valid.
+    ``LibV2/tools/libv2/scripts/ops/backfill_legacy_chunks.py``) to be valid.
     """
     manifest_path, course_dir = archive_without_graph
     result = LibV2ManifestValidator().validate({
@@ -356,6 +356,7 @@ def test_archive_to_libv2_persists_concept_graph_sha256_to_manifest(tmp_path):
     """
     import asyncio
     import re
+
     from MCP.tools import pipeline_tools as pt
 
     # Redirect PROJECT_ROOT so the helper writes under tmp_path.
@@ -415,6 +416,7 @@ def test_archive_to_libv2_persists_all_three_chunkset_hashes(tmp_path):
     """
     import asyncio
     import re
+
     from MCP.tools import pipeline_tools as pt
 
     fake_root = tmp_path / "root"
@@ -484,6 +486,7 @@ def test_archive_to_libv2_omits_chunkset_hashes_when_kwargs_absent(tmp_path):
     omit the field so the validator's ``MISSING_*`` fires loudly.
     """
     import asyncio
+
     from MCP.tools import pipeline_tools as pt
 
     fake_root = tmp_path / "root"
@@ -533,6 +536,7 @@ def test_archive_to_libv2_rejects_malformed_chunkset_hashes(tmp_path):
     ``INVALID_*`` arising from corrupted producer-side data.
     """
     import asyncio
+
     from MCP.tools import pipeline_tools as pt
 
     fake_root = tmp_path / "root"

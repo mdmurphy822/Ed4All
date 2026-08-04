@@ -31,7 +31,7 @@ ci/integrity_check.py
 # tool, and their tests necessarily name the legacy layout they migrate
 # away from.
 LibV2/tools/libv2/migrate.py
-LibV2/tools/libv2/scripts/backfill_legacy_chunks.py
+LibV2/tools/libv2/scripts/ops/backfill_legacy_chunks.py
 LibV2/tools/libv2/tests/test_chunks_path_for_query.py
 LibV2/tools/libv2/tests/test_dart_purge_corpus_migration.py
 

@@ -15,7 +15,7 @@ coverage already landed in:
   - ``lib/validators/tests/test_chunkset_manifest.py`` (Phase 7b
     ST 13) — verify ``ChunksetManifestValidator``'s schema +
     on-disk hash agreement checks.
-  - ``LibV2/tests/test_backfill_legacy_chunks.py`` (Phase 7c ST 18)
+  - ``LibV2/tests/test_backfill_legacy_chunks.py``
     — verify the operator backfill script for legacy archives.
 
 What this test file adds beyond those is the **chain test**:
@@ -64,7 +64,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from lib.validators.libv2_manifest import LibV2ManifestValidator  # noqa: E402
 from MCP.tools import pipeline_tools  # noqa: E402
-
 
 _DART_HTML = """<!DOCTYPE html>
 <html lang="en">
