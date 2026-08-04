@@ -1,12 +1,11 @@
-# LibV2 library-format versioning (OP4)
+# LibV2 library-format versioning
 
 Canonical reference for the **on-disk LibV2 course-layout contract version**,
 stamped on every freshly emitted `course_manifest.json` as
 `library_format_version` (start `"1.0"`). This doc defines the *upgrade
 contract* — what an old-format (or old-chunker) course means, who checks it,
-and what bumps the version. The migration *framework* (an actual in-place
-upgrader, `libv2 migrate`) shipped in **OP4 stage 2** — see § "The migration
-framework" below.
+and what bumps the version. The `libv2 migrate` command provides the in-place
+migration framework described below.
 
 ## The three version fields (do not conflate)
 
@@ -28,7 +27,7 @@ sits one level up: it versions the *layout*, not the bytes.
 The governing rule is **serve read-only + warn; re-chunk to upgrade; never
 silent**:
 
-* **Missing `library_format_version`** (a manifest that predates the OP4 stamp)
+* **Missing `library_format_version`** (an unstamped legacy manifest)
   is treated as the **pre-1.0 baseline** layout. It is still servable — read
   paths must degrade gracefully — but a validator/fsck pass MUST surface a
   warning so an operator knows the course was written against an older layout.
@@ -56,7 +55,7 @@ silent**:
 | `lib/libv2_fsck.py` | Version-awareness is a candidate follow-up; today fsck's manifest checks pass through. |
 
 The field is **optional** in `schemas/library/course_manifest.schema.json`
-(pattern `^\d+\.\d+$`), so every pre-OP4 manifest on disk continues to validate
+(pattern `^\d+\.\d+$`), so every unstamped legacy manifest continues to validate
 untouched.
 
 ## What bumps `library_format_version`
@@ -75,9 +74,9 @@ Do **not** bump `library_format_version` for:
 * manifest-JSON-only key additions → bump `libv2_version`;
 * chunk-emit-shape changes → bump `chunker_version`.
 
-## The migration framework (OP4 stage 2)
+## The migration framework
 
-The actual upgrader shipped as **OP4 stage 2**. It has two pieces:
+The upgrader has two pieces:
 
 * **The framework** — `LibV2/tools/libv2/migrate.py`:
   * `detect_version(manifest)` — a manifest with no `library_format_version` is
