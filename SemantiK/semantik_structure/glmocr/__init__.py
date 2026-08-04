@@ -156,6 +156,16 @@ def resolve_alttext_timeout() -> float:
     return _env_float("SEMANTIK_ALTTEXT_TIMEOUT_SECONDS", 120.0)
 
 
+def resolve_alttext_cache_dir() -> str:
+    """Durable per-figure describe cache directory (empty = disabled).
+
+    With a directory set, each successful describe persists a
+    content-addressed JSON sidecar keyed by crop bytes + caption + model,
+    and re-runs serve cached figures without a seat call.
+    """
+    return _env_str("SEMANTIK_ALTTEXT_CACHE_DIR", "")
+
+
 # ── Super heading-level JUDGE pass (SEMANTIK_HEADING_JUDGE). ─────────────────
 _CHECKPOINT_FAMILY_ENV = "ED4ALL_GENERATION_CHECKPOINT"
 _CHECKPOINT_FALSEY = {"0", "false", "no", "off"}
@@ -201,9 +211,14 @@ def resolve_heading_judge_model() -> str:
 
 
 def resolve_heading_judge_timeout() -> float:
-    """Heading-judge per-request HTTP timeout in seconds (default 1200 —
-    a thinking-on judgment runs long; reasoning-QC precedent)."""
-    return _env_float("SEMANTIK_HEADING_JUDGE_TIMEOUT", 1200.0)
+    """Heading-judge per-request HTTP timeout in seconds.
+
+    Defaults to 300 with thinking off (completion capped near 4096 tokens)
+    and 1200 with thinking on. ``SEMANTIK_HEADING_JUDGE_TIMEOUT`` beats
+    both defaults.
+    """
+    default = 300.0 if not resolve_heading_judge_enable_thinking() else 1200.0
+    return _env_float("SEMANTIK_HEADING_JUDGE_TIMEOUT", default)
 
 
 def resolve_heading_judge_checkpoint() -> bool:

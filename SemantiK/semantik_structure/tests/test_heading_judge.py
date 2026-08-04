@@ -3002,3 +3002,17 @@ def test_both_new_flags_off_run_is_byte_identical():
     hj.run_heading_judge(prov_b, tree_b, esc_b, use_cache=False,
                          emit_capture=False, post_fn=_StubPost(content=stub))
     assert prov_a == prov_b and esc_a == esc_b and tree_a == tree_b
+
+
+def test_timeout_default_is_thinking_aware(monkeypatch):
+    """Timeout defaults 300 with thinking off, 1200 with thinking on; an
+    explicit SEMANTIK_HEADING_JUDGE_TIMEOUT beats both."""
+    from semantik_structure import glmocr as g
+
+    monkeypatch.delenv("SEMANTIK_HEADING_JUDGE_TIMEOUT", raising=False)
+    monkeypatch.setenv("SEMANTIK_HEADING_JUDGE_ENABLE_THINKING", "0")
+    assert g.resolve_heading_judge_timeout() == 300.0
+    monkeypatch.setenv("SEMANTIK_HEADING_JUDGE_ENABLE_THINKING", "1")
+    assert g.resolve_heading_judge_timeout() == 1200.0
+    monkeypatch.setenv("SEMANTIK_HEADING_JUDGE_TIMEOUT", "45")
+    assert g.resolve_heading_judge_timeout() == 45.0

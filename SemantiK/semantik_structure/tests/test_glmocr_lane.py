@@ -277,3 +277,63 @@ def test_alt_text_breaker_short_circuits_dead_seat(monkeypatch):
     assert calls["n"] == 5, f"breaker did not trip at 5 (calls={calls['n']})"
     assert len(esc) == 40  # every figure escalated
     assert sum(1 for e in esc if "breaker open" in str(e.get("detail"))) == 35
+
+
+def test_alt_text_cache_serves_rerun_without_seat_call(monkeypatch, tmp_path):
+    """A cached figure is served from the describe cache on re-run; only
+    uncached figures reach the client."""
+    from semantik_structure.glmocr import alttext as at
+
+    monkeypatch.setenv("SEMANTIK_ALTTEXT_PROVIDER", "qwen30")
+    monkeypatch.setenv("SEMANTIK_ALTTEXT_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("SEMANTIK_ALTTEXT_CONCURRENCY", "1")
+    monkeypatch.setattr(at, "_crop_b64", lambda path, bbox: f"crop-{bbox[0]}")
+
+    calls = {"n": 0}
+
+    class _Seat:
+        def describe(self, b64, caption):
+            calls["n"] += 1
+            return {"alt": f"alt for {b64}", "long_desc": None,
+                    "caption_suggestion": None}
+
+    def _figure(i):
+        return {"region_kind": "figure", "figure_alt": None, "caption_text": None,
+                "source_page": 1, "pages": [1], "bbox": [i, 0, 10, 10],
+                "first_raw_block_index": i, "native_label": "image"}
+
+    first = [_figure(0), _figure(1)]
+    assert at.apply_alt_text(first, {1: "/tmp/fake.png"}, client=_Seat()) == 2
+    assert calls["n"] == 2
+
+    rerun = [_figure(0), _figure(1), _figure(2)]
+    assert at.apply_alt_text(rerun, {1: "/tmp/fake.png"}, client=_Seat()) == 3
+    assert calls["n"] == 3, "cached figures must not reach the seat"
+    assert rerun[0]["figure_alt"] == "alt for crop-0"
+    assert rerun[2]["figure_alt"] == "alt for crop-2"
+
+
+def test_alt_text_cache_disabled_without_directory(monkeypatch, tmp_path):
+    """With no cache dir configured every figure reaches the client."""
+    from semantik_structure.glmocr import alttext as at
+
+    monkeypatch.setenv("SEMANTIK_ALTTEXT_PROVIDER", "qwen30")
+    monkeypatch.delenv("SEMANTIK_ALTTEXT_CACHE_DIR", raising=False)
+    monkeypatch.setenv("SEMANTIK_ALTTEXT_CONCURRENCY", "1")
+    monkeypatch.setattr(at, "_crop_b64", lambda path, bbox: "Zm9v")
+
+    calls = {"n": 0}
+
+    class _Seat:
+        def describe(self, b64, caption):
+            calls["n"] += 1
+            return {"alt": "an alt", "long_desc": None, "caption_suggestion": None}
+
+    figures = [{"region_kind": "figure", "figure_alt": None, "caption_text": None,
+                "source_page": 1, "pages": [1], "bbox": [0, 0, 10, 10],
+                "first_raw_block_index": 0, "native_label": "image"}]
+    assert at.apply_alt_text(figures, {1: "/tmp/fake.png"}, client=_Seat()) == 1
+    assert at.apply_alt_text(
+        [dict(figures[0], figure_alt=None)], {1: "/tmp/fake.png"}, client=_Seat()
+    ) == 1
+    assert calls["n"] == 2

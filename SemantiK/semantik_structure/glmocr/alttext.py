@@ -17,8 +17,11 @@ Contract (owner doctrine — never fabricate, never fail the conversion):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
+import tempfile
 import threading
 import time
 import urllib.request
@@ -29,6 +32,7 @@ from typing import Any, Dict, List, Optional, Protocol, Sequence
 from . import (
     resolve_alttext_api_key,
     resolve_alttext_base_url,
+    resolve_alttext_cache_dir,
     resolve_alttext_concurrency,
     resolve_alttext_model,
     resolve_alttext_provider,
@@ -165,6 +169,41 @@ def _parse_alt_json(content: str) -> Dict[str, Any]:
     }
 
 
+def _cache_path(cache_dir: str, image_b64: str, existing_caption: Optional[str],
+                model: str) -> Optional[Path]:
+    """Content-addressed sidecar path for one figure describe (None = disabled)."""
+    if not cache_dir:
+        return None
+    digest = hashlib.sha256(
+        f"{hashlib.sha256(image_b64.encode()).hexdigest()}|"
+        f"{existing_caption or ''}|{model}".encode()
+    ).hexdigest()
+    return Path(cache_dir) / f"{digest}.alttext.json"
+
+
+def _cache_get(path: Optional[Path]) -> Optional[Dict[str, Any]]:
+    if path is None:
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) and "alt" in data else None
+    except Exception:  # noqa: BLE001 — a missing/torn entry is a miss
+        return None
+
+
+def _cache_put(path: Optional[Path], result: Dict[str, Any]) -> None:
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(result, fh)
+        os.replace(tmp, path)
+    except Exception as exc:  # noqa: BLE001 — cache write never fails a figure
+        logger.warning("alt-text cache write failed for %s: %s", path, exc)
+
+
 def _crop_b64(image_path: str, bbox: Sequence[float]) -> Optional[str]:
     """Crop the figure bbox (normalised 0-1000) from the page render → b64 PNG."""
     try:
@@ -225,8 +264,21 @@ def apply_alt_text(
     # success resets the strike count.
     _BREAKER_THRESHOLD = 5
     _breaker_lock = threading.Lock()
+    _count_lock = threading.Lock()
     _strikes = 0
     _breaker_open = False
+    cache_dir = resolve_alttext_cache_dir()
+
+    def _apply_result(p: Dict[str, Any], result: Dict[str, Any]) -> None:
+        alt = result.get("alt") or ""
+        if alt:
+            p["figure_alt"] = alt
+            p["alt_source"] = "generated"
+        if result.get("long_desc"):
+            p["long_desc"] = result["long_desc"]
+        if result.get("caption_suggestion") and not p.get("caption_text"):
+            p["caption_text"] = result["caption_suggestion"]
+            p["caption_source"] = "generated"
 
     def _one(p: Dict[str, Any]) -> None:
         nonlocal generated, _strikes, _breaker_open
@@ -248,6 +300,14 @@ def apply_alt_text(
                 "source_page": page, "native_label": p.get("native_label", "image"),
                 "reason": "alt_text_no_crop", "detail": "crop failed",
             })
+            return
+        cache_file = _cache_path(cache_dir, b64, p.get("caption_text"),
+                                 getattr(client, "model", ""))
+        cached = _cache_get(cache_file)
+        if cached is not None:
+            _apply_result(p, cached)
+            with _count_lock:
+                generated += 1
             return
         with _breaker_lock:
             if _breaker_open:
@@ -280,16 +340,10 @@ def apply_alt_text(
             return
         with _breaker_lock:
             _strikes = 0
-        alt = result.get("alt") or ""
-        if alt:
-            p["figure_alt"] = alt
-            p["alt_source"] = "generated"
-        if result.get("long_desc"):
-            p["long_desc"] = result["long_desc"]
-        if result.get("caption_suggestion") and not p.get("caption_text"):
-            p["caption_text"] = result["caption_suggestion"]
-            p["caption_source"] = "generated"
-        generated += 1
+        _cache_put(cache_file, result)
+        _apply_result(p, result)
+        with _count_lock:
+            generated += 1
 
     workers = max(1, resolve_alttext_concurrency())
     if workers <= 1 or len(targets) <= 1:
