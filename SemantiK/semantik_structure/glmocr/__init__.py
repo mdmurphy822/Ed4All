@@ -217,7 +217,8 @@ def resolve_heading_judge_timeout() -> float:
     and 1200 with thinking on. ``SEMANTIK_HEADING_JUDGE_TIMEOUT`` beats
     both defaults.
     """
-    default = 300.0 if not resolve_heading_judge_enable_thinking() else 1200.0
+    thinking_enabled = _truthy(os.environ.get("SEMANTIK_HEADING_JUDGE_ENABLE_THINKING"))
+    default = 1200.0 if thinking_enabled else 300.0
     return _env_float("SEMANTIK_HEADING_JUDGE_TIMEOUT", default)
 
 
