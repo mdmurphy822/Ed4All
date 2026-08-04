@@ -28,9 +28,10 @@ if [[ $# -eq 0 ]]; then
 fi
 PDFS=("$@")
 
-# ENGINE: 'council' (default) runs the production v2 cascade (BERT council +
-# Qwen GGUFs + theta v8) — this is the path that exercises the retrained
-# council. 'v1' runs the legacy classify+reason pipeline (uses ADAPTER).
+# ENGINE: 'council' (default) runs the compatibility cascade (BERT council +
+# Qwen GGUFs + theta v8) to evaluate newly trained council weights. It does not
+# imply that the currently staged recipe is qualified. 'v1' runs the legacy
+# classify+reason pipeline (uses ADAPTER).
 ENGINE="${ENGINE:-council}"
 ADAPTER="${ADAPTER:-models/reasoner_v8/final}"   # v1 engine only (reasoner_v7 retired -> v8)
 CLASSIFIER="${CLASSIFIER:-models/classifier_v5/final}"

@@ -60,10 +60,14 @@ unset enters the compatibility cascade documented below.
 
 ## Flag-off compatibility cascade: 13 stages
 
-This cascade remains reachable and supported. Its ModernBERT council and
-cross-reranker are live compatibility components, not dead code. In this
-route, BERT specialists classify, Qwen specialists generate, and deterministic
-code owns composition, hierarchy, ARIA, validation, and final assembly.
+This cascade remains reachable as a compatibility surface, so its modules are
+not dead code. Its ModernBERT council weights are not currently qualified for
+production: the previously obtained classifier was unreliable, and the staged
+multi-head training configuration still requires retraining and evaluation.
+Do not present this route as proven or use it for production conversion. In
+this route, BERT specialists classify, Qwen specialists generate, and
+deterministic code owns composition, hierarchy, ARIA, validation, and final
+assembly.
 
 Entry: `semantik_structure/cascade.py::run_full_cascade` (reachable as
 `pipeline_v2.run(pdf, mode="v2")`). Full per-stage depth (input → behavior →

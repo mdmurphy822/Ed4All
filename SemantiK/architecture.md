@@ -240,9 +240,12 @@ flowchart LR
 
 When `SEMANTIK_GLMOCR_LANE` is not enabled, `run_pipeline_v2` enters the older
 multi-stage conversion cascade. That route remains callable for compatibility
-with existing deployments and artifacts, but it is not the preferred design
-for new conversions. It still converges on the same chapter IR and Ed4All
-adapter contract, which keeps downstream consumers independent of the selected
+with existing deployments and artifacts, but it is not qualified for
+production conversion: the previous BERT classifier was unreliable, and the
+staged multi-head training configuration still requires retraining and
+evaluation. Its retained callability is a code-compatibility fact, not a model-
+quality claim. It still converges on the same chapter IR and Ed4All adapter
+contract, which keeps downstream consumers independent of the selected
 converter.
 
 This public architecture intentionally does not present compatibility-model

@@ -2,9 +2,9 @@
 """Vision-vs-OCR fidelity probe for the image-only scan corpus.
 
 Measures how much a multimodal model (Nemotron-Omni on the local vLLM seat)
-recovers, on OCR-hostile scanned textbook pages, over the current pipeline's
-Tesseract OCR — the quality FLOOR that today bounds every downstream stage
-(BERT council -> structure_graph -> Stage-6 authoring).
+recovers on OCR-hostile scanned pages over the compatibility cascade's
+Tesseract OCR—the quality floor for that route before its council,
+``structure_graph``, and Stage-6 authoring steps.
 
 It is deliberately split into two phases so the safe half can run WHILE the
 baseline conversion is still holding the GPU:

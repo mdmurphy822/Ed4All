@@ -1,10 +1,14 @@
 """Five-specialist BERT council for the SemantiK compatibility cascade.
 
-The default-off GLM-OCR lane bypasses this package, but the byte-compatible
-omni cascade still routes through five registered specialists:
+The preferred GLM-OCR lane bypasses this package, but the reachable
+compatibility cascade still routes through five registered specialists:
 ``merge_or_split``, ``structure``, ``semantic``, ``table_specialist``, and
 ``math_specialist``. They share a ModernBERT backbone and swap LoRA adapters
 sequentially. This package owns:
+
+The package's reachability does not qualify its weights. A trained checkpoint
+must pass the council evaluation contract before this path can support a
+production claim.
 
 - types.py     : the data contracts (TypedSignal, BertOutput, CouncilState)
 - base.py      : the shared backbone abstraction + LoRA loader stub

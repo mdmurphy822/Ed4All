@@ -87,9 +87,10 @@ def main() -> None:
         "--engine",
         choices=("council", "v1"),
         default="council",
-        help="council = the production v2 cascade (Stage 1..13: "
-        "BERT council + Qwen GGUF specialists + theta v8, real "
-        "runtime) via run_full_cascade. v1 = the legacy "
+        help="council = the unqualified compatibility cascade (Stage 1..13: "
+        "BERT council + Qwen GGUF specialists + theta v8) via "
+        "run_full_cascade; use it to evaluate retrained weights, not as a "
+        "production claim. v1 = the legacy "
         "classify+reason pipeline (distilbert classifier + Qwen "
         "reasoner LoRA); does NOT exercise the council.",
     )

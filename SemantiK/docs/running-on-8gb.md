@@ -15,9 +15,11 @@ export SEMANTIK_GLMOCR_BASE_URL=http://localhost:8002/v1
 export SEMANTIK_GLMOCR_MODEL=glm-ocr
 ```
 
-Leaving `SEMANTIK_GLMOCR_LANE` unset runs the live ModernBERT council cascade.
-The page-arranger route is another flag-gated compatibility option, not part of
-the preferred GLM-OCR recipe.
+Leaving `SEMANTIK_GLMOCR_LANE` unset enters the reachable ModernBERT
+compatibility cascade. Its previous classifier was unreliable, and its staged
+multi-head recipe still requires retraining and evaluation; reachability does
+not make that route production-qualified. The page-arranger route is another
+flag-gated compatibility option, not part of the preferred GLM-OCR recipe.
 
 ## Default (recommended): local 4B specialists author
 
