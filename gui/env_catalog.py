@@ -814,7 +814,7 @@ def _build_catalog() -> List[Dict[str, Any]]:
             ),
             "applies_to": "retrieval",
         },
-        # Query-side search tuning (LibV2/tools/libv2/vector_index.py). Both
+        # Query-side search tuning (LibV2/tools/libv2/retrieval/vector_index.py). Both
         # are latency/parity knobs: results are byte-identical whichever way
         # they are set, which is why a bad value degrades to the default
         # rather than failing retrieval.

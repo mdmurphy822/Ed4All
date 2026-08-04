@@ -217,7 +217,7 @@ def test_skips_when_embedding_deps_unavailable_and_not_strict(
     real_find_spec = importlib.util.find_spec
 
     def fake_find_spec(name, *args, **kwargs):
-        if name in ("lib.embedding.providers", "LibV2.tools.libv2.vector_index"):
+        if name in ("lib.embedding.providers", "LibV2.tools.libv2.retrieval.vector_index"):
             return None
         return real_find_spec(name, *args, **kwargs)
 

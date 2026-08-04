@@ -28,7 +28,7 @@ np = __import__("pytest").importorskip(
 )
 import pytest
 
-from LibV2.tools.libv2.vector_index import (
+from LibV2.tools.libv2.retrieval.vector_index import (
     VectorIndexManifest,
     build_vector_index,
     collapse_sub_piece_hits,

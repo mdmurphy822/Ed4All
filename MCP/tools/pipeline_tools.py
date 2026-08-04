@@ -34718,7 +34718,7 @@ def _build_tool_registry() -> dict:
                 EmbeddingBackendUnavailable,
                 build_embedding_client,
             )
-            from LibV2.tools.libv2.vector_index import (
+            from LibV2.tools.libv2.retrieval.vector_index import (
                 SemanticIndexMissing,
                 VectorIndexManifest,
                 build_vector_index,

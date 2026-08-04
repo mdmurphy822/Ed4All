@@ -27,8 +27,8 @@ np = __import__("pytest").importorskip(
 )
 import pytest
 
-from LibV2.tools.libv2 import vector_index as vi
-from LibV2.tools.libv2.vector_index import (
+from LibV2.tools.libv2.retrieval import vector_index as vi
+from LibV2.tools.libv2.retrieval.vector_index import (
     VectorIndex,
     VectorIndexManifest,
     resolve_topk_legacy,

@@ -38,7 +38,7 @@ from LibV2.tools.libv2.semantic_retriever import (
     _load_chunks_by_id,
     semantic_retrieve_chunks,
 )
-from LibV2.tools.libv2.vector_index import build_vector_index
+from LibV2.tools.libv2.retrieval.vector_index import build_vector_index
 
 
 # --------------------------------------------------------------------------

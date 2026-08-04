@@ -853,7 +853,7 @@ def _retrieve_for_engine(
         embedding_client = embedding_client_cache.get("client")
         if embedding_client is None:
             from ..semantic_retriever import _client_for_index
-            from ..vector_index import load_vector_index
+            from ..retrieval.vector_index import load_vector_index
 
             index = load_vector_index(repo_root / "courses" / course_slug)
             embedding_client = _client_for_index(index)

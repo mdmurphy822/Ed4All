@@ -159,7 +159,7 @@ class MultiQueryRetriever:
                     f"engine={engine!r} requires a course_slug "
                     f"(single-course semantic scope)."
                 )
-            from .vector_index import load_vector_index
+            from .retrieval.vector_index import load_vector_index
 
             load_vector_index(self.repo_root / "courses" / effective_slug)
 

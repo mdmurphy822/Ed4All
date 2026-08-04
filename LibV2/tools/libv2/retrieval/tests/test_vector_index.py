@@ -1,7 +1,7 @@
-"""Tests for the on-device vector index (WS2 E2).
+"""Tests for the on-device vector index.
 
 All unit coverage runs on a LOCAL fake-embedding stub honoring the frozen
-``EmbeddingClient`` protocol (§ 3 of the WS2 plan) — no model weights, no
+``EmbeddingClient`` protocol — no model weights, no
 network, no import-time coupling to E1's ``lib.embedding.providers`` (which
 may not have landed yet). Covers:
 
@@ -26,7 +26,7 @@ np = __import__("pytest").importorskip(
 )
 import pytest
 
-from LibV2.tools.libv2.vector_index import (
+from LibV2.tools.libv2.retrieval.vector_index import (
     FakeIndexRefused,
     SemanticIndexMissing,
     SemanticIndexStale,
@@ -317,7 +317,7 @@ def test_fresh_index_refuses_overwrite_without_force(tmp_path):
 def test_stale_index_rebuilds_without_force(tmp_path):
     course_dir = _write_course(tmp_path, n=2)
     build_vector_index(course_dir, client=_FakeEmbeddingClient())
-    # mutate chunks so the on-disk index is now stale
+    # Changing source chunks must make the on-disk index stale.
     chunks = course_dir / "semantik_chunks" / "chunks.jsonl"
     chunks.write_text(
         chunks.read_text(encoding="utf-8") + '{"id":"y","text":"z"}\n',
@@ -427,7 +427,7 @@ def test_no_resolved_attr_defaults_to_empty_prefixes(tmp_path):
 def test_embed_overflow_explicitly_off_byte_identical(tmp_path, monkeypatch):
     """Guard explicitly opted OUT: manifest carries no embed_overflow block,
     and the serialized manifest bytes never mention it (byte-identical
-    off-path). The guard now DEFAULTS ON (report-only), so 'off' is an
+    off-path). The guard defaults on in report-only mode, so 'off' is an
     explicit falsey token rather than an unset env."""
     monkeypatch.setenv("ED4ALL_EMBED_OVERFLOW_GUARD", "0")
     course_dir = _write_course(tmp_path, n=5)

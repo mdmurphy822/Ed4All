@@ -3,7 +3,7 @@
 This is the honest semantic-retrieval path that retires the mock. A query
 is embedded with an OFFLINE embedding client (so a query can never trigger
 a model download), searched against the per-course vector index built by
-``LibV2.tools.libv2.vector_index``, and hydrated back into the same
+``LibV2.tools.libv2.retrieval.vector_index``, and hydrated back into the same
 ``RetrievalResult`` shape the lexical retriever emits — so production
 consumers (``Trainforge/rag/libv2_bridge.py``) read the result objects
 identically regardless of engine.
@@ -12,11 +12,11 @@ Anti-silent-degradation (the contract this whole work-stream enforces):
 every typed failure propagates. There is **NO BM25 fallback** anywhere in
 this module. The typed errors are:
 
-* :class:`~LibV2.tools.libv2.vector_index.SemanticIndexMissing` — no index
+* :class:`~LibV2.tools.libv2.retrieval.vector_index.SemanticIndexMissing` — no index
   for the course (operator must run ``libv2 vector-index build``).
-* :class:`~LibV2.tools.libv2.vector_index.SemanticIndexStale` — the index
+* :class:`~LibV2.tools.libv2.retrieval.vector_index.SemanticIndexStale` — the index
   no longer matches the live chunkset (or on-disk sha drift).
-* :class:`~LibV2.tools.libv2.vector_index.FakeIndexRefused` — the manifest
+* :class:`~LibV2.tools.libv2.retrieval.vector_index.FakeIndexRefused` — the manifest
   provider is ``fake`` and ``ED4ALL_EMBEDDING_ALLOW_FAKE`` is unset.
 * :class:`~lib.embedding.providers.EmbeddingBackendUnavailable` — the
   embedding backend (weights / server) is unavailable.
@@ -213,7 +213,7 @@ def _verify_client_matches_index(client: "EmbeddingClient", index: Any) -> None:
     sides report a dtype — an index or a client predating the precision seam
     reports none, and an absent value means "unknown", never "assume fp32".
     """
-    from .vector_index import SemanticModelMismatch
+    from .retrieval.vector_index import SemanticModelMismatch
 
     fingerprint_fn = getattr(client, "model_fingerprint", None)
     if not callable(fingerprint_fn):
@@ -307,7 +307,7 @@ def semantic_retrieve_chunks(
     / ``FakeIndexRefused`` / ``EmbeddingBackendUnavailable`` all propagate.
     There is NO BM25 fallback.
     """
-    from .vector_index import load_vector_index
+    from .retrieval.vector_index import load_vector_index
 
     repo_root = Path(repo_root)
     course_dir = repo_root / "courses" / course_slug

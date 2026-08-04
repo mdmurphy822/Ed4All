@@ -42,7 +42,7 @@ from lib.testing.no_network import NetworkBlockedError, no_network
 
 from LibV2.tools.libv2.retriever import retrieve_chunks
 from LibV2.tools.libv2.semantic_retriever import semantic_retrieve_chunks
-from LibV2.tools.libv2.vector_index import FakeIndexRefused, build_vector_index
+from LibV2.tools.libv2.retrieval.vector_index import FakeIndexRefused, build_vector_index
 
 _FIXTURE_ROOT = (
     Path(__file__).resolve().parents[4]

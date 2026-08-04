@@ -223,7 +223,7 @@ LibV2/tools/libv2/cli.py
 LibV2/tools/libv2/multi_retriever.py
 LibV2/tools/libv2/retriever.py
 LibV2/tools/libv2/semantic_retriever.py
-LibV2/tools/libv2/vector_index.py
+LibV2/tools/libv2/retrieval/vector_index.py
 
 # ── LIBV2 LEGACY-COMPAT TESTS (WHAT-MUST-STAY) ───────────────────────────────────
 # The dedicated dart_chunks read-fallback resolution + benchmark tests that

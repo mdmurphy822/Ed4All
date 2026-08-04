@@ -387,7 +387,7 @@ class VectorIndexManifestValidator:
         if not course_dir_raw:
             return
         try:
-            from LibV2.tools.libv2.vector_index import resolve_chunks_for_index
+            from LibV2.tools.libv2.retrieval.vector_index import resolve_chunks_for_index
         except Exception:  # noqa: BLE001
             return
 

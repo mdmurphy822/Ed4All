@@ -554,7 +554,7 @@ These are stored in `<project-root>/schemas/taxonomies/` and referenced in cours
 - Import / removal: `importer.py`, `remove.py`, `backup.py`
 - Validation: `validator.py`; SHACL shapes: `_shacl_validator.py`
 - Catalog + indexes: `catalog.py`, `indexer.py`, `models/catalog.py`, `models/course.py`
-- Retrieval entry modules: `retriever.py`, `semantic_retriever.py`, `multi_retriever.py`, `result_fusion.py`, `vector_index.py`
+- Retrieval entry modules: `retriever.py`, `semantic_retriever.py`, `multi_retriever.py`, `result_fusion.py`, `retrieval/vector_index.py`
 - Retrieval internals: `retrieval/retrieval_scoring.py`, `retrieval/query_decomposer.py`, `retrieval/query_decomposition.py`, and `retrieval/query_log.py`
 - Eval: `evaluation/generator.py`, `evaluation/harness.py`, `evaluation/model_bridge.py` (legacy module shims remain during the deprecation window)
 - Concepts / outcomes: `concept_vocabulary.py`, `outcome_linker.py`, `_bloom_verbs.py`

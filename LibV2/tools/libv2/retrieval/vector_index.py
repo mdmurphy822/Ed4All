@@ -1,7 +1,7 @@
-"""On-device vector index — pure-numpy exact-search build/read/query.
+"""Build, load, and query the on-device exact vector index.
 
-WS2 Executor E2. Builds and reads the per-course vector index that backs
-real semantic retrieval (no FAISS, no sqlite-vec — exact cosine over
+The per-course index backs semantic retrieval without FAISS or sqlite-vec:
+exact cosine search over
 L2-normalized float32 in numpy; the measured corpus scale is <=3K
 vectors / ~12 MB worst case, where exact search is sub-millisecond AND
 the determinism-safest option).
@@ -15,7 +15,7 @@ Artifact layout (``LibV2/courses/<slug>/vector_index/``)::
     manifest.json    provenance + integrity manifest
                      (schemas/library/vector_index_manifest.schema.json).
 
-Determinism contract (D4): same machine + venv + provider + model + device +
+Determinism contract: same machine + venv + provider + model + device +
 dtype + batch_size => ``embeddings.npy`` and ``id_map.json`` are
 byte-identical across rebuilds; ``manifest.json`` is identical modulo the
 optional ``generated_at`` field, which is the ONLY non-deterministic
@@ -36,7 +36,7 @@ ordered by ``(-score, chunk_id)``, a total order over finite scores, so the
 result sequence is fully reproducible for a given matrix — including which
 member of a score tie survives the top-k cut.
 
-Anti-silent-degradation (D7): the read path raises typed, honest errors
+The read path raises typed errors instead of silently degrading
 and NEVER falls back to lexical/BM25 results:
 
 * :class:`SemanticIndexMissing` — no ``vector_index/`` for the course.

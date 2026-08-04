@@ -4,7 +4,7 @@ The vector-index manifest exists so a build is reproducible and a
 mixed-provenance comparison is refusable. It used to fall through to the
 literals ``device="cpu"`` and ``batch_size=1`` whenever the embedding client
 did not volunteer them — which was always, so every index on disk carried a
-provenance block that was a fabrication rather than a measurement. A
+provenance block must record measurements rather than inferred values. A
 cuda-built index was indistinguishable from a cpu-built one, and no
 batch-size or precision experiment was verifiable after the fact.
 
@@ -37,13 +37,13 @@ np = __import__("pytest").importorskip(
 )
 import pytest
 
-from LibV2.tools.libv2.vector_index import (
+from LibV2.tools.libv2.retrieval.vector_index import (
     VectorIndexManifest,
     build_vector_index,
     load_vector_index,
 )
 
-from LibV2.tools.libv2.tests.test_vector_index import (
+from LibV2.tools.libv2.retrieval.tests.test_vector_index import (
     _FakeEmbeddingClient,
     _write_course,
 )
@@ -310,7 +310,7 @@ def _built_index(tmp_path: Path, dtype: str):
 
 def test_query_client_with_a_different_dtype_is_refused(tmp_path):
     from LibV2.tools.libv2.semantic_retriever import semantic_retrieve_chunks
-    from LibV2.tools.libv2.vector_index import SemanticModelMismatch
+    from LibV2.tools.libv2.retrieval.vector_index import SemanticModelMismatch
 
     repo_root, slug = _built_index(tmp_path, "fp32")
     mismatched = _ProvenanceClient(

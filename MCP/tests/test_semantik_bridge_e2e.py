@@ -318,7 +318,7 @@ async def test_3_chunks_indexed_and_queryable(tmp_path, monkeypatch):
     # Probe the embedding extra.
     try:
         from lib.embedding.providers import build_embedding_client  # noqa: F401
-        from LibV2.tools.libv2.vector_index import (  # noqa: F401
+        from LibV2.tools.libv2.retrieval.vector_index import (  # noqa: F401
             build_vector_index,
             load_vector_index,
         )
@@ -355,7 +355,7 @@ async def test_3_chunks_indexed_and_queryable(tmp_path, monkeypatch):
     import numpy as np
 
     from lib.embedding.providers import build_embedding_client
-    from LibV2.tools.libv2.vector_index import load_vector_index
+    from LibV2.tools.libv2.retrieval.vector_index import load_vector_index
 
     course_dir = libv2_root / "courses" / "sample-course"
     index = load_vector_index(course_dir, allow_fake=True)

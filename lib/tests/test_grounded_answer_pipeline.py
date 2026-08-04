@@ -990,7 +990,7 @@ def _build_imscc_index_and_chunks(libv2_root: Path) -> str:
       * vector-index manifest (the fix)            -> "imscc"    -> gate PASSES
     """
     from lib.embedding.providers import build_embedding_client
-    from LibV2.tools.libv2.vector_index import build_vector_index
+    from LibV2.tools.libv2.retrieval.vector_index import build_vector_index
 
     course_dir = libv2_root / "courses" / COURSE_SLUG
 

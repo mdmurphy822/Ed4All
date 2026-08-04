@@ -175,7 +175,7 @@ class TestBenchmarkEmbeddingClientReuse:
         )
 
         import LibV2.tools.libv2.semantic_retriever as semantic_retriever
-        import LibV2.tools.libv2.vector_index as vector_index
+        import LibV2.tools.libv2.retrieval.vector_index as vector_index
 
         monkeypatch.setattr(vector_index, "load_vector_index", lambda _path: object())
 

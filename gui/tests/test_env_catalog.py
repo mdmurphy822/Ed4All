@@ -223,7 +223,7 @@ def test_catalog_defaults_match_retrieval_resolvers():
     try:
         from LibV2.tools.libv2 import vector_index
     except Exception:  # noqa: BLE001 — numpy / LibV2 deps absent
-        pytest.skip("LibV2.tools.libv2.vector_index not importable in this env")
+        pytest.skip("LibV2.tools.libv2.retrieval.vector_index not importable in this env")
 
     assert vector_index.resolve_retrieval_blas_threads({}) == 8
     assert env_catalog.catalog_entry("ED4ALL_RETRIEVAL_BLAS_THREADS")["default"] == 8

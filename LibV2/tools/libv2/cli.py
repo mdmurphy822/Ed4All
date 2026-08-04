@@ -23,7 +23,7 @@ except ImportError:
 # module load; ValueError covers engine-misuse (unknown engine, semantic
 # without --course, method+engine combos).
 try:  # pragma: no cover — import shape, not behavior
-    from .vector_index import SemanticIndexError
+    from .retrieval.vector_index import SemanticIndexError
 
     try:
         from lib.embedding.providers import EmbeddingBackendUnavailable
@@ -2923,7 +2923,7 @@ def retrieval_benchmark(
             build_embedding_client,
         )
 
-        from .vector_index import build_vector_index
+        from .retrieval.vector_index import build_vector_index
 
         try:
             # Same scoped override as `vector-index build` — the benchmark
@@ -3029,7 +3029,7 @@ def _run_model_sweep(
     )
 
     from .evaluation.harness import benchmark_retrieval_engines
-    from .vector_index import VECTOR_INDEX_DIRNAME, build_vector_index
+    from .retrieval.vector_index import VECTOR_INDEX_DIRNAME, build_vector_index
 
     canonical_dir = course_dir / VECTOR_INDEX_DIRNAME
     eval_dir = course_dir / "retrieval_eval"
@@ -3242,7 +3242,7 @@ def vector_index_build(ctx, course, provider, model_id, chunkset, device,
         build_embedding_client,
     )
 
-    from .vector_index import build_vector_index
+    from .retrieval.vector_index import build_vector_index
 
     repo_root = ctx.obj["repo_root"]
     course_dir = Path(repo_root) / "courses" / course
@@ -3290,7 +3290,7 @@ def vector_index_status(ctx, course, output):
     chunkset. Exit 0 regardless of staleness (this is a report, not a gate);
     `verify` is the exit-on-drift command.
     """
-    from .vector_index import (
+    from .retrieval.vector_index import (
         MANIFEST_FILENAME,
         VECTOR_INDEX_DIRNAME,
         VectorIndexManifest,
@@ -3366,7 +3366,7 @@ def vector_index_verify(ctx, course):
     """
     from lib.validators.vector_index_manifest import VectorIndexManifestValidator
 
-    from .vector_index import MANIFEST_FILENAME, VECTOR_INDEX_DIRNAME
+    from .retrieval.vector_index import MANIFEST_FILENAME, VECTOR_INDEX_DIRNAME
 
     repo_root = ctx.obj["repo_root"]
     course_dir = Path(repo_root) / "courses" / course

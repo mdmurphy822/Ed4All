@@ -36,14 +36,14 @@ import pytest
 
 from lib.generation import stop_control
 from lib.generation.stop_control import GracefulStopRequested
-from LibV2.tools.libv2.vector_index import (
+from LibV2.tools.libv2.retrieval.vector_index import (
     VECTOR_INDEX_DIRNAME,
     build_vector_index,
     load_vector_index,
 )
 
 # Reuse the frozen-protocol fake client + tiny-course builder verbatim.
-from LibV2.tools.libv2.tests.test_vector_index import (
+from LibV2.tools.libv2.retrieval.tests.test_vector_index import (
     _FakeEmbeddingClient,
     _write_course,
 )

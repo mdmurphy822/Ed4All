@@ -5708,7 +5708,7 @@ class WorkflowRunner:
         # presence of the spec is the slim/full-install signal.
         import importlib.util
 
-        for mod in ("lib.embedding.providers", "LibV2.tools.libv2.vector_index"):
+        for mod in ("lib.embedding.providers", "LibV2.tools.libv2.retrieval.vector_index"):
             if importlib.util.find_spec(mod) is None:
                 logger.info(
                     "Skipping optional phase vector_indexing: embedding "

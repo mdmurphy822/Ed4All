@@ -1,21 +1,17 @@
-"""W5-adjacent — device / batch-size plumbing on the vector-index CLI surface.
+"""Verify device and batch-size plumbing on the vector-index CLI surface.
 
-Three defects this pins, all in ``LibV2/tools/libv2/cli.py``:
+The tests enforce three CLI invariants in ``LibV2/tools/libv2/cli.py``:
 
-1. ``vector-index build --device`` was a ``click.Choice(["cpu", "cuda"])``,
-   which rejects ``cuda:N`` — a token the provider resolver accepts and the
-   index manifest records verbatim. The option now validates through the ONE
+1. ``vector-index build --device`` must accept ``cuda:N`` — a token the
+   provider resolver accepts and the
+   index manifest records verbatim. The option validates through the one
    canonical resolver, so the CLI and the build path can never disagree about
    what a device token is, and ``auto`` is rejected with the project's own
    "auto-detection is silent degradation" message.
-2. The per-call override was a bare ``os.environ[...] = ...``. That leaks: in a
-   single-process multi-course loop (the ``--models`` sweep, or any future
-   batch build) a per-course ``--device cpu`` silently pinned every SUBSEQUENT
-   build, and the manifest recorded it as though the operator had asked. The
-   override is now scoped and restored.
-3. ``retrieval-benchmark --build-index`` accepted neither option, so its inline
-   build used ambient env and the benchmark could not record which device
-   produced the index it measured.
+2. Per-call environment overrides are scoped and restored so one course build
+   cannot alter the device selected by a subsequent build in the same process.
+3. ``retrieval-benchmark --build-index`` exposes the same controls so its
+   manifest records the device that produced the measured index.
 
 Hermetic: the deterministic ``fake`` embedding provider (no weights, no
 network), CPU-only. The fake provider's resolved device is what the manifest
@@ -34,7 +30,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-PROJECT_ROOT = Path(__file__).resolve().parents[4]
+PROJECT_ROOT = Path(__file__).resolve().parents[5]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 

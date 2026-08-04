@@ -48,7 +48,7 @@ def _make_course(repo_root: Path, *, with_index: bool = False) -> Path:
     (cdir / "semantik_chunks" / "chunks.jsonl").write_text("{}\n")
     (cdir / "manifest.json").write_text(json.dumps({"classification": {}}))
     if with_index:
-        from LibV2.tools.libv2.vector_index import (
+        from LibV2.tools.libv2.retrieval.vector_index import (
             MANIFEST_FILENAME,
             VECTOR_INDEX_DIRNAME,
         )
@@ -275,7 +275,7 @@ class TestTypedErrorExits:
     def test_semantic_index_missing_exit_one(self, monkeypatch, tmp_path):
         pytest.importorskip("numpy")  # imports vector_index.SemanticIndexMissing (needs [embedding])
         _make_course(tmp_path)
-        from LibV2.tools.libv2.vector_index import SemanticIndexMissing
+        from LibV2.tools.libv2.retrieval.vector_index import SemanticIndexMissing
 
         def boom(*a, **k):
             raise SemanticIndexMissing(

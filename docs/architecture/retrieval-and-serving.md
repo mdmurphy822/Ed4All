@@ -70,7 +70,7 @@ the same package and configuration reproducible.
 The hybrid implementation lives in
 [`semantic_retriever.py`](../../LibV2/tools/libv2/semantic_retriever.py); vector
 creation and manifest verification live in
-[`vector_index.py`](../../LibV2/tools/libv2/vector_index.py). The index manifest
+[`vector_index.py`](../../LibV2/tools/libv2/retrieval/vector_index.py). The index manifest
 binds embeddings to their model identity and source chunkset, preventing a
 query client or stale index from being substituted silently.
 

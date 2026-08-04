@@ -37,7 +37,7 @@ from LibV2.tools.libv2.semantic_retriever import (
     hybrid_rrf_retrieve,
     semantic_retrieve_chunks,
 )
-from LibV2.tools.libv2.vector_index import (
+from LibV2.tools.libv2.retrieval.vector_index import (
     SemanticIndexMissing,
     SemanticIndexStale,
     SemanticModelMismatch,
