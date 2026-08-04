@@ -162,7 +162,7 @@ class TestPackagerManifestWeekTitle:
             str(Path(__file__).resolve().parents[2]
                 / "Courseforge" / "scripts"),
         )
-        from Courseforge.scripts.packaging import package_multifile_imscc as pkg
+        from Courseforge.scripts.cartridge import package_multifile_imscc as pkg
 
         wdir = tmp_path / "week_01"
         wdir.mkdir()
@@ -181,7 +181,7 @@ class TestPackagerManifestWeekTitle:
             str(Path(__file__).resolve().parents[2]
                 / "Courseforge" / "scripts"),
         )
-        from Courseforge.scripts.packaging import package_multifile_imscc as pkg
+        from Courseforge.scripts.cartridge import package_multifile_imscc as pkg
 
         wdir = tmp_path / "week_02"
         wdir.mkdir()
@@ -199,7 +199,7 @@ class TestPackagerManifestWeekTitle:
             str(Path(__file__).resolve().parents[2]
                 / "Courseforge" / "scripts"),
         )
-        from Courseforge.scripts.packaging import package_multifile_imscc as pkg
+        from Courseforge.scripts.cartridge import package_multifile_imscc as pkg
 
         wdir = tmp_path / "week_03"
         wdir.mkdir()

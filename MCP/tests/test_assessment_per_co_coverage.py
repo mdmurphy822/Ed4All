@@ -461,7 +461,7 @@ def test_imscc_chunking_harvests_per_co_assessment_chunks(
 def test_harvest_skips_non_qti_and_unanchored_items(tmp_path):
     """imsdt/assignment docs and items without a canonical LO title never
     become chunks (anti-fabrication / anti-UNANCHORED_ASSESSMENT)."""
-    from Courseforge.scripts.packaging.qti_emitter import (
+    from Courseforge.scripts.cartridge.qti_emitter import (
         assessment_to_qti,
         discussion_to_imsdt,
     )

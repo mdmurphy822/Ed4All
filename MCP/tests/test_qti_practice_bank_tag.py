@@ -20,7 +20,7 @@ from MCP.tools.pipeline_tools import _harvest_qti_assessment_chunks  # noqa: E40
 
 
 def test_harvested_assessment_item_chunks_are_practice_bank_tagged() -> None:
-    from Courseforge.scripts.packaging.qti_emitter import assessment_to_qti
+    from Courseforge.scripts.cartridge.qti_emitter import assessment_to_qti
 
     quiz_xml = assessment_to_qti({
         "assessment_id": "ASM-1",

@@ -110,7 +110,7 @@ SAMPLE_COURSE_DATA = {
 def test_full_pipeline(tmp_path):
     """Generate course HTML, package IMSCC, process through Trainforge."""
     from Courseforge.scripts.rendering.generate_course import generate_week
-    from Courseforge.scripts.packaging.package_multifile_imscc import package_imscc
+    from Courseforge.scripts.cartridge.package_multifile_imscc import package_imscc
 
     # Step 1: Generate HTML for one week
     content_dir = tmp_path / "content"

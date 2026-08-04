@@ -24,7 +24,7 @@ Rationale:
 * Every mechanical rule (stem/option text, unemphasized negatives, None/All of
   the above, absolute terms, longest-option-is-key cue, option overlap, a/an
   agreement, single-key) is fully computable from the QTI item shape the
-  emitter produces (``Courseforge/scripts/packaging/qti_emitter.py``): the item's
+  emitter produces (``Courseforge/scripts/cartridge/qti_emitter.py``): the item's
   ``cc_profile`` + ``response_lid@rcardinality`` carry the multiple-response
   discriminator, so the single-key rule's ``mc_multiple_response`` exemption
   resolves off the XML alone.

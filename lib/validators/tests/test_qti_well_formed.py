@@ -1,7 +1,7 @@
 """Unit tests for ``lib/validators/qti_well_formed.py::QtiWellFormedValidator``.
 
 All QTI fixtures are HAND-AUTHORED in-test rather than emitted by
-``Courseforge/scripts/packaging/qti_emitter.py``, so a bug in the emitter cannot make
+``Courseforge/scripts/cartridge/qti_emitter.py``, so a bug in the emitter cannot make
 these tests pass. Shapes follow ``Courseforge/docs/guides/troubleshooting.md``. No
 course slugs or device paths — every fixture is an in-test string.
 """

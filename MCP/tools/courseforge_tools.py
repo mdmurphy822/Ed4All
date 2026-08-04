@@ -301,7 +301,7 @@ def register_courseforge_tools(mcp):
 
         ⚠  **Sync-parity with** ``MCP/tools/pipeline_tools.py::_package_imscc``
         is required. Both wrappers delegate to
-        ``Courseforge.scripts.packaging.package_multifile_imscc.package_imscc``; the
+        ``Courseforge.scripts.cartridge.package_multifile_imscc.package_imscc``; the
         MCP-decorated variant also updates
         ``project_config.status``/``package_path`` post-success while the
         registry variant skips that side-effect (pipeline phase tracking
@@ -310,7 +310,7 @@ def register_courseforge_tools(mcp):
         in a later wave if the surface grows further.
 
         Wave 28e fold: delegates to the mature multi-file packager
-        (``Courseforge.scripts.packaging.package_multifile_imscc.package_imscc``)
+        (``Courseforge.scripts.cartridge.package_multifile_imscc.package_imscc``)
         rather than hand-rolling the ZIP. This mirrors the Wave 27
         registry-side fold at
         ``MCP/tools/pipeline_tools.py::_package_imscc`` so external
@@ -397,7 +397,7 @@ def register_courseforge_tools(mcp):
 
             # Import the mature packager from its canonical package.
             try:
-                from Courseforge.scripts.packaging import (
+                from Courseforge.scripts.cartridge import (
                     package_multifile_imscc as _pkg_mod,
                 )
             except ImportError as exc:

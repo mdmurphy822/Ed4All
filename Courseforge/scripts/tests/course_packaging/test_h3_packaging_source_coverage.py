@@ -2,7 +2,7 @@
 
 Pins the canonical W3.H ``source_coverage`` block on the new
 ``packaging_report.json`` sidecar emitted by
-``Courseforge/scripts/packaging/package_multifile_imscc.py::package_imscc``.
+``Courseforge/scripts/cartridge/package_multifile_imscc.py::package_imscc``.
 Four tests:
 
 * canonical shape (5 fields present, coverage_pct calc, dropped_count
@@ -29,7 +29,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[4]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-import package_multifile_imscc as pmi  # noqa: E402
+from Courseforge.scripts.cartridge import package_multifile_imscc as pmi  # noqa: E402
 
 from lib.governance.source_coverage import (  # noqa: E402
     INTERNAL_DROP_REASON_MISSING,

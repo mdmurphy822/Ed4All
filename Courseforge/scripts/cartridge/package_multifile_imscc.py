@@ -392,7 +392,7 @@ _ASSESSMENT_RES_TYPE: Dict[str, str] = {
 # 06_assessments/ sidecar kinds that ship as a plain CC ``webcontent`` resource
 # (NOT a distinctly-assessment QTI type). ``answer_key`` is the instructor-facing
 # sidecar (a rendered accessible HTML page written by
-# ``Courseforge/scripts/packaging/answer_key_emitter.py``); a CC-conformant importer treats
+# ``Courseforge/scripts/cartridge/answer_key_emitter.py``); a CC-conformant importer treats
 # it as an ordinary content page. Kept OUT of ``_ASSESSMENT_RES_TYPE`` so the
 # distinctly-assessment ``.values()`` set stays the three QTI types.
 _ASSESSMENT_WEBCONTENT_RES_TYPE: Dict[str, str] = {

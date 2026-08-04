@@ -2,7 +2,7 @@
 
 Wave 27 folded the registry-side ``_package_imscc`` wrapper at
 ``MCP/tools/pipeline_tools.py`` onto the mature
-``Courseforge.scripts.packaging.package_multifile_imscc.package_imscc`` module.
+``Courseforge.scripts.cartridge.package_multifile_imscc.package_imscc`` module.
 The ``@mcp.tool()`` surface in ``MCP/tools/courseforge_tools.py`` was
 not included in that fold until Wave 28e — pre-Wave-28e it flipped
 ``project_config.status = "packaged"`` and attempted a LibV2 copy

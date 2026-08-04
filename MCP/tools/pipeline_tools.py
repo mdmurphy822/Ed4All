@@ -1067,7 +1067,7 @@ def _build_assessment_artifacts_from_data(
 ) -> List[Dict[str, Any]]:
     """Map AssessmentData + discussion/assignment dicts → emit-ready artifacts.
 
-    PURE — imports the already-landed ``Courseforge.scripts.packaging.qti_emitter`` and
+    PURE — imports the already-landed ``Courseforge.scripts.cartridge.qti_emitter`` and
     serializes each input to its canonical CC resource XML. ``assessments``
     are ``AssessmentData`` instances (or their ``to_dict()`` form) → one QTI
     document each; ``discussions`` → ``imsdt`` topic docs; ``assignments`` →
@@ -1078,7 +1078,7 @@ def _build_assessment_artifacts_from_data(
     No fabrication: the emitter only reshapes its input; an empty input list
     yields an empty artifact list (→ a clean empty ``06_assessments``).
     """
-    from Courseforge.scripts.packaging.qti_emitter import (
+    from Courseforge.scripts.cartridge.qti_emitter import (
         assessment_to_qti,
         discussion_to_imsdt,
         assignment_to_resource,
@@ -1166,7 +1166,7 @@ def _build_assessment_artifacts_from_data(
 # ``06_assessments/`` was never chunked, so per-CO quiz items produced zero
 # per-CO coverage. These helpers close that gap: each QTI ``<item>`` (whose
 # ``title`` attribute carries the item's objective_id, set by
-# ``Courseforge/scripts/packaging/qti_emitter.py::question_to_qti_item``) becomes one
+# ``Courseforge/scripts/cartridge/qti_emitter.py::question_to_qti_item``) becomes one
 # ``assessment_item`` chunk routed through the SAME ``_create_chunk`` callback
 # (→ ``Trainforge.chunker.extract_learning_outcome_refs`` arm 3 via
 # ``item["objective_refs"]``) so ref normalization / case policy
@@ -1183,7 +1183,7 @@ def _qti_local_name(tag: Any) -> str:
 def _qti_scoring_respcondition(item_el: Any) -> Any:
     """Return the ``<respcondition>`` that carries this item's ANSWER KEY.
 
-    Mirrors ``Courseforge/scripts/packaging/qti_emitter.py::_find_scoring_respcondition``
+    Mirrors ``Courseforge/scripts/cartridge/qti_emitter.py::_find_scoring_respcondition``
     (the emitter-side single source of truth): the scoring condition is the one
     that awards SCORE, i.e. the one carrying a ``<setvar>``. This distinction is
     load-bearing, not cosmetic — with ``COURSEFORGE_QTI_ITEMFEEDBACK`` on, the
@@ -26570,7 +26570,7 @@ def _build_tool_registry() -> dict:
             ⚠  **Sync-parity with**
             ``MCP/tools/courseforge_tools.py::package_imscc`` (the
             ``@mcp.tool()`` variant) is required. Both wrappers delegate to
-            ``Courseforge.scripts.packaging.package_multifile_imscc.package_imscc``
+            ``Courseforge.scripts.cartridge.package_multifile_imscc.package_imscc``
             and share the same JSON envelope shape. This registry variant
             omits the `project_config.status`/`package_path` side-effects
             that the MCP-decorated variant performs — phase tracking
@@ -26578,7 +26578,7 @@ def _build_tool_registry() -> dict:
             lockstep until a shared helper is extracted in a later wave.
 
             Wave 27 HIGH-2: delegates to the mature multi-file packager
-            (``Courseforge.scripts.packaging.package_multifile_imscc.package_imscc``)
+            (``Courseforge.scripts.cartridge.package_multifile_imscc.package_imscc``)
             rather than hand-rolling the ZIP. Consequences of the
             delegation:
 
@@ -26688,7 +26688,7 @@ def _build_tool_registry() -> dict:
 
             # Import the mature packager from its canonical package.
             try:
-                from Courseforge.scripts.packaging import (
+                from Courseforge.scripts.cartridge import (
                     package_multifile_imscc as _pkg_mod,
                 )
             except ImportError as exc:
@@ -32612,7 +32612,7 @@ def _build_tool_registry() -> dict:
     #   assessment generator (``AssessmentGeneratorProvider``, env
     #   ``TRAINFORGE_ASSESSMENT_PROVIDER``); each carries ``objective_id``
     #   so the grounding gate fires unchanged.
-    # - XML emit via the already-landed ``Courseforge/scripts/packaging/qti_emitter.py``.
+    # - XML emit via the already-landed ``Courseforge/scripts/cartridge/qti_emitter.py``.
     #
     # PRODUCT content (learner-facing), NOT training pairs → no hard
     # licensing gate (mirrors ``COURSEFORGE_PROVIDER`` /
@@ -33493,7 +33493,7 @@ def _build_tool_registry() -> dict:
         # set while remaining available as a course artifact.
         if _item_bank_enabled():
             try:
-                from Courseforge.scripts.packaging.qti_emitter import (  # noqa: PLC0415
+                from Courseforge.scripts.cartridge.qti_emitter import (  # noqa: PLC0415
                     assessment_to_objectbank,
                 )
                 _bank_questions: List[Any] = []
@@ -33550,7 +33550,7 @@ def _build_tool_registry() -> dict:
         _has_answer_key = False
         if built_assessments or discussions or assignments:
             try:
-                from Courseforge.scripts.packaging.answer_key_emitter import emit_answer_key
+                from Courseforge.scripts.cartridge.answer_key_emitter import emit_answer_key
                 _ak_entry = emit_answer_key(
                     out_dir,
                     assessments=built_assessments,

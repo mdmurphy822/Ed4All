@@ -306,7 +306,7 @@ def test_flag_falsey_values(monkeypatch, val):
 
 
 def test_packager_groups_key_terms_page():
-    from Courseforge.scripts.packaging.package_multifile_imscc import (  # noqa: PLC0415
+    from Courseforge.scripts.cartridge.package_multifile_imscc import (  # noqa: PLC0415
         _iter_week_groups,
     )
 

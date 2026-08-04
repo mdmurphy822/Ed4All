@@ -1,6 +1,6 @@
-"""Instructor answer-key emitter + packaging-inclusion tests (Phase 2 / C.2).
+"""Instructor answer-key emitter and cartridge-inclusion contract tests.
 
-Exercises ``Courseforge/scripts/packaging/answer_key_emitter.py`` (the deterministic,
+Exercises ``Courseforge/scripts/cartridge/answer_key_emitter.py`` (the deterministic,
 LLM-free renderer) and the ``package_multifile_imscc.py`` change that ships the
 rendered ``answer_key.html`` as a CC ``webcontent`` resource.
 
@@ -48,13 +48,13 @@ _REPO_ROOT = Path(__file__).resolve().parents[4]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from answer_key_emitter import (  # noqa: E402
+from Courseforge.scripts.cartridge.answer_key_emitter import (  # noqa: E402
     answer_key_manifest_entry,
     build_answer_key,
     emit_answer_key,
     render_answer_key_html,
 )
-from package_multifile_imscc import (  # noqa: E402
+from Courseforge.scripts.cartridge.package_multifile_imscc import (  # noqa: E402
     _ASSESSMENT_RES_TYPE,
     _assessment_res_type_for_kind,
     _classify_assessment,

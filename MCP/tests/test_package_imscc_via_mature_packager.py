@@ -2,7 +2,7 @@
 
 Verifies that the MCP registry wrapper at
 ``MCP.tools.pipeline_tools._package_imscc`` delegates to
-``Courseforge.scripts.packaging.package_multifile_imscc.package_imscc`` rather than
+``Courseforge.scripts.cartridge.package_multifile_imscc.package_imscc`` rather than
 hand-rolling the IMSCC zip. The mature packager supplies:
 
 - Per-week ``learningObjectives`` LO-contract validation (default on)

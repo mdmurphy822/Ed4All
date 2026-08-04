@@ -11,7 +11,7 @@ harvested ``assessment_item`` chunks therefore carried none of the four fields
 chunkset.
 
 These tests pin, against XML built by the REAL emitter
-(``Courseforge/scripts/packaging/qti_emitter.py``) wherever possible:
+(``Courseforge/scripts/cartridge/qti_emitter.py``) wherever possible:
 
 * the key resolves through ``varequal`` -> ``response_label/@ident`` -> choice
   text, and the RIGHT choice wins even with per-distractor ``itemfeedback``
@@ -66,7 +66,7 @@ def _harvest(xml: str) -> List[Dict[str, Any]]:
 
 
 def _quiz(questions: List[Dict[str, Any]]) -> str:
-    from Courseforge.scripts.packaging.qti_emitter import assessment_to_qti
+    from Courseforge.scripts.cartridge.qti_emitter import assessment_to_qti
 
     return assessment_to_qti({
         "assessment_id": "ASM-1",
