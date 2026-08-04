@@ -1,4 +1,4 @@
-"""Per-provider constrained-decoding payload routing tests (Phase 3 Subtask 56).
+"""Per-provider constrained-decoding payload routing tests.
 
 End-to-end coverage of the constrained-decoding wire path:
 
@@ -23,8 +23,8 @@ the router routes through. Six tests:
 - ``test_grammar_payload_for_ollama_json_schema_mode_includes_format_dict``
   — ``provider="local"`` + ``grammar_mode="json_schema"`` puts the
   Draft 2020-12 schema dict under the top-level ``format`` key
-  (Ollama 0.5+ convention; the dict-shape distinguishes from
-  Wave-113 ``json_mode`` which sets ``format="json"`` literal).
+  (Ollama 0.5+ convention; the dict shape differs from generic
+  ``json_mode``, which sets the ``format="json"`` literal).
 
 - ``test_grammar_payload_for_together_includes_response_format_json_schema``
   — ``provider="together"`` (auto-detect) puts the schema under
@@ -52,9 +52,7 @@ the router routes through. Six tests:
   ``provider="local"`` with no autodetect-friendly base URL still
   emits ``{"grammar": ...}`` when the env var is set to ``"gbnf"``).
 
-The tests exercise the load-bearing wire-through that Subtask 21's
-``extra_payload`` kwarg (verified again in Subtask 55 — Worker 2E's
-work was complete; no additional code change needed) makes possible.
+The tests exercise the load-bearing ``extra_payload`` wire-through.
 A regression in any of the four code paths (router build → dispatch
 merge → client POST → wire body) fails one of these six tests.
 """
@@ -63,7 +61,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Callable, Dict, List
+from typing import Any, Dict, List
 
 import httpx
 import pytest
@@ -73,11 +71,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from Courseforge.generators.outline._outline_provider import (  # noqa: E402
-    OutlineProvider,
     _BLOCK_TYPE_GBNF,
-    _BLOCK_TYPE_JSON_SCHEMAS,
+    OutlineProvider,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -170,8 +166,8 @@ def test_grammar_payload_for_local_with_gbnf_mode_includes_grammar_field(
     """``grammar_mode="gbnf"`` puts the GBNF grammar string under the
     top-level ``grammar`` key on every dispatched POST body. This is
     the llama.cpp / LM Studio convention; the field passes through
-    ``OpenAICompatibleClient`` unchanged because Subtask 21's
-    ``extra_payload`` merge runs BEFORE the POST."""
+    ``OpenAICompatibleClient`` unchanged because the ``extra_payload`` merge
+    runs before the POST."""
     client, captured = _make_capturing_client()
     provider = _make_provider(
         monkeypatch,
@@ -206,8 +202,8 @@ def test_grammar_payload_for_ollama_json_schema_mode_includes_format_dict(
 ):
     """``grammar_mode="json_schema"`` puts the Draft 2020-12 JSON
     Schema dict under the top-level ``format`` key (Ollama 0.5+
-    convention). The dict-shape distinguishes this from Wave-113's
-    ``json_mode=True`` injection which sets ``format="json"`` (the
+    convention). The dict shape differs from the generic ``json_mode=True``
+    injection, which sets ``format="json"`` (the
     string literal), so the test asserts the value is a dict carrying
     ``$schema`` / ``type`` / ``properties``."""
     client, captured = _make_capturing_client()
@@ -228,7 +224,7 @@ def test_grammar_payload_for_ollama_json_schema_mode_includes_format_dict(
         f"expected 'format' field in POST body; got keys={list(body.keys())}"
     )
     fmt = body["format"]
-    # Must be the schema dict, NOT the Wave-113 ``"json"`` literal.
+    # Schema mode must emit a dict rather than the generic ``"json"`` literal.
     assert isinstance(fmt, dict), (
         f"json_schema mode must emit a dict; got {type(fmt).__name__}={fmt!r}"
     )
@@ -340,7 +336,7 @@ def test_grammar_payload_for_anthropic_falls_back_to_json_mode_only(
     """``provider="anthropic"`` MUST return an empty grammar payload —
     the Anthropic SDK does not accept arbitrary OpenAI-compatible
     keys (``grammar`` / ``format`` / ``response_format`` / ``extra_body``).
-    The constraint is carried by Wave-113's ``json_mode=True`` path on
+    The constraint is carried by the ``json_mode=True`` path on
     the OA client for OpenAI-compatible backends, but Anthropic routes
     through the SDK directly so there is no equivalent field to inject.
 
@@ -430,8 +426,7 @@ def test_grammar_mode_env_var_overrides_autodetect(monkeypatch):
     assert body["grammar"] == _BLOCK_TYPE_GBNF["concept"]
     # And the autodetect path's strict ``response_format`` json_schema
     # nesting MUST NOT appear (the GBNF override won the build path).
-    # Plan §3.2 companion: the Wave-113 ``json_mode=True`` opt-in on
-    # the OpenAICompatibleClient does inject a generic
+    # The OpenAICompatibleClient's ``json_mode=True`` option injects a generic
     # ``response_format: {"type": "json_object"}`` default — that's
     # the JSON-only constraint, not the schema-nested form. Assert the
     # field is either absent OR carries the generic shape (NOT the
